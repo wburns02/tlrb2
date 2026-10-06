@@ -14,7 +14,11 @@ Format notes (verified on MAIN.EXE / BB.EXE, 2026-10-06):
   after the MZ load image: 'FBOV' u32 ovl_size u32 segtbl_off i32 nseg, overlay data follows.
   stub segment header (0x20 B, paragraph aligned): CD 3F, u16 0, u32 fileoff (from ovl data
   start), u16 codesize, u16 relocsize, u16 nentries, ...; then nentries x (CD 3F off16 00).
-  overlay fixups: relocsize/2 u16 offsets right after the code; each word gets + BASE.
+  overlay fixups: relocsize/2 u16 offsets right after the code. Each fixed-up word is a SELECTOR, not a segment:
+  index*8 into the FBOV segment table (nseg x 8 B at file offset segtbl: u16 load-relative seg, u16 maxoff,
+  u16 flags, u16 minoff). The overlay manager replaces it with that entry's segment (+ load segment); calls to
+  another overlay land on its stub segment. Fixed 2026-10-06: the first version added BASE to the selector, which
+  only happened to be right for selector 0 (seg 0, the main RTL code segment).
 """
 import sys, struct, json, os
 
@@ -37,6 +41,8 @@ def main():
     if d[img_end:img_end + 4] == b'FBOV':
         ovl_size, segtbl, nseg = struct.unpack('<IIi', d[img_end + 4:img_end + 16])
         ovl_data = d[img_end + 16:img_end + 16 + ovl_size]
+        segtab = [struct.unpack('<H', d[segtbl + 8 * i:segtbl + 8 * i + 2])[0] for i in range(nseg)]
+        nfix = nsel = 0
         flat = bytearray(img)
         flat += b'\0' * (-len(flat) % 16)
         for p in range(0, len(img) - 0x20, 16):
@@ -52,7 +58,10 @@ def main():
             for k in range(relocsize // 2):
                 r = struct.unpack('<H', ovl_data[fileoff + codesize + 2 * k:fileoff + codesize + 2 * k + 2])[0]
                 assert r + 2 <= codesize, (hex(p), hex(r))
-                struct.pack_into('<H', code, r, (struct.unpack('<H', code[r:r + 2])[0] + base) & 0xffff)
+                sel = struct.unpack('<H', code[r:r + 2])[0]
+                assert sel % 8 == 0 and sel // 8 < nseg, ('fixup is not a selector', hex(p), hex(r), hex(sel))
+                struct.pack_into('<H', code, r, (segtab[sel // 8] + base) & 0xffff)
+                nfix += 1; nsel += sel != 0
             entries = []
             for k in range(nent):
                 e = p + 0x20 + 5 * k
@@ -63,7 +72,7 @@ def main():
                                     'fileoff': fileoff, 'codesize': codesize, 'fixups': relocsize // 2,
                                     'entries': entries})
             flat += code + b'\0' * (-len(code) % 16)
-        ovl.update(fbov_nseg=nseg, fbov_size=ovl_size)
+        ovl.update(fbov_nseg=nseg, fbov_size=ovl_size, fbov_segtbl=segtbl, overlay_fixups=nfix, nonzero_selectors=nsel)
     else:
         flat = img
     os.makedirs(out, exist_ok=True)
