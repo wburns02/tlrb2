@@ -18,7 +18,7 @@ SIZE = HDR + REC * N
 # -- field table: name -> (offset, kind). kinds: u8, u16 (LE), hi (high nibble), lo (low nibble), str(len)
 # nibble fields are given as (offset, 'hi'|'lo'). Composite fields are handled in _bio below.
 F = {
-    'injury': (0x18, 'u8'),
+    'injury': (0x18, 'u8'),   # bit7 = rested (pitched recently), 1..0x7f = injured days
     'age': (0x14, 'u8'), 'year_off': (0x15, 'u8'), 'exp': (0x16, 'u8'), 'games': (0x17, 'u8'),
     'salary': (0x19, 'u16'), 'portrait': (0x1b, 'u16'),
     'speed': (0x1d, 'hi'),
@@ -147,6 +147,19 @@ class Team:
     def set_strategy(self, key, right_value):
         """key in STRAT; right_value 0..10 as shown in the right-hand box (left box shows 10 - this)"""
         self.header[H_STRAT + STRAT.index(key)] = right_value * 10
+    # --- season state (written by BACK at Main > QUIT; zeroed by Start New Season) ---
+    @property
+    def wins(self): return self.header[0x26]
+    @property
+    def losses(self): return self.header[0x27]
+    @property
+    def last_game_day(self): return self.header[H_DAY]                              # day index of the team's last game
+    @property
+    def streak(self):                                                               # (+n win streak / -n loss streak)
+        b = self.header[0x6d]; return -(b & 0x7f) if b & 0x80 else b
+    @property
+    def rotation_ptr(self): return self.header[0x6e]                                # next starter, 0..4
+    def set_record(self, w, l): self.header[0x26], self.header[0x27] = w, l
     def twin(self, i): return i + 40 if i < 40 else i - 40
     def set(self, i, **kw):
         """set fields on record i; ratings/bio fields also go to the twin record (other half)"""
