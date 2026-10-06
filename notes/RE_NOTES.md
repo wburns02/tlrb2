@@ -58,6 +58,22 @@ Useful commands: BP seg:off, BPINT 21 3D (break on file open), BPM seg:off (memo
 LOG n (trace n instructions to LOGCPU.TXT), SR (set register). Running-program segment differs from Ghidra's 1000:
 Ghidra seg = runtime seg - (PSP + 0x10) + 0x1000.
 
+## Program transition protocol (live-proven 2026-10-06, :97 rig, strace)
+Every program writes BOTH files on exit, then exits with errorlevel = next program id:
+- `CONTROL` 9 B: [0]=program that just ran (1 MAIN, 2 BACK, 3 BB, 4 MANAGE, 5 UTIL, 6 DRAFT, 7 quit),
+  [1]=next program id, then 00 00 01 00 00 ff ff. Observed MAIN->DRAFT `01 06 ...`, DRAFT->MAIN `06 01 ...`.
+  Matches the control_main_loop decode above (state[1] drives the nextprogram choice).
+- `SYSTEM` 76 B (league name "CLASSIC" + settings) rewritten verbatim each transition.
+Save slots: the PLAY BALL > LOAD SAVED GAME list probes `1.SAV`..`10.SAV` (all ENOENT on a fresh install).
+CLASSIC.MAJ is rewritten wholesale (59,771 B) when season screens open/close - league state is round-tripped
+through .MAJ, team season stats live in the V20 second half (see FORMATS.md). SCREENS/*.SCR are not on C:;
+they are read from the CD (D:). MAIN overlays page in by EXE file offset (e.g. 307424).
+Rig for this: scripts/m3_launch.sh + m3_xc.sh (Xvfb :97, install /mnt/nvme/tlrb2/work2/c from pristine;
+strace with `-p $(pgrep -x dosbox | head -1)`). Isolated from the :98 rig.
+Open: the SEASON > PLAY LEAGUE GAMES date browser does not respond to keyboard or synthetic clicks
+(game boxes not hot; the CLASSIC league ships pre-draft - games may require completing the draft first).
+Sim/ GAME.TMP / end-of-season flow still need a completed-league trace.
+
 ## .SCH schedule files (observations 2026-10-06, static only; needs a trace to decode properly)
 162_26.SCH 57,176 B: +0 ASCII "162 Games-26 Teams" (16 B + 2 NUL). +0x14 u32 (5e 5d ca 02, unknown; not a
 DOS date). +0x18 a run of x86 code bytes (55 8b ec push bp / mov bp,sp...) for ~70 B then zeros to +0xc0 -
