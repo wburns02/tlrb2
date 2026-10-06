@@ -1,0 +1,8 @@
+*.EXE
+*.exe
+*.V20
+*.MAJ
+*.iso
+*.bin
+*.png
+__pycache__/
