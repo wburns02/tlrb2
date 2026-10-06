@@ -4,6 +4,7 @@
   Records 0..39 = "stat line" half (0..15 pitchers, 16..39 position players); records 40..79 = the same 40 players
   as the "current season" half (year+1, exp+1, season stats zeroed). The Utilities editor writes ratings to both.
 usage: v20.py dump FILE [N]       decoded players (all, or record N only)
+       v20.py hdr FILE            decoded team header (staff, lineups, defense, bench, reserves, strategy)
        v20.py raw FILE N          hex of record N with offsets
        v20.py diff OLD NEW        every changed byte as (header|player N, field offset, old -> new)
        v20.py set FILE N FIELD=VAL [FIELD=VAL ...] [-o OUT]   edit fields of record N (writes both halves when the
@@ -17,6 +18,7 @@ SIZE = HDR + REC * N
 # -- field table: name -> (offset, kind). kinds: u8, u16 (LE), hi (high nibble), lo (low nibble), str(len)
 # nibble fields are given as (offset, 'hi'|'lo'). Composite fields are handled in _bio below.
 F = {
+    'injury': (0x18, 'u8'),
     'age': (0x14, 'u8'), 'year_off': (0x15, 'u8'), 'exp': (0x16, 'u8'), 'games': (0x17, 'u8'),
     'salary': (0x19, 'u16'), 'portrait': (0x1b, 'u16'),
     'speed': (0x1d, 'hi'),
@@ -50,6 +52,12 @@ F = {
 TWIN = {'age', 'salary', 'portrait', 'speed', 'consist', 'exper', 'pos1', 'pos2', 'power', 'bunt', 'hit_run',
         'streak_v', 'clutch', 'daynight', 'arm', 'range', 'control', 'velocity', 'pitch4', 'endurance',
         'p_streak_v', 'p_clutch', 'p_daynight', 'pickoff', 'release', 'q1', 'q2', 'q3', 'q4', 'bats', 'throws', 'flag3'}
+
+# Header layout (295 B), decoded by Lane B 2026-10-07 from Manager-screen diffs + MANAGE code (see notes/FORMATS.md)
+H_DAY, H_STAFF, H_LINEUP, H_DEF, H_BENCH, H_RESERVE, H_STRAT = 0x6c, 111, 122, 158, 194, 222, 245
+STRAT = ['lineup_speed_power', 'lineup_def_hit', 'lineup_end_era', 'pitch_yank', 'pitch_pinch', 'pitch_around',
+         'bat_sac', 'bat_squeeze', 'bat_hitrun', 'def_walk', 'def_infield', 'def_pitchout',
+         'run_aggr', 'run_steal2', 'run_steal3']   # stored = RIGHT-hand number on screen x10 (50 = 5/5)
 
 POS = ['P', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH', 'OF', 'IF', 'O/I', 'C/O', 'C/I', 'C/3']
 PITCH = ['FASTBALL', 'CURVE', 'CHANGEUP', 'DEFENSE', 'SLIDER', 'SCREWBALL', 'SINKER', 'SPLITFINGER', 'FORKBALL', 'KNUCKLEBALL']
@@ -119,6 +127,26 @@ class Team:
     def league_code(self): return self.header[14:16].decode('latin-1')
     @property
     def stadium(self): return cstr(self.header[16:24]) + ('.' + cstr(self.header[24:27]) if self.header[24] else '')
+    # --- header lists (indices are player record numbers 0..39; 0xff = empty slot) ---
+    def staff(self): return list(self.header[H_STAFF:H_STAFF + 10])          # 5 starters in rotation order, 5 relievers
+    def lineup(self, dh, vs_rhp):
+        o = H_LINEUP + dh * 18 + vs_rhp * 9; return list(self.header[o:o + 9])    # no-DH lists: 8 players then 0xff
+    def defense(self, dh, vs_rhp):
+        o = H_DEF + dh * 18 + vs_rhp * 9; return list(self.header[o:o + 9])       # position per lineup slot (0 P, 9 DH)
+    def bench(self, dh, vs_rhp):
+        o = H_BENCH + dh * 14 + vs_rhp * 7; return list(self.header[o:o + 7])     # remaining active batters, 0xff pad
+    def reserves(self): return list(self.header[H_RESERVE:H_RESERVE + 15])        # 6 pitchers + 9 batters off the 25-man
+    def strategy(self): return {k: self.header[H_STRAT + i] for i, k in enumerate(STRAT)}
+    def set_list(self, kind, vals, dh=0, vs_rhp=0):
+        """kind: staff|lineup|defense|bench|reserves ; vals padded with 0xff to the slot count. No consistency checks
+        (the roster must stay a partition of the 40 players: 10 staff + lineup/bench batters + 15 reserves)."""
+        o, n = {'staff': (H_STAFF, 10), 'lineup': (H_LINEUP + dh * 18 + vs_rhp * 9, 9),
+                'defense': (H_DEF + dh * 18 + vs_rhp * 9, 9), 'bench': (H_BENCH + dh * 14 + vs_rhp * 7, 7),
+                'reserves': (H_RESERVE, 15)}[kind]
+        assert len(vals) <= n; self.header[o:o + n] = bytes(vals) + b'\xff' * (n - len(vals))
+    def set_strategy(self, key, right_value):
+        """key in STRAT; right_value 0..10 as shown in the right-hand box (left box shows 10 - this)"""
+        self.header[H_STRAT + STRAT.index(key)] = right_value * 10
     def twin(self, i): return i + 40 if i < 40 else i - 40
     def set(self, i, **kw):
         """set fields on record i; ratings/bio fields also go to the twin record (other half)"""
@@ -170,6 +198,16 @@ def main(argv):
         print(f'team={t.name!r} league={t.league_code!r} stadium={t.stadium!r}')
         for i, p in enumerate(t.players):
             if p.active and (len(argv) < 4 or int(argv[3]) == i): print(f'[{i}] ' + describe(p))
+    elif cmd == 'hdr':
+        t = Team.load(argv[2]); nm = lambda i: t.players[i]['last'] if i < 40 else '--'
+        print(f'team={t.name!r} league={t.league_code!r} stadium={t.stadium!r} day={t.header[H_DAY]}')
+        print('staff    ', [nm(i) for i in t.staff()])
+        for dh in (0, 1):
+            for v in (0, 1):
+                print(f"lineup dh={dh} vs {'RHP' if v else 'LHP'}", [nm(i) for i in t.lineup(dh, v)], t.defense(dh, v),
+                      'bench', [nm(i) for i in t.bench(dh, v)])
+        print('reserves ', [nm(i) for i in t.reserves()])
+        print('strategy ', t.strategy())
     elif cmd == 'raw':
         d = open(argv[2], 'rb').read(); i = int(argv[3]); r = d[HDR + REC * i:HDR + REC * (i + 1)]
         for k in range(0, REC, 16): print(f'{k:3d}', ' '.join(f'{b:02x}' for b in r[k:k + 16]))
