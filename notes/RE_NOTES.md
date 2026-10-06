@@ -44,6 +44,15 @@ Pipeline (ghidra_scripts/gh.py, live pyghidra access, BBPro98's venv):
   String text appears in decomp only where code touches it directly; menu strings are behind DGROUP far-pointer
   tables (off,seg pairs), reachable via the table base, not the string itself.
 
+## CONTROL.EXE transition logic (decoded 2026-10-06, static, no rig needed)
+CONTROL's main = control_main_loop (1000:2287): rtl_fopen("control","rb") (rtl wrappers renamed in the project:
+fopen 1000:1276, fread 1000:139f, fwrite 1000:160f, fclose 1000:0ed8). On missing file it creates it ("wb"),
+writes the 9-byte default state (control_state_buf = DGROUP+0x2ec, renders as DAT_1000_26cc; display offset =
+DGROUP + 0x23e0 in this program), else reads 9 bytes into it. State[1] = next program id: 1 MAIN, 2 BACK,
+3 BB, 4 MANAGE, 5 UTIL, 6 DRAFT, 7 quit (exit(7) = errorlevel 7 ends TONY2.BAT). Pristine file bytes
+`03 07 00 00 01 00 00 ff ff` map 1:1 onto the buffer. The 6 per-program switch branches are a jump table
+Ghidra truncated (bad instruction data) - seed or trace them if the details matter.
+
 ## Debugger (DOSBox-X heavy debug build, /mnt/nvme/src/dosbox-x)
 Useful commands: BP seg:off, BPINT 21 3D (break on file open), BPM seg:off (memory change), MEMDUMPBIN seg:off len,
 LOG n (trace n instructions to LOGCPU.TXT), SR (set register). Running-program segment differs from Ghidra's 1000:
