@@ -15,12 +15,14 @@ Flattened images (tools/vroomm_flatten.py): load image at 1000:0000 with MZ relo
 with their fixups applied, every stub thunk `CD 3F off 00` rewritten to `EA off seg` (far jmp to the overlay).
 Import: Raw Binary, x86:LE:16:Real Mode, base 1000:0000. Seeds (tools/make_seeds.py): entry + thunk targets +
 every `push bp; mov bp,sp` in its containing segment (segments from MZ reloc values). Rebuild: scripts/ghidra_build.sh.
-Sanity: all 51 MAIN overlays start with 55 8B EC. MAIN 945 functions exported, 4 decompile failures; BB 1522/9.
+Sanity: all 51 MAIN overlays start with 55 8B EC. Functions exported / decompile failures: MAIN 945/4, BB 1522/9, UTIL 981/7, DRAFT 886/5, BACK 755/2, MANAGE 512/1,
+PLAY 303/0, CONTROL 93/0 (6,000 total). Failures are pcode errors on bad flow targets, not import problems.
 Known gaps / next:
 - DS is not set, so string and global references are unresolved. Find the DGROUP segment (Borland c0 startup
   loads DS from a relocated immediate near entry 1000:0000) and set the DS register context program-wide.
-- Library code (Borland RTL, PKWARE DCL implode/explode) should be identified and named first (FLIRT-like
-  signatures are not available for 16-bit in Ghidra; name by hand from known RTL entry patterns).
+- Library code (Borland RTL, PKWARE DCL implode/explode) should be identified and named first. The same RTL is
+  linked into all 8 programs: name it by hand in one (MAIN), then propagate to the other 7 with a Function ID
+  database built from that program (or a byte-pattern script if FID does not handle 16-bit real mode; verify).
 - Functions only reached through far pointers (callbacks, jump tables) may be missing: add seeds as found.
 
 ## Debugger (DOSBox-X heavy debug build, /mnt/nvme/src/dosbox-x)
