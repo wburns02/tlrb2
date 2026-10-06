@@ -38,6 +38,11 @@ Pipeline (ghidra_scripts/gh.py, live pyghidra access, BBPro98's venv):
   DGROUP cdf) referenced from the far-pointer table at DGROUP 29a. Refs are SourceType.ANALYSIS; short-string
   matches can be false positives. Run setds then fixrefs, then regen.
 - Commands: setds / fixrefs / strings / xrefs / decomp / rename / label / structs.
+- Status 2026-10-06 18:05: setds+fixrefs+regen applied to ALL 8 (second pass, after the DS-aware reimport batch
+  from the parallel session, whose exports still lacked resolution). Indexes now carry DGROUP global refs
+  (DAT_3000_xxxx = DGROUP seg rendering; DAT_4000_xxxx = overlay area) and 1395 s_ string labels in UTIL.
+  String text appears in decomp only where code touches it directly; menu strings are behind DGROUP far-pointer
+  tables (off,seg pairs), reachable via the table base, not the string itself.
 
 ## Debugger (DOSBox-X heavy debug build, /mnt/nvme/src/dosbox-x)
 Useful commands: BP seg:off, BPINT 21 3D (break on file open), BPM seg:off (memory change), MEMDUMPBIN seg:off len,
