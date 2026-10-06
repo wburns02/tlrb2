@@ -58,6 +58,13 @@ Useful commands: BP seg:off, BPINT 21 3D (break on file open), BPM seg:off (memo
 LOG n (trace n instructions to LOGCPU.TXT), SR (set register). Running-program segment differs from Ghidra's 1000:
 Ghidra seg = runtime seg - (PSP + 0x10) + 0x1000.
 
+## .SCH schedule files (observations 2026-10-06, static only; needs a trace to decode properly)
+162_26.SCH 57,176 B: +0 ASCII "162 Games-26 Teams" (16 B + 2 NUL). +0x14 u32 (5e 5d ca 02, unknown; not a
+DOS date). +0x18 a run of x86 code bytes (55 8b ec push bp / mov bp,sp...) for ~70 B then zeros to +0xc0 -
+either an embedded stub or a dumped struct with far pointers; unexplained. From +0xc0: sequences of team ids
+(01..0e) in game-order groups, e.g. `04 09 01 03 0a` - plausibly per-date (away,home) pairings. Do NOT decode
+further by guessing: ftrace a season action (which program opens .SCH, offsets read) first.
+
 ## File-trace facts
 - Utilities > Edit Player Stats reads TEAMS/<league>/<league>ALW1.V20 etc. in full (11735 B) and pages in a UTIL
   overlay (file offset 368144). The current league is CLASSIC (from SYSTEM).
