@@ -274,3 +274,38 @@ are not used (category labels undecoded); no platoon lineups; no trades with the
 C4 fill for a file with no named record, so an empty pool file gets no draft class until it holds a player
 (DYNASTY amendment: fall back to the previous file's year; until then ROSTERS seeds the bootstrap year by keeping
 at least one player per pool file when the pool has any).
+
+## C7. Awards and milestones (DRAFT 2026-10-07; HISTWR + history.record_season, after the C2 step 3 player pass)
+
+Inputs per season, all from the pre-roll league exactly as C2/C3 read it: every named record of every mapped team,
+its season half stats, roster half bio/ratings, its C3 season WAR10, the C3 bat100 (batting runs x100 after the
+park term), its player entry index (after step 3 appended new entries), and its league: AL if the team's
+league-global id < 16, else NL. pa, outs, ab, h, hr, sb, w, sv, pso, er as in C2/C3. Ties always go to the lower
+player entry index. "none" = 0xffff.
+
+Awards, per league:
+- MVP: batters (pos1 != 0) with pa >= 502: max season WAR10.
+- Cy Young: pitchers with outs >= 486: max season WAR10; if none qualify, max WAR10 over pitchers with outs > 0.
+- Rookie of the Year: roster exp (record byte 22) == 0 and (pa >= 130 or outs >= 150): max season WAR10.
+- Gold Glove, positions 1..8 (C, 1B, 2B, 3B, SS, LF, CF, RF) by roster pos1: games >= 100 (C: >= 90): max
+  2 * range + arm, then max fp1000 = ((po1 + a1) * 1000) / (po1 + a1 + e1) (1000 if the denominator is 0).
+- Silver Slugger, positions 1..9 (DH = 9, NL usually none): pa >= 300: max bat100.
+Storage:
+- Season entry bytes 88..99 (season table entries 1..64 only): AL MVP, AL CY, AL ROY, NL MVP, NL CY, NL ROY as u16
+  player entry indices (none 0xffff); 100..127 stay zero.
+- Player entry bytes 152..156: career counts u8 (saturating at 255) MVP, CY, ROY, GG, SS; 157..159 zero. Counts are
+  added for every season, including seasons past 64.
+
+Milestones: HISTWR also writes MILESTON.DAT next to HISTORY.DAT (same dir), 8 B records, little endian:
+0 u16 season_no, 2 u16 player entry index, 4 u8 kind, 5 u8 zero, 6 u16 value (saturating 65535).
+Each run first drops every record with season_no >= the current season (so a rerun is idempotent), then appends this
+season's records in player entry index order, kinds ascending per player. Career kinds fire when the career total
+crosses the mark this season (before < mark <= after); season kinds when the season stat meets the mark.
+- career (value = new career total): 1 H 2000, 2 H 3000, 3 HR 300, 4 HR 400, 5 HR 500, 6 HR 600, 7 HR 700,
+  8 RBI 1500, 9 RBI 2000, 10 SB 500, 11 W 200, 12 W 300, 13 PSO 2000, 14 PSO 3000, 15 PSO 4000, 16 SV 300, 17 SV 400
+- season (value = the season stat): 32 HR >= 50, 33 H >= 200, 34 SB >= 100, 35 BA >= .400 with pa >= 502
+  (value = h * 1000 / ab), 36 W >= 20, 37 PSO >= 300, 38 ERA < 2.00 with outs >= 486 (value = er * 2700 / outs,
+  i.e. ERA x100), 39 SV >= 50
+Write order (HISTWR): MILESTON.DAT and HISTORY.DAT are each written to a temp file; both renames happen only after
+both temp files are complete, using the C5 BAK scheme, so on any exit 2 both files are unchanged.
+Known v1 gaps: per-season Gold Glove and Silver Slugger winners are only kept as career counts.
