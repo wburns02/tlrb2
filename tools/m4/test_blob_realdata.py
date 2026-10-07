@@ -2,16 +2,21 @@
 """P1 gate as a test: the 16-bit blob vs tools/m4/rollover.py on the REAL
 completed m3_end season (all 28 league files, all 40 players each).
 
-The synthetic fixtures in test_blob_unicorn.py masked the t_hitrun register
-clobber class; real season stats catch it. Run:
+The blob is the repo build (tools/m4/blob/rollover.bin, built from rollover.asm
+with nasm at import). The synthetic fixtures in test_blob_unicorn.py masked the
+t_hitrun register clobber class; real season stats catch it. Run:
     cd ~/tlrb2 && python3 -m pytest tools/m4/test_blob_realdata.py -q
 """
 import os
 import struct
+import subprocess
 import sys
 
-sys.path.insert(0, '/home/will/tlrb2/tools')
-sys.path.insert(0, '/home/will/tlrb2/tools/m4')
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_TOOLS = os.path.dirname(_HERE)
+for _p in (_TOOLS, _HERE):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import pytest
 from unicorn import *
@@ -20,8 +25,12 @@ from unicorn.x86_const import *
 import rollover
 from v20 import Team, F
 
-BLOB = '/mnt/nvme/tlrb2/work/m4/blob/rollover.bin'
+BLOB_DIR = os.path.join(_HERE, 'blob')
+ASM = os.path.join(BLOB_DIR, 'rollover.asm')
+BLOB = os.path.join(BLOB_DIR, 'rollover.bin')
 M3_DIR = '/mnt/nvme/tlrb2/snaps/m3_end/TEAMS/CLASSIC'
+
+subprocess.run(['nasm', '-f', 'bin', '-o', BLOB, ASM], check=True, cwd=BLOB_DIR)
 
 Uc.__enter__ = lambda self: self
 Uc.__exit__ = lambda self, *args: False
@@ -56,7 +65,6 @@ def emu_pair(uc, roster_in, season_in, rng_state, flags=1):
     return ax, bytes(uc.mem_read(PHYS_ROSTER, 143)), bytes(uc.mem_read(PHYS_SEASON, 143))
 
 
-@pytest.mark.skipif(not os.path.exists(BLOB), reason='blob not built')
 @pytest.mark.skipif(not os.path.isdir(M3_DIR), reason='m3_end snapshot missing')
 def test_real_season_blob_matches_reference():
     blob = open(BLOB, 'rb').read()

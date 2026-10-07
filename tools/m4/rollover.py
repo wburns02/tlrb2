@@ -1,38 +1,53 @@
 #!/usr/bin/env python3
-"""M4 rollover REFERENCE implementation (Python). The 16-bit asm patch must reproduce
-these byte outputs exactly; the P1 gate diffs rig output against this prediction.
+"""M4 rollover REFERENCE implementation (Python), contract C1 (notes/M4_CONTRACT.md).
+The 16-bit asm patch must reproduce these byte outputs exactly; the gate diffs rig
+output against this prediction.
 
-Semantics (see notes/M4_DESIGN.md):
+Semantics (C1):
   A season IS the league dir (CLASSIC.MAJ + 26 .V20). At season end records 40..79 hold
   the completed season's stats (BACK-accumulated); records 0..39 hold bio+ratings plus
-  the CAREER stat line (stock shipped leagues already carry career numbers there, so
-  existing screens show them for free).
+  the CAREER stat line.
+
+  Quality tier, computed ONCE per player from the ROSTER half ratings BEFORE any change:
+    pitcher (pos1 & 15 == 0): qs = control + velocity + endurance
+                              tier = 0 if qs < 23, 1 if qs < 26, 2 if qs < 28, else 3
+    batter: qs = power + hit_run + speed + range
+            tier = 0 if qs < 32, 1 if qs < 36, 2 if qs < 39, else 3
+    (thresholds = p50/p75/p90 of the shipped CLASSIC league)
 
   rollover(league_dir, out_dir, cfg):
     1. career merge:  career = sat_add(career, season) per STAT field (u8 fields cap 255,
        u16 cap 65535; L+R merged independently)
-    2. aging:         age+1, year_off+1, exp+1 if season games > 0 (both halves)
-    3. progression:   target = ratings_from_stats(season record) via tools/ratings.py;
-                      new = old + k(age)*(target-old) with k as num/256 integer math
-                      (matching the asm port exactly: delta = (k*(t-o) + 128) >> 8 signed)
-       progressed ratings: batters power/bunt/hit_run/speed/range/arm,
-                           pitchers control/velocity/endurance
-    4. retirement:    age >= 41, or age >= 36 and rand < (age-35)*8%, or (pitcher)
-                      endurance+arm both < 3 -> record marked inactive (byte 0 = 0),
-                      player archived in the season history
+    2. aging:         age+1 (both halves), year_off+1, exp+1 if season games > 0
+    3a. evidence      (progression flag AND season games > 0): per rating in the rating
+                      order, new = old + ((96 * (target - old) + 128) >> 8), clamp 1..15;
+                      target = ratings formula on the season record (tools/ratings.py)
+    3b. drift         (progression flag, regardless of games): per rating in the rating
+                      order, ONE draw ALWAYS: d = draw() & 0xff; v = current value;
+                      cap = 10 for endurance, else 12.
+                        age2 <= 26: g = 90 if age2 <= 22, 64 if age2 <= 24, else 32;
+                                    if d < g and v < cap: v += 1
+                        27 <= age2 <= 31: no change (draw still consumed)
+                        age2 >= 32: base = 40 (32..33), 64 (34..35), 96 (36..37),
+                                    128 (38..39), 160 (40+); mult = [4, 4, 3, 2][tier];
+                                    p = (base * mult) >> 2; if d < p and v > 1: v -= 1
+    4. retirement     (retirement flag): NEVER forced.
+                        age2 < 33: not retired, NO draw
+                        age2 >= 33: base = 10 (33..34), 20 (35..36), 36 (37..38),
+                                    56 (39..40), 80 (41..42), 110 (43+);
+                                    mult = [4, 4, 3, 2][tier]; p = (base * mult) >> 2;
+                                    if season games == 0: p = min(255, p * 2)
+                                    d = draw() & 0xff; retired iff d < p
     5. history:       HISTORY.DAT (league dir): per season: year, champion, W-L table,
                       retirees; players archived with career line
   The stock Start New Season (zeroing 40..79, new schedule) still runs afterwards; we
   only pre-process the set before handing it to the stock path.
 
-  Integer-math contract for the asm port:
-    k(age): age<=20:192, 21-24:128, 25-27:64, 28:0, 29-34:224 (i.e. -32/256), >=35:192
-            (-64/256); sign carried by whether target < old.
-    delta = (k * (target - old) + 128) >> 8 computed in 16-bit signed, then added,
-    clamped 1..15.
-    retirement RNG: xorshift16 state seeded with --seed, one draw per player only in the
-    age>=36 branch, threshold (age-35)*20 out of 255 (8%/year over 35); identical to the
-    asm port (rollover.asm) so byte-exact comparison holds.
+  Rating order (evidence, drift and RNG draw order):
+    batters: power, bunt, hit_run, speed, range, arm
+    pitchers: control, velocity, endurance
+  Draw order per player: the drift draws (6 or 3) then the retirement draw. The RNG
+  stream continues across players and teams (sorted *.V20 order, records 0..39).
 
 usage:
   rollover.py IN_DIR OUT_DIR [--seed 1] [--no-progress] [--no-retire] [--dry]
@@ -55,21 +70,39 @@ STAT_FIELDS = [
     'ph_l', 'ph_r', 'pd_l', 'pd_r', 'pt_l', 'pt_r', 'pbb_l', 'pbb_r', 'pso_l', 'pso_r',
     'phr_l', 'phr_r', 'bk', 'wp',
 ]
-K_BY_AGE = lambda age: 192 if age <= 20 else 128 if age <= 24 else 64 if age <= 27 else 0 \
-    if age == 28 else 224 if age <= 34 else 192
 BATTER_RATINGS = [('power', ratings.power), ('bunt', ratings.bunt), ('hit_run', ratings.hit_and_run),
                   ('speed', ratings.speed), ('range', ratings.rng), ('arm', ratings.arm)]
 PITCHER_RATINGS = [('control', ratings.control), ('velocity', ratings.velocity),
                    ('endurance', ratings.endurance)]
 SAT = {'u8': 255, 'u16': 65535}
+# C1 drift base by age2 bucket (>= 32), and retirement base by age2 bucket (>= 33)
+DRIFT_BASE = lambda age2: 40 if age2 <= 33 else 64 if age2 <= 35 else 96 \
+    if age2 <= 37 else 128 if age2 <= 39 else 160
+RETIRE_BASE = lambda age2: 10 if age2 <= 34 else 20 if age2 <= 36 else 36 \
+    if age2 <= 38 else 56 if age2 <= 40 else 80 if age2 <= 42 else 110
+TIER_MULT = (4, 4, 3, 2)
+DRAFT_CAP = {'endurance': 10, 'control': 12, 'velocity': 12, 'power': 12, 'bunt': 12,
+             'hit_run': 12, 'speed': 12, 'range': 12, 'arm': 12}
+ENDURANCE_CAP = 10
 
 
 def k_delta(old, target, k):
-    """new = old + (k*(target-old) + 128) >> 8 with k a SIGNED byte (224 means -32),
+    """new = old + (k*(target-old) + 128) >> 8 with k positive (evidence uses 96),
     arithmetic shift (Python >> on negatives floors, same as x86 sar), clamp 1..15."""
-    ks = k - 256 if k > 128 else k
-    v = (ks * (target - old) + 128) >> 8
+    v = (k * (target - old) + 128) >> 8
     return max(1, min(15, old + v))
+
+
+def tier_of(rec):
+    """C1 quality tier from the ROSTER half ratings, before any change.
+    pitcher (pos1 & 15 == 0) -> [control, velocity, endurance], else the batting four."""
+    pitcher = rec[F['pos1'][0]] & 15 == 0
+    if pitcher:
+        qs = _get(rec, *F['control']) + _get(rec, *F['velocity']) + _get(rec, *F['endurance'])
+        return 0 if qs < 23 else 1 if qs < 26 else 2 if qs < 28 else 3
+    qs = _get(rec, *F['power']) + _get(rec, *F['hit_run']) + _get(rec, *F['speed']) \
+        + _get(rec, *F['range'])
+    return 0 if qs < 32 else 1 if qs < 36 else 2 if qs < 39 else 3
 
 
 def sat_add(a, b, kind):
@@ -77,8 +110,8 @@ def sat_add(a, b, kind):
 
 
 class Rng:
-    """xorshift16, the asm port's exact generator; draw() only called in the age>=36
-    retirement branch so draw order matches."""
+    """xorshift16, the asm port's exact generator; draw order is the C1 order:
+    one drift draw per rating (6 batter / 3 pitcher), then the retirement draw."""
     def __init__(self, seed=1):
         self.s = seed & 0xffff          # blob parity: xorshift(0) stays 0
 
@@ -93,9 +126,11 @@ class Rng:
 
 def rollover_player(rec_roster, rec_season, cfg, rng, log):
     """Mutate rec_roster (career half) in place from rec_season. Returns retire bool."""
-    bio = lambda r: {k: _get(r, *F[k]) if F[k][1] in ('u8', 'u16') else None
-                     for k in ('age', 'year_off', 'exp', 'games')}
-    s_bio = bio(rec_season)
+    s_bio = lambda r: {k: _get(r, *F[k]) if F[k][1] in ('u8', 'u16') else None
+                       for k in ('age', 'year_off', 'exp', 'games')}
+    s_b = s_bio(rec_season)
+    # tier from the ROSTER half BEFORE any change
+    tier = tier_of(rec_roster)
     # 1. career merge with saturation
     for f in STAT_FIELDS:
         off, kind = F[f]
@@ -107,35 +142,51 @@ def rollover_player(rec_roster, rec_season, cfg, rng, log):
     # 2. aging (both halves; caller applies the same to the twin)
     age = _get(rec_roster, *F['age'])
     _set(rec_roster, *F['age'], min(255, age + 1))
-    _set(rec_roster, *F['year_off'], (s_bio['year_off'] + 1) & 0xff)
-    if s_bio['games'] > 0:
+    _set(rec_roster, *F['year_off'], (s_b['year_off'] + 1) & 0xff)
+    if s_b['games'] > 0:
         _set(rec_roster, *F['exp'], min(255, _get(rec_roster, *F['exp']) + 1))
-    # 3. progression
-    if cfg.get('progress', True) and s_bio['games'] > 0:
-        k = K_BY_AGE(age + 1)
-        if k:
-            pitcher = _get(rec_roster, *F['pos1']) == 0   # pos code 0 = P
-            table = PITCHER_RATINGS if pitcher else BATTER_RATINGS
-            for name, fn in table:
-                off, kind = F[name]
-                old = _get(rec_roster, off, kind)
-                target = fn(rec_season)
-                new = k_delta(old, target, k)
-                if new != old and log is not None:
-                    log.append({'rating': name, 'old': old, 'target': target, 'new': new})
-                _set(rec_roster, off, kind, new)
-    # 4. retirement
-    age2 = age + 1
+    # 3a. evidence: only with the progression flag AND season games > 0
+    if cfg.get('progress', True) and s_b['games'] > 0:
+        pitcher = _get(rec_roster, *F['pos1']) & 15 == 0   # pos code 0 = P
+        table = PITCHER_RATINGS if pitcher else BATTER_RATINGS
+        for name, fn in table:
+            off, kind = F[name]
+            old = _get(rec_roster, off, kind)
+            target = fn(rec_season)
+            new = k_delta(old, target, 96)
+            if new != old and log is not None:
+                log.append({'rating': name, 'old': old, 'target': target, 'new': new})
+            _set(rec_roster, off, kind, new)
+    # 3b. drift: only with the progression flag, regardless of games, one draw always
+    if cfg.get('progress', True):
+        pitcher = _get(rec_roster, *F['pos1']) & 15 == 0   # pos code 0 = P
+        table = PITCHER_RATINGS if pitcher else BATTER_RATINGS
+        age2 = _get(rec_roster, *F['age'])
+        for name, _fn in table:
+            d = rng.draw() & 0xff
+            off, kind = F[name]
+            v = _get(rec_roster, off, kind)
+            if age2 <= 26:
+                g = 90 if age2 <= 22 else 64 if age2 <= 24 else 32
+                if d < g and v < DRAFT_CAP[name]:
+                    v += 1
+            elif age2 <= 31:
+                pass                       # no change, the draw is still consumed
+            else:
+                base = DRIFT_BASE(age2)
+                p = (base * TIER_MULT[tier]) >> 2
+                if d < p and v > 1:
+                    v -= 1
+            _set(rec_roster, off, kind, v)
+    # 4. retirement: never forced; draw only at age2 >= 33
+    age2 = _get(rec_roster, *F['age'])
     retire = False
-    if cfg.get('retire', True):
-        if age2 >= 41:
-            retire = True
-        elif age2 >= 36:
-            if (rng.draw() & 0xff) < (age2 - 35) * 20:
-                retire = True
-        elif _get(rec_roster, *F['endurance']) < 3 and _get(rec_roster, *F['arm']) < 3 \
-                and _get(rec_roster, *F['pos1']) == 0:   # pos code 0 = P
-            retire = True
+    if cfg.get('retire', True) and age2 >= 33:
+        base = RETIRE_BASE(age2)
+        p = (base * TIER_MULT[tier]) >> 2
+        if s_b['games'] == 0:
+            p = min(255, p * 2)
+        retire = (rng.draw() & 0xff) < p
     return retire
 
 
