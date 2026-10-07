@@ -9,7 +9,7 @@ Method: single-field edit in Utilities (work install), Main > QUIT is what write
 
 Record offsets (dec, within the 143 B record). u16 is little endian. "hi/lo" = nibble of that byte.
 - 0 last name (12), 12 first name (8), 20 age, 21 year-1870, 22 exp, 23 games, 25 u16 salary
-- 27 u16 unknown. NOT the portrait (changing it left the picture unchanged). Looks like a per-player id.
+- 27 u16 unknown. NOT the portrait (changing it left the picture unchanged); a season game did not touch it either (session 6). Looks like a per-player id.
 - 29: hi speed. lo: bit3 throws R (0=L), bits2-1 bats (1=R, 2=S, L presumably 0), bit0 third header box (L/D, meaning unknown)
 - 30: hi exper, lo consist. 31: hi pos2, lo pos1. Pos: 0 P,1 C,2 1B,3 2B,4 3B,5 SS,6 LF,7 CF,8 RF,9 DH,10 OF,11 IF,12 O/I,13 C/O,14 C/I,15 C/3
 - 32 R, 33 RBI, 34 SH, 35 SB, 36 CS (u8)
@@ -19,7 +19,7 @@ Record offsets (dec, within the 143 B record). u16 is little endian. "hi/lo" = n
 - 71 pinch AB, 72 pinch H, 73 pinch HR (u8)
 - 74 hi bunt lo power. 75 hi streak lo H&R. 76 hi day/night lo clutch. All 1..12 (editor clamps 13 to 12, ignores 0).
 - 77 PO1, 79 PO2, 81 A1, 83 A2 (u16); 85 E1, 86 E2, 87 DP1, 88 DP2, 89 PB (u8)
-- 90 u16 + 92 u16: RTO% shown = 90/92 x100 (probable, typed 33.3 stored 33 and 100). 94 hi range lo arm
+- 90 u16 + 92 u16: RTO% shown = 90/92 x100. CONFIRMED session 6: a catcher faced 1 stolen base (no caught stealing) and u16@92 went 0->1, @90 stayed 0, so 90 = caught, 92 = attempts. 94 hi range lo arm
 - Pitchers: 95 W, 96 L, 97 CG, 98 GS, 99 SHO, 100 SV (u8); 101 IP x10, 103 ER, 105 u16 (equals ER in 301/416, likely R) (u16);
   107 BFP_L, 109 BFP_R, 111 H_L, 113 H_R, 115 2B_L, 117 2B_R (u16); 119 3B_L, 120 3B_R (u8);
   121 BB_L, 123 BB_R, 125 SO_L, 127 SO_R (u16); 129 HR_L, 130 HR_R, 131 BK, 132 WP (u8). Pitchers store batters faced, AB = BFP - BB.
@@ -222,11 +222,36 @@ Play log (scoring half-inning log):
 - Event: b0 bit0 = batting side (1 home), b0>>1 = fielding pitcher id. b1 = batter id<<2 | hand split. b2 = result code (table not decoded; 0x1f probably HR). b3..b5 = runners on 1B/2B/3B before the play, id | adv<<6, ff empty. Runner at base j (0 = first) scores if j+adv >= 3.
 - Writer BB 6000:7e7b (row = buf + [0x12c0]*0x6c + slot*6), counter bump BB 6000:7e65, callers 6000:75fb and 6000:8100.
 
-Accumulators (visitor team only, 40 slots by player id):
+Accumulators (session 5 text, visitor only; superseded by session 6 section below, both teams exist at stride 0x8e8):
 - Pair arrays at 440+80k, index 2*id+split: k0 AB, k1 H, k2 2B, k3 3B, k4 HR, k5 BB, k6 SO, k13 E. k7, k8, k11, k12 unknown (SB/CS candidates). Single bytes: 0xf0 R, 0x118 RBI.
 - Game 2 sums over all 40 slots match the CAL box totals: AB30 H4 2B1 HR2 BB3 SO4 E1.
 
 Ground rules bits: 7444 low 3 bits = visitor AUTO (bit0 fielding, bit1 throwing, bit2 running, 1 = yes), 7445 low 3 bits = home AUTO. Upper bits constant (0x68, 0xc0). Proven with 0x6f and 0x6a runs. 7436 music = SYSTEM+0x1a. MAIN 4000:e968 maps SYSTEM to buffer, 4000:eae4 maps buffer to SYSTEM. SYSTEM persists the last rules.
 
 Salary: no missing term; era100 (UTIL 1000:9e5f) verified, outliers are twin records.
-Portrait index (static only): UTIL 5000:ea5e assigns it, BB 7000:da0a loads by record idx 0x1b. RTO pair u16@90/92 is summed by BB 6000:3407 from arrays 0x690/0x6b8. Exhibition games do not merge into player records, so no in-game confirmation yet. +0x85 counter unresolved.
+Portrait index (static only): UTIL 5000:ea5e assigns it, BB 7000:da0a loads by record idx 0x1b. Session 6 season game left u16@27 and u16@27 twins untouched, so no refutation or confirmation of 0x1b as portrait beyond the static path.
+
+## Session 6 (Lane B6): season game merge, result codes, ALLTIME.BOX writer
+Season Featured game CLEVELAND 2 at BALTIMORE 1, April 9 (CLASALE3 vs CLASALE1), both computer controlled, snapshots s6_before/s6_after. tools/lane_b/gt_merge_check.py prints per-team field sums of the V20 deltas.
+
+Merge (BB 6000:3407, confirmed). Called from 6000:7190 when the game completes, only if buf[0x1bf4]==0; sets buf[0x1bf5]=1. It merges into the V20 records held in BB memory, the V20/MAJ/SYSTEM/CONTROL files are written when BB exits (after DONE on the box score), not at game end (no file touched between game end and DONE). GAME.TMP is not rewritten.
+- Every record 40..79 delta matches the box score: CLE AB32 R2 H6 2B1 HR1 RBI1 BB4 SO4 SB1, BF34 pH10 pSO3 IP 9.0 (90) ER1 RA1 W1 CG1 GS1; BAL AB34 R1 H10 RBI1 SO3 E1, BF36 pH6 p2B2 pHR1 pBB4 pSO4 IP 9.0 (80+10) ER1 RA2 L1 GS1. Fielding PO 27 and A 19/17 per team, DP in +0x57.
+- RTO pair: Severeid (BAL C) u16@92 0->1 for Jackson's one SB, u16@90 unchanged (SB 1, CS 0). RTO merge confirmed, arrays 0x690 (a, caught) / 0x6b8 (b, attempts).
+- +0x85 and +0x17 both +1 for every player who appeared (15 per team, pinch hitters and defensive replacements included). +0x85 is a second games/appearance counter that equals +0x17 in a fresh league.
+- Batted-ball distribution fields +0x3d..0x45 are SET (not added) from the game GB/fly counts: u16 values 1000, 666, 500, 154... = x10 shares; fly% = 100 - grounder%.
+- Team header: +0x26 wins, +0x27 losses (CLE 0->1, BAL 0->1). +0x6d: CLE 0x01, BAL 0x81 (streak 1, bit7 = losing, probable). +0x6e both 0->1 (games count, probable). +0x6c 13->8 is the MANAGE "last day aged" pointer (day 9 minus one).
+- Starter record 0..39 half: only byte 24 (+0x18) changes, 0->0x85 for both starters (rest bit + 5 days), as documented in the injury notes.
+- CLASSIC.MAJ: +0x20a day 8->9, plus standings order, W/L, run/hit/error grids for the day (110 bytes in all, whole league day simulated).
+- Portrait u16@27 not modified by the merge.
+
+Game buffer accumulator layout (both teams, team t block base = 0xf0 + 0x8e8*t, 40 slots by id):
+- singles (40 B): +0x00 R, +0x28 RBI, +0x50 SH, +0x78 SB, +0xa0 CS, +0x2f8 GB count, +0x320 gb pull, +0x348 gb opp, +0x370 fb pull, +0x398 fb opp, +0x3c0 pinch AB, +0x3e8 pinch H, +0x410 pinch HR, +0x578 PB, +0x5a0 RTO a, +0x5c8 RTO b, +0x5f0 outs (+7 correction when %10>2 gives 3 outs = 30 in IP x10), +0x618 ER, +0x640 R allowed, +0x898 BK, +0x8c0 WP. (Buffer offsets from base 0xf0: 0xf0 R, 0x118 RBI, 0x140 SH, 0x168 SB, 0x190 CS, 0x3e8 GBc, 0x410 gbpull, 0x438 gbopp, 0x460 fbpull, 0x488 fbopp, 0x4b0 pinchAB, 0x4d8 pinchH, 0x500 pinchHR, 0x668 PB, 0x690 RTOa, 0x6b8 RTOb, 0x6e0 outs, 0x708 ER, 0x730 RA, 0x988 BK, 0x9b0 WP.)
+- pairs (2*id+split, 80 B): 0x1b8 AB, 0x208 H, 0x258 2B, 0x2a8 3B, 0x2f8 HR, 0x348 BB, 0x398 SO, 0x528 PO, 0x578 A, 0x5c8 E, 0x618 DP, 0x758 BF, 0x7a8 pH, 0x7f8 p2B, 0x848 p3B, 0x898 pHR, 0x8e8 pBB, 0x938 pSO.
+- The session 5 unknowns k7/k8 (0x3e8..0x488 region) are the GB / fly distribution counters (GB count, gb pull, gb opp, fb pull, fb opp) feeding +0x3d..0x45; k11/k12 are PO (0x528) and A (0x578). SB/CS are the singles at 0x168/0x190, not pair arrays.
+- Verified live: HR adds R, RBI, AB, H, HR to the batter and BF, pH, pHR to the pitcher; walk adds BB and BF/pBB; strikeout adds AB, SO, pitcher pSO, catcher PO; groundout/flyout adds AB, GB or fly counter, fielder PO and A, outs +1 (outs byte +8 when the third out is made: 3 outs stored as 30 after correction).
+
+Result code b2 of the 6 B play-log event (assigned in BB 6000:8100 tail 0x8693..0x87f5, jump table at flat 0x58810 keyed by class ab3d):
+- Observed in a full game: 0x0c/0x0d/0x0f singles (0x0c with RBI), 0x13 double, 0x21 HR, 0x27..0x2a ground outs (0x27,0x29 gb pull, 0x28,0x2a plain/opp), 0x30..0x33 and 0x3b, 0x47, 0x48 fly outs (0x30..0x32 fb pull, 0x3b/0x48 fb opp), 0x49 walk, 0x4c strikeout, 0x4e ground out variant (probably forced/other).
+- Formulas (static): class0 = 0x0c..0x0f (singles), class1 = 0x10+zone (zone ab3a 0..6, doubles; 0x13 = zone 3), class2 = 0x17+zone (triples), class3 = 0x1e+zone (HR; 0x21 = zone 3, center), class4 = 0x49 (walk) or 0x4d (probably HBP), class5 = 0x4c (strikeout), class7 = batted-ball outs 0x25+ab4a (ground), 0x2e+ab4a, 0x37+ab4a, 0x40+ab4a (fly/other groups), 0x0b; overrides 0x4a, 0x4b, 0x51, 0x4e. ab4a 0..8 is probably the fielder position index. The four class7 groups and class6 are not fully separated by this single game; exact ab4a meaning and 0x4a/0x4b/0x4d/0x51 are unverified.
+
+ALLTIME.BOX writer: BB 6000:c6c1 (stub 508c:0025): fopen(DS:3be2 name, DS:3bee mode), fwrite 2 B word 0x000e, fwrite DS:aa2a for 0x1c1a (7194) bytes. Called from 6000:d396 inside the box score menu dispatch 6000:d277 (SAVE; guard buf[0x1bf4]!=3 and buf[0x1bf5]!=0) and a twin at 6000:e476. Static only; the SAVE button was not pressed in session 6 (no new ALLTIME.BOX), the file layout matches the session 5 file. In the season game flags were buf[0x1bf4]=0 and buf[0x1bf5]=1 at end.

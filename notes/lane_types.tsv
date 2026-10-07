@@ -1,1 +1,11 @@
 # prog	addr	type	name	evidence. Applied by tools/re/fold_names.py. Types: see tools/re/structs.py (V20Team, V20Header, V20Player), byte/word/dword, [N] arrays, * far pointers.
+BB	DS:aa2a	byte*	game_buffer_far_ptr	Lane B6: far pointer to the 7446 B GAME.TMP layout used by BB; ALLTIME.BOX writer writes 0x1c1a B from it
+BB	DS:aa4a	byte*	merge_team1_records_far_ptr	Lane B6: second arg of 6000:3407 (home team record array), aa46 is team 0 (visitor)
+BB	DS:aa46	byte*	merge_team0_records_far_ptr	Lane B6: visitor record array
+BB	DS:ab3d	byte	play_class	Lane B6: class 0..7 selecting result code formula in 6000:8100
+BB	DS:ab3a	byte	hit_zone	Lane B6: hit-location zone 0..6 from 1000:f98c
+BB	DS:ab4a	byte	out_fielder_index	Lane B6 static only: 0..8 added to 0x25/0x2e/0x37/0x40 for batted-ball out codes
+BB	DS:ab4b	byte	result_code	Lane B6: b2 of the 6 B play-log event, values observed in RAM during a full game
+BB	DS:aa2a+0x1bf4	byte	game_flag_no_merge	Lane B6: merge runs only when 0 (0 in a season Featured game)
+BB	DS:aa2a+0x1bf5	byte	game_complete	Lane B6: 0->1 at end of game (RAM time series), gates box score SAVE
+BB	DS:aa2a+0xf0	word[2][...]	team_accumulators	Lane B6: per team block stride 0x8e8, 40 slots by id; singles and 2*id+split pair arrays, see FORMATS.md session 6
