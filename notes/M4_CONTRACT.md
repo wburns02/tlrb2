@@ -93,3 +93,16 @@ Pitchers (pos1 == 0): outs as in C2, er.
 - pit100 = (L_er * 120 * outs) / L_outs - er * 100; war10 = pit100 / 100 (0 when L_outs == 0)
 Hall of Fame (on retirement): seasons played >= 10 AND any of: H >= 3000, HR >= 500, (AB >= 5000 and
 H * 1000 / AB >= 300), W >= 300, PSO >= 3000, SV >= 400, career WAR10 >= 600, JAWS10 >= 500.
+
+## C4. Rookie variety (amends the P2 fill-path generator; added 2026-10-07)
+
+The P2 WIP blob gave every rookie identical ratings. Rookies must vary and some must become stars through C1 growth.
+- Names: our own pools (no names harvested from game data), 128 last names and 64 first names, ASCII, last <= 11 chars,
+  first <= 7, stored as tables in rookie_fill.asm and in tools/m4/rookies.py (identical order). Index = d % 128 and
+  d % 64 (d = draw() & 0xff for the first-name draw too).
+- Per rookie draw order: last-name, first-name, age, throws, switch, portrait, exper, consist (as the WIP blob), then
+  grade, then one draw per rating in the C1 rating order (batters 6, pitchers 3).
+- grade: d = draw() & 0xff; grade = 0 if d < 154, 1 if d < 230, else 2 (60/30/10 %); bonus = [0, 2, 4][grade].
+- rating value = 3 + (d % 5) + bonus with d = draw() & 0xff, then clamp 1..cap (cap = 10 for endurance, else 12).
+  Ratings not in the C1 order keep the WIP blob's constants.
+- Everything else (stat lines, salary, portrait, season-twin copy) stays as the WIP blob defines it.
