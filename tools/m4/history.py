@@ -253,6 +253,23 @@ def team_stem(m, lg_id):
     return m.stem(lg, slot).encode('latin-1')[:8]
 
 
+def mapped_teams(league_dir, m):
+    """[(v20 path, league-global id)] in sorted file order; files whose stem matches no MAJ slot
+    (ALLSTAR1/2.V20) are left out of every history step."""
+    teams = []
+    for p in sorted(glob.glob(os.path.join(league_dir, '*.V20'))):
+        stem = os.path.basename(p)[:-4].lower()
+        lg_id = None
+        for lg in ('AL', 'NL'):
+            base = 0 if lg == 'AL' else 16
+            for s in range(16):
+                if m.stem(lg, s).lower() == stem:
+                    lg_id = base + s
+        if lg_id is not None:
+            teams.append((p, lg_id))
+    return teams
+
+
 def record_season(league_dir, hist_path, season_no, retirees=None):
     """C2 update order, run BEFORE the P1 rollover mutates anything:
     1. read MAJ standings, champion; write the season entry.
@@ -277,23 +294,12 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
             w, l = m.wl(lg, t)
             if w or l:
                 entry['w_l'][base + t] = (w, l)
-    hist.write_season_entry(season_no, entry)
+    if season_no <= SEASON_COUNT:      # the table holds 64 seasons; later ones keep careers only
+        hist.write_season_entry(season_no, entry)
     if season_no > hist.seasons_recorded:
         hist.seasons_recorded = season_no
     # 2. league pass (unmatched stems, e.g. ALLSTAR1/2: skipped entirely)
-    paths = sorted(glob.glob(os.path.join(league_dir, '*.V20')))
-    teams = []
-    for p in paths:
-        stem = os.path.basename(p)[:-4].lower()
-        lg_id = None
-        for lg in ('AL', 'NL'):
-            base = 0 if lg == 'AL' else 16
-            for s in range(16):
-                if m.stem(lg, s).lower() == stem:
-                    lg_id = base + s
-        if lg_id is None:
-            continue
-        teams.append((p, lg_id))
+    teams = mapped_teams(league_dir, m)
     per, lg_totals = war.season_league(teams)
     pf = war.park_factors(mp) if mp else {}
     # 3. per player
@@ -353,10 +359,12 @@ def mark_retired(hist_path, league_dir, retirees, season_no):
     zeroes a retiree's name byte 0, so the retiree identity (name bytes 0..19,
     birth = 1000 + season_no - age) must come from the pre-roll file."""
     hist = History.load(hist_path)
+    mp = maj_or_none(league_dir)
+    mapped = {os.path.basename(p) for p, _ in mapped_teams(league_dir, maj.Maj.load(mp))} if mp else set()
     for basename, recs in (retirees or {}).items():
         p = os.path.join(league_dir, basename)
-        if not os.path.exists(p):
-            continue
+        if basename not in mapped or not os.path.exists(p):
+            continue                    # ALLSTAR copies of real players must not retire the real entry
         t = Team.load(p)
         for i in recs:
             roster = t.players[i].raw

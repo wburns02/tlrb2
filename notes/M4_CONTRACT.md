@@ -122,3 +122,34 @@ The P2 WIP blob gave every rookie identical ratings. Rookies must vary and some 
 - rating value = 3 + (d % 5) + bonus with d = draw() & 0xff, then clamp 1..cap (cap = 10 for endurance, else 12).
   Ratings not in the C1 order keep the WIP blob's constants.
 - Everything else (stat lines, salary, portrait, season-twin copy) stays as the WIP blob defines it.
+
+## C5. Runtime split for HISTORY.DAT (added 2026-10-07, T4)
+
+Two DOS programs, run by the patched TONY2.BAT loop:
+```
+:start
+copy TEAMS\CLASSIC\*.* C:\DYNSNAP > NUL
+dynasty
+if errorlevel 1 histwr
+control
+```
+DYNASTY.EXE (asm, owns the roll and the HISTORY header bytes 0..2 and 8..9):
+- Acts only when MAJ day = 0xf3 and HISTORY byte 0 != 1 (unchanged). Seed rule per C2: rng = bytes 1..2 when the file
+  exists and is >= 3 B, else missing; missing or 0 -> int 1Ah AH=0, rng = DX, 1 if DX = 0. start = rng.
+- After rolling every team: the HISTORY file keeps its length or grows, never shrinks. Missing -> created as 32 B of
+  zero. Shorter than 32 B -> zero-extended to 32 B (existing bytes kept). Then byte 0 = 1, bytes 1..2 = rng after the
+  roll, bytes 8..9 = start; no other byte is touched (version and counts belong to HISTWR).
+- Day != 0xf3 with byte 0 != 0: byte 0 = 0 written in place, nothing else touched, length unchanged.
+- C:\DYNSNAP\RETIRED.DAT, rewritten from scratch after every roll: u8 nteam, then nteam x (13 B DTA name, NUL padded,
+  + 40 B flags, flag i = the rollover blob's AX for roster record i, 1 = retired this roll), teams in the roll's
+  sorted order. A team that failed to open or read has all-zero flags.
+- Exit code 1 when it rolled (including the no-V20 case that only writes the header), else 0.
+HISTWR.EXE (C, OpenWatcom large model; the same source also builds on the host with gcc for parity tests):
+- usage: HISTWR [PRE_DIR HIST_PATH RETIRED_PATH], defaults C:\DYNSNAP, TEAMS\CLASSIC\HISTORY.DAT,
+  C:\DYNSNAP\RETIRED.DAT. season_no = HISTORY seasons recorded (bytes 4..5) + 1.
+- Output: HIST_PATH byte-identical to Python `history.record_season(PRE_DIR, H, season_no)` followed by
+  `history.mark_retired(H, PRE_DIR, retirees, season_no)`, retirees = {name: [i with flag 1]} from RETIRED.DAT.
+- Never holds the whole player table in memory: streams old entries to a temp file beside HIST_PATH, then replaces it.
+- Any error (missing PRE_DIR MAJ, unreadable file): HIST_PATH unchanged, exit 2. Success exit 0.
+Reference fixes in the same amendment: mark_retired skips unmapped files (ALLSTAR copies of real players), and
+seasons past 64 skip the season-table write (careers still update; the table would overlap the player table).

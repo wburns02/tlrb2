@@ -551,3 +551,51 @@ def test_version_byte_every_path(tmp_path):
     assert h.version == 1
     assert h.rng_word == 0x1234
     assert len(raw) > 32 and raw[4] | raw[5] << 8 == 2
+
+
+def test_allstar_retiree_does_not_retire_real_entry(tmp_path):
+    """An ALLSTAR copy of a real player retiring in the ALLSTAR file must not mark the
+    real player's entry: unmapped files are skipped by mark_retired too."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    (ldir / 'CLASALE1.V20').write_bytes(make_team_v20())
+    (ldir / 'ALLSTAR1.V20').write_bytes(make_team_v20(name=b'ALLSTARS', abbr=b'ALS'))
+    m = make_maj()
+    sa = S_AL + maj.O_STEM + 8 * 15
+    m.d[sa:sa + 8] = b'\0' * 8
+    m.save(str(ldir / 'CLASSIC.MAJ'))
+    for fn, slot in (('CLASALE1.V20', 7), ('ALLSTAR1.V20', 3)):
+        tm = Team(open(str(ldir / fn), 'rb').read())
+        set_player(tm, slot, 'ROSSI', 'ROB', 29, 4, 100)
+        _set(tm.players[slot + 40].raw, *F['games'], 100)
+        tm.save(str(ldir / fn))
+    hp = tmp_path / 'HISTORY.DAT'
+    history.record_season(str(ldir), str(hp), 1, {})
+    history.mark_retired(str(hp), str(ldir), {'ALLSTAR1.V20': [3]}, 1)
+    h = history.History.load(str(hp))
+    assert len(h._entries) == 1
+    assert h.read_entry(0)['status'] == history.STATUS_ACTIVE
+    history.mark_retired(str(hp), str(ldir), {'CLASALE1.V20': [7]}, 1)
+    assert history.History.load(str(hp)).read_entry(0)['status'] in (history.STATUS_RETIRED, history.STATUS_HOF)
+
+
+def test_season_past_64_keeps_player_table(tmp_path):
+    """Season 65+: no season-table write (it would land on the player table); careers still update."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    (ldir / 'CLASALE1.V20').write_bytes(make_team_v20())
+    make_maj().save(str(ldir / 'CLASSIC.MAJ'))
+    tm = Team(open(str(ldir / 'CLASALE1.V20'), 'rb').read())
+    set_player(tm, 7, 'ROSSI', 'ROB', 29, 4, 100)
+    _set(tm.players[47].raw, *F['games'], 100)
+    tm.save(str(ldir / 'CLASALE1.V20'))
+    hp = tmp_path / 'HISTORY.DAT'
+    history.record_season(str(ldir), str(hp), 1, {})
+    before = open(str(hp), 'rb').read()
+    history.record_season(str(ldir), str(hp), 65, {})
+    h = history.History.load(str(hp))
+    after = bytes(h.d)
+    assert after[32:8224] == before[32:8224]
+    assert h.seasons_recorded == 65
+    assert after[8224:8224 + 160] == before[8224:8224 + 160]   # season-1 entry intact
+    assert len(h._entries) == 2 and h.read_entry(1)['first_season'] == 65   # birth differs: new identity
