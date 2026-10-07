@@ -2,6 +2,7 @@
 """Bulk function naming over every unit in /mnt/nvme/tlrb2/re/units.json, callees first.
 
 usage: name_all.py run [--limit N] [--backends zai,deepseek] [--weak]   (--weak: backup pass, only units still below 0.6; resumable; appends to answers.jsonl)
+       name_all.py run --backends zai2 --retry   (round 2: Z.AI again on units merged.json did not accept, now that callees are named)
        name_all.py status
        name_all.py merge      -> /mnt/nvme/tlrb2/re/names/<EXE>.tsv and merged.json
 
@@ -137,7 +138,7 @@ def prompt(S, k):
             f"Disassembly:\n{kb.annotate(P, f)}\n\nDecompiled:\n{c}\n")
 
 def call_backend(b, user):
-    if b == 'zai':
+    if b in ('zai', 'zai2'):
         cfg = __import__('tomllib').load(open(os.path.expanduser('~/.kimi-code/config.toml'), 'rb'))['providers']['zai-coding-plan']
         r = bakeoff.openai_post(cfg['base_url'] + '/chat/completions', cfg['api_key'],
                                 {'model': 'glm-5.3-flash', 'temperature': 0.2, 'max_tokens': 4000,
@@ -157,11 +158,15 @@ def call_backend(b, user):
         return txt, u or {}
     raise ValueError(b)
 
-def run(limit=None, backends=('zai', 'deepseek'), weak=False):
+def run(limit=None, backends=('zai', 'deepseek'), weak=False, retry=False):
     S = State()
     todo = {b: {k for k in S.units if k not in S.seeds and b not in S.ans.get(k, {})} for b in backends}
     if weak:  # backup pass: only units no backend has answered with confidence >= 0.6
         todo = {b: {k for k in t if not any(conf(o) >= 0.6 for o in S.ans.get(k, {}).values())} for b, t in todo.items()}
+    if retry:  # round 2: only units the last merge did not accept
+        M = json.load(open(f'{R}/merged.json'))
+        acc = {k for k, m in M.items() if m.get('accept') or m['status'] == 'seed'}
+        todo = {b: t - acc for b, t in todo.items()}
     attempts = defaultdict(int)
     inflight = set()
     paused = {b: 0.0 for b in backends}
@@ -305,7 +310,7 @@ if __name__ == '__main__':
     if cmd == 'run':
         lim = int(sys.argv[sys.argv.index('--limit') + 1]) if '--limit' in sys.argv else None
         bs = tuple(sys.argv[sys.argv.index('--backends') + 1].split(',')) if '--backends' in sys.argv else ('zai', 'deepseek')
-        run(lim, bs, '--weak' in sys.argv)
+        run(lim, bs, '--weak' in sys.argv, '--retry' in sys.argv)
     elif cmd == 'merge':
         merge()
     elif cmd == 'status':
