@@ -19,7 +19,7 @@ import bakeoff
 
 R = kb.R
 ANS = f'{R}/answers.jsonl'
-CONC = {'zai': 4, 'deepseek': 3}
+CONC = {'zai': 4, 'zai2': 4, 'deepseek': 3}
 
 SYSTEM = """You are a reverse engineer naming functions in a 1993 DOS game, Tony La Russa Baseball II, built with
 Borland C++ 3.x in the large memory model (far calls, retf, stack args start at [bp+6]; some 386 instructions). It links
