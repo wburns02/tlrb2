@@ -36,6 +36,9 @@ Install = DATA1.ARJ extracted to C:\TONY2 (what INSTALL does). The game reads ar
 - Snapshot data before an edit: `~/tlrb2/scripts/snap.sh NAME`; compare team files: `tools/v20.py diff OLD NEW`.
 
 ## Gotchas
+- DOSBox-X ignores SIGTERM: `kill <pid>` leaves it running on :98, so repeated relaunches stacked up to 7 instances on the
+  work install (2026-10-06 ~22:00, Lane B3 gt_run.sh batches; GAME.TMP captures from that window may be contaminated).
+  tools/lane_b/relaunch.sh now escalates to SIGKILL and reaps strays on work/c.
 - `pgrep -f`/`pkill -f` also match other sessions' `bash -c` wrappers whose command text merely mentions a script
   (e.g. a watcher that greps for gh.py). Anchor the pattern to the real invocation (`^bash [^ ]*scripts/regen[.]sh`,
   `^[^ ]*python3 [^ ]*gh[.]py`) or gate on /mnt/nvme/tlrb2/ghidra_proj/TLRB2.lock, which exists only while Ghidra has the project open.
