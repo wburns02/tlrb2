@@ -16,6 +16,11 @@ STACK = 512
 
 
 def main():
+    # the asm table is generated from the Python C4 pools; keep it fresh
+    subprocess.run([sys.executable, os.path.join(HERE, 'gen_names.py')],
+                   check=True, cwd=HERE)
+    subprocess.run(['nasm', '-f', 'bin', '-o', os.path.join(HERE, 'rookie_fill.bin'),
+                    os.path.join(HERE, 'rookie_fill.asm')], check=True, cwd=HERE)
     subprocess.run(['nasm', '-f', 'bin', '-o', IMG, os.path.join(HERE, 'dynasty.asm')],
                    check=True, cwd=HERE)
     image = open(IMG, 'rb').read()

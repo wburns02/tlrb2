@@ -14,23 +14,30 @@ sane structure: pitchers to >= 8, catchers to >= 2, each infield code
 
 Counts are taken from the roster half AFTER retirement (byte 0 != 0),
 using the primary position in the low nibble of byte 31.
+
+fill_image() is the byte-exact reference for the rookie_fill.asm blob:
+it mutates one 295 B header + 80 x 143 B team image in place, with the
+vacancy rule (empty in both halves), the ladder order and the season-twin
+zeroing the asm implements. fill_team() delegates to it on the v20
+Team record view.
 """
 
 import os
 import sys
 
-_TOOLS = "/home/will/tlrb2/tools"
-_M4 = "/home/will/tlrb2/tools/m4"
-for _p in (_TOOLS, _M4):
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_TOOLS = os.path.dirname(_HERE)
+for _p in (_TOOLS, _HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 import rollover  # noqa: E402
 import v20  # noqa: E402
+from m4.rookies import RookieGen  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
-# Season stat byte offsets, taken from /home/will/tlrb2/notes/FORMATS.md
-# ("player record" section).  Offsets within a 143-byte record.
+# Season stat byte offsets, from notes/FORMATS.md ("player record"
+# section).  Offsets within a 143-byte record.
 # ---------------------------------------------------------------------------
 
 # Batter season stats (FORMATS.md player record):
@@ -162,6 +169,73 @@ def _check_vacant(team, index):
         )
 
 
+def fill_image(image, season_year, rng, rookie_gen):
+    """Mutate one team image in place: the byte-exact reference the
+    rookie_fill.asm blob ports (same vacancy rule, ladder, record copy and
+    season-twin zeroing as the asm).
+
+    image = 295 B header + 80 records x 143 B (bytearray, mutated).
+    season_year = the byte stored at record offset 21 (year - 1870).
+    rng = a rollover.Rng; every draw flows through it.
+    rookie_gen = a m4.rookies.RookieGen sharing that rng.
+
+    Returns (nvac, vacancies, positions).
+    """
+    assert len(image) == 295 + 80 * RECORD_SIZE, len(image)
+    rec = lambda i: image[295 + i * RECORD_SIZE:295 + (i + 1) * RECORD_SIZE]
+
+    # Vacancy = inactive in the roster half AND the season half (the asm
+    # checks both); active players are counted, half-vacant slots untouched.
+    counts = [0] * 16
+    vacancies = []
+    for i in range(40):
+        r = rec(i)
+        s = rec(40 + i)
+        if r[0]:
+            counts[r[31] & 0x0F] += 1
+        elif not s[0]:
+            vacancies.append(i)
+    nvac = len(vacancies)
+    if not nvac:
+        return 0, [], []
+
+    # Ladder (as _priority_order, on a list so counts mutate in place).
+    def take(code, target):
+        order = []
+        while counts[code] < target:
+            order.append(code)
+            counts[code] += 1
+        return order
+
+    positions = []
+    positions += take(POS_PITCHER, TARGET_PITCHERS)
+    positions += take(POS_CATCHER, TARGET_CATCHERS)
+    for code in range(POS_INFIELD_MIN, POS_INFIELD_MAX + 1):
+        positions += take(code, TARGET_INFIELD_EACH)
+    of_have = sum(counts[c] for c in _OUTFIELD_CODES)
+    of_i = 0
+    while of_have < TARGET_OUTFIELD:
+        code = _OUTFIELD_CODES[of_i % 3]
+        positions.append(code)
+        counts[code] += 1
+        of_i += 1
+        of_have += 1
+    positions += [POS_DH] * len(vacancies)
+    positions = positions[:nvac]
+
+    # One rookie per vacancy, roster copy + season-twin copy.
+    for index, code in zip(vacancies, positions):
+        rookie = bytearray(rookie_gen.make(code, season_year))
+        # The asm writes the ladder code straight into the pos byte.
+        rookie[31] = (rookie[31] & 0xF0) | (code & 0x0F)
+        season_copy = bytearray(rookie)
+        _zero_season_stats(season_copy)
+        base = 295 + index * RECORD_SIZE
+        image[base:base + RECORD_SIZE] = rookie
+        image[base + 40 * RECORD_SIZE:base + 41 * RECORD_SIZE] = season_copy
+    return nvac, vacancies, positions
+
+
 def fill_team(team_in_path, team_out_path, season_year, rng, rookie_gen):
     """Fill vacated roster slots with generated rookies.
 
@@ -173,39 +247,24 @@ def fill_team(team_in_path, team_out_path, season_year, rng, rookie_gen):
     """
     team = v20.Team.load(team_in_path)
 
-    vacancies = [i for i in range(40) if not _is_active(team.players[i].raw)]
-    if not vacancies:
-        team.save(team_out_path)
-        return {"vacancies": [], "positions": []}
-
-    # Guard: a vacancy must also be empty in the season half (post-rollover
-    # retirees are zeroed in both halves).  Refuse to touch anything else.
-    for i in vacancies:
-        _check_vacant(team, i)
-        season_raw = team.players[SEASON_HALF_BASE + i].raw
-        if _is_active(season_raw):
+    # Guard (raise before anything is written): a roster vacancy with an
+    # active season-half record is not a rollover vacancy; overwriting it
+    # would destroy a live player's stat line.
+    for i in range(40):
+        if _is_active(team.players[i].raw):
+            continue
+        if _is_active(team.players[SEASON_HALF_BASE + i].raw):
             raise ValueError(
                 "slot %d has an active season-half record; not a rollover "
                 "vacancy" % i
             )
 
-    counts = _count_active_by_position(team)
-    positions = _priority_order(counts, len(vacancies))
-
-    for index, code in zip(vacancies, positions):
-        rec = rookie_gen.make(code, season_year)
-        rookie = bytearray(rec)
-        # Force the requested primary position (low nibble of byte 31),
-        # preserving any high-nibble flags the generator set.
-        rookie[31] = (rookie[31] & 0xF0) | (code & 0x0F)
-
-        season_copy = bytearray(rookie)
-        _zero_season_stats(season_copy)
-
-        team.players[index].raw = bytes(rookie)
-        team.players[SEASON_HALF_BASE + index].raw = bytes(season_copy)
-
-    team.save(team_out_path)
+    image = bytearray(team.to_bytes())
+    nvac, vacancies, positions = fill_image(
+        image, season_year, rng, rookie_gen
+    )
+    out = v20.Team(bytes(image))
+    out.save(team_out_path)
     return {"vacancies": vacancies, "positions": positions}
 
 
@@ -217,10 +276,8 @@ def fill_league(in_dir, out_dir, season_year, seed):
 
     Returns {team_basename: {'vacancies': [...], 'positions': [...]}}.
     """
-    from rookies import RookieGen
-
     rng = rollover.Rng(seed)
-    rookie_gen = RookieGen(rng, [])
+    rookie_gen = RookieGen(rng)
 
     names = sorted(
         n for n in os.listdir(in_dir) if n.upper().endswith(".V20")
@@ -248,7 +305,8 @@ def ensure_minimum(team_in_path, team_out_path, season_year, rng, rookie_gen):
 
     active = sum(1 for i in range(40) if _is_active(team.players[i].raw))
     if active >= 35:
-        team.save(team_out_path)
+        out = v20.Team(team.to_bytes())
+        out.save(team_out_path)
         return {"vacancies": [], "positions": []}
 
     need = 35 - active
@@ -270,16 +328,18 @@ def ensure_minimum(team_in_path, team_out_path, season_year, rng, rookie_gen):
     counts = _count_active_by_position(team)
     positions = _priority_order(counts, need)
 
+    image = bytearray(team.to_bytes())
     for index, code in zip(candidates, positions):
-        rec = rookie_gen.make(code, season_year)
-        rookie = bytearray(rec)
+        rookie = bytearray(rookie_gen.make(code, season_year))
         rookie[31] = (rookie[31] & 0xF0) | (code & 0x0F)
 
         season_copy = bytearray(rookie)
         _zero_season_stats(season_copy)
 
-        team.players[index].raw = bytes(rookie)
-        team.players[SEASON_HALF_BASE + index].raw = bytes(season_copy)
+        base = 295 + index * RECORD_SIZE
+        image[base:base + RECORD_SIZE] = rookie
+        image[base + 40 * RECORD_SIZE:base + 41 * RECORD_SIZE] = season_copy
 
-    team.save(team_out_path)
+    out = v20.Team(bytes(image))
+    out.save(team_out_path)
     return {"vacancies": candidates, "positions": positions}
