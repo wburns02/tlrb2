@@ -176,6 +176,14 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
   runs already stored in the MAJ results cells, computed at rollover. True per-player PO/A recording is in IDEAS.md.
   Awards: TBD.
 
+- Q5 roster turnover (Will, 2026-10-07; research and pipeline in notes/M4_ROSTER.md):
+  1. Your own team is left to the manager: the AI never releases, signs, or trades for a managed team.
+  2. Era rules: both, as an option. Real calendar (reserve clause before 1976, free agency for 6+ years of service
+     from 1976) or one rule set throughout.
+  3. Trades: yes, in v1 (AI to AI).
+  4. Money: ignored for now (no payroll, salary byte untouched).
+  5. Turnover target: real life for now (1970-90 MLB rates, Lahman table in M4_ROSTER.md).
+
 ## Engineering decisions (brain, 2026-10-07)
 
 - HISTORY.DAT writer runs as a second DOS program, HISTWR.EXE, written in C (OpenWatcom v2, large model, toolchain

@@ -1,6 +1,6 @@
 # M4 roster management: research and proposed design (2026-10-07)
 
-Status: RESEARCH + PROPOSAL. Nothing here is built or contracted yet. Decisions marked (Will?) are open.
+Status: RESEARCH + PROPOSAL, questions answered 2026-10-07 (section 5). Not built or contracted yet (C6 next).
 
 Why: TLRB2 was a single-season game, so it never needed roster turnover. M4 adds aging and retirement, but under
 C1 only 6 to 19 of ~1100 players leave per season (about 1%), all by age. Real baseball loses ~20% a year, mostly
@@ -131,7 +131,7 @@ service (byte 22) whose contract ends enter the pool. Contracts: length by age (
 Money (Will?): the game already computes salary. Simplest: no payroll limit (SMB3 style). Next step: soft budget
 by market size, which needs a team revenue number we do not have.
 
-## 5. Open questions for Will
+## 5. Questions for Will (answered 2026-10-07, answers and resulting decisions at the end of this section)
 
 1. Your own team: (a) left alone (you manage it, the AI only acts on others), (b) AI-managed like everyone else,
    or (c) AI suggestions you accept or refuse on a new screen. Recommendation: (a) for v1, with your released or
@@ -141,6 +141,23 @@ by market size, which needs a team revenue number we do not have.
 3. Trades: in v1, later, or never for AI-to-AI?
 4. Money: ignore payroll, or add budgets?
 5. Turnover target: match 1970-90 (about 20% of players gone per year) or something gentler?
+
+Answers: 1 left to the manager, 2 both as an option, 3 trades in v1, 4 ignore money, 5 real life.
+
+Decisions that follow (brain):
+- The game has no "human team" flag: league games are all simulated by BACK and the user picks which to play. So
+  DYNASTY keeps its own managed-team mask in the HISTORY.DAT header (bytes 10..31 are zero today): bytes 12..15 =
+  u32, bit k = MAJ team slot k. 0 = no managed team (all AI). Set by a DYNASTY settings screen (T5 scope); until then
+  by a tool. A managed team: never releases, never signs from the pool, never trades. Its vacancies still get its
+  draft picks in standings order, chosen by its own DRAFT GM profile (the stock Draft screen already lets the
+  manager set it), and the new players go to its reserves. Its depth chart is only repaired (a lineup, bench or
+  rotation slot that lost its player gets the best eligible replacement), never rebuilt.
+- Era byte: header byte 10. 0 = real calendar (default), 1 = reserve clause throughout, 2 = free agency throughout.
+  Calendar year = record byte 21 + 1870 (the season year the rollover already maintains).
+- Turnover is measured on the active 25: the Lahman "gone" rate (out of MLB next year) maps to "not on any active
+  25 next season", which in our world means released to the pool, demoted to reserves, or retired. The 40-man
+  organization turns over less.
+- Trades v1 are AI to AI only. Offering trades to the manager is later (needs a screen).
 
 ## 6. How to validate before building
 
