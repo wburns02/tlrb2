@@ -36,6 +36,13 @@ Install = DATA1.ARJ extracted to C:\TONY2 (what INSTALL does). The game reads ar
 - Snapshot data before an edit: `~/tlrb2/scripts/snap.sh NAME`; compare team files: `tools/v20.py diff OLD NEW`.
 
 ## Gotchas
+- The DOSBox-X ncurses debugger only exists when the process has a TTY (gui/sdlmain.cpp isatty checks), so the
+  setsid+>/dev/null relaunch.sh start has it greyed out. tools/lane_b/relaunch_dbg.sh runs the same rig under a
+  pty (tools/lane_b/dbg_pty.py): Alt+Pause opens the debugger, commands go via
+  `tools/lane_b/dbg_pty.py cmd "..."`, raw keys via `raw '\x1b[15~'` (F5), output in logs/dbg_pty.log. Send
+  commands only while the debugger is PAUSED (input line visible) - typed bytes queue while it is Running and
+  concatenate into garbage on the input line (clear with Escape first). Debugger uppercases filenames:
+  MEMDUMPBIN targets must be an UPPERCASE path/dir (logs/M4/ works).
 - DOSBox-X ignores SIGTERM: `kill <pid>` leaves it running on :98, so repeated relaunches stacked up to 7 instances on the
   work install (2026-10-06 ~22:00, Lane B3 gt_run.sh batches; GAME.TMP captures from that window may be contaminated).
   tools/lane_b/relaunch.sh now escalates to SIGKILL and reaps strays on work/c.
