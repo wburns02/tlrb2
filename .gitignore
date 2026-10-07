@@ -6,3 +6,6 @@
 *.bin
 *.png
 __pycache__/
+.claude/
+*.img
+*.lst
