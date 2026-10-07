@@ -2,7 +2,7 @@
 """Fold hand/dynamically verified names (notes/lane_names.tsv: prog, addr, name, evidence) into the Ghidra project,
 and apply data types listed in notes/lane_types.tsv (prog, addr, type, name, evidence). type is a /TLRB2 type
 (V20Team, V20Header, V20Player, see structs.py) or a built-in (byte, word, dword), optionally with [N] for an array
-or a trailing * for a far pointer (4 bytes seg:off) to it. Existing data at the address is cleared first.
+or a trailing * for a far pointer (4 bytes seg:off) to it; char and FILE (as void) are accepted too. Existing data at the address is cleared first.
 
 usage: /mnt/nvme/bbpro98/ghidra_venv/bin/python3 fold_names.py   (then scripts/regen.sh)
 A function starting at addr is renamed USER_DEFINED (overrides auto_ names) and gets "[verified] evidence" prepended to
@@ -38,13 +38,15 @@ def where(prog, a):
 
 def resolve(p, t):
     from ghidra.program.model.data import (CategoryPath, ByteDataType, WordDataType, DWordDataType, ArrayDataType,
-                                           PointerDataType)
+                                           PointerDataType, CharDataType, VoidDataType)
     import re
     m = re.match(r'^(\w+)(?:\[(\d+)\])?(\*)?$', t.strip())
     if not m:
         raise ValueError(t)
     base, n, ptr = m.groups()
-    dt = {'byte': ByteDataType.dataType, 'word': WordDataType.dataType, 'dword': DWordDataType.dataType}.get(base)
+    # FILE: the RTL stream struct is not modelled, so FILE* is a far pointer to void
+    dt = {'byte': ByteDataType.dataType, 'word': WordDataType.dataType, 'dword': DWordDataType.dataType,
+          'char': CharDataType.dataType, 'FILE': VoidDataType.dataType}.get(base)
     if dt is None:
         dt = p.getDataTypeManager().getDataType(CategoryPath('/TLRB2'), base)
         if dt is None:
@@ -55,12 +57,14 @@ def resolve(p, t):
         dt = PointerDataType(dt, 4)
     return dt
 
-def apply_types(proj):
+def apply_types(proj, opened):
     if not os.path.exists(TYPES):
         return
     rows = [l.rstrip('\n').split('\t') for l in open(TYPES) if l.strip() and not l.startswith('#')]
     for prog in sorted({r[0] for r in rows}):
-        p = proj.openProgram('/', f'{prog}.flat.bin', False)
+        if prog not in opened:  # GhidraProject tracks each open; opening twice ends its transaction twice on close
+            opened[prog] = proj.openProgram('/', f'{prog}.flat.bin', False)
+        p = opened[prog]
         af, lst = p.getAddressFactory(), p.getListing()
         tx = p.startTransaction('apply verified types'); ok = False
         try:
@@ -87,9 +91,10 @@ def apply_types(proj):
 def main():
     rows = [l.rstrip('\n').split('\t') for l in open(TSV) if l.strip() and not l.startswith('#')]
     proj = GhidraProject.openProject(PROJ, NAME, True)
+    opened = {}
     try:
         for prog in sorted({r[0] for r in rows}):
-            p = proj.openProgram('/', f'{prog}.flat.bin', False)
+            p = opened[prog] = proj.openProgram('/', f'{prog}.flat.bin', False)
             fm, af, lst = p.getFunctionManager(), p.getAddressFactory(), p.getListing()
             tx = p.startTransaction('fold verified names'); ok = False
             try:
@@ -111,7 +116,7 @@ def main():
             finally:
                 p.endTransaction(tx, ok)
             proj.save(p)
-        apply_types(proj)
+        apply_types(proj, opened)
     finally:
         proj.close()
 
