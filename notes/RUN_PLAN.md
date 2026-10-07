@@ -38,17 +38,16 @@ Will asked for a plan put into effect and run without check-ins. Three workers:
 
 Not in scope while unattended: M4 design (needs Will), any patch to the live install, any push.
 
-## Status 2026-10-07
-- Steps 1-8 done. KB: 5666 functions -> 3269 units, 37 seeds. Z.AI named all 3046 non-seed units (9 errors);
-  DeepSeek backup (--weak) answered 1332 weak units. Final merge: 1987 accepted, 1852 single, 1162 differ, 205 agree,
-  13 conflict.
-- Applied in two passes: 3692 functions renamed with auto_ prefix (ANALYSIS) plus plate comments; 53 failed (BB/PLAY
-  call targets Ghidra would not turn into functions). 54 Lane B verified names folded unprefixed (fold_names.py,
-  notes/lane_names.tsv).
-- Index after regen3: auto_ 3438, FUN_ 1878, other (seeds, verified, RTL) 317 across the 8 programs.
-- M2 types: /TLRB2 V20Player, V20Header, V20Team defined in all 8 programs (tools/re/structs.py). fold_names.py also
-  applies notes/lane_types.tsv (global buffers/tables) when lanes add rows.
-- Lane B sessions 2..5 committed: M3 season state, ratings formulas, GAME.TMP lineup/rules/play log, salary, ALLTIME.BOX.
-  Lane B6 runs the remaining open items (season game merge fields, result codes, ALLTIME.BOX writer); afterwards fold
-  new tsv rows and regen.
-- M4 not started: needs Will's design review.
+## Status 2026-10-07 (03:40)
+- Steps 1-8 done. KB: 5666 functions -> 3269 units, 37 seeds. Z.AI named all 3046 non-seed units; DeepSeek backup
+  (--weak) answered 1332 weak units; Z.AI round 2 (--retry, backend zai2, callees now named) re-asked the 1282 units
+  the first merge did not accept. Final merge: 2614 accepted (was 1987), 1810 single, 754 differ, 660 agree, 8 conflict.
+- Ghidra: auto_ (ANALYSIS) names on 4392 functions, FUN_ left on 917, about 320 verified/seed/RTL names. 54 apply
+  failures are BB/PLAY call targets Ghidra will not turn into functions.
+- M2 types: /TLRB2 V20Player, V20Header, V20Team in all 8 programs (tools/re/structs.py). Lane globals typed from
+  notes/lane_types.tsv by fold_names.py (DS:off rows map to DGROUP; buffer-relative rows stay documentation).
+- Lane B6: season-game merge BB 6000:3407 confirmed field by field, RTO pair (90 caught, 92 attempts), +0x85 appearance
+  counter, accumulator layout for both teams, result-code formulas, ALLTIME.BOX writer BB 6000:c6c1.
+- Lane B7: SAVE confirmed dynamically (append, 2 B header + 7194 B), u16@27 is the portrait index (0..29 generic,
+  981..1507 photos), MAJ +0x35b is the injuries flag. Open: a few result codes, byte 29 bit0 (static only).
+- M1-M3 done. M4 not started: needs Will's design review.
