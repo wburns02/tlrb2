@@ -56,7 +56,7 @@ UTIL	1000:9e5f	era100	Lane B5: verified against salary data
 BB	6000:c6c1	write_alltime_box_file	Lane B6 static: fopen DS:3be2 mode DS:3bee, fwrite word 0x000e then DS:aa2a buffer 0x1c1a B (matches s5 ALLTIME.BOX 7196 B); stub 508c:0025; not re-run dynamically in s6
 BB	6000:d277	boxscore_menu_dispatch	Lane B6 static: box score button handler, calls c6c1 at 6000:d396 when buf[0x1bf4]!=3 and buf[0x1bf5]!=0 (SAVE)
 BB	6000:e476	boxscore_save_call_twin	Lane B6 static: second call of write_alltime_box_file in the function near 6000:e3c1
-BB	6000:7190	auto_run_full_game_loop	Lane B6 static+dynamic: sets buf[0x1bf5]=1 at game end (seen 0->1 in RAM), then if buf[0x1bf4]==0 calls merge twice (team arrays DS:aa4a then aa46); stores buf+0x1bf8 u16 from 6000:7c19 and +0x1bfa u32 from 6000:7c83
+BB	6000:7190	run_full_game_loop	Lane B6 static+dynamic: sets buf[0x1bf5]=1 at game end (seen 0->1 in RAM), then if buf[0x1bf4]==0 calls merge twice (team arrays DS:aa4a then aa46); stores buf+0x1bf8 u16 from 6000:7c19 and +0x1bfa u32 from 6000:7c83
 BB	6000:3407	merge_game_stats_into_player_records	Lane B6 dynamic CONFIRMED: season game CLE 2 BAL 1 deltas in CLASALE3/CLASALE1 V20 equal box score and game-buffer arrays; V20 files written on BB exit, not at game end
 BB	6000:8100	apply_play_result_to_player_stats	Lane B6 dynamic: tail 0x8693..0x87f5 assigns result code ab4b via jump table 6000:8810 keyed by class ab3d, then log_event_writer(ab4b,ab4c); observed codes agree (HR 0x21, BB 0x49, K 0x4c, singles 0x0c-0x0f, 2B 0x13, GB outs 0x27-0x2a, fly outs 0x30-0x33)
 BB	1000:f98c	auto_classify_screen_x_zone	Lane B6 static: sets ab3a to hit-location zone 0..6; hit result code = base + ab3a

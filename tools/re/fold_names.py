@@ -24,6 +24,18 @@ def set_plate(p, ad, text):
 TSV = os.path.join(os.path.dirname(__file__), '..', '..', 'notes', 'lane_names.tsv')
 TYPES = os.path.join(os.path.dirname(__file__), '..', '..', 'notes', 'lane_types.tsv')
 
+DGROUP = dict(MAIN='40fa', BB='5120', UTIL='3954', DRAFT='1f31', BACK='2c71', MANAGE='28bf', PLAY='170a', CONTROL='123e')
+
+def where(prog, a):
+    """'seg:off' or 'DS:off' -> Ghidra address text; None for buffer-relative rows (DS:xxxx+0x..), which have no
+    static address and are documentation only."""
+    a = a.strip()
+    if '+' in a:
+        return None
+    if a.upper().startswith('DS:'):
+        return f"{DGROUP[prog]}:{a[3:]}"
+    return a
+
 def resolve(p, t):
     from ghidra.program.model.data import (CategoryPath, ByteDataType, WordDataType, DWordDataType, ArrayDataType,
                                            PointerDataType)
@@ -53,7 +65,10 @@ def apply_types(proj):
         tx = p.startTransaction('apply verified types'); ok = False
         try:
             for _, a, t, nm, ev in (r for r in rows if r[0] == prog):
-                ad = af.getAddress(a)
+                w = where(prog, a)
+                if w is None:
+                    print(prog, a, 'skipped (buffer-relative, no static address)'); continue
+                ad = af.getAddress(w)
                 try:
                     dt = resolve(p, t)
                     lst.clearCodeUnits(ad, ad.add(dt.getLength() - 1), False)
