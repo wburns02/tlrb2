@@ -74,6 +74,15 @@ Open: the SEASON > PLAY LEAGUE GAMES date browser does not respond to keyboard o
 (game boxes not hot; the CLASSIC league ships pre-draft - games may require completing the draft first).
 Sim/ GAME.TMP / end-of-season flow still need a completed-league trace.
 
+## Night shift 2026-10-06/07 (:97 rig, scripts/m3_gt.sh + m3_gt_batch.sh)
+Exhibition-game flow replicated on the :97/work2 rig (dosbox-x, Lane B's m3_base GAME.TMP): MAIN handoff
+writes CONTROL `01 03 ...` when PLAY BALL is pressed, BB.EXE loads and plays on-field (computer/computer,
+VERY FAST + one-pitch still shows full animations; a game takes >>7 min). Save cascade on handoff:
+GAME.TMP 7446 + CLASSIC.MAJ 59771 + CONTROL + SYSTEM. Exhibition games write NO ALLTIME.BOX (confirms
+Lane B's open item; the writer never fires outside season context). gt2_* snaps + per-run strace logs in
+snaps/ and logs2/. Run-to-run state pollution: poll from a fresh baseline, wait for the SECOND CONTROL
+rewrite (pattern 03*), not the handoff. Batch of 6 matchups running overnight into logs2/gt_batch.log.
+
 ## .SCH schedule files (observations 2026-10-06, static only; needs a trace to decode properly)
 162_26.SCH 57,176 B: +0 ASCII "162 Games-26 Teams" (16 B + 2 NUL). +0x14 u32 (5e 5d ca 02, unknown; not a
 DOS date). +0x18 a run of x86 code bytes (55 8b ec push bp / mov bp,sp...) for ~70 B then zeros to +0xc0 -
