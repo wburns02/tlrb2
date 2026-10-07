@@ -11,3 +11,5 @@ BACK	1000:5bfe	validate_day_played_flags	Lane B s3: day row consistency check of
 MAIN	6000:0ba2	randomize_night_game_flags	Lane B s3: fills S+0x1513 night flags: day%7 0,1 never, 3 80%, 4 66.7%, else always, never for DH slots; m3_end data shows pattern
 BACK	1000:98f3	roll_player_injury	Lane B s3: gated by MAJ injuries flag (AL block +0x35b); probability from workload vs rating, writes injury days 2..14 into player record byte 0x18 (record base idx*0x8f, DU at +0x13f absolute). Flag proof: new-season dialog NO->0 YES->1
 BACK	1000:988f	count_available_players	Lane B s3: counts players of the 40 whose +0x127 record byte nonzero, pos nibble +0x146&0xf==0 (pitcher), DU byte +0x13f == 0 or >0x80 (healthy or rested only)
+DRAFT	2000:ecfd	validate_gm_profile_pcts	Lane B s3: for 32 teams, if V20 hdr+237..243 do not sum to 100 or +244>5, reload preset 0 from ds:10e6 and zero +244
+DRAFT	2000:f6c9	apply_gm_profile_preset	Lane B s3: copies 7-byte preset N (ds:10e6+7N) into hdr+237..243, stores N at +244, N==5 means custom (no copy)

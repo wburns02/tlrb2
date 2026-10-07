@@ -50,7 +50,7 @@ Header (295 B) decoded 2026-10-07 (Lane B), evidence = Manager-screen single-edi
   +194 bench = remaining active batters, 4 x 7 slots, 0xff padded (no-DH 7 players, DH 6 + 0xff) -> +194..+221
 - +222..+236 reserves: 15 player indices (6 pitchers + 9 batters). Active 25-man = 10 pitchers + 15 batters; the whole file is a
   partition of the 40 players. Active<->reserve swap rewrites the player in every list that held him (lineups, bench, reserve slot).
-- +237..+244: 14 14 05 05 0f 0f 14 00 in every CLASSIC team (0 in older 0168 files). Constant roster limits? Not edited. Open.
+- +237..+243: Draft GM profile, 7 percentage bytes that must sum to 100 (DRAFT 2000:ecfd resets to the preset if not). +244: preset index 0..5, 5 = custom (no table copy). Presets (DRAFT ds:10e6, 7 B each): 0 = 20 20 5 5 15 15 20 (all CLASSIC teams), 1 = 20 15 5 5 25 15 15, 2 = 20 15 5 20 5 15 20, 3 = 25 20 10 5 10 10 20, 4 = 20 15 5 10 10 10 30. Category labels live in profile2.scr, not decoded. Used by the draft screen "GENERAL MANAGER PROFILE" (DRAFT 2000:f6c9 applies a preset, 2000:f0c1/e3e8 callers). tools/v20.py: gm_profile/set_gm_profile.
 - +245..+259 manager strategy sliders (Manager > Manager Profile, 5 tabs x 3), stored = RIGHT-hand number x 10 (50 = 5/5):
   LINEUP: speed/power, defense/hitters, endurance/ERA; PITCHING: starters-in/yank'em, starters-in/pinch-hit, pitch-around/challenge;
   BATTING: sacrifice/hit-away, squeeze/hit-away, hit&run/play-safe; DEFENSE: walk/pitch-to, infield-in/normal, pitchout/throw-strikes;

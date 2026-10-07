@@ -55,6 +55,7 @@ TWIN = {'age', 'salary', 'portrait', 'speed', 'consist', 'exper', 'pos1', 'pos2'
 
 # Header layout (295 B), decoded by Lane B 2026-10-07 from Manager-screen diffs + MANAGE code (see notes/FORMATS.md)
 H_COLOR = 44
+H_GM = 237
 H_DAY, H_STAFF, H_LINEUP, H_DEF, H_BENCH, H_RESERVE, H_STRAT = 0x6c, 111, 122, 158, 194, 222, 245
 STRAT = ['lineup_speed_power', 'lineup_def_hit', 'lineup_end_era', 'pitch_yank', 'pitch_pinch', 'pitch_around',
          'bat_sac', 'bat_squeeze', 'bat_hitrun', 'def_walk', 'def_infield', 'def_pitchout',
@@ -137,6 +138,13 @@ class Team:
         """(main, accent): each 8 shades of (r,g,b) VGA 6-bit values 0..63 at header +44 (main) and +68 (accent), light to dark."""
         h = self.header
         return tuple([tuple(h[o + 3 * i:o + 3 * i + 3]) for i in range(8)] for o in (H_COLOR, H_COLOR + 24))
+    def gm_profile(self):
+        h = self.header
+        return list(h[H_GM:H_GM + 7]), h[H_GM + 7]
+    def set_gm_profile(self, pct, preset=5):
+        assert len(pct) == 7 and sum(pct) == 100 and 0 <= preset <= 5
+        self.header[H_GM:H_GM + 7] = bytes(pct)
+        self.header[H_GM + 7] = preset
     def set_colors(self, main=None, accent=None):
         for o, c in ((H_COLOR, main), (H_COLOR + 24, accent)):
             if c is not None:
