@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Fold hand/dynamically verified names (notes/lane_names.tsv: prog, addr, name, evidence) into the Ghidra project.
+"""Fold hand/dynamically verified names (notes/lane_names.tsv: prog, addr, name, evidence) into the Ghidra project,
+and apply data types listed in notes/lane_types.tsv (prog, addr, type, name, evidence). type is a /TLRB2 type
+(V20Team, V20Header, V20Player, see structs.py) or a built-in (byte, word, dword), optionally with [N] for an array
+or a trailing * for a far pointer (4 bytes seg:off) to it. Existing data at the address is cleared first.
 
 usage: /mnt/nvme/bbpro98/ghidra_venv/bin/python3 fold_names.py   (then scripts/regen.sh)
 A function starting at addr is renamed USER_DEFINED (overrides auto_ names) and gets "[verified] evidence" prepended to
@@ -19,6 +22,52 @@ def set_plate(p, ad, text):
     p.getListing().setComment(ad, CodeUnit.PLATE_COMMENT, text)
 
 TSV = os.path.join(os.path.dirname(__file__), '..', '..', 'notes', 'lane_names.tsv')
+TYPES = os.path.join(os.path.dirname(__file__), '..', '..', 'notes', 'lane_types.tsv')
+
+def resolve(p, t):
+    from ghidra.program.model.data import (CategoryPath, ByteDataType, WordDataType, DWordDataType, ArrayDataType,
+                                           PointerDataType)
+    import re
+    m = re.match(r'^(\w+)(?:\[(\d+)\])?(\*)?$', t.strip())
+    if not m:
+        raise ValueError(t)
+    base, n, ptr = m.groups()
+    dt = {'byte': ByteDataType.dataType, 'word': WordDataType.dataType, 'dword': DWordDataType.dataType}.get(base)
+    if dt is None:
+        dt = p.getDataTypeManager().getDataType(CategoryPath('/TLRB2'), base)
+        if dt is None:
+            raise ValueError('unknown type ' + base)
+    if n:
+        dt = ArrayDataType(dt, int(n), dt.getLength())
+    if ptr:
+        dt = PointerDataType(dt, 4)
+    return dt
+
+def apply_types(proj):
+    if not os.path.exists(TYPES):
+        return
+    rows = [l.rstrip('\n').split('\t') for l in open(TYPES) if l.strip() and not l.startswith('#')]
+    for prog in sorted({r[0] for r in rows}):
+        p = proj.openProgram('/', f'{prog}.flat.bin', False)
+        af, lst = p.getAddressFactory(), p.getListing()
+        tx = p.startTransaction('apply verified types'); ok = False
+        try:
+            for _, a, t, nm, ev in (r for r in rows if r[0] == prog):
+                ad = af.getAddress(a)
+                try:
+                    dt = resolve(p, t)
+                    lst.clearCodeUnits(ad, ad.add(dt.getLength() - 1), False)
+                    lst.createData(ad, dt)
+                    if nm:
+                        p.getSymbolTable().createLabel(ad, nm, SourceType.USER_DEFINED)
+                    lst.setComment(ad, CodeUnit.PLATE_COMMENT, f'[verified] {nm} ({t}): {ev}')
+                    print(prog, a, 'typed', t, nm)
+                except Exception as e:
+                    print(prog, a, 'type FAILED', t, repr(e)[:200])
+            ok = True
+        finally:
+            p.endTransaction(tx, ok)
+        proj.save(p)
 
 def main():
     rows = [l.rstrip('\n').split('\t') for l in open(TSV) if l.strip() and not l.startswith('#')]
@@ -47,6 +96,7 @@ def main():
             finally:
                 p.endTransaction(tx, ok)
             proj.save(p)
+        apply_types(proj)
     finally:
         proj.close()
 

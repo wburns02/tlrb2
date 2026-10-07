@@ -1,0 +1,1 @@
+# prog	addr	type	name	evidence. Applied by tools/re/fold_names.py. Types: see tools/re/structs.py (V20Team, V20Header, V20Player), byte/word/dword, [N] arrays, * far pointers.
