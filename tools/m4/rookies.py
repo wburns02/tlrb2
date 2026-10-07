@@ -24,6 +24,9 @@ Pipeline per rookie (see RookieGen.make):
 Draw order per rookie (C4): last-name, first-name, age, throws, switch,
 portrait, exper, consist, grade, then the per-rating draws.
 
+Names are stored like the shipped V20 data (contract C4): mixed case
+("Adams", "McCall"), NUL padded, never space padded, never all caps.
+
 Determinism: all randomness flows through the Rng class from
 tools/m4/rollover.py (xorshift16). Same seed + same ordered inputs gives
 byte-identical output.
@@ -85,38 +88,39 @@ PER_TEAM_POSITIONS = [
 PER_TEAM_DEFAULT_POS = POS_DH
 
 # Name pools (C4): our own, never harvested from game data. 128 lasts and
-# 64 firsts, ASCII, last <= 11 chars, first <= 7 chars, stored in
-# rookie_fill.asm in identical order.
+# 64 firsts, mixed case like the shipped V20 data (first letter upper, rest
+# lower; "Mc" names keep the capital after Mc), last <= 11 chars, first <= 7
+# chars, stored NEW pct in rookie_fill.asm in identical order.
 LAST_NAMES = [
-    "ADAMS", "ALLEN", "ANDERSON", "BAKER", "BARNES", "BELL", "BENNETT",
-    "BROOKS", "BROWN", "BUTLER", "CAMPBELL", "CARTER", "CLARK", "COLE",
-    "COOK", "COOPER", "COX", "CRAWFORD", "CROSS", "DAVIS", "DIAZ", "EDWARDS",
-    "EVANS", "FISHER", "FLORES", "FOSTER", "FOX", "GRAY", "GREEN", "HALL",
-    "HARRIS", "HART", "HAYES", "HILL", "HOWARD", "HUGHES", "JACKSON",
-    "JAMES", "JENKINS", "JOHNSON", "JONES", "KELLY", "KING", "LEE", "LEWIS",
-    "LONG", "MARSH", "MARTIN", "MASON", "MAY", "MILLER", "MITCHELL", "MOORE",
-    "MORRIS", "MYERS", "NELSON", "PARKER", "PATEL", "PERRY", "PETERSON",
-    "PHILLIPS", "POWELL", "PRICE", "REED", "RICHARDSON", "RILEY", "RIVERA",
-    "ROBERTS", "ROBINSON", "ROSS", "RUSSELL", "SANCHEZ", "SCOTT", "SHAW",
-    "SIMMONS", "SMITH", "SPENCER", "STEVENS", "STEWART", "STONE", "SULLIVAN",
-    "TAYLOR", "THOMAS", "THOMPSON", "TORRES", "TURNER", "WARD", "WATSON",
-    "WEBB", "WELLS", "WEST", "WHITE", "WILCOX", "WILLIAMS", "WILSON", "WOOD",
-    "WRIGHT", "YOUNG", "ARNOLD", "BECK", "BURKE", "CHAMBERS", "CHANDLER",
-    "CURTIS", "DIXON", "DUNCAN", "ELLIS", "ERICKSON", "FREEMAN", "GARCIA",
-    "GIBSON", "GORDON", "GRANT", "HANSEN", "HENRY", "HODGES", "HOLMES",
-    "HOPKINS", "HUNTER", "JOHNSTON", "LAMBERT", "LARSON", "LLOYD", "LYNCH",
-    "MALONE", "McCALL", "McREE", "OSBORN",
+    "Adams", "Allen", "Anderson", "Baker", "Barnes", "Bell", "Bennett",
+    "Brooks", "Brown", "Butler", "Campbell", "Carter", "Clark", "Cole",
+    "Cook", "Cooper", "Cox", "Crawford", "Cross", "Davis", "Diaz", "Edwards",
+    "Evans", "Fisher", "Flores", "Foster", "Fox", "Gray", "Green", "Hall",
+    "Harris", "Hart", "Hayes", "Hill", "Howard", "Hughes", "Jackson",
+    "James", "Jenkins", "Johnson", "Jones", "Kelly", "King", "Lee", "Lewis",
+    "Long", "Marsh", "Martin", "Mason", "May", "Miller", "Mitchell", "Moore",
+    "Morris", "Myers", "Nelson", "Parker", "Patel", "Perry", "Peterson",
+    "Phillips", "Powell", "Price", "Reed", "Richardson", "Riley", "Rivera",
+    "Roberts", "Robinson", "Ross", "Russell", "Sanchez", "Scott", "Shaw",
+    "Simmons", "Smith", "Spencer", "Stevens", "Stewart", "Stone", "Sullivan",
+    "Taylor", "Thomas", "Thompson", "Torres", "Turner", "Ward", "Watson",
+    "Webb", "Wells", "West", "White", "Wilcox", "Williams", "Wilson", "Wood",
+    "Wright", "Young", "Arnold", "Beck", "Burke", "Chambers", "Chandler",
+    "Curtis", "Dixon", "Duncan", "Ellis", "Erickson", "Freeman", "Garcia",
+    "Gibson", "Gordon", "Grant", "Hansen", "Henry", "Hodges", "Holmes",
+    "Hopkins", "Hunter", "Johnston", "Lambert", "Larson", "Lloyd", "Lynch",
+    "Malone", "McCall", "McRee", "Osborn",
 ]
 FIRST_NAMES = [
-    "AARON", "ADAM", "ALAN", "ALBERT", "ANDREW", "ANTHONY", "ARTHUR",
-    "BENNY", "BILLY", "BOB", "BOBBY", "BRUCE", "CALVIN", "CARL", "CHARLES",
-    "CHRIS", "CLYDE", "CURTIS", "DANIEL", "DANNY", "DAVID", "DENNIS", "DON",
-    "DONALD", "EARL", "EDDIE", "EDWARD", "EDWIN", "ELMER", "ERNIE", "EUGENE",
-    "FLOYD", "FRANK", "FRED", "GARY", "GEORGE", "GLEN", "GORDON", "HANK",
-    "HAROLD", "HARRY", "HERB", "HERMAN", "DEXTER", "HUGH", "IRVING",
-    "JACK", "JAMES", "JERRY", "JESSE", "JIM", "JIMMY", "JOE", "JOHN",
-    "JOHNNY", "JOSE", "LEON", "LESTER", "LOU", "LOUIS", "LUTHER", "MARK",
-    "MARVIN", "NORM",
+    "Aaron", "Adam", "Alan", "Albert", "Andrew", "Anthony", "Arthur",
+    "Benny", "Billy", "Bob", "Bobby", "Bruce", "Calvin", "Carl", "Charles",
+    "Chris", "Clyde", "Curtis", "Daniel", "Danny", "David", "Dennis", "Don",
+    "Donald", "Earl", "Eddie", "Edward", "Edwin", "Elmer", "Ernie", "Eugene",
+    "Floyd", "Frank", "Fred", "Gary", "George", "Glen", "Gordon", "Hank",
+    "Harold", "Harry", "Herb", "Herman", "Dexter", "Hugh", "Irving",
+    "Jack", "James", "Jerry", "Jesse", "Jim", "Jimmy", "Joe", "John",
+    "Johnny", "Jose", "Leon", "Lester", "Lou", "Louis", "Luther", "Mark",
+    "Marvin", "Norm",
 ]
 
 # C4 grade cut points: d = draw() & 0xff, 154/230 = 60/30/10 percent.
@@ -189,13 +193,12 @@ def _set_nibble_lo(rec, off, val):
 # ---------------------------------------------------------------------------
 
 def _name_table(names, width):
-    """Render a C4 name pool as the fixed-width byte strings the asm table
-    stores: uppercase ASCII, space padded to the field width."""
+    """Render a C4 name pool as the fixed-width NUL-padded byte strings the
+    shipped V20 data stores: mixed case ASCII, NUL padding, never spaces."""
     out = []
     for n in names:
-        s = "".join(ch for ch in n.upper() if "A" <= ch <= "Z")
-        assert len(s) <= width - 1, "name %r too long for a %d-byte field" % (n, width)
-        out.append(s.ljust(width, " "))
+        assert len(n) <= width - 1, "name %r too long for a %d-byte field" % (n, width)
+        out.append(n.encode("ascii").ljust(width, b"\x00"))
     return out
 
 
@@ -223,17 +226,12 @@ class RookieGen:
         """d = draw() & 0xff."""
         return self.rng.draw() & 0xFF
 
-    def _below(self, n):
-        """d %% n for d = the full xorshift16 draw (for n a power of two
-        this equals d & 0xff modulo n; the asm uses both forms)."""
-        return self.rng.draw() % n
-
     def _rand(self, lo, hi):
         """Inclusive uniform integer in [lo, hi]."""
-        return lo + self._below(hi - lo + 1)
+        return lo + self.rng.draw() % (hi - lo + 1)
 
-    def _weighted(self, choices, weights=[100]):
-        """Draw from choices by cumulative weight over a 0..99 draw."""
+    def _weighted(self, choices, weights):
+        """Draw from choices by cumulative weight over a 0..(total-1) draw."""
         total = sum(weights)
         pick = self.rng.draw() % total
         acc = 0
@@ -249,8 +247,8 @@ class RookieGen:
         # C4: index = d % 128 (last), d % 64 (first); d = draw() & 0xff.
         last = self.last_pool[self._dbyte() % len(self.last_pool)]
         first = self.first_pool[self._dbyte() % len(self.first_pool)]
-        rec[OFF_LAST:OFF_LAST + 12] = last.encode("latin-1")
-        rec[OFF_FIRST:OFF_FIRST + 8] = first.encode("latin-1")
+        rec[OFF_LAST:OFF_LAST + 12] = last
+        rec[OFF_FIRST:OFF_FIRST + 8] = first
 
     def _write_identity(self, rec, season_year):
         rec[OFF_AGE] = self._weighted(AGE_CHOICES, AGE_WEIGHTS)
@@ -385,8 +383,8 @@ def main():
     gen = RookieGen(rng)
     for i, pos in enumerate(positions):
         rec = gen.make(pos, season_year)
-        last = rec[0:12].decode("latin-1").rstrip(" \x00")
-        first = rec[12:20].decode("latin-1").rstrip(" \x00")
+        last = rec[0:12].rstrip(b"\x00").decode("ascii")
+        first = rec[12:20].rstrip(b"\x00").decode("ascii")
         print("rookie #%-2d %-12s %-8s age=%d pos=%-2d sal=%d pow=%d"
               % (i, last, first, rec[OFF_AGE], pos,
                  rec[OFF_SALARY] | (rec[OFF_SALARY + 1] << 8),
