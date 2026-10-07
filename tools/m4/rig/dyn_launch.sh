@@ -15,12 +15,12 @@ if [ -n "$OLD" ]; then
   kill -0 "$OLD" 2>/dev/null && kill -9 "$OLD" 2>/dev/null
 fi
 
-# Reap any strays on THIS install path (not touching other rigs)
-SAFE_PATH=$(printf '%s\n' "$MOUNT_ROOT" | sed 's/[[\.*^$/]/\\&/g')
-for p in $(pgrep -f "dosbox-x.*$SAFE_PATH" 2>/dev/null); do
-  kill "$p" 2>/dev/null
-  sleep 0.5
-  kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null
+# Reap any strays on THIS install path (not touching other rigs). Match the exact binary name, then check
+# the mount path in its argv, so no shell whose command text mentions the path can match.
+for p in $(pgrep -x dosbox-x 2>/dev/null); do
+  if tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null | grep -qF "mount c \"$MOUNT_ROOT\""; then
+    kill -9 "$p" 2>/dev/null
+  fi
 done
 sleep 1
 

@@ -9,15 +9,17 @@ Usage: check_roll.py PRE_DIR POST_DIR [--seed N]
 import sys
 import os
 import glob
-sys.path.insert(0, '/home/will/tlrb2/tools')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from m4.rollover import rollover
 
 
 def compare_dirs(pre_dir, post_dir, seed=1):
     """Run reference on pre, compare V20s to post. Return mismatches dict."""
-    ref_out = '/tmp/check_roll_ref'
-    os.makedirs(ref_out, exist_ok=True)
+    import shutil
+    ref_out = os.path.join(os.path.dirname(os.path.abspath(post_dir)), 'check_roll_ref')
+    shutil.rmtree(ref_out, ignore_errors=True)
+    os.makedirs(ref_out)
 
     # Run reference
     print(f'Running rollover reference on {pre_dir} with seed={seed}')
@@ -49,10 +51,9 @@ def compare_dirs(pre_dir, post_dir, seed=1):
             if ref[off] != post[off]:
                 diffs.append(off)
 
-        if len(diffs) == 0 and len(ref) != len(post):
+        diffs = diffs[:20]
+        if len(ref) != len(post):
             diffs.append(f'SIZE: {len(ref)} vs {len(post)}')
-        else:
-            diffs = diffs[:20]
 
         mismatches[name] = diffs
         print(f'{name}: MISMATCH at offsets {diffs[:5]} ... ({len(diffs)} total)')
