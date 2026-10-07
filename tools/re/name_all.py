@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bulk function naming over every unit in /mnt/nvme/tlrb2/re/units.json, callees first.
 
-usage: name_all.py run [--limit N] [--backends zai,deepseek]   (resumable; appends to answers.jsonl)
+usage: name_all.py run [--limit N] [--backends zai,deepseek] [--weak]   (--weak: backup pass, only units still below 0.6; resumable; appends to answers.jsonl)
        name_all.py status
        name_all.py merge      -> /mnt/nvme/tlrb2/re/names/<EXE>.tsv and merged.json
 
@@ -50,6 +50,13 @@ class State:
         self.m2u = {(m[0], m[1]): k for k, u in self.units.items() for m in u['members']}
         # callee units of a unit = union over members
         self.deps = defaultdict(set)
+        # the index can be regenerated under us (another session's regen.sh): drop members that no longer exist
+        for k, u in list(self.units.items()):
+            u['members'] = [m for m in u['members'] if m[1] in self.Ps[m[0]].fn]
+            if not u['members']:
+                del self.units[k]; continue
+            u['rep'] = u['members'][0]
+        self.m2u = {(m[0], m[1]): k for k, u in self.units.items() for m in u['members']}
         for k, u in self.units.items():
             for p, a in u['members']:
                 for c in self.Ps[p].fn[a]['callees']:
@@ -150,9 +157,11 @@ def call_backend(b, user):
         return txt, u or {}
     raise ValueError(b)
 
-def run(limit=None, backends=('zai', 'deepseek')):
+def run(limit=None, backends=('zai', 'deepseek'), weak=False):
     S = State()
     todo = {b: {k for k in S.units if k not in S.seeds and b not in S.ans.get(k, {})} for b in backends}
+    if weak:  # backup pass: only units no backend has answered with confidence >= 0.6
+        todo = {b: {k for k in t if not any(conf(o) >= 0.6 for o in S.ans.get(k, {}).values())} for b, t in todo.items()}
     attempts = defaultdict(int)
     inflight = set()
     paused = {b: 0.0 for b in backends}
@@ -296,7 +305,7 @@ if __name__ == '__main__':
     if cmd == 'run':
         lim = int(sys.argv[sys.argv.index('--limit') + 1]) if '--limit' in sys.argv else None
         bs = tuple(sys.argv[sys.argv.index('--backends') + 1].split(',')) if '--backends' in sys.argv else ('zai', 'deepseek')
-        run(lim, bs)
+        run(lim, bs, '--weak' in sys.argv)
     elif cmd == 'merge':
         merge()
     elif cmd == 'status':

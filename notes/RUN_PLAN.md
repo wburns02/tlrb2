@@ -17,13 +17,19 @@ Will asked for a plan put into effect and run without check-ins. Three workers:
 2. Knowledge base (tools/re/kb.py): relocation masks, DGROUP strings, call graph from disassembly (overlay stubs
    followed), call targets Ghidra missed as pseudo functions, cross-program dedupe (5997 functions -> ~3800 unique
    bodies), seeds (53 hand-verified RTL/DOS names propagated to every program).
-3. Bulk naming (tools/re/name_all.py): every unique body, callees first, two independent models per body
-   (Z.AI GLM-5.3-Flash thinking off, conc 4; DeepSeek V4.1 Flash on Hive, conc 3). Prompts carry callee names
+3. Bulk naming (tools/re/name_all.py): every unique body, callees first, Z.AI GLM-5.3-Flash (thinking off, conc 4)
+   as the primary namer. DeepSeek V4.1 Flash on Hive is backup only (Will, 2026-10-06: it ran ~7/min vs Z.AI ~23/min
+   because of long reasoning output): `run --backends deepseek --weak` after Z.AI finishes, on units still below 0.6. Prompts carry callee names
    (with confidence), DS strings and annotated disassembly. Chosen by the 2026-10-06 bake-off (notes/HIVE_PILOT.md):
    both 100% precise at confidence >= 0.6 on the known set.
 4. Merge: accept = confidence >= 0.6 and not contradicted by a confident second opinion. Everything else becomes a
    plate comment only.
-5. Sonnet spot-check (tools/re/verify.py) on a stratified sample of accepted names. Renames are applied only if the
+5. RESULT 2026-10-06 (30-unit early sample): ~20% of accepted names wrong at the name level (free that is brk,
+   hex-to-ASCII called BCD, overclaimed game meanings). Confidence does not separate them; Z.AI self-audit does not
+   either (tools/re/audit.py calib: 25-38% of its passes were Sonnet-wrong). Decision: rename with prefix auto_
+   (SourceType.ANALYSIS) so every bulk name reads as a hint; plate comments carry purpose and the other opinion.
+   Original rule kept for reference:
+   Sonnet spot-check (tools/re/verify.py) on a stratified sample of accepted names. Renames are applied only if the
    sample is >= 90% correct-or-plausible; otherwise comments only and the accept rule is tightened.
 6. Apply (tools/re/apply_names.py): create missing functions, rename accepted (SourceType.ANALYSIS), plate comments
    for all; regen the index.

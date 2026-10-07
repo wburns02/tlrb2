@@ -5,7 +5,9 @@ usage: /mnt/nvme/bbpro98/ghidra_venv/bin/python3 apply_names.py [EXE ...]   (def
 
 Every named unit gets a plate comment: "[auto <status> <conf>] name: purpose" (+ the other model's answer).
 Accepted units (seed, or confidence >= 0.6 and not contradicted by a confident second opinion; see name_all.py merge)
-are also renamed, with SourceType.ANALYSIS so they stay distinguishable from hand-verified USER_DEFINED names.
+are also renamed. Non-seed names get the prefix auto_ and SourceType.ANALYSIS: a Sonnet spot-check (2026-10-06) found
+~20% of them wrong at the name level and no cheap gate (confidence, Z.AI self-audit) separates those out, so every
+auto_ name is a hint, not a fact. Seeds are hand-verified and go in unprefixed as USER_DEFINED.
 A function already renamed by hand (USER_DEFINED) is never renamed. Re-running is idempotent. Call targets Ghidra
 never made into functions (kb.py pseudo functions) are created first.
 """
@@ -71,6 +73,8 @@ def main():
                     accept = m['status'] == 'seed' or m.get('accept')
                     if accept and f.getSymbol().getSource() != SourceType.USER_DEFINED:
                         nm = clean(m['name'])
+                        if nm and m['status'] != 'seed':
+                            nm = 'auto_' + nm
                         if nm and f.getName() != nm:
                             src = SourceType.USER_DEFINED if m['status'] == 'seed' else SourceType.ANALYSIS
                             try:

@@ -36,6 +36,9 @@ Install = DATA1.ARJ extracted to C:\TONY2 (what INSTALL does). The game reads ar
 - Snapshot data before an edit: `~/tlrb2/scripts/snap.sh NAME`; compare team files: `tools/v20.py diff OLD NEW`.
 
 ## Gotchas
+- Two DOSBox rigs can run at once (2026-10-06): Lane B on Xvfb :98 (dosbox-x, work install) and the M3 rig on :97
+  (dosbox, work2 install, scripts/m3_launch.sh). `pkill -x dosbox` / `pkill -x dosbox-x` hits both; kill your own rig by
+  pid (e.g. `pgrep -f "work2/c"` or `pgrep -f "work/c\""`) instead.
 
 - Never `pkill -f <pattern>` where the pattern appears in your own command line (it kills your shell). Use `pkill -x dosbox` or a bracket trick like `'com.dosbox_[x]'`.
 - SDL picks Wayland if `WAYLAND_DISPLAY` is set: headless runs must set `SDL_VIDEODRIVER=x11` and unset it (launch scripts do), or the window opens on Will's desktop.

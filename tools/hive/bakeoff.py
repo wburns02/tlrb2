@@ -11,9 +11,7 @@ D = pilot.D
 CONC = {'zai': 4, 'haiku': 8, 'deepseek': 3, 'local': 2, 'kimi': 4}
 
 def parse(txt):
-    i = txt.find('[')
-    if i < 0:
-        i = txt.find('{')
+    i = min((j for j in (txt.find('['), txt.find('{')) if j >= 0), default=-1)  # first JSON opener, not any '['
     v, _ = json.JSONDecoder().raw_decode(txt[i:])
     v = v if isinstance(v, list) else [v]
     if not v or not isinstance(v[0], dict):

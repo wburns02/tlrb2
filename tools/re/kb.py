@@ -244,10 +244,14 @@ def build():
     seeds = {}
     m2u = {(m[0], m[1]): u['key'] for u in U for m in u['members']}
     for x in json.load(open(f'{T}/hive/pilot/dos_thin.json')):
-        k = m2u[(x['program'], x['addr'])]
+        k = m2u.get((x['program'], x['addr']))
+        if k is None:
+            print('seed not a function start (skipped):', x['program'], x['addr'], DOS_NAMES[x['ah']]); continue
         seeds[k] = dict(name=DOS_NAMES[x['ah']], purpose=f"DOS int 21h AH={x['ah']} wrapper", kind='dos',
                         confidence=1.0, source='seed')
     for a, (nm, purpose) in RTL_NAMES.items():
+        if ('MAIN', a) not in m2u:
+            print('seed not a function start (skipped): MAIN', a, nm); continue
         seeds[m2u[('MAIN', a)]] = dict(name=nm, purpose=purpose, kind='rtl', confidence=1.0, source='seed')
     json.dump(dict(units=U, seeds=seeds), open(f'{R}/units.json', 'w'))
     multi = sum(1 for u in U if len(u['members']) > 1)
