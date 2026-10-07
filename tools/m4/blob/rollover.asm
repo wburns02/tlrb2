@@ -88,12 +88,14 @@ entry_roll_player:
         mov [si+OFF_YEAR], al
         mov es:[di+OFF_YEAR], al
         cmp byte es:[di+OFF_GAMES], 0
-        je .exp_done
+        je .exp_mirror
         mov al, [si+OFF_EXP]
         cmp al, 255
-        jae .exp_done
+        jae .exp_mirror
         inc byte [si+OFF_EXP]
-        inc byte es:[di+OFF_EXP]
+.exp_mirror:                            ; season twin := roster exp (the twin's
+        mov al, [si+OFF_EXP]            ; exp byte differs in real leagues)
+        mov es:[di+OFF_EXP], al
 .exp_done:
 
         ; -- 4. progression (CX bit0): aged age, season games > 0, k != 0
@@ -525,31 +527,32 @@ t_hitrun:                               ; 1 + (x != 0) + count(x > t)
         mov esi, eax
         mov bx, 53
         call s2sum                      ; BB
-        mov ebx, eax
-        lea edx, [esi + ebx]            ; AB + BB
+        mov ecx, eax                    ; BB (ECX; EBX is the offset scratch and
+        lea edx, [esi + ecx]            ;  mov bx clobbers its low word)
         and edx, 0xFFFF                 ; pa (EDX live)
         mov bx, 41
         call s2sum                      ; H
         shl eax, 2                      ; 4*H
-        lea eax, [eax + ebx*2]          ; + 2*BB
+        lea eax, [eax + ecx*2]          ; + 2*BB
         and eax, 0xFFFF                 ; a (EAX live)
-        mov ebx, eax                    ; a (EBX live)
+        mov esi, eax                    ; a (AB dead, ESI free)
         mov bx, 57
         call s2sum                      ; SO
         lea eax, [eax + eax*2]          ; 3*SO
         and eax, 0xFFFF                 ; c
-        cmp ebx, eax                    ; a vs c
+        cmp esi, eax                    ; a vs c
         ja .hr_have_c
-        mov eax, ebx                    ; a <= c: c = a
+        mov eax, esi                    ; a <= c: c = a
 .hr_have_c:
         mov ecx, eax                    ; c
-        mov eax, ebx
+        mov eax, esi
         sub eax, ecx                    ; delta = a - c (>= 0)
-        mov esi, eax                    ; esi = delta (AB long gone)
+        mov esi, eax                    ; esi = delta
         mov ecx, 10
+        push edx                        ; pa survives the mul (mul clobbers EDX)
         mul ecx                         ; delta * 10
         mov esi, eax                    ; esi = delta*10
-        mov ecx, edx                    ; pa
+        pop ecx                         ; ecx = pa
         jecxz .hr_nopa
         mov eax, esi
         xor edx, edx
