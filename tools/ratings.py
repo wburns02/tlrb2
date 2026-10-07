@@ -133,6 +133,86 @@ def endurance(r):
     return 1 if x == 0 else x
 
 
+# ---- salary ("overall rating" 109..9999, stored at record +25 u16) -----------------------------------------------------------
+# UTIL 5000:f382 (batters), 5000:f697 (pitchers, stores) and 5000:a5aa (pitchers, returns), class helper 5000:a719, ERA helper 1000:9e5f.
+# Called by the import path 5000:e298 after the ratings. Decoded 2026-10-06 (Lane B session 4).
+def era100(r):
+    """UTIL 1000:9e5f: ERA x100 from IP10 (+101) and ER (+103), thirds-aware, capped 9999."""
+    a = u16(r, 101) * 100
+    if a % 1000 == 100: a += 0xe9
+    if a % 1000 == 200: a += 0x1d3
+    n = u16(r, 103) * 900000 + (a >> 1)
+    n = (n // a) if a else (9999 if n else 0)
+    return min(n, 9999)
+
+
+def pitcher_class(r):
+    """UTIL 5000:a719: 1/4 = starter, 2/3/5/6 = reliever. endurance = hi nibble of +135, G +23, GS +98, IP10 +101."""
+    end, g, gs, ip10 = r[135] >> 4, r[23], r[98], u16(r, 101)
+    c = 0
+    if end > 5 or (g * 33 <= gs * 100 and ip10 > 1000): c = 1
+    if end < 3 and c == 0: c = 2
+    if end > 1 and gs < g // 2: c += 3
+    return c or 3
+
+
+def salary_pitcher(r):
+    w, so, sv, era, inn = r[95], (u16(r, 125) + u16(r, 127)) & 0xffff, r[100], era100(r), u16(r, 101) // 10
+    if pitcher_class(r) in (1, 4):
+        x = w * 50 + so * 5
+        if era < 400: x += (400 - era) * 5
+        if w > 20: x += (w - 20) * 100
+        if so > 200: x += (so - 200) * 5
+        if inn < 180: x = (x & 0xffff) * inn // 180
+    else:
+        x = sv * 20 + so * 5
+        if era < 400: x += (400 - era) * 25 // 10
+        if sv > 30: x += (sv - 30) * 10
+        if inn < 50: x = (x & 0xffff) * inn // 50
+    return max(109, min(9999, (x & 0xffff) * 115 // 100))
+
+
+def salary_batter(r):
+    ab, h, d, t3, hr, bb, so = _batter_stats(r)
+    slg = per_mille(h + d + 2 * t3 + 3 * hr, ab)          # 9d04
+    obp = per_mille(h + bb, ab + bb)                       # 9d43
+    ba = per_mille(h, ab)                                  # 9cc5
+    sb, cs, rbi, runs, hrs = r[35], r[36], r[33], r[32], r[51] + r[52]
+    pos, rg, am = r[31] & 15, r[94] >> 4, r[94] & 15
+    pa = s2(r, 37) + s2(r, 53) & 0xffff
+    x = obp + slg + hrs * 30 + rbi * 75 // 10
+    if runs > rbi: x += (runs - rbi) * 75 // 10
+    if hrs > 30: x += (hrs - 30) * 50
+    if sb > cs: x += (sb - cs) * 10
+    if sb > 50: x += (sb - 50) * 20
+    if ba > 300: x += (ba - 300) * 20
+    if pos == 1:
+        if am > 7: x += (am - 7) * 100
+    elif pos == 3:
+        if rg > 8: x += (rg - 8) * 50
+        if rg == 12: x -= 50
+    elif pos == 4:
+        if rg > 8: x += (rg - 8) * 50
+        if am > 8: x += (am - 8) * 50
+        if rg + am > 22: x -= (rg + am - 22) * 50
+    elif pos == 5:
+        if rg > 8: x += (rg - 8) * 100
+        if am > 8: x += (am - 8) * 100
+    elif pos in (6, 8):
+        if am > 8: x += (am - 8) * 100
+    elif pos == 7:
+        if am > 8: x += (am - 8) * 50
+        if rg > 8: x += (rg - 8) * 50
+        if rg == 12: x -= 50
+    x &= 0xffff
+    if pa < 0x20d: x = x * pa // 0x23f
+    return max(109, min(9999, x))
+
+
+def salary(r):
+    return salary_pitcher(r) if r[31] & 15 == 0 else salary_batter(r)
+
+
 def hi(r, o): return r[o] >> 4
 def lo(r, o): return r[o] & 15
 

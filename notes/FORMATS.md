@@ -46,7 +46,7 @@ Stored in the ratings nibbles listed above. x = integer arithmetic exactly as in
 - Not auto-derived: streak, clutch, day/night, pickoff, Q1..Q4, release, pitch4, consistency, experience.
 - When a player is imported, PO1 and A1 are overwritten with PO130[pos]*G/130 and A130[pos]*G/130 (UTIL ds:7a14 and ds:7a28, per 130 games:
   PO P29 C657 1B982 2B233 3B82 SS189 LF193 CF300 RF206, A P60 C56 1B83 2B317 3B218 SS352 LF4 CF5 RF8), before range and arm are computed.
-- Also found: UTIL 5000:a5aa/f382/f697 compute a 109..9999 "overall" score (pitchers vs batters, scaled by IP/10) used for salary-like value. Not decoded.
+- UTIL 5000:a5aa/f382/f697 compute the player SALARY (record +25 u16, clamped 109..9999), decoded in session 4 and implemented as tools/ratings.salary(). Batter f382: obp+slg+30*HR+7.5*RBI plus bonuses, position arm/range adjustments via jump table at 5000:f687 (C f58c, 1B f62a, 2B f5b0, 3B f5cc, SS f605, LF f61d, CF f5a1, RF f61d), scaled by PA/575 under 525 PA. Pitcher f697/a5aa: class by a719 (starter vs reliever), x*115/100. Check vs 57 shipped V20s (salary 0 excluded): batters 1185/1188 exact, pitchers 772/792 (misses mostly 2 to 6 off, 3 batter and 4 pitcher outliers of hundreds, likely hand-edited values or a branch not modelled).
 Header (295 B) decoded 2026-10-07 (Lane B), evidence = Manager-screen single-edit diffs + MANAGE code (team buffer ptr DAT_2000_c73c):
 - +0 team name (14, 13 chars + NUL), +14 league code (2, "cl"), +16 team abbreviation (3, 'KC' NUL padded), +19 stadium stem (8 B,
   NUL terminated, the file STADIUMS/<STEM>.CFG/.SDM on the CD: 'grass', 'TURF', 'ASTRO', 'COMISKEY'; bytes after the NUL are stale,
@@ -176,13 +176,37 @@ Old-format MAJ = 58789 B; UTIL 4000:74ad upgrades 0xE625 to 0xE97B.
   (written by the in-game Escape menu > Save Game, plus the play log below); the save list caption ("EXHIBITION: BAL VS CAL (0 - 1) 2ND INNING, NO OUTS") is not in the file.
 - 0..4821: all zero at game start. In a saved game bytes at 0,80,260,305,480.. etc. become 1 (per play log, not decoded).
 - 4822..~6650: 3 byte records at stride 6, FF FF FF at start (log slots, not decoded).
-- ~6750..7150: lineup and defense tables for both teams (batting order indexes 0..39 per side, FF padded; position codes with 9 = DH appear when DH is on). Not fully decoded.
-- 7143: night game flag (0 day, 1 night). Proven by single-factor runs.
+- Lineup, defense and pitching block 6763..7142 and ground rules: fully decoded in session 4, see the "GAME.TMP session 4" block below (the earlier lines
+  that said the Ground Rules switches are not in the file were wrong, they were read from runs whose switch states persisted from the previous run).
+- 7143: night game flag (0 day, 1 night) = buffer +0x1be7. Proven by single-factor runs.
 - 7169: three NUL-less names: HOME team file stem (8, e.g. "clasale1" = CLASALE1.V20), VISITOR stem (8), set directory ("classic", NUL ended). Proved with
   two team pairs (California visitor vs Baltimore home gives clasale1 first, so the first stem is the HOME team).
 - 7402..7416: per-game random bytes (differ between identical setups): probably weather, wind and temperature (7413 values 0..20, 7415/7416 vary widely).
 - 7419: stadium index byte (0x25 grass at Baltimore, 0x26 TURF at Texas), 7420..7427: stadium stem (8 B, stale bytes after the NUL, e.g. "TURF\0CFG").
-- 7428..7445: 7428 and 7429..7431 vary with the setup, 7432..7445 were constant in every run (01 01 01 03 01 f9 f2 04 02 02 00 00 68 c0).
-- NOT stored in the file (single-factor runs with only that Ground Rules switch changed, differences were only the random bytes above): designated hitter,
-  errors, injuries, computer pipes ball, use stats. Night game is the only General switch that changes a byte. These switches live elsewhere in BB memory.
-- Open: full decode of the lineup/defense block and of the play log (needs a saved game mid-inning with known events).
+- 7428..7445: Ground Rules, see below.
+
+
+## GAME.TMP session 4 (Lane B, 2026-10-06): lineups, ground rules (decoder: tools/lane_b/gt_decode.py, verified on 14 captured runs)
+Buffer = BB far pointer DS:aa2a (read by BB 6000:c4da), MAIN writes it from DS:9b7c (4000:d07d). All offsets are file offsets = buffer offsets.
+Side 0 = VISITOR, side 1 = HOME everywhere in this block (the stems at 7169 are home first). Player ids are V20 record numbers 0..39 (0..15 pitchers).
+- 6763 lineup 2 x 9 (visitor, home): batting order player ids. With the DH the 9 batters, without the DH 8 batters then the starting pitcher's id.
+  The list is the V20 header lineup set for (DH on/off, opposing starter's hand: throws R -> "vs RHP" set), see Team.lineup(dh, vs_rhp). Proved for DH on and off.
+- 6781 defense 2 x 9: position code per lineup slot (0 P, 1 C .. 8 RF, 9 DH), same lists as Team.defense(dh, vs_rhp).
+- 6799 batters not in the lineup, 2 x 22 B (15 or 16 ids then 0xff pad): active bench first, then the reserve batters, as in the header bench + reserves.
+- 6843 starters 2 x 5 (visitor then home, V20 staff[0..4]); 6853 pitchers 2 x 21: relievers 5 (staff[5..9]) then 6 reserve pitchers, 0xff pad to 21.
+- 6895 in-game flag 2 x 40 (indexed by player id: 1 = in the lineup or the starting pitcher). 6975 batting slot 2 x 40: 16 + slot (0..8) for batters, 25 for the
+  pitcher. 7055 defense position code 2 x 40 per player id (0 = not in the field list). 7139/7140: current pitcher id of visitor/home (starter at game start).
+- 7143 night flag (buffer +0x1be7). 7193 DH flag (+0x1c19), same byte BACK keeps at game record +0x1c19.
+- Ground Rules, GROUND RULES dialog in BB (control ids 2..0x37, query function BB 7000:24b0 reads these bytes): 7428 computer pipes ball (+0x1d04),
+  7429 errors (+0x1d05), 7430 injuries (+0x1d06), 7431 use stats (+0x1d07), all 1 = YES. 7432 one pitch mode, 7433 auto replays, 7434 sound effects,
+  7435 bit0 voice and bit1 crowd (03 = both), 7436 music, 7437 quick off the field, 7438 scrolling (any nonzero = yes; shipped values f9/f2).
+  7439 animation speed (4 = very fast). 7440 control of the right-hand panel team (visitor), 7441 left-hand panel team (home): 0 PLAY, 1 MANAGE ONLY, 2 COMPUTER.
+  7442 / 7443 input device of visitor / home (0 keyboard, 1 joystick 1, 2 joystick 2, 3 mouse). 7444 constant 0x68. 7445 low 3 bits: AUTO fielding, throwing, running
+  of the HOME team (bit set = yes; the visitor auto bits are not separately proven). BB 7000:231f copies 7432..7445 and
+  the DH/night/rules bytes into the environment struct at DS:aa1a (+8..+0x1a).
+  Proof: single-factor runs from a known all-YES state flip exactly one byte each (errors 7429, injuries 7430, pipes 7428, stats 7431, DH 7193 plus the DH
+  position 9 in the lineup, night 7143); general rows 7432..7438 all went to 0 together; control/input/auto bytes changed with the panel clicks.
+- Persistence: MAIN stores the Ground Rules in SYSTEM bytes 8..0x19 (+8..+0xb pipes, errors, injuries, stats; +0xc DH; +0xd.. the general rows; +0x14.. control/input/auto)
+  and writes SYSTEM at game start, so the next game starts with the last used rules. Night is not persisted. That is why early single-switch runs looked like "no effect".
+- The play log: bytes 0..4799 are 60 x 80 B? of small counters (the saved game has 01/02 at 0,1,80,81,260,305,...), 4800..4821 and 4822..6762 6-byte entries
+  `ff ff ff 00 00 00` when empty; not decoded (needs a long saved game with a known box score).

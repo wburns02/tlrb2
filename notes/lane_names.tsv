@@ -27,3 +27,18 @@ UTIL	5000:e298	import_player_recompute_ratings	Lane B s3: finds roster slot by i
 UTIL	5000:e477	recompute_po_a_and_all_ratings	Lane B s3: PO1/A1 = table(pos)*G/130 (ds:7a14, 7a28) then writes the six fielding/batting ratings
 MAIN	4000:d07d	write_game_tmp	Lane B3: writes GAME.TMP (7446 B, also the 1.SAV format) before handing off to BB; snap diffs + code read, FORMATS.md
 BB	6000:c4da	read_game_tmp	Lane B3: reads GAME.TMP at BB start; FORMATS.md
+BB	7000:231f	copy_ground_rules_to_env	Lane B4: copies GAME.TMP 0x1d08..0x1d15, 0x1c19 and (mode>=2) 0x1d04..07 into env struct DS:aa1a
+BB	7000:24b0	ground_rules_dialog_query	Lane B4: maps dialog control ids to GAME.TMP rule bytes 1c19,1be7,1d04..1d15; confirmed by diff runs
+UTIL	5000:f382	salary_batter	Lane B4: stores record +0x19 salary; formula matches 1185/1188 shipped batters
+UTIL	5000:f697	salary_pitcher	Lane B4: stores record +0x19 salary; 772/792 shipped pitchers
+UTIL	5000:a5aa	salary_pitcher_return	Lane B4: same pitcher formula, returns value
+UTIL	5000:a719	pitcher_class	Lane B4: starter vs reliever class for salary
+UTIL	5000:f687	salary_pos_jump_table	Lane B4: batter position adjustment targets C f58c 1B f62a 2B f5b0 3B f5cc SS f605 LF f61d CF f5a1 RF f61d
+UTIL	1000:9e5f	era100	Lane B4: ERA*100
+UTIL	1000:9ab9	stat_ab	Lane B4: helper
+UTIL	1000:9ae2	stat_hits	Lane B4: helper
+UTIL	1000:9bea	stat_walks	Lane B4: helper
+UTIL	1000:9c3c	stat_total_bases	Lane B4: helper
+UTIL	1000:9d04	slg_per_mille	Lane B4: helper
+UTIL	1000:9cc5	ba_per_mille	Lane B4: helper
+UTIL	1000:9d43	obp_per_mille	Lane B4: (H+BB)/(AB+BB)

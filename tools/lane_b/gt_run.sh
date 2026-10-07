@@ -24,4 +24,5 @@ $X shot gt_${L}_rules >/dev/null 2>&1
 $X click 435 592; sleep 12
 $X click 512 592; sleep 20
 cp /mnt/nvme/tlrb2/work/c/TONY2/GAME.TMP /mnt/nvme/tlrb2/snaps/gt_$L.tmp
+for f in CONTROL SYSTEM; do cp /mnt/nvme/tlrb2/work/c/TONY2/$f /mnt/nvme/tlrb2/snaps/gt_$L.$f; done
 ls -l --time-style=full-iso /mnt/nvme/tlrb2/snaps/gt_$L.tmp
