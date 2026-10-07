@@ -1,24 +1,27 @@
 ; ---------------------------------------------------------------------------
 ; rookie_fill.bin -- M4 P2 rookie generator + vacancy fill, standalone blob.
 ; Incbin'ed into DYNASTY.EXE (para-aligned), far-called after the rollover
-; pass for one team file. Byte-exact port of team_fill.fill_team +
-; rookies.RookieGen.make in the fill-path configuration (fallback name
-; pools, empty calibration bands => constant stat lines).
+; pass for one team file. Byte-exact port of team_fill.fill_image +
+; rookies.RookieGen.make in the fill-path configuration (our own C4 name
+; pools, constant stat lines, C4 graded rating draws; no game data).
 ;
 ;   in:  DS:SI = team file image (295 B header + 80 records x 143 B)
 ;        FS:BX = pointer to one word: xorshift16 RNG state (persisted)
 ;        AX    = season year byte for record offset 21 (year - 1870)
 ;   out: AX = rookies written; SI, BX, DS, ES, FS, SS preserved.
 ;
-; Record generation consumes exactly 8 draws in this order:
-;   last-name idx (%28), first-name idx (%21), age (%100, weighted),
-;   throws (%100 < 72), switch (%100 < 16), portrait (%30),
-;   exper (%4), consist (%4).
+; Record generation consumes exactly 10 draws in this order (contract C4):
+;   last-name (d%128, d = draw() & 0xff), first-name (d%64),
+;   age (%100, weighted), throws (%100 < 72), switch (%100 < 16),
+;   portrait (%30), exper (%4), consist (%4),
+;   grade (d < 154 / < 230, bonus [0,2,4]),
+;   then one draw per rating in the C1 order (batters 6, pitchers 3):
+;   value = 3 + (d % 5) + bonus, clamped 1..cap (cap = 10 endurance,
+;   12 else), written to the FORMATS.md nibbles.
 ; Constants per position code (pinned against the Python reference):
-;   P (0):     salary 255, IP 200, ratings 134=CC 135=A4 136..139=77 140=07
-;   batters:   salary 109, AB 40 split by bats, 74=11 75=71 76=78,
-;              94 = 11 (codes 1..8) or 77 (codes 9..15)
-; Season copy = roster copy with offsets 23,37..42,49..58,101..102,
+;   P (0):     salary 255, IP 200, pitch4 135 lo = 4, 136..139=77 140=07
+;   batters:   salary 109, AB 40 split by bats, 75 hi = 70, 76 = 78
+; Season copy = roster copy with offsets 23,32..36,37..42,49..58,101..102,
 ; 111..112,121..122,125..126 zeroed (team_fill._SEASON_STAT_OFFSETS).
 ; Build: nasm -f bin -o rookie_fill.bin rookie_fill.asm
 ; ---------------------------------------------------------------------------
@@ -283,7 +286,7 @@ copy_rookie:
         ret
 
 ; make_rookie: cx = position code; builds the 143-byte record at cs:scratch.
-; Consumes the 8 draws. Clobbers AX, DX, SI, DI.
+; Consumes the 10 C4 draws. Clobbers AX, DX, SI, DI, BP.
 make_rookie:
         push si                         ; SI = team image base, sacred
         push cx                         ; position code; popped mid-way below
@@ -303,9 +306,9 @@ make_rookie:
         pop di
         pop es
 
-        ; d0: last name
-        mov cx, 28
-        call randmod                    ; ax = 0..27
+        ; d0: last name (C4: index = d % 128, d = draw() & 0xff)
+        call randbyte                   ; ax = 0..255
+        and ax, 127                     ; d % 128 (128 is a power of two)
         mov dx, ax
         mov si, last_names
         mov ax, dx
@@ -320,14 +323,14 @@ cp_last:
         inc si
         inc di
         loop cp_last
-        ; d1: first name
-        mov cx, 22
-        call randmod
+        ; d1: first name (C4: index = d % 64, d = draw() & 0xff)
+        call randbyte                   ; ax = 0..255
+        and ax, 63                      ; d % 64 (64 is a power of two)
         mov dx, ax
         mov si, first_names
         mov ax, dx
         mov cl, 8
-        mul cl
+        mul cl                          ; ax = idx*8
         add si, ax
         mov di, scratch + 12
         mov cx, 8
@@ -434,19 +437,20 @@ face_done:
 sal_min:
         mov word [cs:scratch+OFF_SALARY], 109
 sal_done:
-        ; stat lines + ratings
+        ; stat-line constants (the WIP blob's fixed values; ratings drawn
+        ; below per C4)
         cmp cx, 0
         jne batter_rec
-        ; pitcher: IP 200, ratings block
+        ; pitcher: IP 200, pitch4 type 4 (135 lo), personality block.
+        ; 135 hi (endurance) and 134 hi/lo are drawn below.
         mov word [cs:scratch+101], 200
-        mov byte [cs:scratch+134], 0xCC
-        mov byte [cs:scratch+135], 0xA4
+        or byte [cs:scratch+135], 0x04
         mov byte [cs:scratch+136], 0x77
         mov byte [cs:scratch+137], 0x77
         mov byte [cs:scratch+138], 0x77
         mov byte [cs:scratch+139], 0x77
         mov byte [cs:scratch+140], 0x07
-        jmp rec_done
+        jmp ratings_c4
 batter_rec:
         ; AB 40 split by bats code
         cmp word [cs:bats_code], 2
@@ -464,15 +468,75 @@ ab_left:
         mov word [cs:scratch+37], 34
         mov word [cs:scratch+39], 6
 ab_set:
-        mov byte [cs:scratch+74], 0x11
-        mov byte [cs:scratch+75], 0x71
-        mov byte [cs:scratch+76], 0x78
-        cmp cx, 8
-        ja of_code
-        mov byte [cs:scratch+94], 0x11
-        jmp rec_done
-of_code:
-        mov byte [cs:scratch+94], 0x77
+        or byte [cs:scratch+75], 0x70   ; streak: letter A (7)
+        mov byte [cs:scratch+76], 0x78  ; day/night 7, clutch 8
+ratings_c4:
+        ; ---- C4: grade draw, then one draw per rating -------------------
+        ; grade: d = draw() & 0xff; 0 if d < 154, 1 if d < 230, else 2;
+        ; bonus = grade * 2
+        call randbyte                   ; ax = d & 0xff
+        xor dx, dx                      ; dx = grade
+        cmp ax, 154
+        jb grade_set
+        mov dx, 1
+        cmp ax, 230
+        jb grade_set
+        mov dx, 2
+grade_set:
+        shl dx, 1                       ; dx = bonus
+        mov bp, dx                      ; bp = bonus (dead in pass 3)
+        ; table + count: pitchers 3 ratings, batters 6 (C1 order); the
+        ; position code is already stored at scratch+OFF_POS
+        mov bx, ratings_batter
+        mov cx, 6
+        cmp byte [cs:scratch+OFF_POS], 0
+        jne c4_next
+        mov bx, ratings_pitcher
+        mov cx, 3
+c4_next:
+        call randbyte                   ; ax = d & 0xff
+        xor ah, ah
+        push bx
+        mov bx, 5
+        xor dx, dx
+        div bx                          ; ax = d/5 (junk), dx = d % 5
+        pop bx
+        mov ax, dx
+        add ax, 3                       ; base
+        add ax, bp                      ; + bonus
+        mov si, [cs:bx+4]               ; cap
+        cmp ax, si
+        jbe c4_cap_ok
+        mov ax, si
+c4_cap_ok:
+        cmp ax, 1
+        jae c4_clamped
+        mov ax, 1
+c4_clamped:
+        mov di, [cs:bx]                 ; di = record byte offset
+        cmp word [cs:bx+2], 0
+        jne c4_hi
+        ; lo nibble: byte = (old & 0xF0) | v
+        mov ah, [cs:scratch+di]
+        and ah, 0xF0
+        or al, ah
+        mov [cs:scratch+di], al
+        jmp c4_adv
+c4_hi:
+        ; hi nibble: byte = (old & 0x0F) | (v << 4)
+        mov ah, [cs:scratch+di]
+        and ah, 0x0F
+        mov dl, al
+        shl dl, 1
+        shl dl, 1
+        shl dl, 1
+        shl dl, 1                       ; dl = v << 4 (cx untouched)
+        or ah, dl
+        mov [cs:scratch+di], ah
+c4_adv:
+        add bx, 6                       ; next entry (off, shift, cap)
+        loop c4_next
+
 rec_done:
         pop si
         ret
@@ -488,6 +552,19 @@ randmod:
         div bp                          ; ax = quot, dx = rem
         mov ax, dx
         pop bp
+        pop bx
+        ret
+
+; randbyte: returns AX = d = xorshift16 draw & 0xff (contract C4 byte draw).
+; Clobbers DX. Preserves BX, SI, DI, BP.
+randbyte:
+        push bx
+        push cx
+        push dx
+        call xorshift16
+        and ax, 0xff
+        pop dx
+        pop cx
         pop bx
         ret
 
@@ -519,25 +596,157 @@ xorshift16:
 ; data (all CS-relative)
 ; ---------------------------------------------------------------------------
 season_zero_list:
-        db 23, 37, 38, 39, 40, 41, 42
+        db 23, 32, 33, 34, 35, 36
+        db 37, 38, 39, 40, 41, 42
         db 49, 50, 51, 52, 53, 54, 55, 56, 57, 58
         db 101, 102, 111, 112, 121, 122, 125, 126
         db 0
 
 last_names:
-        db 'SMITH       JOHNSON     BROWN       DAVIS   '
-        db '    MILLER      WILSON      MOORE       TAYL'
-        db 'OR      ANDERSON    THOMAS      JACKSON     '
-        db 'WHITE       HARRIS      MARTIN      THOMPSON'
-        db '    YOUNG       WALKER      HALL        ALLE'
-        db 'N       KING        WRIGHT      SCOTT       '
-        db 'GREEN       BAKER       ADAMS       NELSON  '
-        db '    HILL        CAMPBELL    '
+        db 65, 68, 65, 77, 83, 32, 32, 32, 32, 32, 32, 32, 65, 76, 76, 69
+        db 78, 32, 32, 32, 32, 32, 32, 32, 65, 78, 68, 69, 82, 83, 79, 78
+        db 32, 32, 32, 32, 66, 65, 75, 69, 82, 32, 32, 32, 32, 32, 32, 32
+        db 66, 65, 82, 78, 69, 83, 32, 32, 32, 32, 32, 32, 66, 69, 76, 76
+        db 32, 32, 32, 32, 32, 32, 32, 32, 66, 69, 78, 78, 69, 84, 84, 32
+        db 32, 32, 32, 32, 66, 82, 79, 79, 75, 83, 32, 32, 32, 32, 32, 32
+        db 66, 82, 79, 87, 78, 32, 32, 32, 32, 32, 32, 32, 66, 85, 84, 76
+        db 69, 82, 32, 32, 32, 32, 32, 32, 67, 65, 77, 80, 66, 69, 76, 76
+        db 32, 32, 32, 32, 67, 65, 82, 84, 69, 82, 32, 32, 32, 32, 32, 32
+        db 67, 76, 65, 82, 75, 32, 32, 32, 32, 32, 32, 32, 67, 79, 76, 69
+        db 32, 32, 32, 32, 32, 32, 32, 32, 67, 79, 79, 75, 32, 32, 32, 32
+        db 32, 32, 32, 32, 67, 79, 79, 80, 69, 82, 32, 32, 32, 32, 32, 32
+        db 67, 79, 88, 32, 32, 32, 32, 32, 32, 32, 32, 32, 67, 82, 65, 87
+        db 70, 79, 82, 68, 32, 32, 32, 32, 67, 82, 79, 83, 83, 32, 32, 32
+        db 32, 32, 32, 32, 68, 65, 86, 73, 83, 32, 32, 32, 32, 32, 32, 32
+        db 68, 73, 65, 90, 32, 32, 32, 32, 32, 32, 32, 32, 69, 68, 87, 65
+        db 82, 68, 83, 32, 32, 32, 32, 32, 69, 86, 65, 78, 83, 32, 32, 32
+        db 32, 32, 32, 32, 70, 73, 83, 72, 69, 82, 32, 32, 32, 32, 32, 32
+        db 70, 76, 79, 82, 69, 83, 32, 32, 32, 32, 32, 32, 70, 79, 83, 84
+        db 69, 82, 32, 32, 32, 32, 32, 32, 70, 79, 88, 32, 32, 32, 32, 32
+        db 32, 32, 32, 32, 71, 82, 65, 89, 32, 32, 32, 32, 32, 32, 32, 32
+        db 71, 82, 69, 69, 78, 32, 32, 32, 32, 32, 32, 32, 72, 65, 76, 76
+        db 32, 32, 32, 32, 32, 32, 32, 32, 72, 65, 82, 82, 73, 83, 32, 32
+        db 32, 32, 32, 32, 72, 65, 82, 84, 32, 32, 32, 32, 32, 32, 32, 32
+        db 72, 65, 89, 69, 83, 32, 32, 32, 32, 32, 32, 32, 72, 73, 76, 76
+        db 32, 32, 32, 32, 32, 32, 32, 32, 72, 79, 87, 65, 82, 68, 32, 32
+        db 32, 32, 32, 32, 72, 85, 71, 72, 69, 83, 32, 32, 32, 32, 32, 32
+        db 74, 65, 67, 75, 83, 79, 78, 32, 32, 32, 32, 32, 74, 65, 77, 69
+        db 83, 32, 32, 32, 32, 32, 32, 32, 74, 69, 78, 75, 73, 78, 83, 32
+        db 32, 32, 32, 32, 74, 79, 72, 78, 83, 79, 78, 32, 32, 32, 32, 32
+        db 74, 79, 78, 69, 83, 32, 32, 32, 32, 32, 32, 32, 75, 69, 76, 76
+        db 89, 32, 32, 32, 32, 32, 32, 32, 75, 73, 78, 71, 32, 32, 32, 32
+        db 32, 32, 32, 32, 76, 69, 69, 32, 32, 32, 32, 32, 32, 32, 32, 32
+        db 76, 69, 87, 73, 83, 32, 32, 32, 32, 32, 32, 32, 76, 79, 78, 71
+        db 32, 32, 32, 32, 32, 32, 32, 32, 77, 65, 82, 83, 72, 32, 32, 32
+        db 32, 32, 32, 32, 77, 65, 82, 84, 73, 78, 32, 32, 32, 32, 32, 32
+        db 77, 65, 83, 79, 78, 32, 32, 32, 32, 32, 32, 32, 77, 65, 89, 32
+        db 32, 32, 32, 32, 32, 32, 32, 32, 77, 73, 76, 76, 69, 82, 32, 32
+        db 32, 32, 32, 32, 77, 73, 84, 67, 72, 69, 76, 76, 32, 32, 32, 32
+        db 77, 79, 79, 82, 69, 32, 32, 32, 32, 32, 32, 32, 77, 79, 82, 82
+        db 73, 83, 32, 32, 32, 32, 32, 32, 77, 89, 69, 82, 83, 32, 32, 32
+        db 32, 32, 32, 32, 78, 69, 76, 83, 79, 78, 32, 32, 32, 32, 32, 32
+        db 80, 65, 82, 75, 69, 82, 32, 32, 32, 32, 32, 32, 80, 65, 84, 69
+        db 76, 32, 32, 32, 32, 32, 32, 32, 80, 69, 82, 82, 89, 32, 32, 32
+        db 32, 32, 32, 32, 80, 69, 84, 69, 82, 83, 79, 78, 32, 32, 32, 32
+        db 80, 72, 73, 76, 76, 73, 80, 83, 32, 32, 32, 32, 80, 79, 87, 69
+        db 76, 76, 32, 32, 32, 32, 32, 32, 80, 82, 73, 67, 69, 32, 32, 32
+        db 32, 32, 32, 32, 82, 69, 69, 68, 32, 32, 32, 32, 32, 32, 32, 32
+        db 82, 73, 67, 72, 65, 82, 68, 83, 79, 78, 32, 32, 82, 73, 76, 69
+        db 89, 32, 32, 32, 32, 32, 32, 32, 82, 73, 86, 69, 82, 65, 32, 32
+        db 32, 32, 32, 32, 82, 79, 66, 69, 82, 84, 83, 32, 32, 32, 32, 32
+        db 82, 79, 66, 73, 78, 83, 79, 78, 32, 32, 32, 32, 82, 79, 83, 83
+        db 32, 32, 32, 32, 32, 32, 32, 32, 82, 85, 83, 83, 69, 76, 76, 32
+        db 32, 32, 32, 32, 83, 65, 78, 67, 72, 69, 90, 32, 32, 32, 32, 32
+        db 83, 67, 79, 84, 84, 32, 32, 32, 32, 32, 32, 32, 83, 72, 65, 87
+        db 32, 32, 32, 32, 32, 32, 32, 32, 83, 73, 77, 77, 79, 78, 83, 32
+        db 32, 32, 32, 32, 83, 77, 73, 84, 72, 32, 32, 32, 32, 32, 32, 32
+        db 83, 80, 69, 78, 67, 69, 82, 32, 32, 32, 32, 32, 83, 84, 69, 86
+        db 69, 78, 83, 32, 32, 32, 32, 32, 83, 84, 69, 87, 65, 82, 84, 32
+        db 32, 32, 32, 32, 83, 84, 79, 78, 69, 32, 32, 32, 32, 32, 32, 32
+        db 83, 85, 76, 76, 73, 86, 65, 78, 32, 32, 32, 32, 84, 65, 89, 76
+        db 79, 82, 32, 32, 32, 32, 32, 32, 84, 72, 79, 77, 65, 83, 32, 32
+        db 32, 32, 32, 32, 84, 72, 79, 77, 80, 83, 79, 78, 32, 32, 32, 32
+        db 84, 79, 82, 82, 69, 83, 32, 32, 32, 32, 32, 32, 84, 85, 82, 78
+        db 69, 82, 32, 32, 32, 32, 32, 32, 87, 65, 82, 68, 32, 32, 32, 32
+        db 32, 32, 32, 32, 87, 65, 84, 83, 79, 78, 32, 32, 32, 32, 32, 32
+        db 87, 69, 66, 66, 32, 32, 32, 32, 32, 32, 32, 32, 87, 69, 76, 76
+        db 83, 32, 32, 32, 32, 32, 32, 32, 87, 69, 83, 84, 32, 32, 32, 32
+        db 32, 32, 32, 32, 87, 72, 73, 84, 69, 32, 32, 32, 32, 32, 32, 32
+        db 87, 73, 76, 67, 79, 88, 32, 32, 32, 32, 32, 32, 87, 73, 76, 76
+        db 73, 65, 77, 83, 32, 32, 32, 32, 87, 73, 76, 83, 79, 78, 32, 32
+        db 32, 32, 32, 32, 87, 79, 79, 68, 32, 32, 32, 32, 32, 32, 32, 32
+        db 87, 82, 73, 71, 72, 84, 32, 32, 32, 32, 32, 32, 89, 79, 85, 78
+        db 71, 32, 32, 32, 32, 32, 32, 32, 65, 82, 78, 79, 76, 68, 32, 32
+        db 32, 32, 32, 32, 66, 69, 67, 75, 32, 32, 32, 32, 32, 32, 32, 32
+        db 66, 85, 82, 75, 69, 32, 32, 32, 32, 32, 32, 32, 67, 72, 65, 77
+        db 66, 69, 82, 83, 32, 32, 32, 32, 67, 72, 65, 78, 68, 76, 69, 82
+        db 32, 32, 32, 32, 67, 85, 82, 84, 73, 83, 32, 32, 32, 32, 32, 32
+        db 68, 73, 88, 79, 78, 32, 32, 32, 32, 32, 32, 32, 68, 85, 78, 67
+        db 65, 78, 32, 32, 32, 32, 32, 32, 69, 76, 76, 73, 83, 32, 32, 32
+        db 32, 32, 32, 32, 69, 82, 73, 67, 75, 83, 79, 78, 32, 32, 32, 32
+        db 70, 82, 69, 69, 77, 65, 78, 32, 32, 32, 32, 32, 71, 65, 82, 67
+        db 73, 65, 32, 32, 32, 32, 32, 32, 71, 73, 66, 83, 79, 78, 32, 32
+        db 32, 32, 32, 32, 71, 79, 82, 68, 79, 78, 32, 32, 32, 32, 32, 32
+        db 71, 82, 65, 78, 84, 32, 32, 32, 32, 32, 32, 32, 72, 65, 78, 83
+        db 69, 78, 32, 32, 32, 32, 32, 32, 72, 69, 78, 82, 89, 32, 32, 32
+        db 32, 32, 32, 32, 72, 79, 68, 71, 69, 83, 32, 32, 32, 32, 32, 32
+        db 72, 79, 76, 77, 69, 83, 32, 32, 32, 32, 32, 32, 72, 79, 80, 75
+        db 73, 78, 83, 32, 32, 32, 32, 32, 72, 85, 78, 84, 69, 82, 32, 32
+        db 32, 32, 32, 32, 74, 79, 72, 78, 83, 84, 79, 78, 32, 32, 32, 32
+        db 76, 65, 77, 66, 69, 82, 84, 32, 32, 32, 32, 32, 76, 65, 82, 83
+        db 79, 78, 32, 32, 32, 32, 32, 32, 76, 76, 79, 89, 68, 32, 32, 32
+        db 32, 32, 32, 32, 76, 89, 78, 67, 72, 32, 32, 32, 32, 32, 32, 32
+        db 77, 65, 76, 79, 78, 69, 32, 32, 32, 32, 32, 32, 77, 67, 67, 65
+        db 76, 76, 32, 32, 32, 32, 32, 32, 77, 67, 82, 69, 69, 32, 32, 32
+        db 32, 32, 32, 32, 79, 83, 66, 79, 82, 78, 32, 32, 32, 32, 32, 32
+
 first_names:
-        db 'JAMES   JOHN    ROBERT  MICHAEL WILLIAM DAVI'
-        db 'D   RICHARD JOSEPH  THOMAS  CHARLES GEORGE  '
-        db 'FRANK   HENRY   EDWARD  HARRY   RALPH   FRED'
-        db '    WALTER  ARTHUR  CARL    SAM     JOE     '
+        db 65, 65, 82, 79, 78, 32, 32, 32, 65, 68, 65, 77, 32, 32, 32, 32
+        db 65, 76, 65, 78, 32, 32, 32, 32, 65, 76, 66, 69, 82, 84, 32, 32
+        db 65, 78, 68, 82, 69, 87, 32, 32, 65, 78, 84, 72, 79, 78, 89, 32
+        db 65, 82, 84, 72, 85, 82, 32, 32, 66, 69, 78, 78, 89, 32, 32, 32
+        db 66, 73, 76, 76, 89, 32, 32, 32, 66, 79, 66, 32, 32, 32, 32, 32
+        db 66, 79, 66, 66, 89, 32, 32, 32, 66, 82, 85, 67, 69, 32, 32, 32
+        db 67, 65, 76, 86, 73, 78, 32, 32, 67, 65, 82, 76, 32, 32, 32, 32
+        db 67, 72, 65, 82, 76, 69, 83, 32, 67, 72, 82, 73, 83, 32, 32, 32
+        db 67, 76, 89, 68, 69, 32, 32, 32, 67, 85, 82, 84, 73, 83, 32, 32
+        db 68, 65, 78, 73, 69, 76, 32, 32, 68, 65, 78, 78, 89, 32, 32, 32
+        db 68, 65, 86, 73, 68, 32, 32, 32, 68, 69, 78, 78, 73, 83, 32, 32
+        db 68, 79, 78, 32, 32, 32, 32, 32, 68, 79, 78, 65, 76, 68, 32, 32
+        db 69, 65, 82, 76, 32, 32, 32, 32, 69, 68, 68, 73, 69, 32, 32, 32
+        db 69, 68, 87, 65, 82, 68, 32, 32, 69, 68, 87, 73, 78, 32, 32, 32
+        db 69, 76, 77, 69, 82, 32, 32, 32, 69, 82, 78, 73, 69, 32, 32, 32
+        db 69, 85, 71, 69, 78, 69, 32, 32, 70, 76, 79, 89, 68, 32, 32, 32
+        db 70, 82, 65, 78, 75, 32, 32, 32, 70, 82, 69, 68, 32, 32, 32, 32
+        db 71, 65, 82, 89, 32, 32, 32, 32, 71, 69, 79, 82, 71, 69, 32, 32
+        db 71, 76, 69, 78, 32, 32, 32, 32, 71, 79, 82, 68, 79, 78, 32, 32
+        db 72, 65, 78, 75, 32, 32, 32, 32, 72, 65, 82, 79, 76, 68, 32, 32
+        db 72, 65, 82, 82, 89, 32, 32, 32, 72, 69, 82, 66, 32, 32, 32, 32
+        db 72, 69, 82, 77, 65, 78, 32, 32, 68, 69, 88, 84, 69, 82, 32, 32
+        db 72, 85, 71, 72, 32, 32, 32, 32, 73, 82, 86, 73, 78, 71, 32, 32
+        db 74, 65, 67, 75, 32, 32, 32, 32, 74, 65, 77, 69, 83, 32, 32, 32
+        db 74, 69, 82, 82, 89, 32, 32, 32, 74, 69, 83, 83, 69, 32, 32, 32
+        db 74, 73, 77, 32, 32, 32, 32, 32, 74, 73, 77, 77, 89, 32, 32, 32
+        db 74, 79, 69, 32, 32, 32, 32, 32, 74, 79, 72, 78, 32, 32, 32, 32
+        db 74, 79, 72, 78, 78, 89, 32, 32, 74, 79, 83, 69, 32, 32, 32, 32
+        db 76, 69, 79, 78, 32, 32, 32, 32, 76, 69, 83, 84, 69, 82, 32, 32
+        db 76, 79, 85, 32, 32, 32, 32, 32, 76, 79, 85, 73, 83, 32, 32, 32
+        db 76, 85, 84, 72, 69, 82, 32, 32, 77, 65, 82, 75, 32, 32, 32, 32
+        db 77, 65, 82, 86, 73, 78, 32, 32, 78, 79, 82, 77, 32, 32, 32, 32
+
+; C4 rating tables: 3 words per entry (record byte offset, nibble shift
+; 0 = lo / 4 = hi, clamp cap), C1 draw order (notes/M4_CONTRACT.md).
+ratings_batter:
+        dw 74, 0, 12                    ; power (74 lo)
+        dw 74, 4, 12                    ; bunt (74 hi)
+        dw 75, 0, 12                    ; hit_run (75 lo)
+        dw 29, 4, 12                    ; speed (29 hi)
+        dw 94, 4, 12                    ; range (94 hi)
+        dw 94, 0, 12                    ; arm (94 lo)
+ratings_pitcher:
+        dw 134, 0, 12                   ; control (134 lo)
+        dw 134, 4, 12                   ; velocity (134 hi)
+        dw 135, 4, 10                   ; endurance (135 hi)
 
 scan_counts:    dw 16 dup(0)
 vac_list:       dw 40 dup(0)
@@ -551,7 +760,6 @@ hand_base:      dw 0
 bats_code:      dw 0
 hand_nib:       dw 0
 ds_save:        dw 0
-image_off:      dw 0
 year_byte:      db 0
 rng_ptr_off:    dw 0
 
