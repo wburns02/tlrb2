@@ -257,8 +257,11 @@ Pipeline (each step over teams in sorted file order unless stated):
    vacant slots of their type with byte 141 += 1 (both halves); the rest retire unsigned. Vacant pool slots are
    the next draft class.
 8. HISTORY bytes 16..17 = start word, 1..2 = end word. ROSTERS.TXT (CRLF, rewritten each run): one line per
-   event in order: `RET <team stem> <name>` (unsigned retirement), `DRAFT`, `REL`, `MKT`, `SIGN <team> <name>
-   <from>`, `TRADE <teamA> <nameX> <teamB> <nameY>`, `POOLRET`, names as "First Last" from the record.
+   event in order: `RET <team stem> <name>` (unsigned retirement), `DRAFT <team> <name>` (team = the file whose
+   C4 vacancy produced the rookie), `REL <team> <name>`, `MKT <team> <name>`, `SIGN <team> <name> <from>`,
+   `TRADE <teamA> <nameX> <teamB> <nameY>`, `POOLRET <name>` (pool cleanup and write-back drops), team stems
+   upper case, names as "First Last" from the record. (Amended 2026-10-07: every line carries its names, so a
+   transactions screen can read the file.)
 
 T table (initial values, tunable):
 - SP_END 6. POOL_YEARS 1. KEEP_P 7, KEEP_B 10. REL_CAP 8. MKT 24. NEED 8. BAND 5. MAX_TRADES 6.
