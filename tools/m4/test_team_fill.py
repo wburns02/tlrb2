@@ -213,11 +213,12 @@ def test_position_priorities_all_pitcher_retirees(tmp_path):
                 "IF fill before P/C targets met"
             )
             assert sim.get(code, 0) < 1
-        elif code == 10:
+        elif 6 <= code <= 8:
             assert sim.get(0, 0) >= 8 and sim.get(1, 0) >= 2 and all(
                 sim.get(c, 0) >= 1 for c in (2, 3, 4, 5)
             ), "OF fill before P/C/IF targets met"
-            assert sim.get(10, 0) < 4
+            of_have = sum(sim.get(c, 0) for c in (6, 7, 8))
+            assert of_have < 4, "OF fill past target"
         else:
             assert code == 9, "unexpected fill code %d" % code
         sim[code] = sim.get(code, 0) + 1
@@ -232,7 +233,7 @@ def test_position_priorities_all_pitcher_retirees(tmp_path):
     assert counts.get(1, 0) >= 2
     for c in (2, 3, 4, 5):
         assert counts.get(c, 0) >= 1
-    assert counts.get(10, 0) >= 4
+    assert sum(counts.get(c, 0) for c in (6, 7, 8)) >= 4 or counts.get(9, 0) > 0
 
 
 def test_determinism_same_seed(tmp_path, three_rolled_teams):
@@ -393,3 +394,24 @@ def test_real_rolled_league_fixture(tmp_path):
         if i in vac_set or (i - 40) in vac_set:
             continue
         assert after.players[i].raw == before.players[i].raw
+
+
+def test_position_codes_shipped_convention(tmp_path, rolled_team):
+    """Filled records carry only codes the shipped data uses (0..8), and an
+    OF-needing fill spreads across LF/CF/RF instead of one generic code.
+    Fails against the old all-code-10 fill."""
+    path, _report = rolled_team
+    out = str(tmp_path / "filled.V20")
+    team_fill.fill_team(path, out, 1994, rollover.Rng(42), _make_rookie_gen(42))
+    rolled, filled = _load(path), _load(out)
+    codes = []
+    for i in _vacancies(rolled):
+        codes.append(filled.players[i].raw[31] & 0x0F)
+    assert codes, "fixture produced no fills"
+    for code in codes:
+        assert 0 <= code <= 9, "code %d outside ladder output (0..9)" % code
+    of_codes = [c for c in codes if 6 <= c <= 8]
+    if len(of_codes) >= 3:
+        assert set(of_codes) == {6, 7, 8}, (
+            ">=3 OF fills should spread LF/CF/RF, got %r" % of_codes
+        )

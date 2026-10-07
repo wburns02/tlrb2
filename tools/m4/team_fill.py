@@ -78,13 +78,17 @@ ROSTER_HALF_BASE = 0    # records 0..39
 SEASON_HALF_BASE = 40   # records 40..79
 RECORD_SIZE = 143
 
-# Primary position codes (byte 31 low nibble).
+# Primary position codes (byte 31 low nibble): 0 P, 1 C, 2..5 IF, 6..8
+# LF/CF/RF, 9 DH. Real shipped records use only 0..8 (zero code-9 players in
+# the 3880 shipped), but 9 is the ladder's designed remainder filler and the
+# game's own tables handle it explicitly (range/arm row 7, editor mapping).
+# Codes 10..15 are never emitted.
 POS_PITCHER = 0
 POS_CATCHER = 1
 POS_INFIELD_MIN = 2
 POS_INFIELD_MAX = 5
 POS_DH = 9
-POS_OUTFIELD = 10
+_OUTFIELD_CODES = (6, 7, 8)
 
 # Priority targets.
 TARGET_PITCHERS = 8
@@ -127,8 +131,17 @@ def _priority_order(counts, num_vacancies):
     take(POS_CATCHER, TARGET_CATCHERS)
     for code in range(POS_INFIELD_MIN, POS_INFIELD_MAX + 1):
         take(code, TARGET_INFIELD_EACH)
-    take(POS_OUTFIELD, TARGET_OUTFIELD)
-    # Any remaining vacancies become DH.
+    # Outfield: LF/CF/RF counted together (shipped OFs always carry 6/7/8,
+    # never a generic code) and filled round-robin below the target.
+    of_have = sum(counts.get(c, 0) for c in _OUTFIELD_CODES)
+    of_i = 0
+    while len(order) < num_vacancies and of_have < TARGET_OUTFIELD:
+        code = _OUTFIELD_CODES[of_i % 3]
+        of_i += 1
+        order.append(code)
+        counts[code] = counts.get(code, 0) + 1
+        of_have += 1
+    # Any remaining vacancies become DH (the ladder's neutral filler).
     while len(order) < num_vacancies:
         order.append(POS_DH)
     return order
