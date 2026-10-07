@@ -23,3 +23,11 @@ BB	DS:d6cc	FILE*	oldport_anm_file	Lane B7 static: OLDPORT.ANM, 528 real-player f
 UTIL	DS:776e	byte[30]	portrait_group_flag_table	Lane B7 static: matched to rec+0x1d&1 when picking a generic face
 UTIL	DS:bfb0	byte[30]	portrait_use_counts	Lane B7 static: least used matching face chosen
 UTIL	DS:9654	byte*	team_player_records_far_ptr	Lane B7 static: record base used by UTIL 5000:ea5e
+MAIN	DS:ab10	byte*	system_file_far_ptr	Lane B8 static: 76 B SYSTEM buffer
+BB	DS:bc1a	byte*	system_file_far_ptr	Lane B8 static
+UTIL	DS:2b74	byte*	system_file_far_ptr	Lane B8 static
+DRAFT	DS:91ac	byte*	system_file_far_ptr	Lane B8 static
+UTIL	DS:95a6	byte[0x299]	font_glyph_table	Lane B8 static: font*0x299 + char*7, 7 B entries [rows][bits][adv][far ptr]
+UTIL	DS:2f10	char[9]	font_name_table	Lane B8 static: main.fnt scbd.fnt bold.fnt scbdthin.fnt at stride 9
+BB	DS:27b4	dword[11]	replay_name_far_ptr_table	Lane B8 static: auto_load_replay_file
+BB	DS:4b73	byte[1289]	stadium_cfg_buffer	Lane B8 static: STADIUMS .CFG image, fence u16[5] at +0x20

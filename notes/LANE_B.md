@@ -1,5 +1,16 @@
 # Lane B (dynamic) status
 
+## Status 2026-10-07 (eighth Lane B session)
+Done (details in FORMATS.md "Lane B8", addresses in lane_names.tsv / lane_types.tsv)
+- SYSTEM (76 B) fully mapped: set dir, ground rules (corrected: +8 DH, +9 pipes, +0xa errors, +0xb injuries, +0xc stats), joystick A/B calibration, 14 Special Box Score flags at 0x37.. (rig CONFIRMED in on-screen order), CD drive index at 0x4b. Written at QUIT.
+- tools/dcl.py (PKWARE DCL explode) and tools/assets.py (PNG renderer): PAL, SCR (63), FNT (5), ANM/OVL (all non-big), OLDPORT (528 portraits, 48x56 raw). BACKGRD.SCR matches a rig screenshot pixel for pixel.
+- STADIUMS: CFG 1289 B (name, type, five fence distances, polylines), SDM = one DCL stream of a 1120 x 444 panorama. Loader BB 2000:1b40.
+- Saved seasons: no such file. SAVE SEASON creates a new league set from the simulated stats (static only).
+Open
+- Big/replay ANM payload (HOMERUN etc.) and INTRO.ANM not decoded. SDM palette source unknown. CFG tables past the fence distances are structure only. DH byte SYSTEM+8 and SAVE SEASON menu path not run on the rig.
+- PAL choice per screen is static (same name else DEFAULT.PAL); ANM palettes are DEFAULT.PAL guesses.
+State: no dosbox-x on work/c; SYSTEM, CONTROL and CLASSIC.MAJ restored from snaps/m3_base after the QUIT rewrote them (diff -rq clean). Assets in /mnt/nvme/tlrb2/assets_png.
+
 ## Status 2026-10-07 (seventh Lane B session)
 Done (details in FORMATS.md "Session 7", addresses in lane_names.tsv / lane_types.tsv)
 - Box score SAVE dynamic: appends (fopen "ab") a 2 B header 0x000e + 7194 B of the game buffer to ALLTIME.BOX; byte-identical to the live buffer, second SAVE appends an identical record. BB 6000:c6c1 CONFIRMED.

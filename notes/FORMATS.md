@@ -156,7 +156,7 @@ Old-format MAJ = 58789 B; UTIL 4000:74ad upgrades 0xE625 to 0xE97B.
   TONY2.BAT loops PLAY then CONTROL, which dispatches on the errorlevel.
 - Season flow: Main "Play League Games" writes MAJ, CONTROL, SYSTEM then BACK simulates in memory. V20s are written at Main > QUIT,
   not during the sim. BB is only used to watch games.
-- SYSTEM (76 B): "CLASSIC\0", then league parameters (0x0a..0x4b), unchanged by sims and by new season. Not decoded further.
+- SYSTEM (76 B): see "SYSTEM file" below (Lane B8).
 - .SCH templates (162_26.SCH, 162_28.SCH, 162_2_26.SCH, 162_2_28.SCH; 57176 B): text name ("162 Games-26 Teams"), then a settings
   block at 0x3e..0x50 (same shape as MAJ 0x20a..0x21c), then the AL schedule rows at +0x50+16*d (byte identical to the MAJ rows after
   new season, 0 mismatches over days 8..243), NL rows at +0x6fd4+16*d (day 0 start). Rest not decoded. Bytes 0x14..0x3d are stale
@@ -168,7 +168,7 @@ Old-format MAJ = 58789 B; UTIL 4000:74ad upgrades 0xE625 to 0xE97B.
 - Start New Season flow (Season menu y319): schedule list (162 Games-26 Teams, 162 Games-28 Teams, 162 Games(2)-26 Teams), games,
   start date, series lengths, required vs current league panels, NEW SEASON (430,592). YES/NO warning, Set DH dialog, injuries question,
   then Play Standard Games. Effects listed under MAJ and V20 above.
-- Still TBD: GAME.TMP internals, SCREENS/*.SCR, *.ANM, *.PAG, *.PAL, *.FNT, saved seasons.
+- Still TBD: GAME.TMP internals (rest), big replay ANM payload. SYSTEM, PAL, SCR, PAG, FNT, ANM/OVL, OLDPORT, STADIUMS and saved seasons are in the Lane B8 sections at the end.
 
 ## GAME.TMP and saved games (Lane B s3, 2026-10-06, rig runs gt_*.tmp in /mnt/nvme/tlrb2/snaps)
 - GAME.TMP is the MAIN to BB hand-off, rewritten on every Play Ball (PLAY BALL on the lineup screen). Size 0x1d16 = 7446 B (the "0x11d16" in the decompile is
@@ -206,7 +206,7 @@ Side 0 = VISITOR, side 1 = HOME everywhere in this block (the stems at 7169 are 
   the DH/night/rules bytes into the environment struct at DS:aa1a (+8..+0x1a).
   Proof: single-factor runs from a known all-YES state flip exactly one byte each (errors 7429, injuries 7430, pipes 7428, stats 7431, DH 7193 plus the DH
   position 9 in the lineup, night 7143); general rows 7432..7438 all went to 0 together; control/input/auto bytes changed with the panel clicks.
-- Persistence: MAIN stores the Ground Rules in SYSTEM bytes 8..0x19 (+8..+0xb pipes, errors, injuries, stats; +0xc DH; +0xd.. the general rows; +0x14.. control/input/auto)
+- Persistence: MAIN stores the Ground Rules in SYSTEM bytes 8..0x19 (+9 pipes, +0xa errors, +0xb injuries, +0xc stats, +8 DH, +0xd.. the general rows, +0x13.. control/input/auto; corrected in Lane B8, see "SYSTEM file")
   and writes SYSTEM at game start, so the next game starts with the last used rules. Night is not persisted. That is why early single-switch runs looked like "no effect".
 - The play log: bytes 0..4799 are 60 x 80 B? of small counters (the saved game has 01/02 at 0,1,80,81,260,305,...), 4800..4821 and 4822..6762 6-byte entries
   `ff ff ff 00 00 00` when empty; not decoded (needs a long saved game with a known box score).
@@ -272,3 +272,47 @@ Result codes (ab4b), observed in 3 more exhibition games (~2170 events, tools/la
 - 0x4f = runner thrown out advancing (class 7 fly, observed twice), 0x52 = lineup change event (class 255 reset state, observed once), 0x08 = sacrifice (class 7, fly, observed once).
 - NOT observed: 0x03..0x07, 0x09, 0x0a (steals, CS, PB, WP, sac variants), 0x0b, 0x50, 0x51, triples. Static meaning only, see session 6 and the notes in BB 6000:8100.
 - ab4a = fielder position in V20 numbering (0 P, 1 C, 2 1B, 3 2B, 4 3B, 5 SS, 6 LF, 7 CF, 8 RF); ab49 = ball x < 0x10 flag; ab3b = fly flag; DS:3298 = error on this play; DS:35eb = outs on this play.
+
+
+## Lane B8: SYSTEM, assets, stadiums (2026-10-07)
+Code: tools/dcl.py (PKWARE DCL explode, pure Python), tools/assets.py (PNG renderer, output /mnt/nvme/tlrb2/assets_png). Addresses in lane_names.tsv / lane_types.tsv.
+
+### SYSTEM file (76 B, all programs keep a far pointer to a farmalloc'ed copy)
+Pointers: MAIN DS:ab10 (loader 5000:40fb, saver 5000:4163), BB DS:bc1a (loader 6000:c28d, saver 6000:c2f5), UTIL DS:2b74, DRAFT DS:91ac. Written at game start and at MAIN QUIT (rig: toggling two Special Box Score flags changed SYSTEM only after QUIT; QUIT also rewrote CONTROL and the MAJ).
+- 0..7 set directory name ("CLASSIC\0"), builds the TEAMS path. UTIL changes it in the league select screen.
+- 0x08 DH, 0x09 pipes, 0x0a errors, 0x0b injuries, 0x0c use stats (+k = GAME.TMP byte 7420+k for k 0x09..0x0c; DH = GAME.TMP 7193, DH byte statically derived only). Copied back only when buf[0x1bf4] >= 2 (exhibition); the pristine bytes 8..0xc are stale. Snapshots gt_Ap/Ae/Ai/As confirm bytes 9, 0xa, 0xb, 0xc.
+- 0x0d one pitch, 0x0e auto replays, 0x0f sound effects, 0x10 voice/crowd bits, 0x11 quick off the field, 0x12 scrolling, 0x1a music; 0x13 animation speed, 0x14 visitor control, 0x15 home control, 0x16 visitor input, 0x17 home input, 0x18 visitor auto bits, 0x19 home auto bits. Mapping: MAIN 4000:e968 (SYSTEM to buffer), 4000:eae4 (buffer to SYSTEM).
+- 0x1b mouse present (1 after init), 0x1c / 0x1d joystick A / B present (MAIN 1000:6250).
+- 0x1e..0x29 joystick A, u16 x 6: X, Y, X>>1, X+(X>>1), Y>>1, Y+(Y>>1) (calibration, BB 2000:16f3). 0x2a..0x35 joystick B, same layout.
+- 0x36 team index for "ALL BOX SCORES (ONE TEAM)", 0xff = none (MAIN 6000:0d77 case 0x1d).
+- 0x37..0x44 Special Box Score yes/no flags, one byte each, 1 = YES. Index order is the on-screen order: batter column (cycle, 5+ hits, 3+ HR, 4+ steals, 5+ runs, pinch grand slam), pitcher column (no hitter or perfect game, 1 hitter, 14+ strikeouts, extra-inning shutout), then 15+ inning game, either team 20+ runs, all boxscores of one team, all boxscores. CONFIRMED on the rig: YES on "3+ HOMERUNS" set byte 0x39, YES on "EXTRA-INNING SHUTOUT" set byte 0x40. BB 6000:3f4f checks them post game.
+- 0x45..0x4a unused, 0x4b CD drive letter index (3 = D), used by auto_prepend_drive_path (MAIN 5000:4348, UTIL, DRAFT, BB).
+
+### PAL (768 B)
+256 x (R,G,B), 6-bit VGA DAC values (0..63). Writer UTIL 1000:0919 (out 3c8/3c9), loader UTIL 1000:9608 (fread 0x300). A screen uses the same-named .PAL when present, else DEFAULT.PAL (UTIL 1000:91a6 picks NEWLGU, EDITNAME, DEFAULT, DOWNLOAD for a few ids). OLDPORT portraits look right under DEFAULT.PAL (grayscale). Rendered BACKGRD.SCR with DEFAULT.PAL matches a rig screenshot of the main menu pixel for pixel (100% of the compared region).
+
+### DCL (PKWARE Data Compression Library "implode")
+Stream starts `00 06` (binary literals, 4096 dictionary). tools/dcl.py explode(data, start) returns (bytes, end offset). All 63 SCR, all small ANM/OVL and all 41 SDM decode and consume their stream exactly. The game's explode runs with a write callback that blits to VGA or fills an EMS area (BB 2000:df04 farmallocs a 0x311e work buffer).
+
+### SCREENS/*.SCR
+u16 count (1), then a 12 B header of 6 u16 (transparent colour in the high byte of the first word, height, width, y offset, x offset, compressed length = file size - 14), then the DCL stream. Explodes to height*width bytes (320 x 200 palette indices, 64000). Loader UTIL 1000:bdf1 (screens\<name>, drive-prefixed fallback). 63 files.
+
+### *.PAG
+Plain text, CRLF lines, TAB separated cells: the position and label layout pages for lineup, defense and the editors (DEFENSE, LINEUP, EDITFLD, EDITPIT, EDITPLAY, EDITPLYB). Read through load_page_file_by_id (MANAGE, MAIN, DRAFT, UTIL, BB).
+
+### *.FNT (BOLD, LARGE, MAIN, SCBD, SCBDTHIN)
+u16 glyph count (95 = chars 0x20..0x7e), then per glyph [rows][width bits][advance] followed by rows x ceil(width/8) bitmap bytes, MSB first. All five files parse to exactly their size. LARGE is upper case only (lower case glyphs are empty). In memory (UTIL 1000:87cd) entries are 7 B [rows][width bits][advance][far ptr] at DS:95a6 + font*0x299 + char*7; font names at DS:2f10. Glyph sheets: assets_png/fnt_*.png.
+
+### ANMS/*.ANM, *.OVL (normal format)
+u16 frame count, then per frame 12 B header (flags word with transparent colour in the high byte, height, width, y offset, x offset, compressed length) and a DCL stream of height*width bytes. OVL is the same format (stadium art, 320x145 overlays, 174x73 and others). All 262 non-big files render (assets_png/anm_*.png; palette DEFAULT.PAL is a guess for colours). Loaders UTIL 1000:c1ed (multi-frame), 1000:bfec (first frame), BB 2000:d922, 2000:d5db.
+- Big/replay ANM (1BOUT, 2BOUT, 2BSAFE, 2BSTEAL, 3BDIVE, 3BDIVE2, 3BSAFE, DBLPLAY, DBLPLAY2, DIVE, DIVE2, DIVE2L, HOMEOUT, HOMERUN, HOMESAFE, JUMP, JUMP2, LEAP, MOON, FLAG, root INTRO.ANM and BOLT13.ANM): 768 B palette, u16 count, 14 B header (flags, h, w, 0, 0, 0, u16 size), then a u16 table and payload. HOMERUN: 18 frames, 232 x 138, first frame size 34320. The payload encoding is NOT decoded (DCL fails at every offset). Candidate decoder: BB 6000:962a auto_load_replay_file.
+- ANMS.LST: 100 x (u32 offset, u32 size); ANMS.ALL is the concatenation of those small ANMs (181405 B, sum of sizes equal). Not otherwise verified.
+- OLDPORT.ANM (1425600 B): no count word; 528 x (12 B header + raw 48 x 56 pixels), header clen 0 = uncompressed, transparent 0x18. Index = player portrait u16@27 minus 981. Renders under DEFAULT.PAL (assets_png/port_OLDPORT_first64.png). PORTRAIT.ANM (generic faces) renders as a normal ANM.
+
+### STADIUMS/<stem>.CFG (1289 B, 41 files) and .SDM
+BB loader 2000:1b40 (called from 6000:15a0): stadium stem is 8 chars at GAME.TMP+0x1cfc; opens stadiums\<stem>.cfg, fread 0x509 B x 1 into a fixed DS buffer (BB DS:4b73), then the .sdm.
+- CFG: 0x00..0x1e stadium name (NUL padded), 0x1f type byte (0, 1 or 2), 0x20 u16[5] fence distances in feet LF, LCF, CF, RCF, RF (FENWAY 315, 379, 389, 383, 302; ASTRODOME 330, 380, 400, 380, 330), 0x2a.. small header and byte triples up to 0x32f, 0x330.. u16 pairs (x, y) polylines, a zero gap 0x390..0x46f, u16 tables at 0x470..0x500, and at 0x501 two (u16, u16) points indexed by buf[0x1cf3]*4 (BB reads them as screen positions); 0x508 = 0xff. Only the name, the type byte and the five distances are confirmed to differ per stadium; the rest is structure by inspection, semantics unproven.
+- SDM: the whole file is one DCL stream. Explodes to 497280 B (1120 x 444, row stride 0x460 as used by the EMS writer BB 2000:dfba) or 501779 B (bigger stadiums). It is the pre-rendered 8-bit stadium panorama (FENWAY.SDM shows the park from behind home plate). Its palette is not in the CFG (a CFG offset 0x2e palette test failed) and is loaded elsewhere at runtime; colours in assets are not verified.
+
+### Saved seasons
+There is no season save file. LOAD SAVED GAME is the in-game mid-game save (1.SAV..10.SAV, see GAME.TMP above). MAIN has "SAVE SEASON": it saves the simulated stats as a NEW LEAGUE (requires the regular season over and at least 81 games, and enough disk: 0xe97b (MAJ size 59771) + 0x2dd7 (V20 size 11735) per team, MAIN 6000:021b) i.e. a new TEAMS/<set> directory of V20s and a MAJ in the existing formats. Static only, the menu path was not run.

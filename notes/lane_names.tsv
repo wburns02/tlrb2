@@ -73,3 +73,28 @@ BB	2000:3744	auto_pick_weighted_play_class	Lane B7 static: first of 7 cumulative
 BB	2000:3124	auto_compute_player_game_ratings	Lane B7 static: builds the 7 cumulative class ratings from batter/pitcher fields
 BB	1000:e059	attempt_advance_runner	Lane B7 static: writes ab4b=0x4f when runner thrown out advancing (0x4f seen dynamically)
 BB	6000:75fb	auto_run_at_bat_play_loop	Lane B7 static: resets ab4b=0xff at the start of each play
+UTIL	1000:bdf1	auto_load_screens_file	Lane B8 static: fopen screens\\<name>, fread 2+12 B hdr, DCL explode callback to VGA
+UTIL	1000:bfec	auto_load_anms_animation_file	Lane B8 static: first frame of an ANM
+UTIL	1000:c1ed	auto_load_anim_files	Lane B8 static: multi-frame ANM loader (12 B hdr per frame)
+UTIL	1000:9608	auto_load_pal_file	Lane B8 static: fread 0x300 palette into global
+UTIL	1000:0919	auto_vga_write_palette_block	Lane B8 static: out 3c8/3c9, 3 bytes per entry
+UTIL	1000:91a6	auto_activate_screen_by_id	Lane B8 static: picks .PAL per screen id
+UTIL	1000:87cd	auto_make_font_glyph_sprite	Lane B8 static: FNT glyph rows to sprite, table DS:95a6
+UTIL	1000:bf46	auto_font_draw_string_advance_cursor	Lane B8 static: font draw callback
+MAIN	5000:40fb	load_system_file	Lane B8 static: farmalloc 0x4c, fread 76 SYSTEM
+MAIN	5000:4163	save_system_file	Lane B8 rig: SYSTEM rewritten at QUIT with flags 0x39 and 0x40 set
+MAIN	1000:6250	auto_joystick_calibrate_read	Lane B8 static: fills SYSTEM+0x1c..0x35
+MAIN	5000:4348	auto_prepend_drive_path	Lane B8 static: X:\\ from SYSTEM+0x4b
+MAIN	4000:e968	settings_to_game_buffer	Lane B8 static: SYSTEM k to GAME.TMP 7420+k
+MAIN	4000:eae4	game_buffer_to_settings	Lane B8 static: reverse copy
+BB	6000:c28d	load_system_file	Lane B8 static
+BB	6000:c2f5	save_system_file	Lane B8 static
+BB	2000:16f3	joystick_calibrate_stick_axes	Lane B8 static: stores into SYSTEM 0x1e or 0x2a
+BB	2000:d922	auto_load_animation_file	Lane B8 static: multi-frame ANM with pool alloc
+BB	2000:d5db	auto_load_anms_animation_file	Lane B8 static
+BB	6000:962a	auto_load_replay_file	Lane B8 static: reads big ANM palette; payload decoder unresolved
+BB	2000:1b40	load_stadium_cfg_and_sdm	Lane B8 static: cfg fread 0x509 into DS:4b73 then sdm via 2000:df04
+BB	2000:df04	auto_load_game_data_file	Lane B8 static: fopen, farmalloc 0x311e, DCL explode thunk (PAL/SCR/SDM)
+BB	2000:dfba	auto_ems_save_records_block	Lane B8 static: 200 rows x 0x140 B, stride 0x460
+BB	6000:3f4f	check_special_box_score_flags	Lane B8 static: reads SYSTEM+0x37..0x44 post game
+MAIN	6000:021b	auto_check_disk_space_for_save	Lane B8 static: 0xe97b + 0x2dd7 * teams (SAVE SEASON as new league)
