@@ -46,8 +46,9 @@ Season table at offset 32: 64 entries x 128 B (8192 B). Entry for season n (1-ba
 - 0 u16 season_no; 2 u8 champion id; 3 u8 runner-up id (league-global ids, 0xff = unknown)
 - 4 8 B champion team stem, 12 8 B runner-up stem (latin-1, NUL padded)
 - 20 u8 al_pennant id, 21 u8 nl_pennant id, 22..23 zero
-- 24 28 x (u8 W, u8 L) indexed by league-global id 0..27 (NL = slot + 16); unused ids 0,0
-- 80..127 zero (reserved for awards, P4)
+- 24 32 x (u8 W, u8 L) indexed by league-global id 0..31 (NL = slot + 16); unused ids 0,0
+  (amended 2026-10-07: CLASSIC NL uses slots 8..13 = ids 24..29, so 28 entries were too few)
+- 88..127 zero (reserved for awards, P4)
 Champion decode (one sample, season2_end: "PHILADELPHIA over CLE 4-2"): AL block S=0x21d, NL block S=0x758c;
 WS winner = byte at AL S+0x3da; al_pennant = AL S+0x3d9; nl_pennant = NL S+0x3d9; runner-up = the pennant winner
 that is not the WS winner. 0xff anywhere means unknown.
@@ -77,13 +78,17 @@ run BEFORE the P1 rollover mutates anything, then `history.mark_retired(...)` af
 3. per player: find or append the entry, add season stats, set status 1, ages, seasons, pos; season WAR10 per C3;
    career WAR10 += season; update top-7 and JAWS10.
 4. after rollover: retirees get status 2, then the HoF test (C3). status 3 + HoF season if it passes.
+   (amended 2026-10-07) The rollover zeroes a retiree's name byte 0, so the retiree identity (name bytes, birth)
+   is read from the PRE-rollover league (the same records step 3 read), birth = 1000 + season_no - pre-roll age.
+   HoF season = season_no, the season just completed. version byte 3 is written as 1 by every record_season.
 
 ## C3. WAR and Hall of Fame (integer, per season, the season half stats)
 
 Batters (pos1 != 0). ab, h, d(2B), t(3B), hr, bb summed L+R; sb, cs, runs; g = season games; s1 = h - d - t - hr; pa = ab + bb.
 - lw100 = 47*s1 + 78*d + 109*t + 140*hr + 33*bb + 20*sb - 41*cs - 27*(ab - h)
 - league: L_lw = sum lw100, L_pa = sum pa, L_runs = sum runs, over batters with pa > 0
-- bat100 = lw100 - (L_lw * pa) / L_pa
+- bat100 = lw100 - (L_lw * pa) / L_pa   (amended 2026-10-07: batters with pa == 0 are NOT zeroed, they still get
+  lw100 (sb/cs), posadj100 and fld100; if L_pa == 0 the L_lw term and park100 are 0)
 - park: pf1000 per team = 1000 * ((home_rs + home_ra) * away_g) / ((away_rs + away_ra) * home_g) from the MAJ
   per-game runs cells of played games (both halves of doubleheaders), clamp 900..1100; 1000 if any term is 0 or the
   team cannot be mapped. park100 = ((((pf1000 - 1000) * L_runs) / 20) * pa) / L_pa  (each division rounds toward
