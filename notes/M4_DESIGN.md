@@ -148,3 +148,22 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
 3. Retirement/progression constants (the curves above are first-pass; you may want era-appropriate values for a
    19th-century league).
 4. HoF thresholds and whether awards matter to you or champion + leaders are enough.
+
+## Answers (Will, 2026-10-07)
+
+- Q2: season leaders and career leaders are two separate screens. The stock STATISTICAL LEADERS screen keeps its
+  stock meaning; CAREER LEADERS is its own DYNASTY screen fed from HISTORY.DAT. Consequence: the P1 merge that
+  saturating-adds 40..79 into 0..39 repurposes half 0 and has to be reworked so career totals live in HISTORY.DAT
+  (u32) and half 0 keeps stock semantics. Rework P1 and re-gate it before P3.
+- Q3: realistic, but older players get a better chance to keep playing well. No 42-year-old Babe Ruth hitting like
+  he is 27, but a star at 35-37 should still be a useful regular. Direction: push the progression plateau later
+  (k ~ 0 through ~31 instead of 28), make the decline gentler (reach -0.3 around 38+, not 35+), scale decline and
+  retirement odds by quality (elite players decline slower and retire later), and lower the age 36+ retirement
+  probability. Validate the curves against real aging data (Lahman) before locking constants.
+- Q4: Hall of Fame uses general classic thresholds (3000 H, 500 HR, 300 W, 3000 K, .300 over a long career, etc.)
+  plus modern value stats: a WAR-style number (and a JAWS-style peak + career blend). Will specifically wants the
+  case of a player whose WAR was huge but whose counting stats only looked very good (Lou Whitaker / Bobby Grich
+  type) to get in. The game does not track everything real WAR needs (defensive value, park/league context), so
+  in-game WAR is an approximation built from what the V20 holds: batting runs from the stat line, a positional
+  adjustment, a fielding term from fielding ratings and errors, pitching runs from ER/IP vs league. Document the
+  formula on the HALL OF FAME screen spec. Awards: TBD.

@@ -2,6 +2,10 @@
 
 Goal: decode the game completely and mod it from inside the game (no companion apps). Set up 2026-10-06.
 
+Unofficial fan research project, not affiliated with the game's publishers or rights holders. This repo contains
+only original notes, tools and patches; no game files, data or assets are included. You need your own copy of
+Tony La Russa Baseball II (v1.3 CD) to use any of it.
+
 ## Layout
 
 | Path | What |
