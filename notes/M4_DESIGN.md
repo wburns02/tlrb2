@@ -113,8 +113,19 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
   byte-exact against tools/m4/rollover.py (all 28 V20 files + rng word 17254), second run is a no-op, and the stock
   Start New Season then runs cleanly on the rolled league (day 0xf3 -> 7, season half zeroed, career half kept except
   the 10 injured DU byte-24 resets). Gate pinned by tools/m4/test_blob_realdata.py (1120 player pairs in unicorn).
-- Season-2 playability sim (thru regular season, All-Star on, injuries on) launched from the live menu on the rolled
-  league.
+- Season-2 playability CLOSED (2026-10-07): the rolled league played a full season in the rig with All-Star and
+  injuries on. All-Star game ran (AL 3, NL 1, July 16, correct rosters), regular season completed (OCT 6,
+  Chicago A 120-42), playoffs and World Series completed (PHILADELPHIA over CLE 4-2), QUIT flushed the MAJ day
+  byte to 0xf3. No crashes at any break point. Snapshot: snaps/season2_end/.
+- Season-3 rollover gate GREEN (2026-10-07): the real played season-2 league rolled by DYNASTY.EXE is byte-exact
+  against tools/m4/rollover.py on all 28 V20s (work/season3_gate/, ref roll = 16 real retirements; retirement is
+  rng-driven, so byte agreement through every draw proves the 16-bit xorshift matched the Python Rng the whole
+  way). Second DYNASTY run is a no-op (flag 1, zero writes).
+- P2 Python reference layer DONE and gated (16/16 tests): tools/m4/rookies.py (rookie-class generator: name pool
+  harvested from real records, portrait 0..29, age 18..23, salary = ratings.salary clamped 109..9999, all rating
+  nibbles 1..15) and tools/m4/team_fill.py (post-rollover fill: priority ladder P>=8, C>=2, IF>=1 each, OF>=4,
+  rest DH; refuses half-vacant slots; zeroing limited to PROVEN season-stat offsets, bytes 59..70 are live
+  per-half nibbles and are NOT zeroed).
 
 ## Phasing (each phase gated by rig verification before the next)
 
