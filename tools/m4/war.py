@@ -41,10 +41,11 @@ def player_bat_inputs(rec):
     return ab, h, d, t, hr, bb, sb, cs, runs
 
 
-def batter_war10(season, roster, games, lg):
-    """C3 batter WAR10. lg = dict with keys L_lw, L_pa, L_runs, pf1000.
-    pa == 0 batters: war10 = (lw100 + posadj100 + fld100) / 100 (bat100 = lw100,
-    repl100 = 0, park100 = 0). If L_pa == 0 the subtraction terms are 0 (no division)."""
+def batter_bat100(season, lg):
+    """C3 bat100 (batting runs x100 after the park term). lg = dict with keys L_lw,
+    L_pa, L_runs, pf1000. pa == 0 batters: bat100 = lw100 (park100 = 0, the C3
+    amendment: batters with pa == 0 still get lw100). If L_pa == 0 the subtraction
+    terms are 0 (no division)."""
     ab, h, d, t, hr, bb, sb, cs, runs = player_bat_inputs(season)
     s1 = h - d - t - hr
     pa = ab + bb
@@ -54,9 +55,17 @@ def batter_war10(season, roster, games, lg):
         pf1000 = lg.get('pf1000', 1000)
         park100 = idiv(idiv((pf1000 - 1000) * lg['L_runs'], 20) * pa, lg['L_pa'])
         bat100 -= park100
-        repl100 = idiv(2000 * pa, 600)
     else:
-        bat100, repl100 = lw100, 0
+        bat100 = lw100
+    return bat100
+
+
+def batter_war10(season, roster, games, lg):
+    """C3 batter WAR10 from batter_bat100 plus replacement, position and fielding."""
+    bat100 = batter_bat100(season, lg)
+    ab, h, d, t, hr, bb, sb, cs, runs = player_bat_inputs(season)
+    pa = ab + bb
+    repl100 = idiv(2000 * pa, 600) if pa > 0 and lg['L_pa'] > 0 else 0
     pos1 = _get(roster, *F['pos1']) & 15
     posadj100 = idiv(POS100.get(pos1, 0) * games, 162)
     fld100 = iddiv_fld(roster, games)

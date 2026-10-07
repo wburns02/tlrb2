@@ -14,7 +14,9 @@ Layout, little endian (TEAMS/<LEAGUE>/HISTORY.DAT):
     28 u16 seasons played, 30 u8 pos1, 31 u8 pitcher flag, 32 25xu32 career totals
     (G, AB, H, 2B, 3B, HR, R, RBI, BB, SO, SB, CS, E, W, L, SV, GS, CG, SHO, OUTS, ER,
     PH, PBB, PSO, PHR), 132 s16 career WAR10, 134 7xs16 top-7 sorted desc (-32768
-    unused), 148 s16 JAWS10, 150 u16 HoF season, 152..159 zero
+    unused), 148 s16 JAWS10, 150 u16 HoF season, 152..156 career award counts
+    (MVP, CY, ROY, GG, SS), 157..159 zero
+    (C7: season entry 88..99 = the 6 award winners as u16 player entry indices)
 
 Identity: same entry iff name bytes 0..19 AND birth match.
 Careers count dynasty seasons only (the shipped half-0 lines are NOT imported).
@@ -37,6 +39,23 @@ TOTALS = ['G', 'AB', 'H', '2B', '3B', 'HR', 'R', 'RBI', 'BB', 'SO', 'SB', 'CS', 
           'W', 'L', 'SV', 'GS', 'CG', 'SHO', 'OUTS', 'ER', 'PH', 'PBB', 'PSO', 'PHR']
 STATUS_ACTIVE, STATUS_RETIRED, STATUS_HOF = 1, 2, 3
 EMPTY_TOP = -32768
+NO_AWARD = 0xffff
+# C7 milestone tables (kind -> mark), ascending kinds
+MILESTONE_CAREER = [(1, 'H', 2000), (2, 'H', 3000), (3, 'HR', 300), (4, 'HR', 400),
+                    (5, 'HR', 500), (6, 'HR', 600), (7, 'HR', 700), (8, 'RBI', 1500),
+                    (9, 'RBI', 2000), (10, 'SB', 500), (11, 'W', 200), (12, 'W', 300),
+                    (13, 'PSO', 2000), (14, 'PSO', 3000), (15, 'PSO', 4000),
+                    (16, 'SV', 300), (17, 'SV', 400)]
+# season kinds: (kind, stat key, gate kind, gate value); value = the season stat
+MILESTONE_SEASON = [(32, 'HR', None, None), (33, 'H', None, None), (34, 'SB', None, None),
+                    (35, 'BA', 'pa', 502), (36, 'W', None, None), (37, 'PSO', None, None),
+                    (38, 'ERA100', 'outs486', None), (39, 'SV', None, None)]
+MILESTONE_RECORD = 8        # 8 B records in MILESTON.DAT
+# career-total keys used by the milestone tables, as TOTALS indexes
+MILESTONE_IDX = {'H': 2, 'HR': 5, 'RBI': 7, 'SB': 10, 'W': 13, 'SV': 15, 'PSO': 23}
+# season-half milestone stats, as collected keys (H/HR/SB = L+R; W/SV/PSO as in C2;
+# the collection step flattens the C2 inputs to these names)
+MS_H, MS_HR, MS_SB, MS_W, MS_SV, MS_PSO = 'ms_H', 'ms_HR', 'ms_SB', 'ms_W', 'ms_SV', 'ms_PSO'
 
 
 def idiv(a, b):
@@ -134,11 +153,12 @@ class History:
         e['top7'] = list(struct.unpack_from('<7h', self.d, o + 134))
         e['JAWS10'] = struct.unpack_from('<h', self.d, o + 148)[0]
         e['hof_season'] = self.d[o + 150] | self.d[o + 151] << 8
+        e['awards'] = list(self.d[o + 152:o + 157])     # MVP, CY, ROY, GG, SS counts
         return e
 
     def write_entry(self, i, e):
         o = self.entry_offset(i)
-        self.d[o:o + 20] = e['name'][:20]
+        self.d[o:o + 20] = e['name'][:20].ljust(20, b'\0')
         self.d[o + 20], self.d[o + 21] = e['birth'] & 255, (e['birth'] >> 8) & 255
         self.d[o + 22] = e['status'] & 255
         self.d[o + 23] = e['age'] & 255
@@ -153,12 +173,18 @@ class History:
         struct.pack_into('<7h', self.d, o + 134, *e['top7'])
         struct.pack_into('<h', self.d, o + 148, e['JAWS10'])
         self.d[o + 150], self.d[o + 151] = e['hof_season'] & 255, (e['hof_season'] >> 8) & 255
-        self.d[o + 152:o + 160] = bytes(8)
+        aw = e.get('awards', None)
+        if aw is None:
+            aw = [0] * 5
+        self.d[o + 152:o + 157] = bytes(v & 255 for v in aw[:5])
+        self.d[o + 157:o + 160] = bytes(3)
 
     def append_entry(self, e):
         i = len(self._entries)
-        self._entries.append(self.entry_offset(i))
-        self.d += bytes(PLAYER_ENTRY)
+        off = self.entry_offset(i)
+        if len(self.d) < off + PLAYER_ENTRY:
+            self.d += bytes(off + PLAYER_ENTRY - len(self.d))
+        self._entries.append(off)
         self.d[6], self.d[7] = i + 1 & 255, (i + 1) >> 8 & 255
         self.write_entry(i, e)
         return i
@@ -184,7 +210,12 @@ class History:
         for t in range(32):
             self.d[o + 24 + 2 * t] = wl[t][0] & 255
             self.d[o + 25 + 2 * t] = wl[t][1] & 255
-        self.d[o + 88:o + 128] = bytes(40)
+        hist_awards = e.get('awards', None)
+        if hist_awards is None:
+            hist_awards = [0] * 6           # absent key: zeros, like files written
+        for k, v in enumerate(hist_awards[:6]):    # before the awards field existed
+            struct.pack_into('<H', self.d, o + 88 + 2 * k, v & 0xffff)
+        self.d[o + 100:o + 128] = bytes(28)
 
     def read_season_entry(self, season_no):
         o = self.season_offset(season_no)
@@ -197,6 +228,7 @@ class History:
         e['al_pennant'] = self.d[o + 20]
         e['nl_pennant'] = self.d[o + 21]
         e['w_l'] = [(self.d[o + 24 + 2 * t], self.d[o + 25 + 2 * t]) for t in range(32)]
+        e['awards'] = [struct.unpack_from('<H', self.d, o + 88 + 2 * k)[0] for k in range(6)]
         return e
 
 
@@ -279,6 +311,9 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
        (i+40) stats and roster-half bio/ratings: league totals for C3.
     3. per player: find or append, add season stats, status 1, ages, seasons, pos;
        season WAR10, career WAR10 += season, top-7 and JAWS10.
+    C7 (after step 3): season awards (6 winners in season bytes 88..99, career award
+    counts in player bytes 152..156) and MILESTON.DAT next to HISTORY.DAT
+    (read, drop season_no >= current, append this season in entry index order).
     retirees = {v20 basename: [record indexes]} from rollover(); applied later
     by mark_retired() (step 4 runs after the P1 rollover)."""
     hist = History.load(hist_path)
@@ -304,10 +339,11 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     teams = mapped_teams(league_dir, m)
     per, lg_totals = war.season_league(teams)
     pf = war.park_factors(mp) if mp else {}
-    # 3. per player
+    # 3. per player; collect the C7 inputs per named record
+    collected = []
+    table_season = season_no <= SEASON_COUNT
     for p, lg_id in teams:
         t = Team.load(p)
-        stem = os.path.basename(p)
         for i in range(40):
             if not t.players[i].active:
                 continue
@@ -326,9 +362,13 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
                      'seasons_played': 0,
                      'pos1': pos1, 'pitcher': 1 if pos1 == 0 else 0,
                      'totals': [0] * 25, 'WAR10': 0, 'top7': [EMPTY_TOP] * 7,
-                     'JAWS10': 0, 'hof_season': 0}
+                     'JAWS10': 0, 'hof_season': 0, 'awards': [0] * 5}
                 idx = hist.append_entry(e)
             e = hist.read_entry(idx)
+            # C7 career totals BEFORE this record's stats are added ('before' is
+            # always the entry as it stands, never rewound: milestone idempotence
+            # comes only from the drop rule on MILESTON.DAT).
+            before = {k: e['totals'][MILESTONE_IDX[k]] for k in MILESTONE_IDX}
             for k, name in enumerate(TOTALS):
                 e['totals'][k] = (e['totals'][k] + totals[name]) & 0xffffffff
             e['status'] = STATUS_ACTIVE
@@ -339,15 +379,74 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
             e['pos1'] = pos1
             e['pitcher'] = 1 if pos1 == 0 else 0
             team_pf = pf.get(lg_id, 1000)
-            if pos1 == 0:
-                w10 = war.pitcher_war10(rec, season_games, lg_totals)
-            else:
-                w10 = war.batter_war10(rec, roster, season_games,
-                                       dict(lg_totals, pf1000=team_pf))
+            w10 = season_war10(rec, roster, season_games, lg_totals, team_pf, pos1)
             e['WAR10'] += w10
             e['top7'] = sorted(e['top7'] + [w10], reverse=True)[:7]
             e['JAWS10'] = war.jaws10(e['WAR10'], e['top7'])
             hist.write_entry(idx, e)
+            exp = _get(roster, *F['exp'])
+            c = {'index': idx, 'league': 'AL' if lg_id < 16 else 'NL', 'pos1': pos1,
+                 'exp': exp, 'games': season_games, 'w10': w10,
+                 'pa': totals['AB'] + totals['BB'],
+                 'outs': totals['OUTS'], 'ab': totals['AB'], 'h': totals['H'],
+                 'er': totals['ER'],
+                 MS_H: totals['H'], MS_HR: totals['HR'],
+                 MS_SB: totals['SB'], MS_W: totals['W'], MS_SV: totals['SV'],
+                 MS_PSO: totals['PSO'],
+                 'range': _get(roster, *F['range']), 'arm': _get(roster, *F['arm']),
+                 'po1': _get(rec, *F['po1']), 'a1': _get(rec, *F['a1']),
+                 'e1': _get(rec, *F['e1'])}
+            bat100 = 0
+            if pos1 != 0:
+                bat100 = war.batter_bat100(rec, dict(lg_totals, pf1000=team_pf))
+            c['bat100'] = bat100
+            collected.append((idx, c, before, {k: e['totals'][MILESTONE_IDX[k]]
+                                               for k in MILESTONE_IDX}))
+    # C7 awards (season table entries 1..64 only) and career award counts (every season)
+    # candidates sorted by player entry index (stable; file/slot order is not
+    # entry index order for returning players), so ties go to the lower index
+    ordered = sorted(collected, key=lambda x: x[0])
+    al = [c for _, c, _, _ in ordered if c['league'] == 'AL']
+    nl = [c for _, c, _, _ in ordered if c['league'] == 'NL']
+    alo = pick_awards(al, lambda x: x['bat100'])
+    nlo = pick_awards(nl, lambda x: x['bat100'])
+    # winner lists in award-count order: MVP, CY, ROY, GG q=1..8, SS q=1..9
+    counts = {}
+    for sel in (alo, nlo):
+        winners = [sel['mvp'], sel['cy'], sel['roy'],
+                   *[sel['gg'].get(q) for q in range(1, 9)],
+                   *[sel['ss'].get(q) for q in range(1, 10)]]
+        for k, w in enumerate(winners):
+            if w is None:
+                continue
+            ckind = k if k < 3 else (3 if k < 11 else 4)    # MVP/CY/ROY | GG | SS
+            counts.setdefault(w['index'], [0] * 5)[ckind] += 1
+    for idx in counts:
+        e = hist.read_entry(idx)
+        aw = e.get('awards')
+        if not isinstance(aw, list):
+            aw = [0] * 5
+        for k in range(5):
+            aw[k] = min(255, aw[k] + counts[idx][k])
+        e['awards'] = aw
+        hist.write_entry(idx, e)
+    if table_season:
+        se = hist.read_season_entry(season_no)
+        se['awards'] = [
+            alo['mvp']['index'] if alo['mvp'] else NO_AWARD,
+            alo['cy']['index'] if alo['cy'] else NO_AWARD,
+            alo['roy']['index'] if alo['roy'] else NO_AWARD,
+            nlo['mvp']['index'] if nlo['mvp'] else NO_AWARD,
+            nlo['cy']['index'] if nlo['cy'] else NO_AWARD,
+            nlo['roy']['index'] if nlo['roy'] else NO_AWARD]
+        hist.write_season_entry(season_no, se)
+    # C7 milestones: drop season_no >= current (idempotent rerun), append this season
+    ms_old = [r for r in milestone_entries(hist_path) if r[0] < season_no]
+    exps = {}
+    for idx, c, before, after in ordered:
+        exps[idx] = {'season': season_no, 'before': before, 'after': after}
+    ms_new = season_milestones([c for _, c, _, _ in ordered], exps)
+    write_milestones(hist_path, ms_old + ms_new)
     hist.done = 1
     hist.flush()
     hist.save(hist_path)
@@ -390,6 +489,136 @@ def hof_passes(e):
                            'AB': e['totals'][1], 'W': e['totals'][13],
                            'PSO': e['totals'][23], 'SV': e['totals'][15],
                            'WAR10': e['WAR10'], 'JAWS10': e['JAWS10']})
+
+
+def season_bat100(rec, lg_totals, team_pf):
+    """C3 bat100 (after the park term) exactly as record_season feeds batter_war10."""
+    return war.batter_bat100(rec, dict(lg_totals, pf1000=team_pf))
+
+
+def season_war10(rec, roster, season_games, lg_totals, team_pf, pos1):
+    if pos1 == 0:
+        return war.pitcher_war10(rec, season_games, lg_totals)
+    return war.batter_war10(rec, roster, season_games, dict(lg_totals, pf1000=team_pf))
+
+
+def max_by_key(cands, key):
+    """max by key(c); ties go to the candidate with the lower entry index
+    (cands are (entry_index, value-ish) tuples in ascending player entry order)."""
+    best = None
+    for c in cands:
+        if best is None or key(c) > key(best):
+            best = c
+    return best
+
+
+def gold_glove_fp1000(po1, a1, e1):
+    """fp1000 = ((po1 + a1) * 1000) / (po1 + a1 + e1), 1000 if the denominator is 0."""
+    den = po1 + a1 + e1
+    if den == 0:
+        return 1000
+    return idiv((po1 + a1) * 1000, den)
+
+
+def pick_awards(recs, bat100_of):
+    """C7 award selection over one league's candidate records. recs = the per-record
+    collect() dicts of one league in player entry index order (ascending). Returns a
+    dict with keys mvp, cy, roy (entry index or None) and gg, ss (entry index per
+    position 1..9, or None). bat100_of(c) = the record's bat100 (only for batters)."""
+    out = {}
+    # MVP: batters with pa >= 502, max season WAR10
+    out['mvp'] = max_by_key([c for c in recs if c['pos1'] != 0 and c['pa'] >= 502],
+                            lambda c: c['w10'])
+    # Cy Young: pitchers with outs >= 486; fallback: any pitcher with outs > 0
+    cy = max_by_key([c for c in recs if c['pos1'] == 0 and c['outs'] >= 486],
+                    lambda c: c['w10'])
+    if cy is None:
+        cy = max_by_key([c for c in recs if c['pos1'] == 0 and c['outs'] > 0],
+                        lambda c: c['w10'])
+    out['cy'] = cy
+    # Rookie of the Year: exp 0 and (pa >= 130 or outs >= 150), max season WAR10
+    out['roy'] = max_by_key([c for c in recs if c['exp'] == 0
+                             and (c['pa'] >= 130 or c['outs'] >= 150)],
+                            lambda c: c['w10'])
+    # Gold Glove, positions 1..8 by roster pos1
+    gg = {}
+    for q in range(1, 9):
+        need = 90 if q == 1 else 100
+        cands = [c for c in recs if c['pos1'] == q and c['games'] >= need]
+        best = max_by_key(cands, lambda c: 2 * c['range'] + c['arm'])
+        if best is None:
+            gg[q] = None
+            continue
+        top = [c for c in cands if 2 * c['range'] + c['arm'] == 2 * best['range'] + best['arm']]
+        best = max_by_key(top, lambda c: gold_glove_fp1000(c['po1'], c['a1'], c['e1']))
+        gg[q] = best
+    out['gg'] = gg
+    # Silver Slugger, positions 1..9 (DH = 9)
+    ss = {}
+    for q in range(1, 10):
+        ss[q] = max_by_key([c for c in recs if c['pos1'] == q and c['pa'] >= 300],
+                           bat100_of)
+    out['ss'] = ss
+    return out
+
+
+def milestone_entries(hist_path):
+    """Read MILESTON.DAT next to a HISTORY.DAT: list of (season, idx, kind, value)
+    records; an empty list when the file is missing."""
+    p = os.path.join(os.path.dirname(hist_path), 'MILESTON.DAT')
+    if not os.path.exists(p):
+        return []
+    raw = open(p, 'rb').read()
+    out = []
+    for o in range(0, len(raw) - MILESTONE_RECORD + 1, MILESTONE_RECORD):
+        season, idx = raw[o] | raw[o + 1] << 8, raw[o + 2] | raw[o + 3] << 8
+        kind, zero = raw[o + 4], raw[o + 5]
+        value = raw[o + 6] | raw[o + 7] << 8
+        out.append((season, idx, kind, value))
+    return out
+
+
+def write_milestones(hist_path, ms):
+    p = os.path.join(os.path.dirname(hist_path), 'MILESTON.DAT')
+    d = bytearray()
+    for season, idx, kind, value in ms:
+        d += struct.pack('<HHBBH', season, idx, kind, 0, min(value, 0xffff))
+    open(p, 'wb').write(bytes(d))
+
+
+def season_milestones(collected, exps_after):
+    """Milestone records for one season. collected = the per-record collect() dicts
+    (entry_index ordered); exps_after = {entry_index: expiry dict} keyed by entry
+    index, each with 'season' and 'before'/'after' career-total dicts. Returns a
+    list of (season, idx, kind, value) appended in player entry index order, kinds
+    ascending per player."""
+    out = []
+    for c in collected:
+        idx = c['index']
+        x = exps_after[idx]
+        s = x['season']
+        for kind, key, mark in MILESTONE_CAREER:
+            before, after = x['before'][key], x['after'][key]
+            if before < mark <= after:
+                out.append((s, idx, kind, min(after, 0xffff)))
+        # season kinds (value = the season stat)
+        if c[MS_HR] >= 50:
+            out.append((s, idx, 32, c[MS_HR]))
+        if c[MS_H] >= 200:
+            out.append((s, idx, 33, c[MS_H]))
+        if c[MS_SB] >= 100:
+            out.append((s, idx, 34, c[MS_SB]))
+        if c['pa'] >= 502 and c['ab'] > 0 and idiv(c['h'] * 1000, c['ab']) >= 400:
+            out.append((s, idx, 35, idiv(c['h'] * 1000, c['ab'])))
+        if c[MS_W] >= 20:
+            out.append((s, idx, 36, c[MS_W]))
+        if c[MS_PSO] >= 300:
+            out.append((s, idx, 37, c[MS_PSO]))
+        if c['outs'] >= 486 and idiv(c['er'] * 2700, c['outs']) < 200:
+            out.append((s, idx, 38, idiv(c['er'] * 2700, c['outs'])))
+        if c[MS_SV] >= 50:
+            out.append((s, idx, 39, c[MS_SV]))
+    return out
 
 
 def dump(hist_path):
