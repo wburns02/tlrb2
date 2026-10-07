@@ -107,6 +107,15 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
 - No in-season progression (stock behavior kept; progression happens at rollover only).
 - No stat field width changes inside .V20 (the 11735 B layout is fixed); saturation + HISTORY.DAT absorb overflow.
 
+## Status (2026-10-07)
+
+- P1 DONE and rig-verified: DYNASTY.EXE (tools/m4/blob/, built by build_dynasty.py) rolls the real m3_end season
+  byte-exact against tools/m4/rollover.py (all 28 V20 files + rng word 17254), second run is a no-op, and the stock
+  Start New Season then runs cleanly on the rolled league (day 0xf3 -> 7, season half zeroed, career half kept except
+  the 10 injured DU byte-24 resets). Gate pinned by tools/m4/test_blob_realdata.py (1120 player pairs in unicorn).
+- Season-2 playability sim (thru regular season, All-Star on, injuries on) launched from the live menu on the rolled
+  league.
+
 ## Phasing (each phase gated by rig verification before the next)
 
 - P0: pick the code home from TBD-B9 numbers; write the patch skeleton with assert-original-bytes + revert.
