@@ -43,7 +43,8 @@ def setup_install(fresh=False):
         if not fresh:
             print(f'{INSTALL_ROOT} exists; use --fresh to overwrite', file=sys.stderr)
             return False
-        # Remove old install
+        # Remove old install (make writable first)
+        subprocess.run(['chmod', '-R', 'u+w', INSTALL_ROOT], check=False)
         for item in os.listdir(INSTALL_ROOT):
             item_path = os.path.join(INSTALL_ROOT, item)
             if os.path.isfile(item_path):
