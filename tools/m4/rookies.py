@@ -216,7 +216,9 @@ class RookieGen:
     def __init__(self, rng, team_paths=None):
         self.rng = rng
         # C4: our own name pools, identical order to the rookie_fill.asm
-        # tables. No game data is loaded: the fill path works offline.
+        # tables (kept there by gen_names.py). No game data is loaded: the
+        # fill path works offline. team_paths is accepted and ignored for
+        # call-site compatibility.
         self.last_pool = list(LAST_TABLE)
         self.first_pool = list(FIRST_TABLE)
 
@@ -231,7 +233,8 @@ class RookieGen:
         return lo + self.rng.draw() % (hi - lo + 1)
 
     def _weighted(self, choices, weights):
-        """Draw from choices by cumulative weight over a 0..(total-1) draw."""
+        """Draw from choices by cumulative weight (weights sum to 100 for
+        the age pool, so the draw chain matches the asm's % 100 + cmps)."""
         total = sum(weights)
         pick = self.rng.draw() % total
         acc = 0

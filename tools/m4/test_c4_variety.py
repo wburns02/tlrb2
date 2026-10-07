@@ -24,7 +24,6 @@ if _TOOLS not in sys.path:
 from m4.rookies import (  # noqa: E402
     RookieGen, Rng, LAST_NAMES, FIRST_NAMES, LAST_TABLE, FIRST_TABLE,
 )
-from m4.rollover import Rng as BaseRng  # noqa: E402
 
 SEASON_YEAR = 50          # the stored byte (year - 1870)
 N_ROOKIES = 300
@@ -34,13 +33,12 @@ CODES = [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
 # The assembled table in the bin must equal the Python tables; find them by
 # searching the bin for LAST_TABLE.
-_HERE = os.path.dirname(os.path.abspath(__file__))
 _BIN = os.path.join(_HERE, "blob", "rookie_fill.bin")
 
 _NAME_PAT = re.compile(r"^[A-Z][a-z]*([A-Z][a-z]+)?$")
 
 
-class _DrawRecorder(BaseRng):
+class _DrawRecorder(Rng):
     """Rng that records every byte draw, so grades can be replayed."""
 
     def __init__(self, seed):

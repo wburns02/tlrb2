@@ -69,16 +69,6 @@ _PITCHER_STAT_OFFSETS = (
 # Pitcher W-L-streak season bytes near 60..70 (FORMATS.md pitcher block).
 _PITCHER_WL_OFFSETS = (61, 62, 63)
 
-# Season stat offsets as the rookie_fill.asm season_zero_list zeroes them:
-# exactly _BATTER_STAT_OFFSETS + _PITCHER_STAT_OFFSETS (the asm list drops
-# nothing and adds nothing; see rookie_fill.asm data section).
-_ASM_SEASON_ZERO_LIST = (
-    23, 32, 33, 34, 35, 36,
-    37, 38, 39, 40, 41, 42,
-    49, 50, 51, 52, 53, 54, 55, 56, 57, 58,
-    101, 102, 111, 112, 121, 122, 125, 126,
-)
-
 # Union of every season stat byte zeroed in the season half.  Identity
 # fields (name, age, year, exp, salary, portrait, ratings, throws/bats)
 # live outside these offsets, so zeroing the union for every rookie is safe.

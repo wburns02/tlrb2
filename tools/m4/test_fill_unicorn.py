@@ -17,9 +17,7 @@ import struct
 import subprocess
 import sys
 
-import pytest
-from unicorn import Uc, UC_ARCH_X86, UC_MODE_16, UC_MEM_WRITE, \
-    UC_HOOK_MEM_WRITE, UC_ERR_EXCEPTION
+from unicorn import Uc, UC_ARCH_X86, UC_MODE_16, UC_ERR_EXCEPTION, UcError
 from unicorn.x86_const import (
     UC_X86_REG_AX, UC_X86_REG_BX, UC_X86_REG_CS, UC_X86_REG_DS,
     UC_X86_REG_ES, UC_X86_REG_FS, UC_X86_REG_SP, UC_X86_REG_SS,
@@ -36,11 +34,6 @@ for _p in (_TOOLS, _BLOB_DIR):
 from m4 import team_fill  # noqa: E402
 from m4.rollover import Rng  # noqa: E402
 from m4.rookies import RookieGen  # noqa: E402
-
-# this unicorn binding constructs UcIntel instances (subclassing Uc returns
-# the parent type), so add the context-manager methods to the class itself
-Uc.__enter__ = lambda self: self
-Uc.__exit__ = lambda self, *args: False
 
 ASM = os.path.join(_BLOB_DIR, "rookie_fill.asm")
 BIN = os.path.join(_BLOB_DIR, "rookie_fill.bin")
@@ -209,9 +202,26 @@ def test_all_batter_vacancies():
     _assert_parity(image, 14, 50)
 
 
-def test_full_roster_no_op_on_40():
+def test_empty_roster_fills_all_40():
     image = _team({})                       # entirely empty team: 40 vacancies
     _assert_parity(image, 15, 50)
+
+
+def test_full_roster_no_op_on_40():
+    """All 40 roster + 40 season records active: the blob and reference both
+    return 0 vacancies and leave the image byte-identical."""
+    image = _all_active(lambda i: i % 10)
+    for i in range(40):                     # season half active too
+        base = HDR + (40 + i) * RECORD
+        image[base] = 1                     # season byte 0
+        image[base + 20] = 28
+        image[base + 21] = 50
+    ax, got, rng_word = _run_blob(image, 15, 50, PTeamB)
+    nvac, ref, ref_rng = _reference(image, 15, 50)
+    assert ax == 0 and nvac == 0
+    assert got == bytes(image)
+    assert ref == bytearray(image)
+    assert rng_word == ref_rng
 
 
 def test_rng_continues_across_teams():

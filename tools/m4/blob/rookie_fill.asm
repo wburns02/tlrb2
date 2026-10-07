@@ -41,6 +41,7 @@ OFF_HAND        equ 29
 OFF_EXPCONS     equ 30
 OFF_POS         equ 31
 
+; offset 0 is a bare retf stub (entry is 0x10 by design; see below).
 start:  retf
 
 ; ---------------------------------------------------------------------------
@@ -56,7 +57,6 @@ entry_fill:
         push ds
         push es
 
-        mov [cs:ds_save], ds
         mov [cs:year_byte], al
         mov word [cs:rng_ptr_off], bx
 
@@ -406,7 +406,6 @@ bats_set:
         mov byte [cs:scratch+OFF_PORTRAIT+1], 0
         cmp dx, 15
         jb face_lo
-        or ax, 1                        ; won't be used; keep flags clean
         mov ax, [cs:hand_nib]
         or ax, 1
         mov [cs:hand_nib], ax
@@ -629,7 +628,6 @@ of_rot:         dw 0
 hand_base:      dw 0
 bats_code:      dw 0
 hand_nib:       dw 0
-ds_save:        dw 0
 year_byte:      db 0
 rng_ptr_off:    dw 0
 
