@@ -27,10 +27,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 sys.path.insert(0, TOOLS)
+import rig                      # noqa: E402  (before check_roll: m4.team_fill puts tools/m4 on sys.path,
+import season_sim               # noqa: E402   where the rig/ package would shadow rig.py)
 import bat_patch                # noqa: E402
 import check_roll               # noqa: E402
-import rig                      # noqa: E402
-import season_sim               # noqa: E402
 import v20                      # noqa: E402
 from m4 import rollover         # noqa: E402
 
