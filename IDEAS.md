@@ -9,3 +9,9 @@ end-of-season flow (BACK/MAIN), and free memory/screen space for new screens.
 
 ## Historical imports (Lahman)
 Depends on the V20 decode and the stats -> ratings formula.
+
+## True fielding stats (for better in-game WAR)
+The sim keeps no real putouts/assists per player (import overwrites PO/A with position averages x games; season
+accumulators hold errors only). Recording real PO/A/DP per fielder means patching the play engine (BB/PLAY) to
+bump new counters on each out, with only ~64+133 B of code caves there. Heavy lift; the M4 WAR approximation
+works without it.
