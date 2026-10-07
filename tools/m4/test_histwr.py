@@ -21,10 +21,13 @@ from v20 import SIZE as V20_SIZE
 import maj
 from m4.test_history import (make_team_v20, make_maj, set_player)
 from m4 import dynasty_ref
+from m4.test_awards import (statbat, statpit, fielding, entry_of,
+                            PRE_AL, PRE_NL)
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_H = os.path.join(HERE, 'histwr')
 HOST = os.path.join(HERE_H, 'histwr_host')
+MS_NAME = 'MILESTON.DAT'
 
 MAJ_SIZE = 59771
 S_AL, S_NL = 0x21d, 0x758c
@@ -141,6 +144,11 @@ def chain(tmp_path, tag, pre_dirs, start, retire_team_filter=None):
         a, b = open(hp_c, 'rb').read(), open(hp_r, 'rb').read()
         off, ent = first_diff(a, b)
         assert off < 0, f'{tag} season {season}: first diff at offset {off} (entry {ent})'
+        # C7: MILESTON.DAT byte-identical too
+        ms_c = os.path.join(os.path.dirname(hp_c), MS_NAME)
+        ms_r = os.path.join(os.path.dirname(hp_r), MS_NAME)
+        assert open(ms_c, 'rb').read() == open(ms_r, 'rb').read(), \
+            f'{tag} season {season}: MILESTON.DAT differs'
         last_c, last_r = hp_c, hp_r
     h = history.History.load(last_c)
     assert h.seasons_recorded == len(pre_dirs), \
@@ -575,6 +583,11 @@ def test_dos_chain_parity(tmp_path):
         b = open(hp_d, 'rb').read()
         off, ent = first_diff(a, b)
         assert off < 0, f'dos season {season}: first diff at offset {off} (entry {ent})'
+        # C7: MILESTON.DAT byte-identical too
+        ms_c = os.path.join(pc, MS_NAME)
+        ms_d = os.path.join(dc, MS_NAME)
+        assert open(ms_c, 'rb').read() == open(ms_d, 'rb').read(), \
+            f'dos season {season}: MILESTON.DAT differs'
         last_c, last_d = hp_c, hp_d
 
 
@@ -700,3 +713,127 @@ def test_fail_rename_keeps_hist(tmp_path):
     finally:
         if os.path.exists(HC):
             os.remove(HC)
+
+
+# ---------------- round 4: C7 awards and milestones ----------------
+
+def ms_path_of(hp):
+    return os.path.join(os.path.dirname(hp), MS_NAME)
+
+
+def test_awards_synthetic_league_host(tmp_path):
+    """The A1 synthetic award league through the host binary: same HISTORY.DAT
+    and MILESTON.DAT as the Python reference (award winners, career counts,
+    season entry 88..99)."""
+    _build()
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    (ldir / PRE_AL).write_bytes(make_team_v20())
+    (ldir / PRE_NL).write_bytes(make_team_v20(name=b'NLONE', abbr=b'NL1'))
+    make_maj().save(str(ldir / 'CLASSIC.MAJ'))
+    ta = Team(open(str(ldir / PRE_AL), 'rb').read())
+    set_player(ta, 16, 'MVPWIN', 'AL', 27, 7, 155)      # CF, pa 512, big WAR
+    statbat(ta, 16, 450, 150, d2=30, t3=5, hr=25, bb=62, sb=30, runs=100,
+            games=155)
+    fielding(ta, 16, 300, 20, 5)
+    set_player(ta, 17, 'TIELO', 'LOWIDX', 27, 3, 150)   # 2B, ties with TIEHI
+    statbat(ta, 17, 460, 160, d2=35, hr=20, bb=50, runs=95, games=150)
+    fielding(ta, 17, 250, 200, 6)
+    set_player(ta, 18, 'TIEHI', 'HIGHIDX', 27, 3, 150)  # same pos, same line
+    statbat(ta, 18, 460, 160, d2=35, hr=20, bb=50, runs=95, games=150)
+    fielding(ta, 18, 250, 200, 6)
+    set_player(ta, 19, 'SOPH', 'NOTROOK', 22, 9, 162)   # DH, exp 1: no ROY
+    ta.players[19]['exp'] = 1
+    statbat(ta, 19, 500, 200, hr=40, bb=60, rbi=110, runs=120, games=162)
+    set_player(ta, 20, 'SSBAT', 'SHORTPA', 28, 5, 150)  # SS pa 200: under 300
+    statbat(ta, 20, 190, 60, bb=10, runs=30, games=150)
+    set_player(ta, 21, 'FROSH', 'KID', 21, 4, 100)      # 3B rookie, exp 0
+    statbat(ta, 21, 150, 48, hr=15, bb=20, rbi=50, runs=40, games=100)
+    set_player(ta, 0, 'CYFALL', 'FALLBACK', 26, 0, 25)  # P A: 162 outs < 486
+    ta.players[0]['exp'] = 1
+    statpit(ta, 0, 540, 60, w=10, pso=100, games=25)
+    set_player(ta, 1, 'CYFALL2', 'FALLBK2', 26, 0, 20)  # P B: 300 outs, better
+    ta.players[1]['exp'] = 1
+    statpit(ta, 1, 1000, 30, w=8, pso=80, games=20)
+    for i in (16, 17, 18, 20):
+        ta.players[i]['exp'] = 1
+    ta.save(str(ldir / PRE_AL))
+    tn = Team(open(str(ldir / PRE_NL), 'rb').read())
+    set_player(tn, 16, 'CATCHER', 'GLOVE', 28, 1, 95)   # C at 95 games (>= 90)
+    tn.players[16]['exp'] = 1
+    statbat(tn, 16, 320, 90, hr=10, bb=30, rbi=45, runs=40, games=95)
+    fielding(tn, 16, 700, 60, 8)
+    set_player(tn, 17, 'NLDH', 'DESIG', 29, 9, 150)     # NL DH: MVP + SS(9)
+    tn.players[17]['exp'] = 1
+    statbat(tn, 17, 550, 180, hr=30, bb=70, rbi=105, runs=110, games=150)
+    tn.save(str(ldir / PRE_NL))
+    hp = os.path.join(str(tmp_path), 'H.DAT')
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    rc = HISTWR(str(ldir), hp, ret)
+    assert rc.returncode == 0, rc.stderr
+    hp2 = os.path.join(str(tmp_path), 'H2.DAT')
+    history.record_season(str(ldir), hp2, 1, None)
+    a = open(hp, 'rb').read()
+    b = open(hp2, 'rb').read()
+    off, ent = first_diff(a, b)
+    assert off < 0, f'award league off {off} (entry {ent})'
+    assert open(ms_path_of(hp), 'rb').read() == open(ms_path_of(hp2), 'rb').read()
+    # sanity: the winners landed (season entry 88..99 not all none)
+    h = history.History.load(hp2)
+    aw = h.read_season_entry(1)['awards']
+    assert aw[0] != history.NO_AWARD and aw[1] != history.NO_AWARD
+    assert aw[2] != history.NO_AWARD and aw[3] != history.NO_AWARD
+    assert aw[4] == history.NO_AWARD and aw[5] == history.NO_AWARD
+
+
+def test_fail_rename_keeps_both(tmp_path):
+    """Second-rename failure with an old MILESTON.DAT present: rc 2, HISTORY.DAT
+    AND MILESTON.DAT both byte-identical, no TMP/BAK left."""
+    _build()
+    _build_special(HC, ['-DTEST_FAIL_RENAME'])
+    try:
+        ldir = synth_league(str(tmp_path), [
+            (b'CLASALE1', 7, 'ROSSI', 'ROB', 29, 4, {'games': 100}),
+        ])
+        hp = os.path.join(str(tmp_path), 'H.DAT')
+        open(hp, 'wb').write(bytes(range(32)))
+        before = open(hp, 'rb').read()
+        ms = ms_path_of(hp)
+        open(ms, 'wb').write(bytes([1, 0, 0, 0, 40, 0, 5, 0]))
+        ms_before = open(ms, 'rb').read()
+        ret = os.path.join(str(tmp_path), 'R.DAT')
+        open(ret, 'wb').write(bytes(1))
+        rc = subprocess.run([HC, ldir, hp, ret], capture_output=True, text=True)
+        assert rc.returncode == 2, rc.returncode
+        assert open(hp, 'rb').read() == before, 'HIST not restored'
+        assert open(ms, 'rb').read() == ms_before, 'MILESTON not restored'
+        for leftover in ('HISTWR.BAK', 'HISTWR.TMP', 'MILESTON.BAK',
+                         'MILESTON.TMP'):
+            assert not os.path.exists(os.path.join(str(tmp_path), leftover)), \
+                f'{leftover} left'
+    finally:
+        if os.path.exists(HC):
+            os.remove(HC)
+
+
+def test_milestone_rerun_idempotent(tmp_path):
+    """Running the same season twice on copies gives identical MILESTON.DAT
+    (drop-then-append)."""
+    _build()
+    ldir = synth_league(str(tmp_path / 'in'), [
+        (b'CLASALE1', 16, 'MILER', 'RUN', 26, 7, {'games': 150, 'ab_l': 550,
+         'h_l': 200, 'hr_l': 55, 'rbi': 120}),
+    ])
+    outs = []
+    for tag in ('a', 'b'):
+        d = str(tmp_path / tag)
+        shutil.copytree(ldir, d)
+        hp = os.path.join(d, 'H.DAT')
+        ret = os.path.join(d, 'R.DAT')
+        open(ret, 'wb').write(bytes(1))
+        rc = HISTWR(d, hp, ret)
+        assert rc.returncode == 0, rc.stderr
+        outs.append(open(ms_path_of(hp), 'rb').read())
+    assert outs[0] == outs[1]
+    assert len(outs[0]) > 0, 'no milestone records written'

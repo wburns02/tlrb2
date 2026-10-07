@@ -1,7 +1,9 @@
-/* HISTWR: C port of history.record_season + mark_retired (notes/M4_CONTRACT.md C5).
- * Builds on the host with gcc for parity tests and in DOS with OpenWatcom
- * (large model). Streams player entries from HIST_PATH to HISTWR.TMP beside it;
- * never holds the whole player table in memory.
+/* HISTWR: C port of history.record_season + mark_retired (notes/M4_CONTRACT.md
+ * C5, C7). Builds on the host with gcc for parity tests and in DOS with
+ * OpenWatcom (large model). Streams player entries from HIST_PATH to HISTWR.TMP
+ * beside it; never holds the whole player table in memory. C7: awards (season
+ * entry bytes 88..99, player entry award counts 152..156) and MILESTON.DAT
+ * beside HISTORY.DAT.
  * usage: HISTWR [PRE_DIR HIST_PATH RETIRED_PATH]
  * exit 0 on success, 2 after any error (HIST_PATH left unchanged).
  */
@@ -28,6 +30,10 @@
 #define EMPTY_TOP      ((int16_t)-32768)
 #define TMP_NAME       "HISTWR.TMP"
 #define BAK_NAME       "HISTWR.BAK"
+#define MS_NAME        "MILESTON.DAT"
+#define MS_TMP_NAME    "MILESTON.TMP"
+#define MS_BAK_NAME    "MILESTON.BAK"
+#define NO_AWARD       0xffff
 #define STATUS_ACTIVE  1
 #define STATUS_RETIRED 2
 #define STATUS_HOF     3
@@ -80,6 +86,9 @@
 #define R_PHR_R  0x82
 #define R_RANGE  0x5e
 #define R_ARM    0x5e
+#define R_EXP    0x16
+#define R_PO1    0x4d
+#define R_A1     0x51
 
 #define MAJ_SIZE     59771
 #define MAJ_DAYS     244
@@ -99,9 +108,13 @@
 #define TOT_AB 1
 #define TOT_H 2
 #define TOT_HR 5
+#define TOT_RBI 7
+#define TOT_BB 8
+#define TOT_SB 10
 #define TOT_W 13
 #define TOT_SV 15
 #define TOT_OUTS 19
+#define TOT_ER 20
 #define TOT_PSO 23
 
 #define DEF_PRE  "C:\\DYNSNAP"
@@ -124,6 +137,13 @@ typedef struct {
     int32_t next_dup;
     uint32_t tot[NUM_TOT];
     int16_t w10;
+    /* C7 award inputs (season, per record; chain records overwrite) */
+    uint8_t exp;
+    uint32_t outs;
+    uint32_t ab;
+    int32_t bat100;                 /* batters only: lw100 - (L_lw*pa)/L_pa - park100 */
+    uint8_t rng, arm;
+    uint16_t po1, a1, e1;
 } CurPlayer;
 
 typedef struct {
@@ -133,11 +153,42 @@ typedef struct {
     CurPlayer cur[40];
 } TeamInfo;
 
+/* C7 milestone career-total keys, as TOT indexes (H, HR, RBI, SB, W, SV, PSO) */
+#define MS_KEYS 7
+static const uint8_t ms_tot[MS_KEYS] = {
+    TOT_H, TOT_HR, TOT_RBI, TOT_SB, TOT_W, TOT_SV, TOT_PSO };
+/* MILESTONE_CAREER (kind, ms-key index, mark) */
+static const int16_t ms_career[][3] = {
+    { 1, 0, 2000 }, { 2, 0, 3000 }, { 3, 1, 300 }, { 4, 1, 400 },
+    { 5, 1, 500 }, { 6, 1, 600 }, { 7, 1, 700 }, { 8, 2, 1500 },
+    { 9, 2, 2000 }, { 10, 3, 500 }, { 11, 4, 200 }, { 12, 4, 300 },
+    { 13, 6, 2000 }, { 14, 6, 3000 }, { 15, 6, 4000 },
+    { 16, 5, 300 }, { 17, 5, 400 } };
+#define MS_CAREER_N 17
+
 typedef struct {
     int32_t first_cur;
     int32_t entry_index;
     int32_t next;
 } Slot;
+
+/* C7 award candidate: one named record. Compact: a single array of these
+ * must stay under the DOS 64 KB allocation limit (G_ncaps ~1120). The
+ * milestone before/after is computed at emit time from the written entry
+ * totals minus the record's season totals. */
+typedef struct {
+    int32_t ref;                    /* ((team << 8) | rec) */
+    int32_t slot;                   /* identity slot owning this record */
+    int32_t idx;                    /* player entry index (-1 until assigned) */
+    int32_t bat100;
+    int16_t w10;
+    uint16_t pa, outs, ab, h, er;
+    uint16_t s_h, s_hr, s_sb, s_rbi, s_w, s_sv, s_pso;   /* season stats */
+    uint16_t po1, a1;
+    uint8_t league;                 /* 0 AL, 1 NL */
+    uint8_t pos1, exp, games;
+    uint8_t rng, arm, e1;
+} Cand;
 
 typedef struct {
     char name[13];
@@ -159,6 +210,8 @@ static uint8_t g_pf_valid[32];
 static uint16_t g_season_no;
 static Maj g_maj;
 static char g_retpath[512];
+static Cand *g_cands;
+static int32_t g_ncands, g_cands_cap;
 static uint16_t rd16(const uint8_t *p)
 {
     return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
@@ -553,6 +606,40 @@ static int16_t pitcher_war10(const uint8_t *rec)
     return (int16_t)idiv64(pit100, 100);
 }
 
+/* war.batter_bat100 (C3): lw100 - (L_lw * pa) / L_pa - park100.
+ * pa == 0 batters: lw100 (park100 = 0, the C3 amendment); L_pa == 0: no division. */
+static int32_t batter_bat100(const uint8_t *rec, int32_t pf1000)
+{
+    int32_t ab = (int32_t)bat_l(rec, R_AB_L, R_AB_R);
+    int32_t h = (int32_t)bat_l(rec, R_H_L, R_H_R);
+    int32_t d = (int32_t)bat_l(rec, R_D_L, R_D_R);
+    int32_t t = rec[R_T_L] + rec[R_T_R];
+    int32_t hr = rec[R_HR_L] + rec[R_HR_R];
+    int32_t bb = (int32_t)bat_l(rec, R_BB_L, R_BB_R);
+    int32_t sb = rec[R_SB], cs = rec[R_CS];
+    int32_t s1 = h - d - t - hr;
+    int32_t pa = ab + bb;
+    int64_t lw100 = (int64_t)47 * s1 + (int64_t)78 * d + (int64_t)109 * t
+                  + (int64_t)140 * hr + (int64_t)33 * bb + (int64_t)20 * sb
+                  - (int64_t)41 * cs - (int64_t)27 * (ab - h);
+    if (pa > 0 && g_L_pa > 0) {
+        int32_t bat100 = (int32_t)(lw100 - idiv64((int64_t)g_L_lw * pa, g_L_pa));
+        bat100 -= idiv64(idiv64((int64_t)(pf1000 - 1000) * g_L_runs, 20) * pa,
+                         g_L_pa);
+        return bat100;
+    }
+    return (int32_t)lw100;
+}
+
+/* history.gold_glove_fp1000: 1000 if the denominator is 0 */
+static int32_t gg_fp1000(int32_t po1, int32_t a1, int32_t e1)
+{
+    int32_t den = po1 + a1 + e1;
+    if (den == 0)
+        return 1000;
+    return idiv64((int64_t)(po1 + a1) * 1000, den);
+}
+
 /* phase A2: league totals over all mapped teams */
 static int league_pass(const char *pre_dir)
 {
@@ -701,6 +788,16 @@ static int player_pass(const char *pre_dir)
             cp->w10 = (pos1 == 0)
                     ? pitcher_war10(rec)
                     : batter_war10(rec, roster, games, pf_of(ti->lg_slot));
+            cp->exp = roster[R_EXP];
+            cp->rng = (uint8_t)(roster[R_RANGE] >> 4);
+            cp->arm = (uint8_t)(roster[R_ARM] & 15);
+            cp->po1 = rd16(rec + R_PO1);
+            cp->a1 = rd16(rec + R_A1);
+            cp->e1 = rec[R_E1];
+            cp->outs = (uint32_t)outs_of(rd16(rec + R_IP10));
+            cp->ab = bat_l(rec, R_AB_L, R_AB_R);
+            cp->bat100 = (pos1 == 0)
+                       ? 0 : batter_bat100(rec, pf_of(ti->lg_slot));
             if (g_nslots < g_slots_cap)
                 hash_add(((int32_t)k << 8) | (ti->ncur - 1), cp->name, cp->birth);
         }
@@ -728,11 +825,75 @@ static void fresh_entry(uint8_t *eb, const CurPlayer *p)
         wr16(eb + 134 + 2 * i, (uint16_t)EMPTY_TOP);
     wr16(eb + 148, 0);
     wr16(eb + 150, 0);
+    memset(eb + 152, 0, 8);
 }
 
-/* every current player with the slot's identity, in league order */
-static void apply_chain(int32_t s, uint8_t *eb)
+/* team index from a TeamInfo pointer */
+static int32_t team_ix(const TeamInfo *ti)
 {
+    int32_t k;
+    for (k = 0; k < g_nt; k++)
+        if (g_tp[k] == ti)
+            return k;
+    return -1;
+}
+
+/* propagate a slot's player entry index to its collected candidates */
+static void slots_assign(int32_t s, int32_t idx)
+{
+    int32_t ci;
+    for (ci = 0; ci < g_ncands; ci++)
+        if (g_cands[ci].slot == s)
+            g_cands[ci].idx = idx;
+}
+
+/* add the C7 award candidate for the incumbent record (record rt of team ti)
+ * with its milestone before/after career totals */
+static void cand_collect(TeamInfo *ti, int rt, int32_t slot)
+{
+    const CurPlayer *p = &ti->cur[rt];
+    Cand *cd;
+    if (g_ncands >= g_cands_cap)
+        return;
+    cd = &g_cands[g_ncands++];
+    cd->ref = (team_ix(ti) << 8) | rt;
+    cd->slot = slot;
+    cd->idx = -1;
+    cd->w10 = p->w10;
+    cd->bat100 = p->bat100;
+    cd->pa = (uint16_t)(p->ab + p->tot[TOT_BB]);
+    cd->outs = (uint16_t)p->outs;
+    cd->ab = (uint16_t)p->ab;
+    cd->h = (uint16_t)p->tot[TOT_H];
+    cd->er = (uint16_t)p->tot[TOT_ER];
+    cd->s_h = (uint16_t)p->tot[TOT_H];
+    cd->s_hr = (uint16_t)p->tot[TOT_HR];
+    cd->s_sb = (uint16_t)p->tot[TOT_SB];
+    cd->s_w = (uint16_t)p->tot[TOT_W];
+    cd->s_sv = (uint16_t)p->tot[TOT_SV];
+    cd->s_pso = (uint16_t)p->tot[TOT_PSO];
+    cd->league = (ti->lg_slot < 16) ? 0 : 1;
+    cd->pos1 = p->pos1;
+    cd->exp = p->exp;
+    cd->games = (uint8_t)p->games;
+    cd->rng = p->rng;
+    cd->arm = p->arm;
+    cd->po1 = p->po1;
+    cd->a1 = p->a1;
+    cd->e1 = p->e1;
+    cd->s_rbi = (uint16_t)p->tot[TOT_RBI];
+}
+
+/* every current player with the slot's identity, in league order.
+ * The entry's award counters (152..156) are kept: they carry the career counts
+ * accumulated by earlier record_season calls; this season's come from the
+ * candidates after phase B assigns entry indices. collect adds the C7
+ * candidate for this record (the last chain record of an identity wins, like
+ * the reference's exps[idx] overwrite) with its milestone before/after. The
+ * team is the slot's first_cur owner. */
+static void apply_chain(int32_t s, uint8_t *eb, int collect)
+{
+    TeamInfo *ti = g_tp[(int)(g_slots[s].first_cur >> 8)];
     int32_t c = g_slots[s].first_cur;
     while (c >= 0) {
         const CurPlayer *p = cur_of(c);
@@ -772,7 +933,19 @@ static void apply_chain(int32_t s, uint8_t *eb)
             }
             wr16(eb + 148, (uint16_t)idiv64(sum, 2));
         }
-        memset(eb + 152, 0, 8);
+        memset(eb + 157, 0, 3);
+        if (collect) {
+            /* the reference collects one candidate per named record, keyed by
+             * entry index; the LAST chain record's stats win: drop a
+             * candidate collected on an earlier chain record and re-append */
+            int32_t ci;
+            for (ci = g_ncands - 1; ci >= 0; ci--)
+                if (g_cands[ci].slot == s) {
+                    g_cands[ci] = g_cands[--g_ncands];
+                    break;
+                }
+            cand_collect(ti, (int)(c & 255), s);
+        }
         c = p->next_dup;
     }
 }
@@ -939,7 +1112,6 @@ static int do_marks(const char *pre_dir, const char *tmp, const RetTeam *rt, int
                 eb[22] = STATUS_HOF;
                 wr16(eb + 150, g_season_no);
             }
-            memset(eb + 152, 0, 8);
             if (fseek(g, off, SEEK_SET) != 0)
                 goto fail;
             if (fwrite(eb, 1, PLAYER_ENTRY, g) != (size_t)PLAYER_ENTRY)
@@ -954,22 +1126,264 @@ fail:
     return -1;
 }
 
-/* phase B: stream old entries, append new, write, then mark */
+/* ---------------- C7: awards and milestones ---------------- */
+
 static const char *bak_of(const char *hpath, char *dst, size_t cap);
+
+/* the per-league award pick, one C7 rule class at a time. cands = the
+ * league's records in ascending entry-index order (cand order is file order:
+ * re-sorting by entry index happens on the merged array before this runs) */
+static const Cand *pick_max(const Cand *cands, int nc, int32_t (*key)(const Cand *))
+{
+    const Cand *best = NULL;
+    int i;
+    for (i = 0; i < nc; i++) {
+        if (best == NULL || key(&cands[i]) > key(best))
+            best = &cands[i];
+    }
+    return best;
+}
+
+static int32_t key_w10(const Cand *c) { return c->w10; }
+static int32_t key_bat100(const Cand *c) { return c->bat100; }
+static int32_t key_field(const Cand *c)
+{
+    return (int)2 * (int)c->rng + (int)c->arm;
+}
+static int32_t key_fp1000(const Cand *c)
+{
+    return gg_fp1000(c->po1, c->a1, c->e1);
+}
+
+/* history.pick_awards on one league's candidates: fills the 20 winners
+ * (MVP, CY, ROY, GG 1..8, SS 1..9) as entry indices, or -1 when none.
+ * Filters the merged ascending-entry-index array by league (0 AL, 1 NL). */
+static void pick_league(const Cand *lc, int nlc, int league, int32_t *win)
+{
+    int q, i, n2;
+    Cand *sub;
+    const Cand *best;
+    sub = (Cand *)calloc((size_t)nlc, sizeof(Cand));
+    if (!sub) {
+        for (i = 0; i < 20; i++)
+            win[i] = -1;
+        return;
+    }
+    for (i = 0; i < 20; i++)
+        win[i] = -1;
+    /* MVP: batters pa >= 502, max w10 */
+    n2 = 0;
+    for (i = 0; i < nlc; i++)
+        if (lc[i].league == league && lc[i].pos1 != 0
+            && lc[i].pa >= 502)
+            sub[n2++] = lc[i];
+    best = pick_max(sub, n2, key_w10);
+    if (best)
+        win[0] = best->idx;
+    /* CY: outs >= 486, fallback any pitcher outs > 0 */
+    n2 = 0;
+    for (i = 0; i < nlc; i++)
+        if (lc[i].league == league && lc[i].pos1 == 0
+            && lc[i].outs >= 486)
+            sub[n2++] = lc[i];
+    best = pick_max(sub, n2, key_w10);
+    if (!best) {
+        n2 = 0;
+        for (i = 0; i < nlc; i++)
+            if (lc[i].league == league && lc[i].pos1 == 0
+                && lc[i].outs > 0)
+                sub[n2++] = lc[i];
+        best = pick_max(sub, n2, key_w10);
+    }
+    if (best)
+        win[1] = best->idx;
+    /* ROY: exp 0 and (pa >= 130 or outs >= 150) */
+    n2 = 0;
+    for (i = 0; i < nlc; i++)
+        if (lc[i].league == league && lc[i].exp == 0
+            && (lc[i].pa >= 130 || lc[i].outs >= 150))
+            sub[n2++] = lc[i];
+    best = pick_max(sub, n2, key_w10);
+    if (best)
+        win[2] = best->idx;
+    /* GG positions 1..8: games gate, 2*range + arm, then fp1000 on the tie tier */
+    for (q = 1; q <= 8; q++) {
+        int32_t top;
+        int need = (q == 1) ? 90 : 100;
+        n2 = 0;
+        for (i = 0; i < nlc; i++)
+            if (lc[i].league == league && lc[i].pos1 == q
+                && lc[i].games >= need)
+                sub[n2++] = lc[i];
+        best = pick_max(sub, n2, key_field);
+        if (!best)
+            continue;
+        top = key_field(best);
+        {
+            int m = 0;
+            for (i = 0; i < n2; i++)
+                if (key_field(&sub[i]) == top)
+                    sub[m++] = sub[i];
+            best = pick_max(sub, m, key_fp1000);
+        }
+        if (best)
+            win[2 + q] = best->idx;
+    }
+    /* SS positions 1..9: pa >= 300, max bat100 */
+    for (q = 1; q <= 9; q++) {
+        n2 = 0;
+        for (i = 0; i < nlc; i++)
+            if (lc[i].league == league && lc[i].pos1 == q && lc[i].pa >= 300)
+                sub[n2++] = lc[i];
+        best = pick_max(sub, n2, key_bat100);
+        if (best)
+            win[10 + q] = best->idx;
+    }
+    free(sub);
+}
+
+/* patch the entry's award counters on the temp file: counts[k] += 1,
+ * saturating at 255 (bytes 152..156; 157..159 already zeroed) */
+static int add_award_count(FILE *g, int32_t idx, int k)
+{
+    static uint8_t eb[PLAYER_ENTRY];
+    long off = (long)PLAYER_TABLE + (long)idx * PLAYER_ENTRY;
+    uint8_t v;
+    if (fseek(g, off + 152, SEEK_SET) != 0)
+        return -1;
+    if (fread(eb, 1, 5, g) != 5)
+        return -1;
+    v = (uint8_t)(eb[k] + 1);
+    eb[k] = v;
+    if (fseek(g, off + 152, SEEK_SET) != 0)
+        return -1;
+    if (fwrite(eb, 1, 5, g) != 5)
+        return -1;
+    return 0;
+}
+
+/* season entry bytes 88..99: the 6 award winners as u16 entry indices */
+static int write_season_awards(FILE *g, uint16_t season_no,
+                               const int32_t *al, const int32_t *nl)
+{
+    uint8_t b[12];
+    int i;
+    long off = (long)SEASON_TABLE + (long)(season_no - 1) * SEASON_ENTRY + 88;
+    for (i = 0; i < 6; i++) {
+        int32_t ix = (i < 3) ? al[i] : nl[i - 3];
+        wr16(b + 2 * i, (ix < 0) ? (uint16_t)NO_AWARD : (uint16_t)ix);
+    }
+    if (fseek(g, off, SEEK_SET) != 0)
+        return -1;
+    if (fwrite(b, 1, 12, g) != 12)
+        return -1;
+    return 0;
+}
+
+/* one milestone record (8 B, little endian) */
+static void ms_rec(uint8_t *r, uint16_t season, uint16_t idx, uint8_t kind,
+                   int32_t value)
+{
+    wr16(r, season);
+    wr16(r + 2, idx);
+    r[4] = kind;
+    r[5] = 0;
+    wr16(r + 6, (value > 0xffff) ? 0xffffu : (uint16_t)value);
+}
+
+/* season milestones for one record (entry-assigned Cand): the career kinds
+ * compute before/after from the WRITTEN entry totals (read by the caller
+ * into tot[]) minus this record's season totals; the season kinds use the
+ * SEASON stats (s_h/s_hr/s_sb/s_w/s_sv/s_pso, h, er, outs) */
+/* the record's season total for milestone key k (ms_tot order) */
+static uint32_t cand_season_tot(const Cand *c, int k)
+{
+    switch (ms_tot[k]) {
+    case TOT_H: return c->s_h;
+    case TOT_HR: return c->s_hr;
+    case TOT_RBI: return c->s_rbi;
+    case TOT_SB: return c->s_sb;
+    case TOT_W: return c->s_w;
+    case TOT_SV: return c->s_sv;
+    default: return c->s_pso;
+    }
+}
+
+static int c7_milestones(const Cand *c, uint16_t season,
+                         const uint32_t *wtot, uint8_t *out)
+{
+    int n = 0, i;
+    uint8_t r[8];
+    for (i = 0; i < MS_CAREER_N; i++) {
+        int k = ms_career[i][1];
+        uint32_t after = wtot[k];
+        uint32_t before = after - cand_season_tot(c, k);
+        if (before < (uint32_t)ms_career[i][2]
+            && after >= (uint32_t)ms_career[i][2]) {
+            ms_rec(r, season, (uint16_t)c->idx, (uint8_t)ms_career[i][0],
+                   (int32_t)((after > 0xffffu) ? 0xffffu : after));
+            memcpy(out + 8 * n++, r, 8);
+        }
+    }
+    if (c->s_hr >= 50) {
+        ms_rec(r, season, (uint16_t)c->idx, 32, c->s_hr);
+        memcpy(out + 8 * n++, r, 8);
+    }
+    if (c->s_h >= 200) {
+        ms_rec(r, season, (uint16_t)c->idx, 33, c->s_h);
+        memcpy(out + 8 * n++, r, 8);
+    }
+    if (c->s_sb >= 100) {
+        ms_rec(r, season, (uint16_t)c->idx, 34, c->s_sb);
+        memcpy(out + 8 * n++, r, 8);
+    }
+    if (c->pa >= 502 && c->ab > 0
+        && idiv64((int64_t)c->h * 1000, c->ab) >= 400) {
+        ms_rec(r, season, (uint16_t)c->idx, 35,
+               idiv64((int64_t)c->h * 1000, c->ab));
+        memcpy(out + 8 * n++, r, 8);
+    }
+    if (c->s_w >= 20) {
+        ms_rec(r, season, (uint16_t)c->idx, 36, c->s_w);
+        memcpy(out + 8 * n++, r, 8);
+    }
+    if (c->s_pso >= 300) {
+        ms_rec(r, season, (uint16_t)c->idx, 37, c->s_pso);
+        memcpy(out + 8 * n++, r, 8);
+    }
+    if (c->outs >= 486
+        && idiv64((int64_t)c->er * 2700, c->outs) < 200) {
+        ms_rec(r, season, (uint16_t)c->idx, 38,
+               idiv64((int64_t)c->er * 2700, c->outs));
+        memcpy(out + 8 * n++, r, 8);
+    }
+    if (c->s_sv >= 50) {
+        ms_rec(r, season, (uint16_t)c->idx, 39, c->s_sv);
+        memcpy(out + 8 * n++, r, 8);
+    }
+    return n;
+}
 
 static int do_run(const char *pre_dir, const char *hpath)
 {
-    FILE *f = NULL, *g = NULL;
+    FILE *f = NULL, *g = NULL, *ms = NULL;
     long old_len = 0, remaining = 0;
     uint16_t sr_raw, season_no, sr_new;
     static char tmp[600], bak[600];
+    char *mstmp, *msbak, *msname;
     uint32_t out_index = 0;
     static uint8_t eb[PLAYER_ENTRY];
     int32_t s;
     int nrt;
+    int k;
     RetTeam *rt = NULL;
-    int swapped = 0;
+    int swapped = 0, ms_swapped = 0;
 
+    mstmp = (char *)malloc(600);
+    msbak = (char *)malloc(600);
+    msname = (char *)malloc(600);
+    if (!mstmp || !msbak || !msname)
+        goto fail;
     f = fopen(hpath, "rb");
     if (f) {
         if (fseek(f, 0, SEEK_END) != 0)
@@ -994,6 +1408,60 @@ static int do_run(const char *pre_dir, const char *hpath)
         write_season_entry(season_no, &g_maj);
     g_tab[3] = VERSION_ONE;
 
+    /* candidates: one per active record (ncur is known after player_pass);
+     * a single calloc must stay under the DOS 64 KB allocation limit */
+    {
+        int32_t tc = 0;
+        for (k = 0; k < g_nt; k++)
+            tc += g_tp[k]->ncur;
+        g_cands = NULL;
+        g_ncands = 0;
+        g_cands_cap = 0;
+        if (tc > 0) {
+            g_cands = (Cand *)calloc((size_t)tc, sizeof(Cand));
+            if (!g_cands)
+                goto fail;
+            g_cands_cap = tc;
+        }
+    }
+
+    /* MILESTON.TMP: old records with season_no < current, then this season's
+     * appended in entry order during phase B (drop-then-append) */
+    tmp_of(hpath, mstmp, 600, MS_TMP_NAME);
+    ms = fopen(mstmp, "wb");
+    if (!ms)
+        goto fail;
+    tmp_of(hpath, msname, 600, MS_NAME);
+    if (f && old_len > 0) {
+        FILE *mo = fopen(msname, "rb");
+        static uint8_t mrec[8];
+        long kept = 0;
+        if (mo) {
+            long msz;
+            if (fseek(mo, 0, SEEK_END) != 0)
+                goto fail;
+            msz = ftell(mo);
+            if (msz < 0)
+                goto fail;
+            if (fseek(mo, 0, SEEK_SET) != 0)
+                goto fail;
+            while (kept + 8 <= msz) {
+                if (fread(mrec, 1, 8, mo) != 8)
+                    goto fail;
+                kept += 8;
+                if (rd16(mrec) >= season_no)
+                    continue;             /* drop-then-append */
+                if (fwrite(mrec, 1, 8, ms) != 8)
+                    goto fail;
+            }
+            fclose(mo);
+        }
+        (void)kept;
+    }
+
+    /* milestone records for this season were accumulated on the candidates by
+     * apply_chain during phase B; they are appended below by entry index */
+
     tmp_of(hpath, tmp, 600, TMP_NAME);
     g = fopen(tmp, "wb");
     if (!g)
@@ -1013,7 +1481,8 @@ static int do_run(const char *pre_dir, const char *hpath)
         h = hash_find(eb, rd16(eb + 20));
         if (h >= 0) {
             g_slots[h].entry_index = (int32_t)out_index;
-            apply_chain(h, eb);
+            apply_chain(h, eb, 1);
+            slots_assign(h, (int32_t)out_index);
         }
         if (fwrite(eb, 1, PLAYER_ENTRY, g) != (size_t)PLAYER_ENTRY)
             goto fail;
@@ -1032,7 +1501,8 @@ static int do_run(const char *pre_dir, const char *hpath)
             continue;
         fresh_entry(eb, cur_of(g_slots[s].first_cur));
         g_slots[s].entry_index = (int32_t)out_index;
-        apply_chain(s, eb);
+        apply_chain(s, eb, 1);
+        slots_assign(s, (int32_t)out_index);
         if (fwrite(eb, 1, PLAYER_ENTRY, g) != (size_t)PLAYER_ENTRY)
             goto fail;
         out_index++;
@@ -1052,6 +1522,119 @@ static int do_run(const char *pre_dir, const char *hpath)
     }
     g = NULL;
 
+    /* C7: resolved below, after this close of the milestone temp */
+    if (ms != NULL) {
+        if (fclose(ms) != 0) {
+            ms = NULL;
+            goto fail;
+        }
+        ms = NULL;
+    }
+
+    /* reopen the milestone temp for the season's records */
+    ms = fopen(mstmp, "ab");
+    if (!ms)
+        goto fail;
+    if (g_cands != NULL) {
+        static int32_t alwin[20], nlwin[20];
+        int32_t n_al = 0, n_nl = 0, ci;
+        int k, q, i;
+        Cand *c;
+        /* history sorts the collected records by player ENTRY index (stable),
+         * so ties go to the lower entry index; cand order is collection
+         * order, which is not entry index order for returning players:
+         * insertion-sort by idx */
+        for (ci = 1; ci < g_ncands; ci++) {
+            Cand t = g_cands[ci];
+            int32_t j = ci - 1;
+            while (j >= 0 && g_cands[j].idx > t.idx) {
+                g_cands[j + 1] = g_cands[j];
+                j--;
+            }
+            g_cands[j + 1] = t;
+        }
+        n_al = 0;
+        n_nl = 0;
+        for (ci = 0; ci < g_ncands; ci++)
+            if (g_cands[ci].league == 0)
+                n_al++;
+            else
+                n_nl++;
+        pick_league(g_cands, (int)n_al, 0, alwin);
+        pick_league(g_cands, (int)g_ncands, 1, nlwin);
+        /* award counts on the temp entries (already written): seek and patch */
+        g = fopen(tmp, "r+b");
+        if (!g)
+            goto fail;
+        for (k = 0; k < 2; k++) {
+            const int32_t *win = k ? nlwin : alwin;
+            /* ckind: MVP/CY/ROY = 0..2, GG 1..8 = 3, SS 1..9 = 4 */
+            for (i = 0; i < 3; i++)
+                if (win[i] >= 0 && add_award_count(g, win[i], i) != 0)
+                    goto fail;
+            for (q = 1; q <= 8; q++)
+                if (win[2 + q] >= 0 && add_award_count(g, win[2 + q], 3) != 0)
+                    goto fail;
+            for (q = 1; q <= 9; q++)
+                if (win[10 + q] >= 0 && add_award_count(g, win[10 + q], 4) != 0)
+                    goto fail;
+        }
+        if (season_no <= SEASON_COUNT
+            && write_season_awards(g, season_no, alwin, nlwin) != 0)
+            goto fail;
+        if (fclose(g) != 0) {
+            g = NULL;
+            goto fail;
+        }
+        /* season milestones appended by entry index, kinds ascending per
+         * player; out is small because the records are written per cand.
+         * The wtot read uses the already-open temp handle parked at the
+         * entry: reopen a dedicated read handle to keep the count patches
+         * and the reads independent. */
+        {
+            static uint8_t out[8 * 25];
+            int32_t acc = 0;
+            FILE *r = fopen(tmp, "rb");
+            uint32_t wtot[MS_KEYS];
+            int k2;
+            long off;
+            if (!r)
+                goto fail;
+            for (ci = 0; ci < g_ncands; ci++) {
+                c = &g_cands[ci];
+                off = (long)PLAYER_TABLE + (long)c->idx * PLAYER_ENTRY;
+                for (k2 = 0; k2 < MS_KEYS; k2++) {
+                    uint8_t b4[4];
+                    if (fseek(r, off + 32 + 4 * ms_tot[k2], SEEK_SET) != 0
+                        || fread(b4, 1, 4, r) != 4)
+                        goto rfail;
+                    wtot[k2] = rd32(b4);
+                }
+                acc += c7_milestones(c, season_no, wtot, out);
+                if (acc > 0) {
+                    if (fwrite(out, 1, (size_t)acc * 8, ms)
+                        != (size_t)acc * 8)
+                        goto rfail;
+                    acc = 0;
+                }
+            }
+            fclose(r);
+            goto racc;
+rfail:
+            fclose(r);
+            goto fail;
+racc:
+            ;
+        }
+    }
+    if (ms != NULL) {
+        if (fclose(ms) != 0) {
+            ms = NULL;
+            goto fail;
+        }
+        ms = NULL;
+    }
+
     nrt = load_retired(g_retpath, &rt);
     if (nrt < 0)
         goto fail;
@@ -1061,9 +1644,9 @@ static int do_run(const char *pre_dir, const char *hpath)
         free(rt);
     if (f)
         fclose(f);
-    /* swap in the temp file without ever leaving HIST_PATH missing:
-     * old -> HISTWR.BAK (stale BAK removed first), temp -> HIST_PATH, BAK back on
-     * failure, BAK dropped on success */
+    /* swap both temp files in, each with the C5 BAK scheme; both renames
+     * happen only after both temps are complete, and a second-rename failure
+     * restores BOTH originals (exit 2 leaves both files unchanged) */
     swapped = 0;
     bak[0] = 0;
     {
@@ -1078,30 +1661,80 @@ static int do_run(const char *pre_dir, const char *hpath)
                 bak[0] = 0;           /* no backup: hpath still in place */
         }
     }
-#ifdef TEST_FAIL_RENAME
-    /* host-only test build: pretend the second rename failed, exercise the restore */
-    remove(tmp);
-    if (swapped)
-        rename(bak, hpath);           /* put the old file back: HIST_PATH unchanged */
-    return 2;
-#else
+    ms_swapped = 0;
+    msbak[0] = 0;
+    {
+        FILE *probe2 = fopen(msname, "rb");
+        if (probe2) {
+            fclose(probe2);
+            bak_of(msname, msbak, sizeof msbak);
+            remove(msbak);
+            if (rename(msname, msbak) == 0)
+                ms_swapped = 1;
+            else
+                msbak[0] = 0;
+        }
+    }
     if (rename(tmp, hpath) != 0) {
         remove(tmp);
         if (swapped)
-            rename(bak, hpath);       /* put the old file back: HIST_PATH unchanged */
+            rename(bak, hpath);       /* put the old file back */
+        free(msname);
+        free(msbak);
+        free(mstmp);
         return 2;
     }
+#ifndef TEST_FAIL_RENAME
+    if (rename(mstmp, msname) != 0) {
+        remove(mstmp);
+        /* restore BOTH: the new history too */
+        remove(hpath);
+        if (swapped)
+            rename(bak, hpath);
+        if (ms_swapped)
+            rename(msbak, msname);
+        free(msname);
+        free(msbak);
+        free(mstmp);
+        return 2;
+    }
+#else
+    /* host-only test build: the second rename behaves as if it failed after
+     * both temps landed: restore BOTH originals, leave no TMP/BAK */
+    remove(mstmp);
+    remove(tmp);
+    remove(hpath);
+    if (swapped)
+        rename(bak, hpath);
+    if (ms_swapped)
+        rename(msbak, msname);
+    free(msname);
+    free(msbak);
+    free(mstmp);
+    return 2;
 #endif
     if (swapped)
         remove(bak);
+    if (ms_swapped)
+        remove(msbak);
+    free(msname);
+    free(msbak);
+    free(mstmp);
     return 0;
 fail:
+    if (ms)
+        fclose(ms);
     if (g)
         fclose(g);
     if (f)
         fclose(f);
     tmp_of(hpath, tmp, 600, TMP_NAME);
     remove(tmp);
+    tmp_of(hpath, mstmp, 600, MS_TMP_NAME);
+    remove(mstmp);
+    free(msname);
+    free(msbak);
+    free(mstmp);
     return 2;
 }
 
