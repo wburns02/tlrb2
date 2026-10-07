@@ -28,9 +28,15 @@ Record offsets (dec, within the 143 B record). u16 is little endian. "hi/lo" = n
 - Pitch4 codes: 0 FASTBALL 1 CURVE 2 CHANGEUP 3 ? 4 SLIDER 5 SCREWBALL 6 SINKER 7 SPLITFINGER 8 FORKBALL 9 KNUCKLEBALL
 - Display letters: day/night A..G = 1..7. Streak letters: stored A7 B5 C8 D6 E10 F4 G9 (other values unmapped).
 Header (295 B) decoded 2026-10-07 (Lane B), evidence = Manager-screen single-edit diffs + MANAGE code (team buffer ptr DAT_2000_c73c):
-- +0 team name (14), +14 league code (2, "cl"), +16 stadium stem (8, "BALgrass"), +24 ext (3, "CFG"), +27.. zeros to +43.
-- +44..+91 (48 B): two 24 B tables or 8 triples (a,a,b) / (x,y,z), differ per team, copied by MANAGE FUN_1000_f120 into DGROUP
-  arrays 0x4f89/0x4fb9 (computer-manager/advice tables). Not edited by any screen. Meaning open.
+- +0 team name (14, 13 chars + NUL), +14 league code (2, "cl"), +16 team abbreviation (3, 'KC' NUL padded), +19 stadium stem (8 B,
+  NUL terminated, the file STADIUMS/<STEM>.CFG/.SDM on the CD: 'grass', 'TURF', 'ASTRO', 'COMISKEY'; bytes after the NUL are stale,
+  e.g. 'CFG'), +27.. zeros to +43. (Earlier note "+16 stadium stem BALgrass" was wrong: 'BAL' is the abbreviation.)
+  Proved 2026-10-06 session 3: Edit Team Names changes +0 and +16 (MAJ too), Assign Stadiums changes +19 only ('grass' -> 'ASTRO'),
+  outside edit with tools/v20.py shows on the Edit Team Names / Assign Stadiums (Oakland Coliseum) / Team Colors screens.
+- +44..+91 (48 B) TEAM COLORS: main color 8 shades x (r,g,b) at +44, accent color 8 shades at +68; VGA DAC 6 bit values (0..63), light to
+  dark. Edit Team Colors writes all 48 B when a swatch is clicked (main swatch #4 = (25,24,36)..(4,3,15), accent swatch #7 =
+  (63,35,30)..(13,1,0); classic Baltimore main black (8,8,8)..(3,3,3), accent orange (63,23,0)..). tools/v20.py Team.colors()/set_colors().
+  (The old guess "computer-manager tables copied by MANAGE FUN_1000_f120" is the colour block: f120 copies it into DGROUP 0x4f89/0x4fb9.)
 - +38 u8 wins, +39 u8 losses (season record; BACK writes them at Main > QUIT, Start New Season zeroes them).
 - +108 u8 team "last day aged" for MANAGE (1000:ce08 loops from this to MAJ+0x20a and ages byte 24 of players 0..39).
   BACK also writes the day index of the team's last game here (189 for a team that finished the regular season, 211 for WS finalists).
@@ -86,7 +92,27 @@ Old-format MAJ = 58789 B; UTIL 4000:74ad upgrades 0xE625 to 0xE97B.
   - Results, 244 days x 32 B (first 16 B = per-game values in schedule order): +0x1607 runs (away, home pairs), +0x3487 hits (likely),
     +0x5307 errors (likely). Checked against the in-game Game Scores screen for April 9 (Cle 4 Bal 0, Tor 4 Det 8, Min 2 Mil 6, KC 1 Oak 5, Tex 6 Sea 1).
   - +0x7187 u16 per day game-played bitmask (bit7 = game 0; 0xf8 = 5 games).
-  - +0x132b..0x1607 bitmaps and 5 B rows, not decoded.
+  - +0x132b / +0x141f / +0x1513: three 244 B arrays, one byte per day, bit 0x80>>g = game slot g of that day (decoded session 3 from
+    BACK 1000:5bfe/5a65/rain code and MAIN 6000:0ba2, checked against m3_end data):
+      +0x132b DOUBLEHEADER flag: slot g plays twice. Second game's runs/hits/errors are in the second 16 B half of the 32 B day row
+        (offset 16 + 2g), its played bit in the second byte of the +0x7187 u16. Template has a few (3 bits in classic); BACK's rain
+        code (1000:5c...) turns a game into a makeup doubleheader (random < table at DS:0x12a[month], not for teams flagged at +0x29b[team&15],
+        which stay 0 in classic): it clears the game from the day row, flips the flag of the same pairing on day+1 and clears its night bit.
+      +0x141f CANCELLED flag: a set bit makes the sim skip the game (all 0 in classic).
+      +0x1513 NIGHT game flag, randomised when a season is set up (MAIN 6000:0ba2): day%7 in {0,1} never, 3 -> 80%, 4 -> 66.7%, else always,
+        and never for doubleheader slots. All playoff days 0xff.
+    Per-game result cells: runs (+0x1607), hits (+0x3487), errors (+0x5307) hold (away, home) byte pairs per slot, copied from BACK's game
+    record 0x1beb/0x1bec runs, 0x1bed/0x1bee hits, 0x1bef/0x1bf0 errors by BACK 1000:5a65.
+  - +0x7187 u16 per day: byte0 bit = game 1 of slot g played, byte1 bit = doubleheader game 2 played.
+  - Names/IDs of the 16 team slots (slot = division*8+i, 15 = all-star team, 7 unused), decoded session 3 with Edit Team Names:
+      +0x00 league name (15 B, NUL terminated; the stale " LEAGUE" text behind it is leftover), +0x0f team entries 16 B each (name 14 B
+      + league code 2 B "cl") up to +0x10f, +0x18f 3 B abbreviations x16 ('KC' padded), +0x1d7 8 B file stems x16 ("clasale1" is the
+      V20 name TEAMS/CLASSIC/CLASALE1.V20 without extension, "ALLSTAR1" in slot 15).
+    Proof: names/abbr/league name edited in the game land in MAJ AND the team's V20 (+0, +16); a MAJ edit with tools/maj.py shows on
+    the Edit Team Names screen. Edit Team Names changes nothing else.
+  - +0x35b: 1 in the AL block, 0 in NL, never changes (unknown).
+  - Global +0x20c/+0x20d = number of leagues / divisions per league. Setup Leagues "# OF DIVISIONS 2 -> 1 (clear the West)": 0x20d 2->1,
+    AL west count (S+0x299) 7->0, NL west count 6->0, first byte of every west team name entry/abbr/stem zeroed, day idx 0x20a -> 0xf3.
 - Tail 128 B at 0xe8fb: 8 entries x 8 u16, static park-factor-like data (1503, 468, 45, 177, 860, 1424, 177, 10000). Never changed by any sim.
 - Start New Season diff (m3_end vs after, 2302 runs): +0x20a 0xf3 -> 7, 0x214..0x218 <- template, +0x21c <- 0x6a, standings, results
   and playoff data zeroed, schedule rows rewritten from the .SCH. No other MAJ bytes change. DH and injury choices are not in

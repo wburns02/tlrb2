@@ -54,6 +54,7 @@ TWIN = {'age', 'salary', 'portrait', 'speed', 'consist', 'exper', 'pos1', 'pos2'
         'p_streak_v', 'p_clutch', 'p_daynight', 'pickoff', 'release', 'q1', 'q2', 'q3', 'q4', 'bats', 'throws', 'flag3'}
 
 # Header layout (295 B), decoded by Lane B 2026-10-07 from Manager-screen diffs + MANAGE code (see notes/FORMATS.md)
+H_COLOR = 44
 H_DAY, H_STAFF, H_LINEUP, H_DEF, H_BENCH, H_RESERVE, H_STRAT = 0x6c, 111, 122, 158, 194, 222, 245
 STRAT = ['lineup_speed_power', 'lineup_def_hit', 'lineup_end_era', 'pitch_yank', 'pitch_pinch', 'pitch_around',
          'bat_sac', 'bat_squeeze', 'bat_hitrun', 'def_walk', 'def_infield', 'def_pitchout',
@@ -126,7 +127,20 @@ class Team:
     @property
     def league_code(self): return self.header[14:16].decode('latin-1')
     @property
-    def stadium(self): return cstr(self.header[16:24]) + ('.' + cstr(self.header[24:27]) if self.header[24] else '')
+    def abbr(self): return cstr(self.header[16:19])                 # 3 B, e.g. 'BAL' ('KC' is NUL padded)
+    @property
+    def stadium(self): return cstr(self.header[19:27])              # 8 B stem of STADIUMS/<STEM>.CFG, e.g. 'grass', 'ASTRO' (bytes after the NUL are stale)
+    def set_name(self, n): self.header[0:14] = n.encode('latin-1')[:13].ljust(14, b'\0')
+    def set_abbr(self, a): self.header[16:19] = a.encode('latin-1')[:3].ljust(3, b'\0')
+    def set_stadium(self, st): self.header[19:27] = st.encode('latin-1')[:8].ljust(8, b'\0')
+    def colors(self):
+        """(main, accent): each 8 shades of (r,g,b) VGA 6-bit values 0..63 at header +44 (main) and +68 (accent), light to dark."""
+        h = self.header
+        return tuple([tuple(h[o + 3 * i:o + 3 * i + 3]) for i in range(8)] for o in (H_COLOR, H_COLOR + 24))
+    def set_colors(self, main=None, accent=None):
+        for o, c in ((H_COLOR, main), (H_COLOR + 24, accent)):
+            if c is not None:
+                assert len(c) == 8; self.header[o:o + 24] = bytes(v & 63 for rgb in c for v in rgb)
     # --- header lists (indices are player record numbers 0..39; 0xff = empty slot) ---
     def staff(self): return list(self.header[H_STAFF:H_STAFF + 10])          # 5 starters in rotation order, 5 relievers
     def lineup(self, dh, vs_rhp):
@@ -208,12 +222,13 @@ def main(argv):
     cmd = argv[1]
     if cmd == 'dump':
         t = Team.load(argv[2])
-        print(f'team={t.name!r} league={t.league_code!r} stadium={t.stadium!r}')
+        print(f'team={t.name!r} league={t.league_code!r} stadium={t.stadium!r} abbr={t.abbr!r}')
         for i, p in enumerate(t.players):
             if p.active and (len(argv) < 4 or int(argv[3]) == i): print(f'[{i}] ' + describe(p))
     elif cmd == 'hdr':
         t = Team.load(argv[2]); nm = lambda i: t.players[i]['last'] if i < 40 else '--'
-        print(f'team={t.name!r} league={t.league_code!r} stadium={t.stadium!r} day={t.header[H_DAY]}')
+        print(f'team={t.name!r} league={t.league_code!r} stadium={t.stadium!r} abbr={t.abbr!r} day={t.header[H_DAY]}')
+        print('colors   ', t.colors())
         print('staff    ', [nm(i) for i in t.staff()])
         for dh in (0, 1):
             for v in (0, 1):
