@@ -42,3 +42,14 @@ UTIL	1000:9c3c	stat_total_bases	Lane B4: helper
 UTIL	1000:9d04	slg_per_mille	Lane B4: helper
 UTIL	1000:9cc5	ba_per_mille	Lane B4: helper
 UTIL	1000:9d43	obp_per_mille	Lane B4: (H+BB)/(AB+BB)
+BB	6000:7e7b	log_event_writer	Lane B5: writes 6 B event at row*0x6c+slot*6; code read + game 2 decode
+BB	6000:7e65	log_row_counter_inc	Lane B5: if buf[0x12c0]<0x12 then ++; row count 7 matches game 2
+BB	6000:3407	merge_game_stats_into_player_records	Lane B5: static, sums RTO arrays 0x690/0x6b8
+BB	6000:8100	apply_play_result_to_player_stats	Lane B5: caller of log writer, static
+BB	6000:3c2b	update_rest_injury_and_wl	Lane B5: static (0x13f byte)
+BB	7000:da0a	load_portrait_by_rec_idx_1b	Lane B5: static
+BB	7000:0346	log_play_to_scorefile	Lane B5: static
+UTIL	5000:ea5e	assign_random_portrait_index	Lane B5: static
+MAIN	4000:e968	settings_to_game_buffer	Lane B5: SYSTEM to GAME.TMP, music byte 7436=SYSTEM+0x1a
+MAIN	4000:eae4	game_buffer_to_settings	Lane B5: GAME.TMP to SYSTEM
+UTIL	1000:9e5f	era100	Lane B5: verified against salary data

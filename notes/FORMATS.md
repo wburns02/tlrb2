@@ -210,3 +210,23 @@ Side 0 = VISITOR, side 1 = HOME everywhere in this block (the stems at 7169 are 
   and writes SYSTEM at game start, so the next game starts with the last used rules. Night is not persisted. That is why early single-switch runs looked like "no effect".
 - The play log: bytes 0..4799 are 60 x 80 B? of small counters (the saved game has 01/02 at 0,1,80,81,260,305,...), 4800..4821 and 4822..6762 6-byte entries
   `ff ff ff 00 00 00` when empty; not decoded (needs a long saved game with a known box score).
+
+## GAME.TMP session 5 (Lane B5): play log, accumulators, ALLTIME.BOX, rules bits
+Buffer offset == file offset in GAME.TMP (7446 B). tools/lane_b/gt_log_decode.py decodes and self-checks against the game 2 box score (snaps/s5_g2.ALLTIME.BOX).
+
+ALLTIME.BOX record (post-game box score SAVE button): 7196 B = 2 byte header (0e 00 seen) + buffer bytes 0..7193. Writer address not located.
+
+Play log (scoring half-inning log):
+- 18 rows x 108 B at 0x12d3, each 18 events x 6 B. Row counter at 0x12c0 (cap 0x12). Rows 0..cnt-1 are scoring half-innings, row cnt is the tail row holding the latest events. Empty event = 00 00 00 ff ff ff.
+- Row advances when the batting side's run total (0x1beb visitor, 0x1bec home) changed after the play step. Verified: game 2 (CAL 3, BAL 5) gives cnt 7.
+- Event: b0 bit0 = batting side (1 home), b0>>1 = fielding pitcher id. b1 = batter id<<2 | hand split. b2 = result code (table not decoded; 0x1f probably HR). b3..b5 = runners on 1B/2B/3B before the play, id | adv<<6, ff empty. Runner at base j (0 = first) scores if j+adv >= 3.
+- Writer BB 6000:7e7b (row = buf + [0x12c0]*0x6c + slot*6), counter bump BB 6000:7e65, callers 6000:75fb and 6000:8100.
+
+Accumulators (visitor team only, 40 slots by player id):
+- Pair arrays at 440+80k, index 2*id+split: k0 AB, k1 H, k2 2B, k3 3B, k4 HR, k5 BB, k6 SO, k13 E. k7, k8, k11, k12 unknown (SB/CS candidates). Single bytes: 0xf0 R, 0x118 RBI.
+- Game 2 sums over all 40 slots match the CAL box totals: AB30 H4 2B1 HR2 BB3 SO4 E1.
+
+Ground rules bits: 7444 low 3 bits = visitor AUTO (bit0 fielding, bit1 throwing, bit2 running, 1 = yes), 7445 low 3 bits = home AUTO. Upper bits constant (0x68, 0xc0). Proven with 0x6f and 0x6a runs. 7436 music = SYSTEM+0x1a. MAIN 4000:e968 maps SYSTEM to buffer, 4000:eae4 maps buffer to SYSTEM. SYSTEM persists the last rules.
+
+Salary: no missing term; era100 (UTIL 1000:9e5f) verified, outliers are twin records.
+Portrait index (static only): UTIL 5000:ea5e assigns it, BB 7000:da0a loads by record idx 0x1b. RTO pair u16@90/92 is summed by BB 6000:3407 from arrays 0x690/0x6b8. Exhibition games do not merge into player records, so no in-game confirmation yet. +0x85 counter unresolved.

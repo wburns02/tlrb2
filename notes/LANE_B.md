@@ -1,17 +1,17 @@
 # Lane B (dynamic) status
 
-## Status 2026-10-06 (fourth Lane B session)
-Done (evidence in FORMATS.md "GAME.TMP session 4", code names in lane_names.tsv)
-- GAME.TMP lineup/defense/pitching block fully decoded (6763..7139, side 0 visitor, side 1 home); tools/lane_b/gt_decode.py verifies it against V20 headers on 14 captured runs.
-- Ground Rules found: GAME.TMP 7428..7439 (pipes, errors, injuries, stats, one pitch, replays, sound, voice/crowd, music, quick off field, scrolling, animation speed), DH at 7193, night at 7143.
-  Persisted by MAIN in SYSTEM bytes 8..0x19. Static (BB 7000:24b0, 7000:231f) and dynamic (single-switch diff runs from an all-YES baseline) agree.
-- "Overall rating" is the salary (record +25). tools/ratings.salary(): batters 1185/1188 exact, pitchers 772/792 (rest off by 2..6 or a few outliers).
+## Status 2026-10-07 (fifth Lane B session)
+Done (evidence in FORMATS.md "GAME.TMP session 5", addresses in lane_names.tsv)
+- Play log decoded: scoring-half-inning log, 18 rows x 108 B at 0x12d3, 6 B events (side, pitcher, batter+split, result, runners). Writer BB 6000:7e7b, row counter BB 6000:7e65. Verified on game 2 (CAL 3, BAL 5: 7 scoring rows) via ALLTIME.BOX record and a game 3 RAM time series. tools/lane_b/gt_log_decode.py self-test passes.
+- Accumulator arrays (visitor team only) mapped for AB, H, 2B, 3B, HR, BB, SO, E, R, RBI. Sums match the CAL box score exactly.
+- ALLTIME.BOX record format: 2 B header + buffer 0..7193 (7196 B).
+- Salary: no missing term, outliers explained by twin records.
+- Visitor auto bits: 7444 low 3 bits (home 7445), proven by runs. Music byte 7436 = SYSTEM+0x1a, mapped by MAIN 4000:e968 / 4000:eae4.
 Open
-- GAME.TMP play log (bytes 0..4799 counters, 4822..6762 six byte entries) not decoded; needs a saved long game with a known box score.
-- Salary: pitcher 2..6 off residual (likely ERA or truncation detail), 3 batter and 4 pitcher outliers.
-- Player record u16@27, u16@90/92, +0x85 counter (task 4 not started; earlier searches found no hit in this struct).
-- Visitor auto-play bits 7444/7445, source of music byte 7436 in SYSTEM; header +237..244 labels; NL SCH row order.
+- Result-code table (b2), arrays k7/k8/k11/k12 (SB/CS?), RTO numerator/denominator (u16@90/92), +0x85 counter.
+- Portrait index and RTO merge are static only; exhibition games do not merge to player records, need a season game.
+- Address of the box score SAVE (ALLTIME.BOX writer) not located.
 Next
-- Chase the pitcher residual by single-stepping f697 on one miss (Carlton 5934 vs 5939). Then task 4 via debugger watchpoints on a record.
-Code addresses (BACK DGROUP 2c71 unless noted): see session 3 list in git history plus lane_names.tsv; new this session: BB 7000:231f, 7000:24b0, UTIL 5000:f382/f697/a5aa/a719/f687, 1000:9e5f/9ab9/9ae2/9bea/9c3c/9d04/9cc5/9d43.
-State: my DOSBox-X killed; work SYSTEM restored from snaps/m3_base.
+- Decode b2 with a game of known play-by-play, then play a season game to confirm 6000:3407 and the portrait index.
+State: no dosbox-x running; work install SYSTEM, CONTROL, GAME.TMP restored from snaps/m3_base; ALLTIME.BOX moved to snaps/s5_work_ALLTIME.BOX.moved.
+Confirmed code addresses: BB 6000:7e7b, 6000:7e65 (dynamic); BB 6000:3407, 6000:8100, 6000:3c2b, 7000:da0a, 7000:0346, UTIL 5000:ea5e (static); MAIN 4000:e968, 4000:eae4; UTIL 1000:9e5f.
