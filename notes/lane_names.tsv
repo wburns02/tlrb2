@@ -25,3 +25,5 @@ UTIL	1000:b82f	calc_speed_rating	Lane B s3: batter speed (rec+29 hi) from SB-2CS
 UTIL	1000:a478	per_mille_ratio_rounded	Lane B s3: (num*1000 + den/2)/den, 16 bit, 0 if den 0
 UTIL	5000:e298	import_player_recompute_ratings	Lane B s3: finds roster slot by import id (rec+141), recomputes ratings when rec+140 hi nibble is 0
 UTIL	5000:e477	recompute_po_a_and_all_ratings	Lane B s3: PO1/A1 = table(pos)*G/130 (ds:7a14, 7a28) then writes the six fielding/batting ratings
+MAIN	4000:d07d	write_game_tmp	Lane B3: writes GAME.TMP (7446 B, also the 1.SAV format) before handing off to BB; snap diffs + code read, FORMATS.md
+BB	6000:c4da	read_game_tmp	Lane B3: reads GAME.TMP at BB start; FORMATS.md
