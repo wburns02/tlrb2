@@ -41,7 +41,11 @@ and teams exactly as in P1 (sorted *.V20 order, records 0..39).
 Header, 32 B:
 - 0 u8 done flag (same meaning as P1), 1 u16 rng word (same as P1), 3 u8 version = 1
   (a legacy 4-byte P1 file has no byte 3 or 0 there: upgrade in place keeping bytes 0..2)
-- 4 u16 seasons recorded, 6 u16 player entries, 8..31 zero
+- 4 u16 seasons recorded, 6 u16 player entries, 8 u16 start seed of the last roll, 10..31 zero
+  (amended 2026-10-07) Seed rule at roll time: rng word = bytes 1..2; if the file is missing OR the word is 0, the
+  word = BIOS tick count low word (int 1Ah, DX), and 1 if that is 0 (xorshift16 seeded with 0 stays 0 forever: every
+  draw 0, every young player +1 on every rating, every age >= 33 player retires). Bytes 8..9 = the word in effect
+  at the START of the roll, so the gate replays the roll with that seed. Bytes 1..2 = the word after the roll.
 Season table at offset 32: 64 entries x 128 B (8192 B). Entry for season n (1-based) at 32 + (n-1)*128:
 - 0 u16 season_no; 2 u8 champion id; 3 u8 runner-up id (league-global ids, 0xff = unknown)
 - 4 8 B champion team stem, 12 8 B runner-up stem (latin-1, NUL padded)

@@ -23,6 +23,7 @@ REC          equ 143
 HDR          equ 295             ; team header before record 0
 MAX_TEAMS    equ 32
 NAME_LEN     equ 13
+OFF_YEAR     equ 21              ; record byte: year - 1870
 
 entry:
         cld
@@ -298,6 +299,44 @@ pl_loop:
         inc word [pi]
         jmp pl_loop
 pl_done:
+        ; ---- rookie fill pass (P2) --------------------------------------
+        ; Season year byte = any active record's byte 21 (all active players
+        ; aged +1 this roll, so the league year is uniform). Skip the fill
+        ; entirely if no active record exists.
+        mov word [year_byte], 0xFFFF    ; sentinel: none found
+        mov word [fi], 0
+year_scan:
+        mov ax, [fi]
+        cmp ax, 80
+        jae year_scan_done
+        imul ax, ax, REC
+        add ax, HDR
+        mov si, ax
+        add si, team_buf
+        cmp byte [si], 0
+        je year_scan_next
+        mov al, [si+OFF_YEAR]
+        mov [year_byte], al
+        jmp year_scan_done
+year_scan_next:
+        inc word [fi]
+        jmp year_scan
+year_scan_done:
+        cmp word [year_byte], 0xFFFF
+        je  no_fill
+        mov ax, cs
+        add ax, ROOKIE_PARA
+        mov [farptr2+2], ax
+        mov word [farptr2], 0x10
+        mov ax, cs
+        mov ds, ax
+        mov es, ax
+        mov fs, ax
+        mov si, team_buf
+        mov bx, rng_word
+        mov ax, [year_byte]
+        call far [farptr2]
+no_fill:
         mov ax, 0x4200                  ; seek to start
         mov bx, [h]
         mov cx, 0
@@ -329,6 +368,9 @@ h          dw 0
 nteam      dw 0
 ti         dw 0
 pi         dw 0
+fi         dw 0
+year_byte  dw 0
+farptr2    dw 0, 0
 i          dw 0
 j          dw 0
 farptr     dw 0, 0
@@ -343,6 +385,12 @@ BLOB_PARA equ ($ - $$) / 16
 blob_start:
           incbin 'rollover.bin'
 blob_end:
+
+align 16
+ROOKIE_PARA equ ($ - $$) / 16
+rookie_start:
+          incbin 'rookie_fill.bin'
+rookie_end:
 
 align 16
 db STACK_SIZE dup(0)
