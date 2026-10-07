@@ -38,11 +38,17 @@ Will asked for a plan put into effect and run without check-ins. Three workers:
 
 Not in scope while unattended: M4 design (needs Will), any patch to the live install, any push.
 
-## Status 2026-10-06 ~21:00
-- Steps 1-4 done. KB: 5666 functions -> 3269 units, 37 seeds. Z.AI named all 3046 non-seed units (9 errors);
-  merge accepted 1865.
-- Step 6 applied once (Z.AI only): 3471 functions renamed (auto_ prefix, ANALYSIS), 5633 plate comments, 4 functions
-  created, 53 failed (mostly BB/PLAY call targets Ghidra would not turn into functions). Index regenerated.
-- Running: DeepSeek backup on the ~1350 units below 0.6 (run_backup.log). On finish a chain re-merges, re-applies
-  (idempotent) and regenerates, gated on the Ghidra lock file.
-- Still to do: step 8 (fold Lane B / M3 addresses into Ghidra), commit. Step 7 is the DeepSeek backup pass.
+## Status 2026-10-07
+- Steps 1-8 done. KB: 5666 functions -> 3269 units, 37 seeds. Z.AI named all 3046 non-seed units (9 errors);
+  DeepSeek backup (--weak) answered 1332 weak units. Final merge: 1987 accepted, 1852 single, 1162 differ, 205 agree,
+  13 conflict.
+- Applied in two passes: 3692 functions renamed with auto_ prefix (ANALYSIS) plus plate comments; 53 failed (BB/PLAY
+  call targets Ghidra would not turn into functions). 54 Lane B verified names folded unprefixed (fold_names.py,
+  notes/lane_names.tsv).
+- Index after regen3: auto_ 3438, FUN_ 1878, other (seeds, verified, RTL) 317 across the 8 programs.
+- M2 types: /TLRB2 V20Player, V20Header, V20Team defined in all 8 programs (tools/re/structs.py). fold_names.py also
+  applies notes/lane_types.tsv (global buffers/tables) when lanes add rows.
+- Lane B sessions 2..5 committed: M3 season state, ratings formulas, GAME.TMP lineup/rules/play log, salary, ALLTIME.BOX.
+  Lane B6 runs the remaining open items (season game merge fields, result codes, ALLTIME.BOX writer); afterwards fold
+  new tsv rows and regen.
+- M4 not started: needs Will's design review.
