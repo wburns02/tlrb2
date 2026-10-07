@@ -27,6 +27,26 @@ Record offsets (dec, within the 143 B record). u16 is little endian. "hi/lo" = n
   138 hi Q1 lo release. 139 hi Q3 lo Q2. 140 Q4. 141-142 zero. Batters carry default values here.
 - Pitch4 codes: 0 FASTBALL 1 CURVE 2 CHANGEUP 3 ? 4 SLIDER 5 SCREWBALL 6 SINKER 7 SPLITFINGER 8 FORKBALL 9 KNUCKLEBALL
 - Display letters: day/night A..G = 1..7. Streak letters: stored A7 B5 C8 D6 E10 F4 G9 (other values unmapped).
+- 140 hi nibble: "ratings are user-set" flag. 0 in all 3880 shipped players; the import path only recomputes ratings when it is 0. 141-142 u16:
+  import id (matched by UTIL 5000:e298 against the id in an import line), 0 in all shipped players.
+Stats-to-ratings (decoded 2026-10-06 Lane B s3 from UTIL 1000:b02a..b82f, implemented in tools/ratings.py, checked against every shipped player
+with real stats: 99.7% to 100% exact per rating, 2 or fewer misses per ~670, zero-stat bench filler excluded). L+R means both split columns summed.
+Stored in the ratings nibbles listed above. x = integer arithmetic exactly as in the code, see ratings.py for the 16 bit truncations.
+- power (74 lo) = 1 + count of thresholds met by SLG x1000 = (H+2B+2*3B+3*HR)*1000/AB (rounded): 250 275 300 325 350 375 425 450 500 575 700.
+- hit and run (75 lo): x = 10*(4H+2BB-3SO, floored at 0)/(AB+BB). 1 if 0, else 2 + count of (x>1,2,3,4,5,6,7,8,10,12).
+- bunt (74 hi): s=10*(H-2B-3B-HR); x = 20*(s - min(s, 3SO+6HR))/(AB+BB). 1 + count of x>=4 8 12 16 19 21 23 27 31 35 40.
+- speed (29 hi): x = 1000*max(SB-2CS,0)/(H+BB-2B-3B-HR) + 1000*3B/(30*2B) (each rounded), 1 + count of x>=1 2 4 6 9 15 20 25 90 150 240.
+- range (94 hi) and arm (94 lo): per position row (pos1 -> row: C0 1B1 2B2 SS3 3B4 LF/CF/RF5; P, DH and the multi-position codes give 7).
+  range = clamp(1..12, (PO1*a + A1*b + DP1*c - 100*E1, floored 0, + 50*G) / (100*G)); arm = same with (A1*d + DP1*e - 100*E1, + 25*G) / (50*G).
+  Weights (a b c d e): C 140 200 0 500 2500, 1B 67 250 300 200 340, 2B 270 100 100 50 450, SS 320 130 100 133 100, 3B 600 200 200 200 300,
+  OF 350 0 100 4000 3000 (table at UTIL ds:7490, 10 B per row). G is record +23.
+- velocity (134 hi): o = outs = (IP10/10)*3 + IP10%10; x = (507*o + 540*SO - 1080*H if positive else 0, + 20*o) / (40*o), clamp 1..12.
+- control (134 lo): x = max(2, (999*BB + 10*o)/(20*o)); rating = 14 - x if x < 14 else 1.
+- endurance (135 hi): x = (min(CG,20)*G + IP10 + 2*(IP10%10))*10/G, rating = clamp(1..10, (x+50)/100) (about IP per game + CG/10).
+- Not auto-derived: streak, clutch, day/night, pickoff, Q1..Q4, release, pitch4, consistency, experience.
+- When a player is imported, PO1 and A1 are overwritten with PO130[pos]*G/130 and A130[pos]*G/130 (UTIL ds:7a14 and ds:7a28, per 130 games:
+  PO P29 C657 1B982 2B233 3B82 SS189 LF193 CF300 RF206, A P60 C56 1B83 2B317 3B218 SS352 LF4 CF5 RF8), before range and arm are computed.
+- Also found: UTIL 5000:a5aa/f382/f697 compute a 109..9999 "overall" score (pitchers vs batters, scaled by IP/10) used for salary-like value. Not decoded.
 Header (295 B) decoded 2026-10-07 (Lane B), evidence = Manager-screen single-edit diffs + MANAGE code (team buffer ptr DAT_2000_c73c):
 - +0 team name (14, 13 chars + NUL), +14 league code (2, "cl"), +16 team abbreviation (3, 'KC' NUL padded), +19 stadium stem (8 B,
   NUL terminated, the file STADIUMS/<STEM>.CFG/.SDM on the CD: 'grass', 'TURF', 'ASTRO', 'COMISKEY'; bytes after the NUL are stale,

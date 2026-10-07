@@ -13,3 +13,15 @@ BACK	1000:98f3	roll_player_injury	Lane B s3: gated by MAJ injuries flag (AL bloc
 BACK	1000:988f	count_available_players	Lane B s3: counts players of the 40 whose +0x127 record byte nonzero, pos nibble +0x146&0xf==0 (pitcher), DU byte +0x13f == 0 or >0x80 (healthy or rested only)
 DRAFT	2000:ecfd	validate_gm_profile_pcts	Lane B s3: for 32 teams, if V20 hdr+237..243 do not sum to 100 or +244>5, reload preset 0 from ds:10e6 and zero +244
 DRAFT	2000:f6c9	apply_gm_profile_preset	Lane B s3: copies 7-byte preset N (ds:10e6+7N) into hdr+237..243, stores N at +244, N==5 means custom (no copy)
+UTIL	1000:b02a	calc_velocity_rating	Lane B s3: pitcher velocity (rec+134 hi) from outs, SO, H. tools/ratings.py velocity() matches shipped data
+UTIL	1000:b121	calc_control_rating	Lane B s3: pitcher control (rec+134 lo) from BB per outs
+UTIL	1000:b1cd	calc_endurance_rating	Lane B s3: pitcher endurance (rec+135 hi) from IP/G and CG
+UTIL	1000:b29c	calc_arm_rating	Lane B s3: fielder arm (rec+94 lo) from A, DP, E per game, weights ds:7490 row cols 4,5 (jump table cs:3a8 maps pos to row)
+UTIL	1000:b3d8	calc_range_rating	Lane B s3: fielder range (rec+94 hi) from PO, A, DP, E per game, weights ds:7490 cols 1..3
+UTIL	1000:b541	calc_bunt_rating	Lane B s3: batter bunt (rec+74 hi) from singles, SO, HR per AB+BB
+UTIL	1000:b68e	calc_hit_and_run_rating	Lane B s3: batter H&R (rec+75 lo) from H, BB, SO per AB+BB
+UTIL	1000:b74a	calc_power_rating	Lane B s3: batter power (rec+74 lo) from SLG x1000 ladder (auto_ name said OBP, it is SLG: total bases over AB)
+UTIL	1000:b82f	calc_speed_rating	Lane B s3: batter speed (rec+29 hi) from SB-2CS per single+BB plus 3B/2B
+UTIL	1000:a478	per_mille_ratio_rounded	Lane B s3: (num*1000 + den/2)/den, 16 bit, 0 if den 0
+UTIL	5000:e298	import_player_recompute_ratings	Lane B s3: finds roster slot by import id (rec+141), recomputes ratings when rec+140 hi nibble is 0
+UTIL	5000:e477	recompute_po_a_and_all_ratings	Lane B s3: PO1/A1 = table(pos)*G/130 (ds:7a14, 7a28) then writes the six fielding/batting ratings
