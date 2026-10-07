@@ -80,7 +80,7 @@ class Rng:
     """xorshift16, the asm port's exact generator; draw() only called in the age>=36
     retirement branch so draw order matches."""
     def __init__(self, seed=1):
-        self.s = seed & 0xffff or 1
+        self.s = seed & 0xffff          # blob parity: xorshift(0) stays 0
 
     def draw(self):
         s = self.s
@@ -121,9 +121,8 @@ def rollover_player(rec_roster, rec_season, cfg, rng, log):
                 old = _get(rec_roster, off, kind)
                 target = fn(rec_season)
                 new = k_delta(old, target, k)
-                if new != old:
-                    log.append({'rec': rec_roster is not None, 'rating': name, 'old': old,
-                                'target': target, 'new': new})
+                if new != old and log is not None:
+                    log.append({'rating': name, 'old': old, 'target': target, 'new': new})
                 _set(rec_roster, off, kind, new)
     # 4. retirement
     age2 = age + 1
