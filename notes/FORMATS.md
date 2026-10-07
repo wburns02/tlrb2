@@ -229,7 +229,7 @@ Accumulators (session 5 text, visitor only; superseded by session 6 section belo
 Ground rules bits: 7444 low 3 bits = visitor AUTO (bit0 fielding, bit1 throwing, bit2 running, 1 = yes), 7445 low 3 bits = home AUTO. Upper bits constant (0x68, 0xc0). Proven with 0x6f and 0x6a runs. 7436 music = SYSTEM+0x1a. MAIN 4000:e968 maps SYSTEM to buffer, 4000:eae4 maps buffer to SYSTEM. SYSTEM persists the last rules.
 
 Salary: no missing term; era100 (UTIL 1000:9e5f) verified, outliers are twin records.
-Portrait index (static only): UTIL 5000:ea5e assigns it, BB 7000:da0a loads by record idx 0x1b. Session 6 season game left u16@27 and u16@27 twins untouched, so no refutation or confirmation of 0x1b as portrait beyond the static path.
+Portrait index (static only): UTIL 5000:ea5e assigns it, BB 7000:da0a loads by record idx 0x1b. Session 6 season game left u16@27 untouched, so no refutation or confirmation of 0x1b as portrait beyond the static path.
 
 ## Session 6 (Lane B6): season game merge, result codes, ALLTIME.BOX writer
 Season Featured game CLEVELAND 2 at BALTIMORE 1, April 9 (CLASALE3 vs CLASALE1), both computer controlled, snapshots s6_before/s6_after. tools/lane_b/gt_merge_check.py prints per-team field sums of the V20 deltas.
