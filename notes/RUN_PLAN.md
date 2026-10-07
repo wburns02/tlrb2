@@ -50,4 +50,11 @@ Not in scope while unattended: M4 design (needs Will), any patch to the live ins
   counter, accumulator layout for both teams, result-code formulas, ALLTIME.BOX writer BB 6000:c6c1.
 - Lane B7: SAVE confirmed dynamically (append, 2 B header + 7194 B), u16@27 is the portrait index (0..29 generic,
   981..1507 photos), MAJ +0x35b is the injuries flag. Open: a few result codes, byte 29 bit0 (static only).
+- Lane B8: SYSTEM fully mapped (byte 8 DH, 9..0xc pipes/errors/injuries/stats, 14 box-score flags from 0x37), PKWARE
+  DCL streams (tools/dcl.py), SCR/PAL/FNT/small ANM/OVL/OLDPORT rendered by tools/assets.py to
+  /mnt/nvme/tlrb2/assets_png (263 PNGs; BACKGRD.SCR matches the rig pixel for pixel), STADIUMS CFG fence distances,
+  SDM = 1120x444 park panorama. No season save file: SAVE SEASON builds a new league set.
 - M1-M3 done. M4 not started: needs Will's design review.
+- Left (all minor): big replay ANM payloads (HOMERUN, INTRO), SDM palette source, CFG tables past the fences, DH byte
+  dynamic check, result codes 0x4a/0x4b/0x4d/0x51 and class 6/7, byte 29 bit0 (skin tone, static only), 917 FUN_
+  functions with no confident name.
