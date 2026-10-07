@@ -81,7 +81,7 @@ VERY FAST + one-pitch still shows full animations; a game takes >>7 min). Save c
 GAME.TMP 7446 + CLASSIC.MAJ 59771 + CONTROL + SYSTEM. Exhibition games write NO ALLTIME.BOX (confirms
 Lane B's open item; the writer never fires outside season context). gt2_* snaps + per-run strace logs in
 snaps/ and logs2/. Run-to-run state pollution: poll from a fresh baseline, wait for the SECOND CONTROL
-rewrite (pattern 03*), not the handoff. Batch of 6 matchups running overnight into logs2/gt_batch.log.
+rewrite (pattern 03*), not the handoff. Batch of 6 matchups ABORTED: guessed click coords missed the team dialogs (only the proven CAL(435,293)/BAL(600,293) pair works), and full-animation computer games do not finish in 40 min even at cycles=max - game pacing is wall-clock bound. Lane B session 6 superseded the goal by playing a real SEASON featured game (CLE 2 @ BAL 1) and confirming the merge + ALLTIME.BOX writer (see LANE_B.md).
 
 ## .SCH schedule files (observations 2026-10-06, static only; needs a trace to decode properly)
 162_26.SCH 57,176 B: +0 ASCII "162 Games-26 Teams" (16 B + 2 NUL). +0x14 u32 (5e 5d ca 02, unknown; not a
