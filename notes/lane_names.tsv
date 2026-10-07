@@ -1,0 +1,6 @@
+# prog	addr	name	evidence (plate comment). Hand/dynamically verified names folded into Ghidra by tools/re/fold_names.py (USER_DEFINED).
+BACK	1000:95da	streak_after_win	Lane B M3: sets team streak (V20 header +109) after a win; season sim snap diffs, notes/FORMATS.md
+BACK	1000:95fb	streak_after_loss	Lane B M3: sets team streak (V20 header +109) after a loss; season sim snap diffs, notes/FORMATS.md
+BACK	1000:9d84	choose_starting_pitcher	Lane B M3: starter chooser, honors rest bit; staff tables DS:0x180a + team*5 + i + 0x1abb, bullpen +0x1ac5, player record base 0x127 + idx*0x8f
+UTIL	4000:74ad	maj_upgrade_e625_to_e97b	Lane A static + Lane B: upgrades a league .MAJ from 0xE625 to 0xE97B bytes
+MANAGE	1000:ce08	age_players_loop	Lane B M3: aging loop over player records at Start New Season
