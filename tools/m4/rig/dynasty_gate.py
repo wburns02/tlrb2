@@ -100,7 +100,7 @@ def roster_checks(pre, post, full):
     return errs, named
 
 
-def gate_one(n, install, full):
+def gate_one(n, install, full, fill=True):
     rec = {'season': n, 'ok': False}
     t0 = time.time()
     dr = season_sim.Driver(n, install)
@@ -124,7 +124,7 @@ def gate_one(n, install, full):
         dr.log(rec['error'])
         return rec, dr
     seed = rec['seed'] = roll_seed(pre, post)
-    mm = check_roll.compare_dirs(pre, post, seed)
+    mm = check_roll.compare_dirs(pre, post, seed, fill=fill)
     rec['check_roll'] = 'PASS' if not any(mm.values()) else {k: [str(x) for x in v] for k, v in mm.items() if v}
     errs, named = roster_checks(pre, post, full)
     rec['roster_errors'] = errs[:50]
@@ -142,6 +142,7 @@ def main(argv):
     ap.add_argument('--fresh', action='store_true')
     ap.add_argument('--full-rosters', action='store_true')
     ap.add_argument('--install', default=INSTALL)
+    ap.add_argument("--no-fill", action="store_true", help="installed DYNASTY.EXE predates the C4 fill")
     a = ap.parse_args(argv)
     if a.fresh:
         setup_fresh(a.install)
@@ -154,7 +155,7 @@ def main(argv):
     summary = {'started': time.strftime('%Y-%m-%d %H:%M:%S'), 'install': a.install, 'seasons': []}
     ok = True
     for n in range(first, first + a.seasons):
-        rec, dr = gate_one(n, a.install, a.full_rosters)
+        rec, dr = gate_one(n, a.install, a.full_rosters, fill=not a.no_fill)
         summary['seasons'].append(rec)
         json.dump(summary, open(SUMMARY, 'w'), indent=1)
         if not rec['ok']:

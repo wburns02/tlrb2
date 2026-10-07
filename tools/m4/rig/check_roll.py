@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""Compare game rollover output to Python reference byte-for-byte.
+"""Compare one DYNASTY.EXE roll to the Python reference byte-for-byte.
 
-Runs rollover reference on PRE_DIR, compares each .V20 to POST_DIR.
+Runs the dynasty_ref reference (per team: C1 rollover, then C4 rookie fill, one rng stream) on PRE_DIR and
+compares each .V20 to POST_DIR. --no-fill checks a rollover-only DYNASTY.EXE (pre-T2 builds).
 Prints first 20 mismatching offsets per file, exits nonzero on any difference.
 
-Usage: check_roll.py PRE_DIR POST_DIR [--seed N]
+Usage: check_roll.py PRE_DIR POST_DIR [--seed N] [--no-fill]
 """
 import sys
 import os
 import glob
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from m4.rollover import rollover
+from m4.dynasty_ref import roll_league
 
 
-def compare_dirs(pre_dir, post_dir, seed=1):
+def compare_dirs(pre_dir, post_dir, seed=1, fill=True):
     """Run reference on pre, compare V20s to post. Return mismatches dict."""
     import shutil
     ref_out = os.path.join(os.path.dirname(os.path.abspath(post_dir)), 'check_roll_ref')
@@ -22,8 +23,8 @@ def compare_dirs(pre_dir, post_dir, seed=1):
     os.makedirs(ref_out)
 
     # Run reference
-    print(f'Running rollover reference on {pre_dir} with seed={seed}')
-    rollover(pre_dir, ref_out, seed=seed, cfg={'progress': True, 'retire': True})
+    print(f'Running dynasty reference on {pre_dir} with seed={seed} fill={fill}')
+    roll_league(pre_dir, ref_out, seed, fill=fill)
 
     # Compare files
     mismatches = {}
@@ -70,7 +71,7 @@ def main(args):
     post_dir = args[1]
     seed = int(args[args.index('--seed') + 1]) if '--seed' in args else 1
 
-    mismatches = compare_dirs(pre_dir, post_dir, seed)
+    mismatches = compare_dirs(pre_dir, post_dir, seed, fill='--no-fill' not in args)
 
     if any(mismatches.values()):
         print(f'\nFAIL: {len(mismatches)} files with mismatches')
