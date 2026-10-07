@@ -9,3 +9,17 @@ BB	DS:ab4b	byte	result_code	Lane B6: b2 of the 6 B play-log event, values observ
 BB	DS:aa2a+0x1bf4	byte	game_flag_no_merge	Lane B6: merge runs only when 0 (0 in a season Featured game)
 BB	DS:aa2a+0x1bf5	byte	game_complete	Lane B6: 0->1 at end of game (RAM time series), gates box score SAVE
 BB	DS:aa2a+0xf0	word[2][...]	team_accumulators	Lane B6: per team block stride 0x8e8, 40 slots by id; singles and 2*id+split pair arrays, see FORMATS.md session 6
+BB	DS:ab3b	byte	batted_ball_is_fly	Lane B7 dynamic: 0 grounder, 1 fly; selects ground/fly out code families
+BB	DS:ab3d	byte	play_class	Lane B7 dynamic: 0 single, 1 double, 2 triple, 3 HR, 4 walk/HBP, 5 K, 6 (no code), 7 in play out/error/DP
+BB	DS:ab48	byte	pitch_result_flag_4d	Lane B7: 1 only in the BB 2000:724a branch, class 4 with ab48=1 gives code 0x4d
+BB	DS:ab49	byte	ball_x_lt_0x10_flag	Lane B7 dynamic: pull/opposite flag for fly out codes (0x37 family)
+BB	DS:ab4a	byte	fielder_pos_v20	Lane B7 dynamic: 0 P, 1 C, 2 1B, 3 2B, 4 3B, 5 SS, 6 LF, 7 CF, 8 RF
+BB	DS:3298	byte	error_on_play_flag	Lane B7 dynamic: 1 on the play where an error occurred (codes 0x4a/0x4b)
+BB	DS:35eb	byte	outs_on_play	Lane B7 dynamic: 2 on a ground ball DP (0x4e)
+BB	DS:3be2	char[12]	alltime_box_filename	Lane B7 dynamic: "alltime.box"
+BB	DS:3bee	char[3]	alltime_box_open_mode	Lane B7 dynamic: "ab" (append)
+BB	DS:d6d0	FILE*	portrait_anm_file	Lane B7 static: ANMS\PORTRAIT.ANM, 30 generic faces, frame stride 0xa8c
+BB	DS:d6cc	FILE*	oldport_anm_file	Lane B7 static: OLDPORT.ANM, 528 real-player faces, idx-981
+UTIL	DS:776e	byte[30]	portrait_group_flag_table	Lane B7 static: matched to rec+0x1d&1 when picking a generic face
+UTIL	DS:bfb0	byte[30]	portrait_use_counts	Lane B7 static: least used matching face chosen
+UTIL	DS:9654	byte*	team_player_records_far_ptr	Lane B7 static: record base used by UTIL 5000:ea5e

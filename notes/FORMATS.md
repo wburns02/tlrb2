@@ -9,7 +9,7 @@ Method: single-field edit in Utilities (work install), Main > QUIT is what write
 
 Record offsets (dec, within the 143 B record). u16 is little endian. "hi/lo" = nibble of that byte.
 - 0 last name (12), 12 first name (8), 20 age, 21 year-1870, 22 exp, 23 games, 25 u16 salary
-- 27 u16 unknown. NOT the portrait (changing it left the picture unchanged); a season game did not touch it either (session 6). Looks like a per-player id.
+- 27 u16 PORTRAIT INDEX (session 7, dynamic). 0..29 = generic colour face (ANMS\PORTRAIT.ANM), 981..1507 = real-player b/w photo (OLDPORT.ANM frame idx-981). Proved: all BAL batters set to 1000 showed one identical photo, CAL pitcher set to 3 showed a generic colour face. Twin halves hold the same value except 168 of 2200 pairs. (Session 6 saw no change only because a season game does not touch it.)
 - 29: hi speed. lo: bit3 throws R (0=L), bits2-1 bats (1=R, 2=S, L presumably 0), bit0 third header box (L/D, meaning unknown)
 - 30: hi exper, lo consist. 31: hi pos2, lo pos1. Pos: 0 P,1 C,2 1B,3 2B,4 3B,5 SS,6 LF,7 CF,8 RF,9 DH,10 OF,11 IF,12 O/I,13 C/O,14 C/I,15 C/3
 - 32 R, 33 RBI, 34 SH, 35 SB, 36 CS (u8)
@@ -140,7 +140,7 @@ Old-format MAJ = 58789 B; UTIL 4000:74ad upgrades 0xE625 to 0xE97B.
       V20 name TEAMS/CLASSIC/CLASALE1.V20 without extension, "ALLSTAR1" in slot 15).
     Proof: names/abbr/league name edited in the game land in MAJ AND the team's V20 (+0, +16); a MAJ edit with tools/maj.py shows on
     the Edit Team Names screen. Edit Team Names changes nothing else.
-  - +0x35b: 1 in the AL block, 0 in NL, never changes (unknown).
+  - +0x35b: 1 in the AL block, 0 in NL, never changes. = injuries ON/OFF flag (PROVED, see line above).
   - Global +0x20c/+0x20d = number of leagues / divisions per league. Setup Leagues "# OF DIVISIONS 2 -> 1 (clear the West)": 0x20d 2->1,
     AL west count (S+0x299) 7->0, NL west count 6->0, first byte of every west team name entry/abbr/stem zeroed, day idx 0x20a -> 0xf3.
 - Tail 128 B at 0xe8fb: 8 entries x 8 u16, static park-factor-like data (1503, 468, 45, 177, 860, 1424, 177, 10000). Never changed by any sim.
@@ -229,7 +229,7 @@ Accumulators (session 5 text, visitor only; superseded by session 6 section belo
 Ground rules bits: 7444 low 3 bits = visitor AUTO (bit0 fielding, bit1 throwing, bit2 running, 1 = yes), 7445 low 3 bits = home AUTO. Upper bits constant (0x68, 0xc0). Proven with 0x6f and 0x6a runs. 7436 music = SYSTEM+0x1a. MAIN 4000:e968 maps SYSTEM to buffer, 4000:eae4 maps buffer to SYSTEM. SYSTEM persists the last rules.
 
 Salary: no missing term; era100 (UTIL 1000:9e5f) verified, outliers are twin records.
-Portrait index (static only): UTIL 5000:ea5e assigns it, BB 7000:da0a loads by record idx 0x1b. Session 6 season game left u16@27 untouched, so no refutation or confirmation of 0x1b as portrait beyond the static path.
+Portrait index: u16@27, dynamically proved in session 7 (see Session 7).
 
 ## Session 6 (Lane B6): season game merge, result codes, ALLTIME.BOX writer
 Season Featured game CLEVELAND 2 at BALTIMORE 1, April 9 (CLASALE3 vs CLASALE1), both computer controlled, snapshots s6_before/s6_after. tools/lane_b/gt_merge_check.py prints per-team field sums of the V20 deltas.
@@ -255,3 +255,20 @@ Result code b2 of the 6 B play-log event (assigned in BB 6000:8100 tail 0x8693..
 - Formulas (static): class0 = 0x0c..0x0f (singles), class1 = 0x10+zone (zone ab3a 0..6, doubles; 0x13 = zone 3), class2 = 0x17+zone (triples), class3 = 0x1e+zone (HR; 0x21 = zone 3, center), class4 = 0x49 (walk) or 0x4d (probably HBP), class5 = 0x4c (strikeout), class7 = batted-ball outs 0x25+ab4a (ground), 0x2e+ab4a, 0x37+ab4a, 0x40+ab4a (fly/other groups), 0x0b; overrides 0x4a, 0x4b, 0x51, 0x4e. ab4a 0..8 is probably the fielder position index. The four class7 groups and class6 are not fully separated by this single game; exact ab4a meaning and 0x4a/0x4b/0x4d/0x51 are unverified.
 
 ALLTIME.BOX writer: BB 6000:c6c1 (stub 508c:0025): fopen(DS:3be2 name, DS:3bee mode), fwrite 2 B word 0x000e, fwrite DS:aa2a for 0x1c1a (7194) bytes. Called from 6000:d396 inside the box score menu dispatch 6000:d277 (SAVE; guard buf[0x1bf4]!=3 and buf[0x1bf5]!=0) and a twin at 6000:e476. Static only; the SAVE button was not pressed in session 6 (no new ALLTIME.BOX), the file layout matches the session 5 file. In the season game flags were buf[0x1bf4]=0 and buf[0x1bf5]=1 at end.
+
+## Session 7 (Lane B7): box score SAVE, result codes, portrait index
+
+ALLTIME.BOX SAVE, dynamic. Box score SAVE button (390,592) after a season Featured game: DOSBox log shows seek to end, "Writing 2 bytes", "Writing 7194 bytes". File opened with name DS:3be2 "alltime.box", mode DS:3bee "ab" (append). Record = u16 0x000e + 7194 B copied from the game buffer (far ptr at DS:aa2a, GAME.TMP layout); two live host copies of the buffer matched file bytes [2:7196] with 0 diffs. A second SAVE click appended an identical record (7196 -> 14392 B). DONE afterwards wrote the season files. Writer BB 6000:c6c1.
+
+Portrait index = V20 player record u16@27 (+0x1b). BB 7000:da0a: idx < 0x3d5 (981): fseek(FILE DS:d6d0 portrait.anm, idx*0xa8c+0xe); idx >= 0x3d5: fseek(FILE DS:d6cc oldport.anm, (idx-0x3d5)*0xa8c+0xc); then fread 0xa80 B (56x48 bitmap), remap, blit. Files opened by BB 7000:d9a3. Callers 7000:be90 (stats modal), 7000:c8d0 (player report), 7000:d387 (scouting). Play screen shows the batter portrait bottom left and pitcher bottom right (those use it). Dynamic proof: see u16@27 line in the player record layout.
+Byte 29 (+0x1d) bit0 = portrait group flag (static only, not dynamically tested): UTIL 5000:ea5e picks a generic face whose flag in UTIL DS:776e equals rec+0x1d & 1, least used first (counts UTIL DS:bfb0). Probably light/dark skin tone. 776e = 00 00 00 01 01 00 00 00 00 00 00 00 00 00 00 00 01 00 01 00 01 01 01 00 00 01 00 01 00 00. Record copy to next-season twin copies +0x1b/+0x19 (UTIL 5000:9cd5, MAIN 5000:f1ce, DRAFT 1000:5589); blank record init sets +0x1b=0 (UTIL 5000:e89d).
+
+Result codes (ab4b), observed in 3 more exhibition games (~2170 events, tools/lane_b/rc_sniff.py, rc_games.sh, rc_summarize.py) in addition to session 6:
+- Class (ab3d) is drawn in BB 2000:3744 as the first of 7 cumulative per-mille ratings (built in 2000:3124) above a random 0..999, else 7. Class 6 (the 7th slot) never sets a code (seen only as a transient with ab4b=0xff).
+- CONFIRMED singles class0: 0x0c (zone<2, fielder LF/CF/RF), 0x0d (zone 2..4), 0x0e (zone 5+), 0x0f (infield single, ab4a<6).
+- CONFIRMED doubles 0x13..0x16 (class1 = 0x10+zone, zones 3..6 seen), HR/class3 0x1f..0x24 (0x1e+zone; 0x21 = zone 3, 0x22 = zone 4). Triples class2 0x17+zone: NOT observed (rare).
+- CONFIRMED class7 outs: ground out 0x25+ab4a (0x25 P, 0x27..0x2a for 1B..SS), fly out ab49=0: 0x2e+ab4a for ab4a<6 (0x30..0x33), ab49=1 (ball x<0x10): 0x37+ab4a (0x37 P, 0x3c SS), ab4a>=6: 0x40+ab4a (0x46 LF, 0x47 CF, 0x48 RF).
+- CONFIRMED 0x49 = walk (class 4, ab48=0), 0x4c = strikeout (class 5), 0x4d = class 4 with ab48=1 (the ab48=1 pitch result branch at BB 2000:724a; hit-by-pitch or intentional walk, which of the two not separated), 0x4e = ground-ball double play (class 7, ground, 2 outs on the play, DS:35eb == 2), 0x4a = class 7 batter-reaches-on-error (DS:3298 = 1, base index 1 -> 0x4a, zone 2/ab4a 5 seen), 0x4b = same with the second base index (zone 1, ab4a 6 seen; mapping base index to 0x4a/0x4b/0x51 is static, 0x51 NOT observed).
+- 0x4f = runner thrown out advancing (class 7 fly, observed twice), 0x52 = lineup change event (class 255 reset state, observed once), 0x08 = sacrifice (class 7, fly, observed once).
+- NOT observed: 0x03..0x07, 0x09, 0x0a (steals, CS, PB, WP, sac variants), 0x0b, 0x50, 0x51, triples. Static meaning only, see session 6 and the notes in BB 6000:8100.
+- ab4a = fielder position in V20 numbering (0 P, 1 C, 2 1B, 3 2B, 4 3B, 5 SS, 6 LF, 7 CF, 8 RF); ab49 = ball x < 0x10 flag; ab3b = fly flag; DS:3298 = error on this play; DS:35eb = outs on this play.

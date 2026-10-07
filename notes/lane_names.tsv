@@ -47,16 +47,29 @@ BB	6000:7e65	log_row_counter_inc	Lane B5: if buf[0x12c0]<0x12 then ++; row count
 BB	6000:3407	merge_game_stats_into_player_records	Lane B5: static, sums RTO arrays 0x690/0x6b8
 BB	6000:8100	apply_play_result_to_player_stats	Lane B5: caller of log writer, static
 BB	6000:3c2b	update_rest_injury_and_wl	Lane B5: static (0x13f byte)
-BB	7000:da0a	load_portrait_by_rec_idx_1b	Lane B5: static
 BB	7000:0346	log_play_to_scorefile	Lane B5: static
-UTIL	5000:ea5e	assign_random_portrait_index	Lane B5: static
 MAIN	4000:e968	settings_to_game_buffer	Lane B5: SYSTEM to GAME.TMP, music byte 7436=SYSTEM+0x1a
 MAIN	4000:eae4	game_buffer_to_settings	Lane B5: GAME.TMP to SYSTEM
 UTIL	1000:9e5f	era100	Lane B5: verified against salary data
-BB	6000:c6c1	write_alltime_box_file	Lane B6 static: fopen DS:3be2 mode DS:3bee, fwrite word 0x000e then DS:aa2a buffer 0x1c1a B (matches s5 ALLTIME.BOX 7196 B); stub 508c:0025; not re-run dynamically in s6
 BB	6000:d277	boxscore_menu_dispatch	Lane B6 static: box score button handler, calls c6c1 at 6000:d396 when buf[0x1bf4]!=3 and buf[0x1bf5]!=0 (SAVE)
 BB	6000:e476	boxscore_save_call_twin	Lane B6 static: second call of write_alltime_box_file in the function near 6000:e3c1
 BB	6000:7190	run_full_game_loop	Lane B6 static+dynamic: sets buf[0x1bf5]=1 at game end (seen 0->1 in RAM), then if buf[0x1bf4]==0 calls merge twice (team arrays DS:aa4a then aa46); stores buf+0x1bf8 u16 from 6000:7c19 and +0x1bfa u32 from 6000:7c83
 BB	6000:3407	merge_game_stats_into_player_records	Lane B6 dynamic CONFIRMED: season game CLE 2 BAL 1 deltas in CLASALE3/CLASALE1 V20 equal box score and game-buffer arrays; V20 files written on BB exit, not at game end
 BB	6000:8100	apply_play_result_to_player_stats	Lane B6 dynamic: tail 0x8693..0x87f5 assigns result code ab4b via jump table 6000:8810 keyed by class ab3d, then log_event_writer(ab4b,ab4c); observed codes agree (HR 0x21, BB 0x49, K 0x4c, singles 0x0c-0x0f, 2B 0x13, GB outs 0x27-0x2a, fly outs 0x30-0x33)
 BB	1000:f98c	auto_classify_screen_x_zone	Lane B6 static: sets ab3a to hit-location zone 0..6; hit result code = base + ab3a
+BB	6000:c6c1	write_alltime_box_file	Lane B7 dynamic CONFIRMED: SAVE appends (mode "ab") 2 B header 0x000e + 7194 B of DS:aa2a buffer; file 7196 B, second SAVE 14392 B
+BB	7000:da0a	load_portrait_by_rec_idx_1b	Lane B7 dynamic CONFIRMED: u16@27 portrait index; edited V20 portraits change the play-screen faces
+BB	7000:d9a3	open_portrait_anm_files	Lane B7 static: fopen "anms\portrait.anm" (DS:7246) and "oldport.anm" (DS:725b) into DS:d6d0/d6cc
+BB	7000:be90	player_stats_modal_draw_portrait	Lane B7 static: caller of 7000:da0a
+BB	7000:c8d0	player_report_dialog_draw_portrait	Lane B7 static: caller of 7000:da0a
+BB	7000:d387	scouting_report_modal_draw_portrait	Lane B7 static: caller of 7000:da0a
+UTIL	5000:ea5e	assign_random_generic_portrait	Lane B7 static: writes rec+0x1b (0..29), group flag table UTIL DS:776e matched to rec+0x1d&1, least used first (counts DS:bfb0)
+UTIL	5000:e89d	init_blank_player_record	Lane B7 static: zeroes 0x8f B, +0x1b=0
+UTIL	5000:9cd5	copy_player_record_to_next_season_twin	Lane B7 static: copies +0x1b/+0x19, increments +0x15/+0x16
+MAIN	5000:f1ce	copy_player_record_to_next_season_twin_variant	Lane B7 static: same copy pattern as UTIL 5000:9cd5
+DRAFT	1000:5589	copy_player_record_to_next_season_twin_variant	Lane B7 static: same copy pattern as UTIL 5000:9cd5
+MAIN	4000:d96f	roll_injury_duration_gated_by_maj_35b	Lane B7 static: cmp byte [es:bx+0x35b],0 at 0xdaee, duration clamp 2..14 into rec+0x18
+BB	2000:3744	auto_pick_weighted_play_class	Lane B7 static: first of 7 cumulative per-mille ratings above rand 0..999, else 7 (class ab3d)
+BB	2000:3124	auto_compute_player_game_ratings	Lane B7 static: builds the 7 cumulative class ratings from batter/pitcher fields
+BB	1000:e059	attempt_advance_runner	Lane B7 static: writes ab4b=0x4f when runner thrown out advancing (0x4f seen dynamically)
+BB	6000:75fb	auto_run_at_bat_play_loop	Lane B7 static: resets ab4b=0xff at the start of each play

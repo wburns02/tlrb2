@@ -1,5 +1,18 @@
 # Lane B (dynamic) status
 
+## Status 2026-10-07 (seventh Lane B session)
+Done (details in FORMATS.md "Session 7", addresses in lane_names.tsv / lane_types.tsv)
+- Box score SAVE dynamic: appends (fopen "ab") a 2 B header 0x000e + 7194 B of the game buffer to ALLTIME.BOX; byte-identical to the live buffer, second SAVE appends an identical record. BB 6000:c6c1 CONFIRMED.
+- Portrait index PROVED: V20 player u16@27 (0..29 generic colour face, 981..1507 OLDPORT photo). Edited team files changed the play-screen portraits as predicted. Old FORMATS.md "not the portrait" claim removed.
+- Result codes: 3 more games (~2170 events) sniffed live. Confirmed singles 0x0c..0x0f, doubles, HR, outs, walk 0x49, K 0x4c, 0x4d (class 4 with ab48=1), 0x4e DP, 0x4a/0x4b error, 0x4f, 0x52, 0x08. Class 6 = 7th weighted slot, never sets a code.
+- MAJ +0x35b stale "unknown" line fixed (already proved as injuries ON/OFF).
+Open
+- Never observed: triples (0x17..0x1d), 0x03..0x07, 0x09, 0x0a, 0x0b, 0x50, 0x51. Static meaning only.
+- Byte 29 bit0 as portrait group flag (UTIL 5000:ea5e) is static only. Whether 0x4d is HBP or intentional walk is not separated.
+- UTIL 5000:b83f reads +0x1b (0xb8b4, 0xb926), not examined.
+Next: force steals/WP/PB via lineup speed edits, edit byte 29 bit0 plus a generic-face run in UTIL to test the group flag.
+State: no dosbox-x on work/c; work install restored from snaps/m3_base (SYSTEM, CONTROL, GAME.TMP, MAJ, V20s, ALLTIME.BOX removed), diff -rq clean. Saved s7_ALLTIME.BOX and s7_ALLTIME2.BOX in /mnt/nvme/tlrb2/snaps. MCP servers needing auth (Slack, Canva, context7, logfire, sentry, stripe) were unavailable and unused.
+
 ## Status 2026-10-07 (sixth Lane B session)
 Done (details in FORMATS.md "Session 6", addresses in lane_names.tsv / lane_types.tsv)
 - Season Featured game CLE 2 at BAL 1 played; V20/MAJ before and after diffed. BB 6000:3407 CONFIRMED as the merge (all per-field deltas equal the box score); RTO pair u16@90/92 CONFIRMED (90 caught, 92 attempts); +0x85 = appearance counter (= +0x17 in a fresh league); u16@27 not touched (portrait still unproven).
