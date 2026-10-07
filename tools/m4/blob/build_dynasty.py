@@ -16,6 +16,8 @@ STACK = 512
 
 
 def main():
+    subprocess.run(['nasm', '-f', 'bin', '-o', os.path.join(HERE, 'rookie_fill.bin'),
+                    os.path.join(HERE, 'rookie_fill.asm')], check=True, cwd=HERE)
     subprocess.run(['nasm', '-f', 'bin', '-o', IMG, os.path.join(HERE, 'dynasty.asm')],
                    check=True, cwd=HERE)
     image = open(IMG, 'rb').read()

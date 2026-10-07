@@ -560,41 +560,44 @@ class RookieGen:
     # -- ratings + salary -----------------------------------------------------
 
     def _write_ratings(self, rec, position):
-        """Compute ratings with ratings.py and store the nibbles the way
-        shipped records do (verified by round-tripping real records)."""
+        """Compute ratings with ratings.py and store them where the game
+        reads them (FORMATS.md record layout, verified against shipped
+        records): batters 74 hi bunt / lo power, 75 hi streak / lo H&R,
+        76 hi day-night / lo clutch, 94 hi range / lo arm; pitchers 134 hi
+        velocity / lo control, 135 hi endurance / lo pitch4 type, 136..140
+        the personality block. Non-derived nibbles get the shipped modal
+        defaults (streak 7 = letter A, day/night 7 = letter G, clutch 8,
+        pitcher personality 7s, pitch4 = 4 slider). Bytes 59..61 are the
+        per-half live-nibble area, NOT ratings; they stay 0 here."""
         if position == POS_P:
             vel = ratings.velocity(rec)
             ctl = ratings.control(rec)
             endu = ratings.endurance(rec)
-            cls = ratings.pitcher_class(rec)
-            # Shipped layout: ratings nibbles live in the record at the
-            # offsets ratings.py reads them back from. We write via the
-            # same hi/lo helpers ratings.py uses, at the canonical spots:
-            # byte 30 hi = exper, lo = consist (already written); pitcher
-            # velocity/control/endurance/class nibbles are stored in the
-            # rating bytes that ratings.py's readers index. Round-trip
-            # check against real records pins these at bytes 59..62:
-            # 59 hi velocity / lo control, 60 lo endurance, 61 lo class.
-            _set_nibble_hi(rec, 59, vel)
-            _set_nibble_lo(rec, 59, ctl)
-            _set_nibble_lo(rec, 60, endu)
-            _set_nibble_lo(rec, 61, cls)
+            _set_nibble_hi(rec, 134, vel)
+            _set_nibble_lo(rec, 134, ctl)
+            _set_nibble_hi(rec, 135, endu)
+            rec[135] = (rec[135] & 0xF0) | 4      # pitch4: slider (modal)
+            # Pitcher class is computed by the game from stored endurance
+            # + usage (ratings.pitcher_class reads 135 hi); nothing to store.
+            rec[136] = 0x77
+            rec[137] = 0x77
+            rec[138] = 0x77
+            rec[139] = 0x77
+            rec[140] = 7
         else:
             pw = ratings.power(rec)
-            sp = ratings.speed(rec)
             hr_ = ratings.hit_and_run(rec)
             bt = ratings.bunt(rec)
             rg = ratings.rng(rec)
             am = ratings.arm(rec)
-            # Batter rating nibbles, canonical shipped spots (round-trip
-            # verified): 59 hi power / lo hit-and-run, 60 hi speed /
-            # lo bunt, 61 hi range / lo arm.
-            _set_nibble_hi(rec, 59, pw)
-            _set_nibble_lo(rec, 59, hr_)
-            _set_nibble_hi(rec, 60, sp)
-            _set_nibble_lo(rec, 60, bt)
-            _set_nibble_hi(rec, 61, rg)
-            _set_nibble_lo(rec, 61, am)
+            _set_nibble_hi(rec, 74, bt)
+            _set_nibble_lo(rec, 74, pw)
+            _set_nibble_hi(rec, 75, 7)             # streak: letter A (modal)
+            _set_nibble_lo(rec, 75, hr_)
+            _set_nibble_hi(rec, 76, 7)             # day/night: letter G
+            _set_nibble_lo(rec, 76, 8)             # clutch: 8 (modal)
+            _set_nibble_hi(rec, 94, rg)
+            _set_nibble_lo(rec, 94, am)
 
     def _write_salary(self, rec):
         sal = ratings.salary(rec)
