@@ -29,7 +29,7 @@ import check_roll as check_roll_mod
 import v20
 
 
-INSTALL_ROOT = '/mnt/nvme/tlrb2/work/dyn/c'
+INSTALL_ROOT = '/mnt/nvme/tlrb2/work/dyn/c/TONY2'
 LOGS_DIR = Path('/mnt/nvme/tlrb2/logs/t6')
 SUMMARY_PATH = LOGS_DIR / 'gate_summary.json'
 
@@ -69,8 +69,8 @@ def setup_install(fresh=False):
     if not bat_patch.patch(INSTALL_ROOT, revert=False):
         return False
 
-    # Reset HISTORY.DAT
-    hist_path = os.path.join(INSTALL_ROOT, 'HISTORY.DAT')
+    # Reset HISTORY.DAT (in TEAMS/CLASSIC/ per DYNASTY.EXE)
+    hist_path = os.path.join(INSTALL_ROOT, 'TEAMS', 'CLASSIC', 'HISTORY.DAT')
     print(f'Resetting {hist_path}')
     with open(hist_path, 'wb') as f:
         f.write(b'\x00\x00\x00\x00')
@@ -90,8 +90,8 @@ def day_byte(install_root):
 
 
 def history_byte0(install_root):
-    """Read HISTORY.DAT byte 0."""
-    hist = os.path.join(install_root, 'HISTORY.DAT')
+    """Read HISTORY.DAT byte 0 (in TEAMS/CLASSIC/ per DYNASTY.EXE)."""
+    hist = os.path.join(install_root, 'TEAMS', 'CLASSIC', 'HISTORY.DAT')
     try:
         with open(hist, 'rb') as f:
             return f.read(1)[0]
