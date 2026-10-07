@@ -242,9 +242,11 @@ Pipeline (each step over teams in sorted file order unless stated):
      can_play(q) and max Off + Fld(q); if none can play q, the unassigned batter with max Off + Fld(q) - 20. DH =
      unassigned max Off. Backup catcher = unassigned max Fld(1) among can_play(1) (if any). Active 15 = 8 field
      starters + DH + backup C + the rest by S descending up to 15. Ties lowest slot.
-   - Batting order: the 9 starters (8 + DH) sorted by Off descending r1..r9 (ties lowest slot): DH sets r3, r2,
-     r1, r4, r5, r6, r7, r8, r9 with positions; no-DH sets the same order without the DH, 8 entries, then 0xff
-     with position 0 (pitcher). vs-LHP and vs-RHP sets are identical. Bench +194: the other active batters by S
+   - Batting order (slot roles after ClaudeBall's LineupBuilder), picked in turn from the starters, each pick
+     removed, ties lowest slot: #1 max 3*speed + 2*hit_run, #2 max 2*hit_run + speed, #3 max Off, #4 max power,
+     #5 max 3*power + hit_run, #6.. the rest by Off descending. DH sets pick over the 9 starters (8 + DH); no-DH
+     sets pick over the 8 field starters, then 0xff with position 0 (pitcher). Each entry's position byte = the
+     player's assigned position (DH = 9). vs-LHP and vs-RHP sets are identical. Bench +194: the other active batters by S
      descending (no-DH: 7 incl. the DH; DH: 6 then 0xff).
    - Reserves +222..+236: the 6 inactive pitchers by slot, then the 9 inactive batters by slot.
    Repair (managed): every header list entry whose slot changed occupant this offseason (or is vacant) is replaced
