@@ -37,3 +37,23 @@ to it), (3) a DCL encoder (we only have explode; a literal-only encoder is small
 accept it). Pipeline: photo from behind home plate -> img2img retro pass at 1120 x 444 -> quantize to the game
 palette -> DCL encode -> CFG cloned from a similar stock park with the real distances. First proof: re-encode a
 stock SDM losslessly and play a game in it, then swap in one AI panorama. Photos stay out of the public repo.
+
+## From ClaudeBall (~/ClaudeBall, surveyed 2026-10-07)
+Taken: batting-order slot roles (src/engine/ai/LineupBuilder.ts) into C6 step 7. Earlier: trade value bands and
+position weights (TradeEngine), retirement shape (DevelopmentEngine, since superseded by C1).
+Queued:
+- Awards (OffseasonEngine.generateAwards): the set MVP, Cy Young, Rookie of the Year, Gold Glove, Silver Slugger
+  per league. Take the set, not the method: ClaudeBall picks from ratings; ours should pick from season stats and
+  the C3 WAR10 HISTWR already computes. Storage: HISTORY season entry bytes 88..127 (reserved for P4 awards).
+- Milestones (player/CareerEngine.ts MILESTONE_DEFS): career thresholds (500 HR, 3000 H, 300 W, 3000 K, ...) and
+  season marks (40 HR, .300, 20 W, sub-2.00 ERA). HISTWR sees career totals before and after each season, so it
+  can log "reached 3000 hits in season N" for a league-news / history screen.
+- Hidden development trait (DevelopmentEngine work_ethic scales growth, decline and retirement): today every young
+  player has the same expected growth, so every rookie class has the same shape. A per-player grade in record byte
+  142 (zero in every stock record, game use unverified) feeding the C1 drift and retirement odds would give
+  boom/bust prospects and late bloomers. C1 + asm change; decide after the 50-season validation.
+- Historical leagues: ClaudeBall preprocessed Lahman 1900-2019 (public/data/lahman, from the SQLite at
+  /mnt/win11/Fedora/lahman). A Lahman -> V20 + MAJ builder would let any real season be played. Ratings must come
+  from the game's own decoded stat-to-rating formulas (the C1 evidence targets), not ClaudeBall's conversion.
+Not worth taking: its HoF score (counting stats only, ours has WAR/JAWS), position assignment (takes the first
+candidate, not the best), morale/hot-cold/injury/schedule/commentary (the TLRB2 engine has its own).
