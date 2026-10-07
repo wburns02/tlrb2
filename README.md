@@ -36,6 +36,9 @@ Install = DATA1.ARJ extracted to C:\TONY2 (what INSTALL does). The game reads ar
 - Snapshot data before an edit: `~/tlrb2/scripts/snap.sh NAME`; compare team files: `tools/v20.py diff OLD NEW`.
 
 ## Gotchas
+- `pgrep -f`/`pkill -f` also match other sessions' `bash -c` wrappers whose command text merely mentions a script
+  (e.g. a watcher that greps for gh.py). Anchor the pattern to the real invocation (`^bash [^ ]*scripts/regen[.]sh`,
+  `^[^ ]*python3 [^ ]*gh[.]py`) or gate on /mnt/nvme/tlrb2/ghidra_proj/TLRB2.lock, which exists only while Ghidra has the project open.
 - Two DOSBox rigs can run at once (2026-10-06): Lane B on Xvfb :98 (dosbox-x, work install) and the M3 rig on :97
   (dosbox, work2 install, scripts/m3_launch.sh). `pkill -x dosbox` / `pkill -x dosbox-x` hits both; kill your own rig by
   pid (e.g. `pgrep -f "work2/c"` or `pgrep -f "work/c\""`) instead.

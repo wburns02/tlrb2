@@ -37,3 +37,12 @@ Will asked for a plan put into effect and run without check-ins. Three workers:
 8. Fold Lane B's addresses (notes/LANE_B.md) into Ghidra.
 
 Not in scope while unattended: M4 design (needs Will), any patch to the live install, any push.
+
+## Status 2026-10-06 ~21:00
+- Steps 1-4 done. KB: 5666 functions -> 3269 units, 37 seeds. Z.AI named all 3046 non-seed units (9 errors);
+  merge accepted 1865.
+- Step 6 applied once (Z.AI only): 3471 functions renamed (auto_ prefix, ANALYSIS), 5633 plate comments, 4 functions
+  created, 53 failed (mostly BB/PLAY call targets Ghidra would not turn into functions). Index regenerated.
+- Running: DeepSeek backup on the ~1350 units below 0.6 (run_backup.log). On finish a chain re-merges, re-applies
+  (idempotent) and regenerates, gated on the Ghidra lock file.
+- Still to do: step 8 (fold Lane B / M3 addresses into Ghidra), commit. Step 7 is the DeepSeek backup pass.
