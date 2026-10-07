@@ -235,6 +235,8 @@ def decode_champion(m):
     ws = m.d[s_al + 0x3da]
     al_p = m.d[s_al + 0x3d9]
     nl_p = m.d[s_nl + 0x3d9]
+    # ids past the 32 league-global ids are unknown, like 0xff (C2 amendment)
+    ws, al_p, nl_p = (v if v < 32 else 0xff for v in (ws, al_p, nl_p))
     runner = 0xff
     if ws != 0xff:
         if al_p == ws:

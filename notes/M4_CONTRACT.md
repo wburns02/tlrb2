@@ -55,7 +55,7 @@ Season table at offset 32: 64 entries x 128 B (8192 B). Entry for season n (1-ba
 - 88..127 zero (reserved for awards, P4)
 Champion decode (one sample, season2_end: "PHILADELPHIA over CLE 4-2"): AL block S=0x21d, NL block S=0x758c;
 WS winner = byte at AL S+0x3da; al_pennant = AL S+0x3d9; nl_pennant = NL S+0x3d9; runner-up = the pennant winner
-that is not the WS winner. 0xff anywhere means unknown.
+that is not the WS winner. 0xff anywhere means unknown; any id byte >= 32 is read as 0xff (amended 2026-10-07).
 Player table at offset 8224: entries x 160 B. Entry:
 - 0 20 B name = raw V20 record bytes 0..19 (last 12, first 8)
 - 20 u16 birth = 1000 + season_no - age (age = roster age BEFORE aging, season_no of first sighting)
