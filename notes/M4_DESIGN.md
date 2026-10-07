@@ -167,3 +167,18 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
   exist, import overwrites them with position averages), and a team park factor comes from the per-game home/away
   runs already stored in the MAJ results cells, computed at rollover. True per-player PO/A recording is in IDEAS.md.
   Awards: TBD.
+
+## Engineering decisions (brain, 2026-10-07)
+
+- HISTORY.DAT writer runs as a second DOS program, HISTWR.EXE, written in C (OpenWatcom v2, large model, toolchain
+  at /mnt/nvme/tools/openwatcom). Why: the player table passes 64 KB in the first season (1100+ x 160 B) and the
+  C3 math needs signed 32/64-bit products and divisions. In 16-bit asm that is far segments plus hand-rolled long
+  division; in C it is plain code, and the same source builds on the host with gcc so the Python reference can pin
+  it byte for byte. DYNASTY.EXE (asm) keeps the roll and only adds the seed rule, an in-place header write, and a
+  RETIRED.DAT list for HISTWR. Contract C5.
+- Crash window: the BAT runs `dynasty` then `if errorlevel 1 histwr`. If DOSBox is killed between the two, that
+  season's history is lost (the roll itself is kept). Accepted: the window is one program start, and a pending
+  flag would need the pre-roll snapshot kept across launches, which the BAT's DYNSNAP copy overwrites.
+- Reference fixes found while porting: mark_retired now skips ALLSTAR files (their records are copies of real
+  players, so an All-Star copy retiring would have retired the real player), and seasons past 64 skip the
+  season-table write instead of overwriting the first player entries.
