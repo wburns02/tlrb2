@@ -316,3 +316,136 @@ BB loader 2000:1b40 (called from 6000:15a0): stadium stem is 8 chars at GAME.TMP
 
 ### Saved seasons
 There is no season save file. LOAD SAVED GAME is the in-game mid-game save (1.SAV..10.SAV, see GAME.TMP above). MAIN has "SAVE SEASON": it saves the simulated stats as a NEW LEAGUE (requires the regular season over and at least 81 games, and enough disk: 0xe97b (MAJ size 59771) + 0x2dd7 (V20 size 11735) per team, MAIN 6000:021b) i.e. a new TEAMS/<set> directory of V20s and a MAJ in the existing formats. Static only, the menu path was not run.
+
+## M4 headroom (Lane B9, 2026-10-07)
+
+### Free conventional memory (MCB chain walked in the DOSBox-X debugger)
+Method: rig relaunched under a pty so the ncurses debugger is enabled (tools/lane_b/dbg_pty.py + relaunch_dbg.sh;
+Alt+Pause opens it, MEMDUMPBIN 50:0 A0000 <file> dumps 640 KiB, tools/lane_b/mcb_parse.py walks the chain;
+chain head at segment 0x450 in this DOSBox-X config). Programs were parked at their normal idle screens (menus
+driven over Xvfb :98); each dump is one instant. DOSBox-X memsize=16 MB, XMS/EMS/UMB on; numbers are the
+conventional chain only. Free memory is always ONE contiguous block (each program is the topmost load, no
+fragmentation). "alloc" = the program's single DOS block (image + BSS + heap incl. the VROOMM overlay buffer,
+which Borland allocates during CRT init, so overlay paging does not change free memory afterwards).
+
+| program (state measured) | free conventional | largest block | program alloc |
+|---|---|---|---|
+| CONTROL.EXE (at its first file open, BPINT 21 3D) | 592.7 KiB | same | 15,360 B |
+| PLAY.EXE (mid intro) | 443.7 KiB | same | 167,936 B |
+| MAIN.EXE (main menu idle, after boot) | 321.7 KiB | same | 292,864 B |
+| MAIN.EXE (after menus + pre-game screens) | 233.7 KiB | same | 292,864 B +heap growth |
+| MANAGE.EXE (roster screen, Baltimore) | 388.7 KiB | same | 224,256 B |
+| UTIL.EXE (Edit Player Stats team select) | 277.7 KiB | same | 337,920 B |
+| UTIL.EXE (player editor open) | 254.7 KiB | same | grew ~23 KiB |
+| DRAFT.EXE (started from the DOS prompt; black screen, it waits for a CONTROL state and never drew) | 188.7 KiB | same | 429,056 B |
+| BACK.EXE (mid season sim, play-to Oct 3 via Play League Games) | 106.7 KiB | same | 513,024 B |
+| BB.EXE (mid exhibition game, overlays + stadium + ANMs loaded) | 94.7 KiB | same | 525,312 B |
+
+Bottom line for the design: even the two fattest states (BB in-game, BACK simulating) leave ~95-107 KiB of one
+contiguous free block; a new 4-8 KiB code segment allocated at startup (farmalloc-style DOS block) fits in every
+program with room to spare. MCB blocks: env block 73 para + image block; PSP always 0x814 in this rig, load image
+at 0x824, flat seg S = runtime seg S-0x1000+0x824. TONY2.BAT runs CHECKMEM.EXE once (DOS version >= 3.30 check at
+0x7d/0x7e, EMS-aware, sets errorlevel on failure; exact threshold constant not chased).
+
+### Code caves (candidate padding inside the resident image)
+tools/lane_b/cave_scan.py lists zero runs >= 64 B in each flat image's resident prefix; each candidate was then
+checked against the real-memory dump of that program (same instant). Results (verified = all zero in RAM at idle):
+
+- MAIN: 1eca:000d 115 B, 3fbe:000b 133 B, 4642:000c 68 B, 49ac:0001 2127 B, 4a4c:0003 129 B, 4a5b:0004 300 B, 4a8e:0004 9884 B all VERIFIED at idle. The huge 1edf:0000 133 KB flat run is BSS: 57 KB of it was already in use at idle.
+- PLAY: every run VERIFIED (14bf:000b 433 B, 14db:0000 516 B, 159c:0002 180 B, 1733:000d 129 B, 1742:000e 300 B, 1771:000a 4470 B).
+- CONTROL: 124f:000c 300 B VERIFIED.
+- UTIL: 3846:000b 133 B, 3fd1:0004 64 B, 4068:0002 80 B, 41a2:0001 2127 B, 4242:0003 129 B VERIFIED (the 2291 88.9 KB flat run is live BSS).
+- DRAFT: 1d94:000d 115 B, 1d9f:0005 2109 B, 1e24:000b 133 B VERIFIED (the rest live BSS).
+- BB: only 4fe0:000b 133 B and 5394:0000 64 B VERIFIED (its big flat runs are live BSS).
+- BACK / MANAGE: nothing verified (all candidate regions carry live tables/BSS by menu-idle time).
+
+Caveat: "verified" means zero at one observed idle instant; any use of a cave must re-verify per address (watch
+over gameplay) before shipping. The design should not NEED caves except for tiny hook trampolines: free
+conventional memory (above) is the real code space, and per-program the far heap already hosts alloc'd buffers.
+
+### Overlay (VROOMM) structure and where new code can live
+FBOV format (tools/vroomm_flatten.py docstring, verified): after the MZ load image: 'FBOV' + u32 ovl_size +
+u32 segtbl_off + i32 nseg; per stub segment a 0x20 B header (CD 3F, u16 0, u32 fileoff, u16 codesize,
+u16 relocsize, u16 nentries) followed by nentries 5-byte thunks `CD 3F off16 00`; overlay fixup words are
+selector indices (x8) into the nseg x 8 B segment table. Overlay counts: MAIN 51, BB 42, UTIL 37, DRAFT 41,
+BACK 24; MANAGE/PLAY/CONTROL have none. Adding a new overlay to an existing EXE = append FBOV table entry +
+stub + overlay data and bump nseg (file surgery); simpler paths: (a) allocate a DOS block at startup and patch
+a far call to it, (b) add a new program to the TONY2.BAT loop (below), which gets a fresh full memory space.
+
+### CONTROL.EXE dispatch (id 8 patch point) and the TONY2.BAT loop
+TONY2.BAT: `play` then loop { `control`; if errorlevel 7 end; 6->draft, 5->util, 4->manage, 3->bb, 2->back,
+1->main (bat labels run `<prog> %1` then goto start) }. Batch errorlevels are >=-ordered so a new id must be
+inserted in the right place (e.g. `if errorlevel 8 goto dyn` before the 7 test).
+CONTROL main loop (real seg 0x1228; flat offset = 0x2280+off): reads/creates the 9 B control file into DGROUP
+0x2ec (DGROUP seg 0x123e), then:
+  0xBE  cmp byte [0x2ed],7 / jz quit         (state[1] == 7 -> int10 mode 3, exit(7))
+  0xC5  mov al,[0x2ed]; dec ax; mov bx,ax
+  0xCF  cmp bx,5 / ja quit                   <-- bounds check: state[1] must be 1..6
+  0xD4  shl bx,1; jmp [cs:bx+0x127]          jump table at 0x1228:0x127, six words:
+        0xE5 0xEA 0xD9 0xEF 0xF4 0xF9  = handlers `mov ax,<same id>; push ax; call exit(0x1000:0x357)`.
+So errorlevel == state[1] 1:1. Patch for id 8: change the `cmp bx,5` immediate (0x1228:0xD0, byte 05 -> 07)
+to accept 1..8, repoint the `jmp [cs:bx+0x127]` displacement (0x1228:0xD6, word 0x127) to a copied 8-entry
+table + two new `mov ax,N; jmp short <push/call exit tail at 0xDC>` handlers placed in a verified cave
+(e.g. CONTROL 124f:000c, 300 B, see above). The new program itself writes the control file + exits with its
+own errorlevel, exactly like the shipped programs.
+
+### The 4 *.OVL stadium art files (C:\TONY2\GRASS1B/GRASS3B/TURF1B/TURF3B.OVL)
+Not code: single-frame ANM art, u16 frame count (1) + 12 B header (flags 0x0200 -> transparent colour 2,
+height 55, width 88, y 0, x 0, u16 clen) + one DCL stream of exactly 88x55 = 4840 B (GRASS1B: clen 1432,
+file 1446 B, explodes to 4840 at end == file size). Filename pool is a string table at BB 5494
+("grass1b.ovl", "grass3b.ovl", "turf1b.ovl", "turf3b.ovl"), i.e. BB selects by stadium surface for the
+base/inline camera insets on the play screen; loader = BB's ANM loader family (2000:d922/2000:d5db).
+
+### Next-season twin copy (season rollover hook), all three variants byte-identical in behaviour
+UTIL 5000:9cd5, MAIN 5000:f1ce, DRAFT 1000:5589 copy ONE 143 B record from src to dst:
+- +0x00..0x13 verbatim (last+first name), +0x14 age VERBATIM, +0x15 year-1870 +1, +0x16 exp +1,
+  +0x19 u16 salary, +0x1b u16 portrait, nibble copies of +0x1d (throws/bats/flag3 + hi nibble),
+  +0x1e (exper/consist), +0x1f (pos2/pos1), +0x4a (bunt/power), +0x4b (streak/H&R), +0x4c (day/night/clutch),
+  +0x5e (range/arm), +0x86..0x8c (pitcher rating nibbles incl. +0x8c hi = user-set-ratings flag).
+- Everything else (games +0x17 and all stat bytes) is NOT copied, so the destination keeps zero stats.
+Callers (=> when it runs; it is a league/team-build helper, NOT a season-rollover pass):
+- UTIL 5000:9cd5 <- 5000:91a1 build_team_from_source_data <- 5000:8c60 import_league_disk_to_team_files
+  (Utilities > IMPORT VERSION 1 STATS: reads DH.LGU/NONDH.LGU + per-team .TMS, converts each player from a
+  0x78-stride source record into V20 records 0..39, then twins into 40..79; salaries and portrait are zero at
+  this stage, portrait assigned later by 5000:a208/5000:ea5e).
+- MAIN 5000:f1ce <- 5000:ebc3 load_team_data_roster_for_all_slots <- 5000:da40 (MAIN league/team loading;
+  reads both halves from the V20 file, so the on-disk twin is authoritative, not recomputed).
+- DRAFT 1000:5589 <- 1000:504d reset_team_roster_after_draft (post-draft roster rebuild).
+Corollary for the design: there is no in-season aging/progression in the shipped code; the twin's year+1/exp+1
+fires only when a league is BUILT. A dynasty rollover must age +0x14 and regenerate +0x15/+0x16 itself.
+
+### Fantasy draft pool (DRAFT) and player generation
+- Pool: 2000:e7f7 draft_build_draft_pool iterates 32 draft slots grouped in fives per team (three category
+  counts read from the league structures at +0x298/0x299/0x29a, mirroring the GM profile), and for each slot
+  2000:e964 draft_load_team_file_and_add_players builds teams\<stem>.v20 (stem from the MAJ +0x1d7 table),
+  farmallocs 0x2dd7 (one whole V20), copies the team header (14 B name) and up to 40 flagged 0x8f-stride
+  player records into the pool. I.e. the draft pool = the league's own players re-categorised, NOT generated.
+- There is NO procedural player generator anywhere: new players come from the v1 import (.TMS source records,
+  ratings already packed in the source) or blank records. Reusable pieces for a rookie-class generator:
+  UTIL 5000:e89d init_blank_player_record (zeroes 0x8f B, portrait 0), UTIL 5000:ea5e
+  assign_random_generic_portrait (least-used face matching rec+0x1d&1 against UTIL DS:776e, counts DS:bfb0),
+  and the stats->ratings calculators (UTIL 1000:b02a..b82f, tools/ratings.py) + salary (5000:f382/f697).
+  Name tables seen (manager names in the league builder, UTIL DS:0x219c first / +0x1e0 last, 24 B entries)
+  are fixed lists, not a name generator.
+
+### STATISTICAL LEADERS reads records 0..39 (the historical half)
+Rig: UTILITIES > STATISTICAL LEADERS (menu 490 210 -> item y=232). Table row 1 = WILLS, MAURY LA S
+G165 AB695 H208 HR6, row 2 TAVERAS FRANK NYH G164 AB680 H178. File check: CLASNLW4.V20 record 29 WILLS
+half0 G165 AB695 H208 HR6 (exact), twin half40 G0 AB0; CLASNLE3.V20 record 26 TAVERAS half0 matches row 2
+exactly. So the default table = records 0..39 (shipped "historical" season stats, not career totals). The
+HISTORICAL/SIMULATED button pair (bottom right) switches halves (SIMULATED = 40..79); the click coordinates
+were not hit in this run, but the data above pins the default view. NOTE: half 0..39 of the classic league
+holds each player's best/historical single season (Wills 1962: 165 G), not career sums.
+
+### SYSTEM+8 DH byte (code-confirmed) and portrait bit0 (dynamic)
+- MAIN 4000:eae4 game_buffer_to_settings: SYSTEM+8 <- GAME.TMP +0x1c19 (7193), executed only when
+  buf[0x1bf4] >= 2 (completed exhibition game). Dynamic counterpart: toggling DESIGNATED HITTER to NO on the
+  Ground Rules screen flipped GAME.TMP's DH (lineup screen showed 8 batters + pitcher batting 9th), but
+  MAIN > QUIT wrote a byte-identical SYSTEM because no exhibition game completed in between. SYSTEM+8 = DH,
+  persisted only through a finished exhibition game. (Season games take DH from MAJ S+0x297 at setup,
+  MAIN 4000:e968's default branch.)
+- V20 byte 29 (+0x1d) bit0: set it on Dave McNally (CLASALE1 record 0 and twin 40, 0x72 -> 0x73) and played
+  an exhibition game: his generic portrait (index 6) rendered byte-identical on the play screen. Confirms the
+  flag is used ONLY by the random assignment (UTIL 5000:ea5e matches it against the face-group table
+  DS:776e when picking a face for a new/unassigned player), never by the renderer (BB 7000:da0a uses u16@27
+  alone). Evidence shots pb3.png vs bb_esc3.png.

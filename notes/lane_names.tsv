@@ -98,3 +98,15 @@ BB	2000:df04	auto_load_game_data_file	Lane B8 static: fopen, farmalloc 0x311e, D
 BB	2000:dfba	auto_ems_save_records_block	Lane B8 static: 200 rows x 0x140 B, stride 0x460
 BB	6000:3f4f	check_special_box_score_flags	Lane B8 static: reads SYSTEM+0x37..0x44 post game
 MAIN	6000:021b	auto_check_disk_space_for_save	Lane B8 static: 0xe97b + 0x2dd7 * teams (SAVE SEASON as new league)
+CONTROL	1228:00be	quit_check_state7	Lane B9: cmp byte [0x2ed],7 at 0x1228:0xBE; disasm of flat 0x2280.. (real seg 1228), notes/FORMATS.md M4 headroom
+CONTROL	1228:00cf	dispatch_bounds_check_1_to_6	Lane B9: cmp bx,5 / ja quit at 0xCF; patch point for program id 8 (byte 05->07 + retargeted jump table)
+CONTROL	1228:00d4	dispatch_jump_table	Lane B9: jmp [cs:bx+0x127]; table at 0x1228:0x127 = words E5 EA D9 EF F4 F9 (handlers mov ax,N; call exit)
+CONTROL	1228:00d9	dispatch_handler_exit	Lane B9: six handlers at D9..F9, errorlevel == state[1] 1:1
+UTIL	5000:8c60	import_league_disk_to_team_files	Lane B9: reads DH.LGU/NONDH.LGU + .TMS, calls build_team_from_source_data per team, writes V20s+MAJ (IMPORT VERSION 1 STATS path)
+UTIL	5000:91a1	build_team_from_source_data	Lane B9: init team header, 30x convert_player_record + 4+6 blank records, copies lineups from source, twins all 40 records
+UTIL	5000:9509	convert_source_record_to_v20	Lane B9: 0x78-stride source record -> V20 record at +0x127; names, ratings nibbles, pos; salary/DU zeroed; batted-ball defaults 0x214/0x1c2/200
+UTIL	5000:9cd5	copy_player_record_to_next_season_twin	Lane B9: full field list decoded (names, age, year+1, exp+1, salary, portrait, ratings nibbles 0x4a-0x4c/0x5e/0x86-0x8c); stats NOT copied
+MAIN	5000:ebc3	load_team_data_roster_for_all_slots	Lane B9: iterates MAJ 24 slots by stem (+0x1d7), loads both V20 halves (pair), zeroes W/L/streak, calls twin variant
+DRAFT	2000:e7f7	draft_build_draft_pool	Lane B9: 32 draft slots in fives per team, category counts from league +0x298/0x299/0x29a
+DRAFT	2000:e964	draft_load_team_file_and_add_players	Lane B9: teams\<stem>.v20, farmalloc 0x2dd7, copies header + flagged 0x8f records into the pool; pool = league's own players
+UTIL	5000:a12d	copy_manager_names_from_tables	Lane B9: first/last name tables at UTIL DS:0x219c / +0x1e0 (24 B entries) into team header fields (manager, not players)

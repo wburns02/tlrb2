@@ -31,3 +31,11 @@ UTIL	DS:95a6	byte[0x299]	font_glyph_table	Lane B8 static: font*0x299 + char*7, 7
 UTIL	DS:2f10	char[9]	font_name_table	Lane B8 static: main.fnt scbd.fnt bold.fnt scbdthin.fnt at stride 9
 BB	DS:27b4	dword[11]	replay_name_far_ptr_table	Lane B8 static: auto_load_replay_file
 BB	DS:4b73	byte[1289]	stadium_cfg_buffer	Lane B8 static: STADIUMS .CFG image, fence u16[5] at +0x20
+CONTROL	1228:0127	word[6]	control_dispatch_jump_table	Lane B9: near-offsets E5 EA D9 EF F4 F9 within seg 1228; extend + retarget the 0xD6 displacement for id 8
+CONTROL	123e:02ec	byte[9]	control_state_buf	Lane B9 re-verify: state[1] at +0x2ed drives dispatch; bounds check cmp bx,5 at 1228:0xCF
+UTIL	DS:219c	byte[30][24]	manager_firstname_table	Lane B9: 24 B entries, indexed via struct +0x778c in the league builder
+UTIL	DS:237c	byte[30][24]	manager_lastname_table	Lane B9: DS:0x219c+0x1e0, indexed via +0x77ac
+UTIL	DS:bfb0	byte[30]	portrait_use_counts	Lane B9 re-verify (cleared per team build in 5000:91a1)
+DRAFT	DS:69b2	byte[32][0x30]	draft_pool_team_entries	Lane B9: per draft slot 0x30 B copied from team record +0x2c; names/counts globals at 0x67f2
+MAIN	DS:9b70	byte*	settings_mirror_ptr	Lane B9: settings_to_game_buffer/game_buffer_to_settings copy SYSTEM bytes 0x8..0x1a through here (SYSTEM far ptr = DS:ab10)
+BB	5494:0000	byte[]	stadium_ovl_name_pool	Lane B9: strings grass1b.ovl grass3b.ovl turf1b.ovl turf3b.ovl in the BB resident tail (string table, no direct far ptr)
