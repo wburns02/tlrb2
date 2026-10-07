@@ -110,6 +110,8 @@ The P2 WIP blob gave every rookie identical ratings. Rookies must vary and some 
 - Names: our own pools (no names harvested from game data), 128 last names and 64 first names, ASCII, last <= 11 chars,
   first <= 7, stored as tables in rookie_fill.asm and in tools/m4/rookies.py (identical order). Index = d % 128 and
   d % 64 (d = draw() & 0xff for the first-name draw too).
+  (amended 2026-10-07) Stored like the shipped data: mixed case ("Adams", "McCall", "Aaron"), NUL padded (last 12 B,
+  first 8 B), never space padded or all caps. The asm table is generated from the Python list, never hand-kept.
 - Per rookie draw order: last-name, first-name, age, throws, switch, portrait, exper, consist (as the WIP blob), then
   grade, then one draw per rating in the C1 rating order (batters 6, pitchers 3).
 - grade: d = draw() & 0xff; grade = 0 if d < 154, 1 if d < 230, else 2 (60/30/10 %); bonus = [0, 2, 4][grade].
