@@ -31,7 +31,7 @@ cd /mnt/nvme/tlrb2/logs/t6
 setsid /mnt/nvme/src/dosbox-x/src/dosbox-x -conf "$HOME/tlrb2/conf/tlrb2-x.conf" \
   -set mixer nosound=true \
   -c "mount c \"$INSTALL_ROOT\"" \
-  -c "imgmount d \"$INSTALL_ROOT/../../../iso/TONY2V13.iso\" -t iso" \
+  -c "imgmount d \"/mnt/nvme/tlrb2/iso/TONY2V13.iso\" -t iso" \
   -c "c:" -c "cd \TONY2" -c "TONY2.BAT" >/dev/null 2>&1 &
 echo $! > "$PIDF"
 echo "launched pid $!"
