@@ -143,3 +143,15 @@ def same(a, b, box=None, tol=2.0):
         a, b = a.crop(box), b.crop(box)
     import numpy as np
     return float(np.abs(np.asarray(a, dtype=np.int16) - np.asarray(b, dtype=np.int16)).mean()) < tol
+
+
+def type_text(s, delay=120):
+    """Type at the DOS prompt (per-key delay: DOSBox drops fast keystrokes). Focus plus plain typing:
+    events sent with --window are synthetic and DOSBox-X ignores them."""
+    focus()
+    _x('type', '--delay', str(delay), s)
+
+
+def park():
+    """Move the pointer off the game area so it cannot overlap a reference crop."""
+    _x('mousemove', '1010', '750')

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch TONY2.BAT to call DYNASTY.EXE before control, with pre-roll backup.
+r"""Patch TONY2.BAT to call DYNASTY.EXE before control, with pre-roll backup.
 
 Inserts after `:start`:
   copy TEAMS\CLASSIC\*.* C:\DYNSNAP > NUL
@@ -25,6 +25,9 @@ PATCHED_START = (
     'control\r\n'
 )
 
+# Will's live install, the pristine copy, and the shared work install are never patched
+REFUSE = ('/mnt/nvme/tlrb2/c/', '/mnt/nvme/tlrb2/pristine/', '/mnt/nvme/tlrb2/work/c/')
+
 PATCH_LINES = [
     'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n',
     'dynasty\r\n',
@@ -33,13 +36,14 @@ PATCH_LINES = [
 
 def patch(install_root, revert=False):
     """Apply or revert patch. Refuses /mnt/nvme/tlrb2/c or pristine."""
-    install_root = os.path.abspath(install_root)
-    if 'tlrb2/c' in install_root or 'pristine' in install_root:
+    install_root = os.path.realpath(install_root)
+    if any((install_root + '/').startswith(p) for p in REFUSE):
         print(f"ERROR: refusing to patch {install_root}", file=sys.stderr)
         return False
 
     bat_path = os.path.join(install_root, 'TONY2.BAT')
-    dynsnap_path = os.path.join(install_root, 'DYNSNAP')
+    # C:\\DYNSNAP is at the drive root, the parent of the install dir
+    dynsnap_path = os.path.join(os.path.dirname(install_root), 'DYNSNAP')
 
     if not os.path.isfile(bat_path):
         print(f"ERROR: {bat_path} not found", file=sys.stderr)

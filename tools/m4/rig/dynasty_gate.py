@@ -1,255 +1,177 @@
 #!/usr/bin/env python3
-"""Unattended multi-season dynasty gate: runs N seasons and verifies each rollover.
+"""Unattended multi-season dynasty gate on the :98 rig.
 
-Setup (if --fresh): copy install, patch BAT, reset HISTORY.DAT.
-Per season: start new season if needed, sim to 0xf3, copy pre-roll league, run check_roll,
-verify player records, write summary JSON.
+Per season: season_sim drives the game through the World Series and QUIT (the BAT loop copies the league to
+C:\\DYNSNAP and DYNASTY rolls it), then this script snapshots DYNSNAP to logs/t6/sN_pre and TEAMS/CLASSIC to
+logs/t6/sN_post BEFORE relaunching (the relaunch overwrites DYNSNAP), checks the roll byte for byte against the
+Python reference (check_roll), runs roster sanity checks, and relaunches for the next season.
 
-Usage: python3 tools/m4/rig/dynasty_gate.py --seasons N [--fresh]
+usage: dynasty_gate.py --seasons N [--first K] [--fresh] [--full-rosters]
+  --first K        number of the first season run here (default: one past the highest logs/t6/sN_post)
+  --fresh          rebuild the dedicated install from work/c (never touches work/c itself), patch the BAT,
+                   install the repo DYNASTY.EXE, reset HISTORY.DAT to 4 zero bytes
+  --full-rosters   require 40 named roster records per team after the roll (DYNASTY builds with the rookie fill)
+Exit 0 only if every roll passes. Summary: logs/t6/gate_summary.json.
 """
-import sys
-import os
+import argparse
+import glob
 import json
+import os
 import shutil
-import subprocess
-import time
-from pathlib import Path
 import struct
+import subprocess
+import sys
+import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-sys.path.insert(0, '/home/will/tlrb2/tools')
+HERE = os.path.dirname(os.path.abspath(__file__))
+TOOLS = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+sys.path.insert(0, TOOLS)
+import bat_patch                # noqa: E402
+import check_roll               # noqa: E402
+import rig                      # noqa: E402
+import season_sim               # noqa: E402
+import v20                      # noqa: E402
+from m4 import rollover         # noqa: E402
 
-# Import locals
-rig_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, rig_dir)
-import bat_patch
-import check_roll as check_roll_mod
-
-# Import from main repo
-import v20
-
-
-INSTALL_ROOT = '/mnt/nvme/tlrb2/work/dyn/c/TONY2'
-LOGS_DIR = Path('/mnt/nvme/tlrb2/logs/t6')
-SUMMARY_PATH = LOGS_DIR / 'gate_summary.json'
-
-
-def setup_install(fresh=False):
-    """Copy pristine install to work directory, patch BAT. Refuses overwrite unless --fresh."""
-    base_dir = os.path.dirname(INSTALL_ROOT)
-    os.makedirs(base_dir, exist_ok=True)
-
-    if os.path.exists(INSTALL_ROOT):
-        if not fresh:
-            print(f'{INSTALL_ROOT} exists; use --fresh to overwrite', file=sys.stderr)
-            return False
-        # Remove old install (make writable first)
-        subprocess.run(['chmod', '-R', 'u+w', INSTALL_ROOT], check=False)
-        for item in os.listdir(INSTALL_ROOT):
-            item_path = os.path.join(INSTALL_ROOT, item)
-            if os.path.isfile(item_path):
-                os.remove(item_path)
-            elif os.path.isdir(item_path):
-                shutil.rmtree(item_path)
-
-    # Copy pristine
-    pristine = '/mnt/nvme/tlrb2/pristine/TONY2'
-    print(f'Copying {pristine} to {INSTALL_ROOT}')
-    if not os.path.exists(INSTALL_ROOT):
-        os.makedirs(INSTALL_ROOT)
-    for item in os.listdir(pristine):
-        src = os.path.join(pristine, item)
-        dst = os.path.join(INSTALL_ROOT, item)
-        if os.path.isdir(src):
-            shutil.copytree(src, dst)
-        else:
-            shutil.copy2(src, dst)
-
-    # Make everything writable
-    subprocess.run(['chmod', '-R', 'u+w', INSTALL_ROOT], check=True)
-
-    # Patch BAT
-    print(f'Patching {INSTALL_ROOT}/TONY2.BAT')
-    if not bat_patch.patch(INSTALL_ROOT, revert=False):
-        return False
-
-    # Reset HISTORY.DAT (in TEAMS/CLASSIC/ per DYNASTY.EXE)
-    hist_path = os.path.join(INSTALL_ROOT, 'TEAMS', 'CLASSIC', 'HISTORY.DAT')
-    print(f'Resetting {hist_path}')
-    with open(hist_path, 'wb') as f:
-        f.write(b'\x00\x00\x00\x00')
-
-    return True
+INSTALL = season_sim.INSTALL
+SOURCE = '/mnt/nvme/tlrb2/work/c/TONY2'
+LOGS = season_sim.LOGS
+SUMMARY = os.path.join(LOGS, 'gate_summary.json')
+RATINGS = [n for n, _ in rollover.BATTER_RATINGS + rollover.PITCHER_RATINGS]
 
 
-def day_byte(install_root):
-    """Read MAJ day byte."""
-    maj = os.path.join(install_root, 'TEAMS', 'CLASSIC', 'CLASSIC.MAJ')
+def setup_fresh(install):
+    if os.path.realpath(install) != os.path.realpath(INSTALL):
+        sys.exit(f'--fresh only rebuilds the dedicated install {INSTALL}')
+    if os.path.exists(install):
+        shutil.rmtree(install)
+    shutil.copytree(SOURCE, install)
+    if not bat_patch.patch(install):
+        sys.exit('BAT patch failed')
+    shutil.copy2(os.path.join(TOOLS, 'm4', 'blob', 'DYNASTY.EXE'), os.path.join(install, 'DYNASTY.EXE'))
+    with open(os.path.join(season_sim.league(install), 'HISTORY.DAT'), 'wb') as f:
+        f.write(bytes(4))
+
+
+def launch(install):
+    subprocess.run(['bash', os.path.join(HERE, 'dyn_launch.sh'), install], check=True)
+    time.sleep(15)
+    dr = season_sim.Driver(0, install)
+    dr.wait_for('ball_menu', 120, every=3, nudge=lambda st: rig.key('Escape'))
+
+
+def snapshot(src, dst):
+    shutil.rmtree(dst, ignore_errors=True)
+    os.makedirs(dst)
+    for f in os.listdir(src):
+        p = os.path.join(src, f)
+        if os.path.isfile(p):
+            shutil.copy2(p, os.path.join(dst, f))
+
+
+def roll_seed(pre, post):
+    """The xorshift16 word DYNASTY started this roll from: C2 v1 files keep it at bytes 8..9; the 4-byte P1 file
+    only has the word at bytes 1..2 of the pre-roll copy."""
+    hp = open(os.path.join(post, 'HISTORY.DAT'), 'rb').read()
+    if len(hp) >= 32:
+        return struct.unpack_from('<H', hp, 8)[0]
+    return struct.unpack_from('<H', open(os.path.join(pre, 'HISTORY.DAT'), 'rb').read(), 1)[0]
+
+
+def roster_checks(pre, post, full):
+    """Survivors aged exactly +1, ratings 1..15 on every named record, and (full) 40 named records per team."""
+    errs, named = [], {}
+    for pp in sorted(glob.glob(os.path.join(post, '*.V20'))):
+        name = os.path.basename(pp)
+        a, b = v20.Team.load(os.path.join(pre, name)), v20.Team.load(pp)
+        named[name] = sum(1 for i in range(40) if b.players[i].active)
+        if full and named[name] != 40:
+            errs.append(f'{name}: {named[name]} named roster records, want 40')
+        for i in range(40):
+            x, y = a.players[i], b.players[i]
+            if y.active:
+                bad = [r for r in RATINGS if not 1 <= y[r] <= 15]
+                if bad:
+                    errs.append(f'{name} rec {i}: rating out of 1..15: {bad}')
+            if x.active and y.active and bytes(x.raw[0:20]) == bytes(y.raw[0:20]):
+                if y['age'] != min(255, x['age'] + 1):
+                    errs.append(f'{name} rec {i}: age {x["age"]} -> {y["age"]}')
+    return errs, named
+
+
+def gate_one(n, install, full):
+    rec = {'season': n, 'ok': False}
+    t0 = time.time()
+    dr = season_sim.Driver(n, install)
     try:
-        with open(maj, 'rb') as f:
-            f.seek(0x20a)
-            return f.read(1)[0]
-    except OSError:
-        return None
+        rec['sim_min'] = round(dr.season(), 1)
+    except season_sim.SimError as e:
+        dr.log(f'FAIL {e}')
+        rec['error'] = str(e)
+        return rec, dr
+    pre, post = os.path.join(LOGS, f's{n}_pre'), os.path.join(LOGS, f's{n}_post')
+    snapshot(os.path.join(os.path.dirname(install), 'DYNSNAP'), pre)
+    snapshot(season_sim.league(install), post)
+    rec['wall_min'] = round((time.time() - t0) / 60, 1)
+    # the pre-roll copy must be the league DYNASTY saw: season over, not yet rolled
+    with open(os.path.join(pre, 'CLASSIC.MAJ'), 'rb') as f:
+        f.seek(0x20a)
+        pre_day = f.read(1)[0]
+    pre_h0 = open(os.path.join(pre, 'HISTORY.DAT'), 'rb').read(1)[0]
+    if pre_day != 0xf3 or pre_h0 != 0:
+        rec['error'] = f'DYNSNAP is not the pre-roll league (day 0x{pre_day:02x}, done flag {pre_h0})'
+        dr.log(rec['error'])
+        return rec, dr
+    seed = rec['seed'] = roll_seed(pre, post)
+    mm = check_roll.compare_dirs(pre, post, seed)
+    rec['check_roll'] = 'PASS' if not any(mm.values()) else {k: [str(x) for x in v] for k, v in mm.items() if v}
+    errs, named = roster_checks(pre, post, full)
+    rec['roster_errors'] = errs[:50]
+    rec['named_total'] = sum(named.values())
+    rec['ok'] = rec['check_roll'] == 'PASS' and not errs
+    dr.log(f'roll seed {seed}: check_roll {"PASS" if rec["check_roll"] == "PASS" else "FAIL"}, '
+           f'{len(errs)} roster errors, {rec["named_total"]} named records')
+    return rec, dr
 
 
-def history_byte0(install_root):
-    """Read HISTORY.DAT byte 0 (in TEAMS/CLASSIC/ per DYNASTY.EXE)."""
-    hist = os.path.join(install_root, 'TEAMS', 'CLASSIC', 'HISTORY.DAT')
-    try:
-        with open(hist, 'rb') as f:
-            return f.read(1)[0]
-    except OSError:
-        return None
-
-
-def copy_snapshot(src_dir, dest_dir):
-    """Copy TEAMS/CLASSIC/* to dest."""
-    os.makedirs(dest_dir, exist_ok=True)
-    src = os.path.join(src_dir, 'TEAMS', 'CLASSIC')
-    for fname in os.listdir(src):
-        src_file = os.path.join(src, fname)
-        if os.path.isfile(src_file):
-            shutil.copy2(src_file, os.path.join(dest_dir, fname))
-
-
-def verify_player_records(install_root):
-    """Verify all 26 teams have valid rosters."""
-    errors = []
-    teams_dir = os.path.join(install_root, 'TEAMS', 'CLASSIC')
-    for v20_file in sorted(os.listdir(teams_dir)):
-        if not v20_file.endswith('.V20'):
-            continue
+def main(argv):
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--seasons', type=int, required=True)
+    ap.add_argument('--first', type=int)
+    ap.add_argument('--fresh', action='store_true')
+    ap.add_argument('--full-rosters', action='store_true')
+    ap.add_argument('--install', default=INSTALL)
+    a = ap.parse_args(argv)
+    if a.fresh:
+        setup_fresh(a.install)
+    if a.fresh or rig.window() is None:
+        launch(a.install)
+    first = a.first
+    if first is None:
+        done = [int(os.path.basename(p)[1:-5]) for p in glob.glob(os.path.join(LOGS, 's*_post'))]
+        first = max(done, default=0) + 1
+    summary = {'started': time.strftime('%Y-%m-%d %H:%M:%S'), 'install': a.install, 'seasons': []}
+    ok = True
+    for n in range(first, first + a.seasons):
+        rec, dr = gate_one(n, a.install, a.full_rosters)
+        summary['seasons'].append(rec)
+        json.dump(summary, open(SUMMARY, 'w'), indent=1)
+        if not rec['ok']:
+            ok = False
+            break
         try:
-            team = v20.Team.load(os.path.join(teams_dir, v20_file))
-            active_count = sum(1 for p in team.players if p.active)
-            if active_count < 40:
-                errors.append(f'{v20_file}: only {active_count} active records')
-            # Check ages advanced
-            for p in team.players[:40]:
-                if p.active and p.age > 50:
-                    errors.append(f'{v20_file}: age {p.age} > 50')
-        except Exception as e:
-            errors.append(f'{v20_file}: {e}')
-    return errors
-
-
-def run_season_gate(season_num):
-    """Run one season simulation. Return success bool."""
-    print(f'\n=== Season {season_num} ===')
-    print(f'Launch on :98')
-    # Launch game
-    subprocess.run(['bash', 'tools/m4/rig/dyn_launch.sh', INSTALL_ROOT],
-                   check=False, cwd='/home/will/tlrb2/.claude/worktrees/t6-driver')
-    time.sleep(30)  # Let boot finish
-
-    # Check if we need to start a new season
-    day = day_byte(INSTALL_ROOT)
-    hist0 = history_byte0(INSTALL_ROOT)
-    print(f'Current state: day=0x{day:02x}, hist0={hist0}')
-
-    if day == 0xf3 and hist0 == 0:
-        print('League at season end, rolling over first')
-        # Run season sim which will handle the rollover
-        pass
-    elif day != 0x07:
-        print('Resetting to start of season')
-        # Kill and relaunch to reset
-
-    # Run season
-    print(f'Running season_sim for season {season_num}')
-    result = subprocess.run(
-        ['python3', 'tools/m4/rig/season_sim.py', INSTALL_ROOT, str(season_num)],
-        cwd='/home/will/tlrb2/.claude/worktrees/t6-driver'
-    )
-    if result.returncode != 0:
-        print(f'season_sim failed')
-        return False
-
-    # Verify end state
-    final_day = day_byte(INSTALL_ROOT)
-    final_hist0 = history_byte0(INSTALL_ROOT)
-    if final_day != 0xf3 or final_hist0 != 1:
-        print(f'ERROR: final state bad (day=0x{final_day:02x}, hist0={final_hist0})')
-        return False
-
-    # Copy snapshots
-    print(f'Copying pre-roll league to logs')
-    pre_snap = LOGS_DIR / f's{season_num}_pre'
-    post_snap = LOGS_DIR / f's{season_num}_post'
-
-    # Pre-roll is in DYNSNAP (copied by BAT before dynasty runs)
-    dynsnap = os.path.join(INSTALL_ROOT, 'DYNSNAP')
-    if os.path.exists(dynsnap):
-        copy_snapshot(INSTALL_ROOT, str(pre_snap))
-
-    # Post-roll in TEAMS/CLASSIC
-    copy_snapshot(INSTALL_ROOT, str(post_snap))
-
-    # Check rollover
-    print(f'Running check_roll')
-    if pre_snap.exists() and post_snap.exists():
-        mismatches = check_roll_mod.compare_dirs(str(pre_snap), str(post_snap), seed=1)
-        if any(mismatches.values()):
-            print(f'check_roll FAILED: {len(mismatches)} files with mismatches')
-            return False
-
-    # Verify rosters
-    errors = verify_player_records(INSTALL_ROOT)
-    if errors:
-        print(f'Player record errors:')
-        for e in errors[:5]:
-            print(f'  {e}')
-        return False
-
-    print(f'Season {season_num} PASSED')
-    return True
-
-
-def main(args):
-    if '--seasons' not in args:
-        print(__doc__, file=sys.stderr)
-        sys.exit(1)
-
-    num_seasons = int(args[args.index('--seasons') + 1])
-    fresh = '--fresh' in args
-
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Setup
-    if fresh or not os.path.exists(INSTALL_ROOT):
-        print(f'Setting up install')
-        if not setup_install(fresh=fresh):
-            sys.exit(1)
-
-    # Run seasons
-    summary = {'start_time': time.time(), 'seasons': [], 'passed': 0, 'failed': 0}
-    for season in range(1, num_seasons + 1):
-        try:
-            start = time.time()
-            success = run_season_gate(season)
-            elapsed = time.time() - start
-            summary['seasons'].append({
-                'num': season,
-                'success': success,
-                'wall_time': elapsed
-            })
-            if success:
-                summary['passed'] += 1
-            else:
-                summary['failed'] += 1
-        except Exception as e:
-            print(f'Season {season} exception: {e}')
-            summary['failed'] += 1
-
-    # Write summary
-    with open(SUMMARY_PATH, 'w') as f:
-        json.dump(summary, f, indent=2)
-    print(f'\nSummary written to {SUMMARY_PATH}')
-    print(f'Passed: {summary["passed"]}, Failed: {summary["failed"]}')
-
-    sys.exit(0 if summary['failed'] == 0 else 1)
+            dr.relaunch()
+        except season_sim.SimError as e:
+            dr.log(f'FAIL relaunch: {e}')
+            summary['seasons'][-1]['relaunch_error'] = str(e)
+            ok = False
+            break
+    summary['ok'] = ok
+    json.dump(summary, open(SUMMARY, 'w'), indent=1)
+    print(json.dumps({'ok': ok, 'seasons': [(r['season'], r['ok']) for r in summary['seasons']]}))
+    return 0 if ok else 1
 
 
 if __name__ == '__main__':
-    main(sys.argv[1:])
+    sys.exit(main(sys.argv[1:]))
