@@ -271,3 +271,54 @@ def test_hof_batting_avg_idiv():
 
 v20_SIZE = 11735
 maj_SIZE = 59771
+
+
+def test_batter_pa0_nonzero_war(tmp_path):
+    """C3: batters with pa == 0 are NOT zeroed: war10 = (lw100 + posadj100 + fld100)/100
+    with bat100 = lw100, repl100 = 0, park100 = 0. A pinch-runner type: games and SB but
+    no PA... SB needs PA to matter? No: lw100 uses only the stat line; pa 0. games 20,
+    sb 5, SS (pos 5). By hand: ab=h=d=t=hr=bb=cs=runs=0 -> s1 = 0, lw100 = 20*5 = 100.
+    posadj = 750*20/162 = 92; fld = range 7 arm 6 -> ((7-6)*150 + 0)*20/162 = 18.
+    war10 = (100 + 0 + 92 + 18)/100 = 2."""
+    t = Team(make_team_v20())
+    set_batter(t, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 20, 5, 7, 6)
+    s, roster = t.players[40].raw, t.players[0].raw
+    lg = {'L_lw': 0, 'L_pa': 0, 'L_runs': 0, 'pf1000': 1000}
+    w = war.batter_war10(s, roster, 20, lg)
+    assert w == 2       # nonzero: pa == 0 batters are not zeroed
+    # replay: posadj alone: 750*20 idiv 162 = 92; fld = (1*150)*20 idiv 162 = 18
+    assert idiv_ref(750 * 20, 162) == 92 and idiv_ref(150 * 20, 162) == 18
+
+
+def test_batter_pa0_single_league(tmp_path):
+    """A whole league with only pa == 0 batters: L_pa == 0 -> no division, war10 from
+    lw100 + posadj + fld. season_league must not divide by L_pa = 0."""
+    t = Team(make_team_v20())
+    set_batter(t, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 10, 1, 7, 6)
+    f = tmp_path / 'TEAM.V20'
+    t.save(str(f))
+    per, lg = war.season_league([(str(f), 0)])
+    assert lg['L_pa'] == 0 and lg['L_lw'] == 0       # L_* count only pa > 0 batters
+    # lw100 = 20*2 = 40 (bat100 = lw100, pa == 0 rule); posadj 1250*10/162 = 77;
+    # fld = (1*150 + 0)*10/162 = 9 -> 126/100 = 1
+    assert per[(0, 0)] == 1
+
+
+def test_batter_lpa0_guard_with_own_pa(tmp_path):
+    """L_pa == 0 but the player has pa > 0: the subtraction terms are 0 (no division)
+    and repl100 still applies. lw100 + repl, no league subtraction, no park."""
+    s = t = None
+    roster_raw = bytearray(143)
+    _set(roster_raw, *F['pos1'], 5)              # SS
+    _set(roster_raw, *F['range'], 6)
+    _set(roster_raw, *F['arm'], 6)
+    season_raw = bytearray(143)
+    _set(season_raw, *F['ab_l'], 10)
+    _set(season_raw, *F['h_l'], 3)
+    _set(season_raw, *F['games'], 10)
+    lg = {'L_lw': 0, 'L_pa': 0, 'L_runs': 0, 'pf1000': 1000}
+    w = war.batter_war10(season_raw, roster_raw, 10, lg)
+    # lw100 = 47*3 - 27*7 = 141 - 189 = -48; repl = 2000*10/600 = 33;
+    # posadj = 750*10/162 = 46; fld = 0 -> (-48 + 33 + 46 + 0)/100 = 0
+    assert w == 0
+    assert idiv_ref(-48 + 33 + 46, 100) == 0

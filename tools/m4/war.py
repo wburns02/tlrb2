@@ -42,18 +42,21 @@ def player_bat_inputs(rec):
 
 
 def batter_war10(season, roster, games, lg):
-    """C3 batter WAR10. lg = dict with keys L_lw, L_pa, L_runs, pf1000."""
+    """C3 batter WAR10. lg = dict with keys L_lw, L_pa, L_runs, pf1000.
+    pa == 0 batters: war10 = (lw100 + posadj100 + fld100) / 100 (bat100 = lw100,
+    repl100 = 0, park100 = 0). If L_pa == 0 the subtraction terms are 0 (no division)."""
     ab, h, d, t, hr, bb, sb, cs, runs = player_bat_inputs(season)
     s1 = h - d - t - hr
     pa = ab + bb
     lw100 = 47 * s1 + 78 * d + 109 * t + 140 * hr + 33 * bb + 20 * sb - 41 * cs - 27 * (ab - h)
-    if pa <= 0:
-        return 0
-    bat100 = lw100 - idiv(lg['L_lw'] * pa, lg['L_pa'])
-    pf1000 = lg.get('pf1000', 1000)
-    park100 = idiv(idiv((pf1000 - 1000) * lg['L_runs'], 20) * pa, lg['L_pa'])
-    bat100 -= park100
-    repl100 = idiv(2000 * pa, 600)
+    if pa > 0 and lg['L_pa'] > 0:
+        bat100 = lw100 - idiv(lg['L_lw'] * pa, lg['L_pa'])
+        pf1000 = lg.get('pf1000', 1000)
+        park100 = idiv(idiv((pf1000 - 1000) * lg['L_runs'], 20) * pa, lg['L_pa'])
+        bat100 -= park100
+        repl100 = idiv(2000 * pa, 600)
+    else:
+        bat100, repl100 = lw100, 0
     pos1 = _get(roster, *F['pos1']) & 15
     posadj100 = idiv(POS100.get(pos1, 0) * games, 162)
     fld100 = iddiv_fld(roster, games)
@@ -101,12 +104,12 @@ def season_stats_inputs(season):
 
 
 def season_league(teams):
-    """teams = [(v20_path, team_lg_id)]. Returns (per_player war10 dict keyed by
-    (team_lg_id, rec_index), league dict with L_* and pf1000 table)."""
-    import maj
+    """teams = [(v20_path, team_lg_id)] with unmatched stems already skipped.
+    Returns (per_player war10 dict keyed by (team_lg_id, rec_index), league dict with
+    L_* and pf1000 table)."""
     maj_path = None
-    ldir = os.path.dirname(teams[0][0])
-    cands = sorted(glob.glob(os.path.join(ldir, '*.MAJ')))
+    ldir = os.path.dirname(teams[0][0]) if teams else None
+    cands = sorted(glob.glob(os.path.join(ldir, '*.MAJ'))) if ldir else []
     if cands:
         maj_path = cands[0]
     pf = park_factors(maj_path) if maj_path else {}
@@ -234,7 +237,12 @@ def main(argv):
     mp = maj_path(argv[1])
     teams = []
     for p in sorted(glob.glob(os.path.join(argv[1], '*.V20'))):
-        teams.append((p, slot_from_stem(mp, os.path.basename(p)[:-4])))
+        lg_id = slot_from_stem(mp, os.path.basename(p)[:-4])
+        if lg_id is None:
+            continue                # unmatched stems (ALLSTAR files) are skipped
+        teams.append((p, lg_id))
+    if not teams:
+        raise SystemExit('no V20 matches a MAJ stem in ' + argv[1])
     per, lg = season_league(teams)
     for (lg_id, i), w in sorted(per.items()):
         print(f'{lg_id:2d} rec {i:2d}  WAR10 {w}')
@@ -246,14 +254,17 @@ def maj_path(ldir):
 
 
 def slot_from_stem(mp, stem):
-    if mp is None: return 0
+    """league-global id from the MAJ stem match, case-insensitive; None = no match
+    (ALLSTAR files: their MAJ stems start with NUL)."""
+    if mp is None:
+        return None
     m = maj.Maj.load(mp)
     for lg in ('AL', 'NL'):
         base = 0 if lg == 'AL' else 16
         for s in range(16):
             if m.stem(lg, s).lower() == stem.lower():
                 return base + s
-    return 0
+    return None
 
 
 if __name__ == '__main__':

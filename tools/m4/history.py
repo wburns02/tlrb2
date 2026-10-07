@@ -7,7 +7,7 @@ Layout, little endian (TEAMS/<LEAGUE>/HISTORY.DAT):
   season table at 32: 64 x 128 B. Entry for season n (1-based) at 32 + (n-1)*128:
     0 u16 season_no, 2 u8 champion id, 3 u8 runner-up id (0xff unknown),
     4 8 B champion stem, 12 8 B runner-up stem, 20 u8 al_pennant, 21 u8 nl_pennant,
-    24 28x(u8 W, u8 L) by league-global id (NL = slot+16), 80..127 zero
+    24 32x(u8 W, u8 L) by league-global id 0..31 (NL = slot+16), 88..127 zero
   player table at 8224: 160 B entries:
     0 20 B name (raw V20 bytes 0..19), 20 u16 birth, 22 u8 status (1 active 2 retired
     3 Hall of Fame), 23 u8 age at last season, 24 u16 first season, 26 u16 last season,
@@ -180,11 +180,11 @@ class History:
         self.d[o + 20] = e['al_pennant'] & 255
         self.d[o + 21] = e['nl_pennant'] & 255
         self.d[o + 22:o + 24] = bytes(2)
-        wl = e.get('w_l', [0] * 28)
-        for t in range(28):
+        wl = e.get('w_l', [(0, 0)] * 32)
+        for t in range(32):
             self.d[o + 24 + 2 * t] = wl[t][0] & 255
             self.d[o + 25 + 2 * t] = wl[t][1] & 255
-        self.d[o + 80:o + 128] = bytes(48)
+        self.d[o + 88:o + 128] = bytes(40)
 
     def read_season_entry(self, season_no):
         o = self.season_offset(season_no)
@@ -196,7 +196,7 @@ class History:
         e['runner_up_stem'] = bytes(self.d[o + 12:o + 20]).split(b'\0')[0]
         e['al_pennant'] = self.d[o + 20]
         e['nl_pennant'] = self.d[o + 21]
-        e['w_l'] = [(self.d[o + 24 + 2 * t], self.d[o + 25 + 2 * t]) for t in range(28)]
+        e['w_l'] = [(self.d[o + 24 + 2 * t], self.d[o + 25 + 2 * t]) for t in range(32)]
         return e
 
 
@@ -265,33 +265,34 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     hist = History.load(hist_path)
     mp = maj_or_none(league_dir)
     m = maj.Maj.load(mp)
+    hist.version = 1
     # 1. season entry
     ws, runner, al_p, nl_p = decode_champion(m)
     entry = {'season_no': season_no, 'champion': ws, 'runner_up': runner,
              'champion_stem': team_stem(m, ws), 'runner_up_stem': team_stem(m, runner),
-             'al_pennant': al_p, 'nl_pennant': nl_p, 'w_l': [(0, 0)] * 28}
+             'al_pennant': al_p, 'nl_pennant': nl_p, 'w_l': [(0, 0)] * 32}
     for lg in ('AL', 'NL'):
         base = 0 if lg == 'AL' else 16
-        for t in range(14):
-            if base + t > 27:
-                break                   # table holds ids 0..27 only (C2)
+        for t in range(16):
             w, l = m.wl(lg, t)
             if w or l:
                 entry['w_l'][base + t] = (w, l)
     hist.write_season_entry(season_no, entry)
     if season_no > hist.seasons_recorded:
         hist.seasons_recorded = season_no
-    # 2. league pass
+    # 2. league pass (unmatched stems, e.g. ALLSTAR1/2: skipped entirely)
     paths = sorted(glob.glob(os.path.join(league_dir, '*.V20')))
     teams = []
     for p in paths:
         stem = os.path.basename(p)[:-4].lower()
-        lg_id = 0
+        lg_id = None
         for lg in ('AL', 'NL'):
             base = 0 if lg == 'AL' else 16
             for s in range(16):
                 if m.stem(lg, s).lower() == stem:
                     lg_id = base + s
+        if lg_id is None:
+            continue
         teams.append((p, lg_id))
     per, lg_totals = war.season_league(teams)
     pf = war.park_factors(mp) if mp else {}
@@ -347,7 +348,10 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
 
 def mark_retired(hist_path, league_dir, retirees, season_no):
     """C2 step 4 (after the P1 rollover): retirees get status 2, then the HoF test.
-    status 3 + HoF season if it passes."""
+    status 3 + HoF season = season_no (the season just completed) if it passes.
+    league_dir is the PRE-rollover dir (the same V20s record_season read): the rollover
+    zeroes a retiree's name byte 0, so the retiree identity (name bytes 0..19,
+    birth = 1000 + season_no - age) must come from the pre-roll file."""
     hist = History.load(hist_path)
     for basename, recs in (retirees or {}).items():
         p = os.path.join(league_dir, basename)

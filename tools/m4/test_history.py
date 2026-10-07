@@ -38,7 +38,7 @@ def make_maj(stem=b'classic1'):
         sa = S_AL + maj.O_ABBR + 3 * slot
         d[sa:sa + 3] = (b'T%02d' % slot)
         ss = S_AL + maj.O_STEM + 8 * slot
-        d[ss:ss + 8] = (b'ALA%02d' % slot).ljust(8, b'\0')
+        d[ss:ss + 8] = (b'clasale1' if slot == 0 else (b'ALA%02d' % slot)).ljust(8, b'\0')
     for slot in range(14):
         s = S_NL + maj.O_NAMES + 16 * slot
         d[s:s + 14] = (b'NLTEAM%02d' % slot).ljust(14, b'\0')[:14]
@@ -87,7 +87,7 @@ def test_layout_offsets(tmp_path):
     hist.seasons_recorded = 1
     hist.write_season_entry(1, {'season_no': 1, 'champion': 0x13, 'runner_up': 2,
                                 'champion_stem': b'PHILA', 'runner_up_stem': b'CLE',
-                                'al_pennant': 2, 'nl_pennant': 0x13, 'w_l': [(0, 0)] * 28})
+                                'al_pennant': 2, 'nl_pennant': 0x13, 'w_l': [(0, 0)] * 32})
     e = {'name': b'SMITH'.ljust(8) + b'JOHN'.ljust(12), 'birth': 1955, 'status': 1, 'age': 25,
          'first_season': 1, 'last_season': 1, 'seasons_played': 1, 'pos1': 4,
          'pitcher': 0, 'totals': list(range(25)), 'WAR10': 123, 'top7': [9, 8, 7, 6, 5, 4, 3],
@@ -305,10 +305,13 @@ def test_record_season_champion_and_wl(tmp_path):
     assert s['al_pennant'] == 2 and s['nl_pennant'] == 0x13
     assert h.seasons_recorded == 2
     # W-L: AL slot 0 (lg id 0) = 95-67, NL slot 3 (lg id 16+3=19) = 88-74;
-    # other majors slots keep their zeros
+    # NL slot 13 (lg id 29) is inside the 32-pair table; unused ids stay (0, 0)
     assert s['w_l'][0] == (95, 67)
     assert s['w_l'][19] == (88, 74)
     assert s['w_l'][27] == (0, 0)
+    assert s['w_l'][31] == (0, 0)
+    # version byte: every record_season writes 1
+    assert h.version == 1
 
 
 def test_season_table_top7_more_than_7(tmp_path):
@@ -320,7 +323,7 @@ def test_season_table_top7_more_than_7(tmp_path):
         hist.write_season_entry(n, {'season_no': n, 'champion': n, 'runner_up': 0xff,
                                     'champion_stem': b'S%d' % n, 'runner_up_stem': b'',
                                     'al_pennant': 0xff, 'nl_pennant': 0xff,
-                                    'w_l': [(0, 0)] * 28})
+                                    'w_l': [(0, 0)] * 32})
     hist.seasons_recorded = 8
     hist.save(str(p))
     raw = open(p, 'rb').read()
@@ -341,9 +344,14 @@ def test_mark_retired_and_hof(tmp_path):
     make_maj().save(str(ldir / 'CLASSIC.MAJ'))
     hp = tmp_path / 'HISTORY.DAT'
     v20_path = ldir / 'CLASALE1.V20'
-    # two batters, 10 seasons each; one ends with H >= 3000 (3rd career stat H)
+    # one batter, 10 seasons; ends with H >= 3000 (3rd career stat H). Each season the
+    # P1 rollover would age him +1; the test ages him explicitly at the season switch
+    # so his birth identity recomputes the same way record_season does.
     for season in range(1, 11):
         tm = Team(open(v20_path, 'rb').read())
+        if season > 1:
+            for rec in (tm.players[24].raw, tm.players[64].raw):
+                _set(rec, *F['age'], _get(rec, *F['age']) + 1)
         set_player(tm, 24, 'HITTER', 'HOF', 25 + season - 1, 5, 150)
         s = tm.players[64].raw
         _set(s, *F['ab_l'], 500); _set(s, *F['h_l'], 310); _set(s, *F['games'], 150)
@@ -353,19 +361,15 @@ def test_mark_retired_and_hof(tmp_path):
     e = h.read_entry(0)
     assert e['totals'][2] == 3100                # H career total
     assert e['status'] == history.STATUS_ACTIVE
-    # the P1 rollover ages him between record_season and mark_retired (age 34 -> 35)
-    tmv = Team(open(v20_path, 'rb').read())
-    for rec in (tmv.players[24].raw, tmv.players[64].raw):
-        _set(rec, *F['age'], 35)
-    tmv.save(str(v20_path))
-    # retire him
-    history.mark_retired(str(hp), str(ldir), {'CLASALE1.V20': [24]}, 11)
+    # step 4: mark_retired with the SAME pre-rollover dir and season_no (the rollover
+    # has by now zeroed his name byte 0 in the post-roll file, but the identity comes
+    # from the pre-roll V20s record_season read); hof_season = the season just done
+    history.mark_retired(str(hp), str(ldir), {'CLASALE1.V20': [24]}, 10)
     h2 = history.History.load(str(hp))
     e2 = h2.read_entry(0)
     assert e2['status'] == history.STATUS_HOF
-    assert e2['hof_season'] == 11
-    # a retiree below the bar: single-season player (season 12; the incumbent ages +1
-    # as the P1 rollover would, keeping his birth identity intact)
+    assert e2['hof_season'] == 10
+    # a retiree below the bar: single-season player (season 11, same dir/season_no rule)
     tm3 = Team(open(v20_path, 'rb').read())
     for rec in (tm3.players[24].raw, tm3.players[64].raw):
         _set(rec, *F['age'], _get(rec, *F['age']) + 1)
@@ -373,12 +377,49 @@ def test_mark_retired_and_hof(tmp_path):
     _set(tm3.players[65].raw, *F['ab_l'], 200); _set(tm3.players[65].raw, *F['h_l'], 50)
     _set(tm3.players[65].raw, *F['games'], 100)
     tm3.save(str(v20_path))
-    history.record_season(str(ldir), str(hp), 12, {})
-    history.mark_retired(str(hp), str(ldir), {'CLASALE1.V20': [25]}, 12)
+    history.record_season(str(ldir), str(hp), 11, {})
+    history.mark_retired(str(hp), str(ldir), {'CLASALE1.V20': [25]}, 11)
     h3 = history.History.load(str(hp))
     e3 = h3.read_entry(1)
     assert e3['status'] == history.STATUS_RETIRED
     assert e3['hof_season'] == 0
+
+
+def test_mark_retired_pre_rollover_identity(tmp_path):
+    """mark_retired finds the retiree via the PRE-rollover dir even though the
+    post-roll V20s (rollover out dir) have the retiree's name byte 0 zeroed."""
+    ldir = tmp_path / 'lg'
+    post = tmp_path / 'out'
+    post.mkdir()
+    ldir.mkdir()
+    (ldir / 'CLASALE1.V20').write_bytes(make_team_v20())
+    make_maj().save(str(ldir / 'CLASSIC.MAJ'))
+    hp = tmp_path / 'HISTORY.DAT'
+    v20_path = ldir / 'CLASALE1.V20'
+    for season in range(1, 11):
+        tm = Team(open(v20_path, 'rb').read())
+        if season > 1:
+            for rec in (tm.players[24].raw, tm.players[64].raw):
+                _set(rec, *F['age'], _get(rec, *F['age']) + 1)
+        set_player(tm, 24, 'HITTER', 'HOF', 25 + season - 1, 5, 150)
+        s = tm.players[64].raw
+        _set(s, *F['ab_l'], 500); _set(s, *F['h_l'], 310); _set(s, *F['games'], 150)
+        tm.save(str(v20_path))
+        history.record_season(str(ldir), str(hp), season, {})
+    # the rollover's post-roll copy zeroes the retiree name byte 0 (out dir)
+    tm = Team(open(v20_path, 'rb').read())
+    tm.players[24].raw[0] = 0
+    tm.players[64].raw[0] = 0
+    tm.save(str(post / 'CLASALE1.V20'))
+    # mark_retired uses the PRE dir (intact names), not the post dir
+    history.mark_retired(str(hp), str(ldir), {'CLASALE1.V20': [24]}, 10)
+    h = history.History.load(str(hp))
+    e = h.read_entry(0)
+    assert e['status'] == history.STATUS_HOF and e['hof_season'] == 10
+    # and with the post dir it would NOT fire (identity gone): sanity
+    history.mark_retired(str(hp), str(post), {'CLASALE1.V20': [24]}, 10)
+    h2 = history.History.load(str(hp))
+    assert h2.read_entry(0)['status'] == history.STATUS_HOF   # unchanged from above
 
 
 def test_status_active_and_name_bytes(tmp_path):
@@ -414,3 +455,99 @@ def test_status_active_and_name_bytes(tmp_path):
     assert e2['pitcher'] == 1 and e2['pos1'] == 0
     # outs = (1000 // 10) * 3 + 0 = 300
     assert e2['totals'][19] == 300
+
+
+def test_allstar_unmatched_stem_skipped(tmp_path):
+    """A V20 whose stem matches no MAJ stem (ALLSTAR1/2: their MAJ stems start with
+    NUL) is skipped by every history step: no league totals, no player entries."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    (ldir / 'CLASALE1.V20').write_bytes(make_team_v20())
+    (ldir / 'ALLSTAR1.V20').write_bytes(make_team_v20(name=b'ALLSTARS', abbr=b'ALS'))
+    m = make_maj()
+    sa = S_AL + maj.O_STEM + 8 * 15
+    m.d[sa:sa + 8] = b'\0' * 8         # ALLSTAR1 stem starts with NUL = no match
+    m.save(str(ldir / 'CLASSIC.MAJ'))
+    hp = tmp_path / 'HISTORY.DAT'
+    tm = Team(open(str(ldir / 'CLASALE1.V20'), 'rb').read())
+    set_player(tm, 7, 'ROSSI', 'ROB', 29, 4, 100)
+    _set(tm.players[47].raw, *F['games'], 100)
+    _set(tm.players[47].raw, *F['ab_l'], 100)
+    tm.save(str(ldir / 'CLASALE1.V20'))
+    # the ALLSTAR file has an active batter with big stats that must be ignored
+    tm2 = Team(open(str(ldir / 'ALLSTAR1.V20'), 'rb').read())
+    set_player(tm2, 3, 'MASH', 'MADDOX', 28, 2, 162)
+    _set(tm2.players[43].raw, *F['games'], 162)
+    _set(tm2.players[43].raw, *F['ab_l'], 999); _set(tm2.players[43].raw, *F['h_l'], 400)
+    tm2.save(str(ldir / 'ALLSTAR1.V20'))
+    history.record_season(str(ldir), str(hp), 1, {})
+    h = history.History.load(str(hp))
+    # only the matched team's batter gets an entry; the ALLSTAR one does not
+    assert len(h._entries) == 1
+    e = h.read_entry(0)
+    assert e['totals'][1] == 100          # AB from ROB only, no ALLSTAR 999
+    # league totals: L_pa from the matched team only (pa = 100 AB + 0 BB)
+    per, lg = war.season_league([(str(ldir / 'CLASALE1.V20'), 0)])
+    assert lg['L_pa'] == 100
+
+
+def test_wl_nl_slot13_id29_and_32_pairs(tmp_path):
+    """W-L table = 32 pairs, ids 0..31: an NL slot 13 team lands at id 29;
+    88..127 stay zero."""
+    p = tmp_path / 'HISTORY.DAT'
+    hist = history.History(None)
+    wl = [(0, 0)] * 32
+    wl[29] = (101, 61)
+    wl[31] = (1, 1)
+    hist.write_season_entry(1, {'season_no': 1, 'champion': 0xff, 'runner_up': 0xff,
+                                'champion_stem': b'', 'runner_up_stem': b'',
+                                'al_pennant': 0xff, 'nl_pennant': 0xff, 'w_l': wl})
+    hist.save(str(p))
+    raw = open(p, 'rb').read()
+    o = 32
+    # id 29 pair at 24 + 2*29 = 82, id 31 at 86; 88..127 zero
+    assert raw[o + 24 + 2 * 29] == 101 and raw[o + 25 + 2 * 29] == 61
+    assert raw[o + 24 + 2 * 31] == 1 and raw[o + 25 + 2 * 31] == 1
+    assert raw[o + 88:o + 128] == bytes(40)
+    h2 = history.History.load(str(p))
+    s = h2.read_season_entry(1)
+    assert len(s['w_l']) == 32
+    assert s['w_l'][29] == (101, 61)
+    assert s['w_l'][31] == (1, 1)
+
+
+def test_nl_slot13_wl_through_record_season(tmp_path):
+    """record_season writes W-L for slots 0..15 of both leagues: NL slot 13 -> id 29."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    (ldir / 'CLASALE1.V20').write_bytes(make_team_v20())
+    m = make_maj()
+    m.set_wl('NL', 13, 101, 61)
+    m.save(str(ldir / 'CLASSIC.MAJ'))
+    hp = tmp_path / 'HISTORY.DAT'
+    history.record_season(str(ldir), str(hp), 1, {})
+    h = history.History.load(str(hp))
+    s = h.read_season_entry(1)
+    assert s['w_l'][29] == (101, 61)
+
+
+def test_version_byte_every_path(tmp_path):
+    """Byte 3 = 1 after record_season on a brand-new file, and after a legacy
+    4-byte upgrade + record_season (bytes 0..2 kept)."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    (ldir / 'CLASALE1.V20').write_bytes(make_team_v20())
+    make_maj().save(str(ldir / 'CLASSIC.MAJ'))
+    hp = tmp_path / 'HISTORY.DAT'
+    # brand-new file
+    history.record_season(str(ldir), str(hp), 1, {})
+    assert history.History.load(str(hp)).version == 1
+    # legacy 4-byte file: record_season keeps bytes 0..2 where it can (the done flag /
+    # rng word are P1 markers; the done flag is set at the end of every record_season)
+    open(hp, 'wb').write(bytes([7, 0x34, 0x12]))
+    history.record_season(str(ldir), str(hp), 2, {})
+    raw = open(hp, 'rb').read()
+    h = history.History.load(str(hp))
+    assert h.version == 1
+    assert h.rng_word == 0x1234
+    assert len(raw) > 32 and raw[4] | raw[5] << 8 == 2
