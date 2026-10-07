@@ -51,6 +51,9 @@ class Maj:
         s = self._s(lg) + o + 32 * day; return list(self.d[s:s + 16])
     def dh(self, lg): return self.d[self._s(lg) + O_DH]
     def set_dh(self, lg, v): self.d[self._s(lg) + O_DH] = v
+    # injuries on/off lives only in the AL block (S+0x35b = file 0x578), read by BACK as DAT_1842+0x35b
+    def injuries(self): return self.d[LG['AL'] + 0x35b]
+    def set_injuries(self, v): self.d[LG['AL'] + 0x35b] = v
     # -- names (slot = division*8 + i, slot 15 = all-star team) --
     @staticmethod
     def _cs(b): return bytes(b).split(b'\0')[0].decode('latin-1')

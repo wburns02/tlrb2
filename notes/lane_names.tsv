@@ -9,3 +9,5 @@ BACK	1000:523d	sim_day_slots	Lane B s3: loops 8 game slots of the current day (M
 BACK	1000:5a65	store_game_result_cells	Lane B s3: copies runs 0x1beb/c, hits 0x1bed/e, errors 0x1bef/f of the game record into MAJ tables +0x1607/+0x3487/+0x5307 at day*32 + (slot + dh*8)*2
 BACK	1000:5bfe	validate_day_played_flags	Lane B s3: day row consistency check of played bits S+0x7187/7188 vs doubleheader flag S+0x132b
 MAIN	6000:0ba2	randomize_night_game_flags	Lane B s3: fills S+0x1513 night flags: day%7 0,1 never, 3 80%, 4 66.7%, else always, never for DH slots; m3_end data shows pattern
+BACK	1000:98f3	roll_player_injury	Lane B s3: gated by MAJ injuries flag (AL block +0x35b); probability from workload vs rating, writes injury days 2..14 into player record byte 0x18 (record base idx*0x8f, DU at +0x13f absolute). Flag proof: new-season dialog NO->0 YES->1
+BACK	1000:988f	count_available_players	Lane B s3: counts players of the 40 whose +0x127 record byte nonzero, pos nibble +0x146&0xf==0 (pitcher), DU byte +0x13f == 0 or >0x80 (healthy or rested only)

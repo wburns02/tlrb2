@@ -57,6 +57,10 @@ Header (295 B) decoded 2026-10-07 (Lane B), evidence = Manager-screen single-edi
   RUNNING: aggressive/safe, steal-2nd/safe, steal-3rd/safe. Proved: 15 values 30,80,40 40,90,20 10,60,30 80,20,60 90,10,70 for the
   screens' (7|3 2|8 6|4 / 6|4 1|9 8|2 / 9|1 4|6 7|3 / 2|8 8|2 4|6 / 1|9 9|1 3|7). +247 is used in MANAGE 1000:5e78 (advice score).
   +260..+264 stay 0x32 (unused), +265..+294 zero.
+- Injury roll (BACK 1000:98f3, called from 1000:978f after a game, only if MAJ injuries flag set): for a pitcher a workload ratio
+  a = (games-count byte per player at DS+0x17e1 * 100 / (days elapsed+5)) * (season length) / (pitcher durability byte at record+0x62), roll
+  random(0..999) < (a-100)*10; for a batter a = byte(+0x1796)... threshold 115, chance (a-115)*5. Duration table from a second roll r=random/10+1:
+  r<26 -> 1, <41 -> (r-0x18)/10+2.., slow growth, capped to 2..14, stored into DU byte (record+0x18) low bits (injury, no REST bit).
 - Player record byte 24 (0x18) = DU column "days unavailable": low 7 bits = days, bit 7 = REST ("R" suffix: 0x85 -> "5R", 0x03 -> "3",
   0x92 -> "18R"). BACK sets bit7 on pitchers after they pitch (0x85 after 8.2 IP / 30 BF, 0x82 after 1 BF); a starter is eligible when
   the byte is 0 or 0x81. Aged by 1 per league day, 0x81 -> 0. Values 1..0x7f without bit7 are injuries. Proved in game
@@ -81,7 +85,13 @@ Old-format MAJ = 58789 B; UTIL 4000:74ad upgrades 0xE625 to 0xE97B.
   Day 203 = Oct 21, 107 = July 17. The Start New Season screen shows idx+1 as the date.
 - Two league blocks, S = 0x21d (AL) and 0x758c (NL), size 0x736f. Team slot = division*8 + i (East 0..6, West 8..14; slot 7 unused).
   Offsets from S:
-  - +0x297 DH flag (AL 1, NL 0 in classic). NOT changed by the Start New Season DH dialog in my run (open question).
+  - +0x297 DH flag (AL 1, NL 0 in classic). PROVED (session 3): the Start New Season "SET DH FOR LEAGUES" dialog writes it (A=NO DH, N=USE DH
+    gave AL 0, NL 1 after the new season) and an outside edit with maj.py set_dh shows as the checkmarks in that dialog (shot n13). The earlier
+    run failed because the radio rows only react to clicks on the checkmark column (x=445 in screen coords, rows y380/418), not on the text.
+    BACK 1000:~9654 copies S+0x297 of the game's league into the game record (+0x1c19).
+  - +0x35b of the AL block (file 0x578) = INJURIES ON/OFF (1 = on). PROVED: "Do you want injuries to occur during the season?" NO -> 0, YES -> 1
+    (NL block's byte stays 0, only the AL block copy is read: BACK DAT_3000_1842+0x35b). Gate for the injury rolls in BACK 1000:98f3, c18b, c278,
+    c750 and the season loop 4ed3/5cc8.
   - +0x298/0x299 East/West team counts.
   - +0x2b3 24 B standings order: East slots, 0xff, West slots, 0xff, then ff padding. All ff before play and after new season. Derived.
   - +0x2cb W[24] u8, +0x2e3 L[24] u8, +0x2fb GB*10 u16[24] (derived).
