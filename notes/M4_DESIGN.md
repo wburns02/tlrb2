@@ -148,6 +148,14 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
 3. Retirement/progression constants (the curves above are first-pass; you may want era-appropriate values for a
    19th-century league).
 4. HoF thresholds and whether awards matter to you or champion + leaders are enough.
+5. Roster turnover (found 2026-10-07, measured on the real CLASSIC league with the C1 reference): a normal seed
+   retires 6 to 19 players per season out of ~1100 on the 28 real rosters, about 1%. Real MLB turns over far more,
+   mostly through washouts (young players released), not old-age retirement. Under C1 a weak 26-year-old keeps his
+   roster spot until 36, so rookies enter only as veterans age out. Option: a release rule (for example age 29+ and
+   every key rating below a floor, or N straight seasons under a games threshold) that frees the slot without
+   counting as a retirement for the Hall of Fame. Not built; needs your call. (Seasons 1 to 3 of the test dynasty
+   looked like heavy turnover only because they rolled at seed 0, a degenerate rng that retired 192 a season;
+   the T4a seed rule removes that.)
 
 ## Answers (Will, 2026-10-07)
 
