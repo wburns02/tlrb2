@@ -1,31 +1,26 @@
 # Lane B (dynamic) status
 
-## Status 2026-10-06 (M2 and M3 done to the extent below)
-Done
-- M2 player record fully mapped except u16@27 and u16@90/92. V20 header fully decoded (staff, lineups, defense, bench, reserves, strategy,
-  W/L +38/39, streak +109, rotation pointer +110). tools/v20.py has accessors; parse+serialize byte exact. Round trips proven on screen
-  (rt1.png record fields, rt2.png header lists).
-- M3: ran a full 162 game season plus playoffs and WS on the work install with ftrace/snap diffs (snaps m3_base, m3_d1, m3_d2, m3_end).
-  MAJ layout decoded: date constants, standings, schedule, runs/hits/errors tables, playoff data (FORMATS.md). Verified against the
-  Game Scores screen for April 9. Season sums check: all W+L = 4212 = 26 x 162, per-team V20 W/L equal MAJ arrays.
-- tools/maj.py reader/writer. Round trip proven: W/L edited outside the game show on Season > Standings (shots/rt_maj2.png).
-  Order and GB are recomputed by the game on load.
-- Season flow: CONTROL byte meanings, V20s written only at Main > QUIT, PLAYOFFS.AL/.NL layout (8 x GAME.TMP records), .SCH template
-  layout (AL rows at +0x50+16d, byte identical to MAJ rows), Start New Season effects (zeroes W/L, streak, byte 24, stats in records
-  40..79; deletes PLAYOFFS.*; rewrites schedule and date constants). Season stats never touch records 0..39.
-- BACK code read: 1000:95da/95fb (streak), 1000:9d84 (starter chooser, rest bit).
+## Status 2026-10-06 (third Lane B session)
+Done (all committed; evidence in FORMATS.md, code names in lane_names.tsv)
+- M2 record and header: V20 header fully decoded including colors (+44..91, tools/v20.py colors/set_colors), abbreviation, stadium stem and the draft GM
+  profile (+237..244: 7 percentages summing to 100 plus preset index 0..5, code DRAFT 2000:ecfd and 2000:f6c9). Parse and serialize are byte exact on all shipped teams.
+- M3 MAJ: layout, per-day arrays, doubleheader rows, name/abbr/stem tables, DH flag at S+0x132b, injuries flag at AL block +0x35b, cancel and night arrays.
+  tools/maj.py has accessors and setters. DH and injuries flags proven on screen with positive controls (new-season dialog, shots n13, p1..p3).
+- Team names, abbreviations, colors, stadium assignment are stored in the V20 headers plus the MAJ name tables (Edit Team Names changes both). Proven by snap diffs.
+- Stats-to-ratings: all nine auto ratings decoded (power, hit and run, bunt, speed, range, arm, velocity, control, endurance) and implemented in tools/ratings.py.
+  Checked against every shipped player with real stats: 99.7 to 100 percent exact. Code UTIL 1000:b02a..b82f, 5000:e298/e477.
+- GAME.TMP: size, writer/reader, home-first team stems, night flag, stadium bytes, random weather-like bytes. Ground Rules DH/errors/injuries/stats are not in it.
+- New rig tools: tools/lane_b/relaunch.sh (restart own DOSBox-X by pid file), gt_run.sh (scripted exhibition game that captures GAME.TMP).
 Open
-- DH flag: S+0x297 did not change when I set A=NO DH, N=USE DH in the new-season dialog (maybe the clicks missed, maybe stored in memory only).
-  The injuries on/off choice is in no data file either. Needs a re-run with a screenshot after each click.
-- MAJ: bitmaps at S+0x132b..0x1607, exact hits/errors table semantics, 0x20c/0x20d use, team names/colors/stadium storage (Setup Leagues,
-  Edit Team Names, Assign Stadiums experiments not run), V20 header +44..91 and +237..244, record u16@27/90/92, +0x85 counter semantics,
-  stats-to-ratings formula, GAME.TMP internals.
+- Player record u16@27 (not the portrait, probably an id), u16@90/92 (probable RTO% ratio), +0x85 counter (not found in code; the UTIL hits at +0x85 are another struct).
+- Header +237..244 category labels (screen file profile2.scr), meaning of the 7 percentages beyond "draft GM weights".
+- GAME.TMP lineup/defense block and play log layout, where BB keeps the Ground Rules switches. UTIL 5000:a5aa/f382/f697 "overall rating" (109..9999) formula.
 - Cause of the ordering of NL schedule rows in the SCH (+0x6fd4) not verified beyond one row match.
 Next
-- Edit Team Names / Assign Stadiums / team colors experiments with snap diffs. DH and injuries flag re-run.
-- Decode GAME.TMP via a BB game (M4 is not started).
-Code addresses for Lane A (BACK DGROUP 2c71 unless noted): streak setters 1000:95da (win) and 1000:95fb (loss), starter chooser 1000:9d84
-(staff tables DS:0x180a + team*5 + i + 0x1abb, bullpen +0x1ac5, record base 0x127 + idx*0x8f), CONTROL.EXE FUN_1228_0007 (reads CONTROL).
-UTIL (DGROUP 3954): position string table DS:0x0b6c, pitch type strings near DS:0x0a0f, MAJ upgrade UTIL 4000:74ad, MANAGE 1000:ce08 (aging loop).
-Editor screens SCREENS/EDITBATA.SCR, EDITBATB.SCR, EDITFLD.SCR, CHOOSEP.SCR. V20 record struct 143 B, see FORMATS.md.
-State: work install restored to snaps/m3_base (clean classic, CONTROL 00 01 ...). A DOSBox-X window is left at the DOS prompt on :98.
+- Decode the GAME.TMP lineup block by varying lineups with the Manager screen; read BB for the Ground Rules storage.
+- Earlier-session facts that still hold: season flow (CONTROL byte meanings, V20s written only at Main > QUIT, PLAYOFFS.* layout, Start New Season effects).
+Code addresses for Lane A (BACK DGROUP 2c71 unless noted): streak setters 1000:95da/95fb, starter chooser 1000:9d84, rain postpone 1000:57c0, day slot loop 1000:523d,
+injury roll 1000:98f3, MAIN night flags 6000:0ba2, DRAFT GM profile 2000:ecfd/f6c9, MAIN GAME.TMP writer 4000:d07d, BB reader 6000:c4da,
+UTIL (DGROUP 3954) rating formulas 1000:b02a b121 b1cd b29c b3d8 b541 b68e b74a b82f, per_mille 1000:a478, import 5000:e298/e477,
+CONTROL.EXE FUN_1228_0007 (reads CONTROL). V20 record struct 143 B, see FORMATS.md.
+State: work install restored to snaps/m3_base. My DOSBox-X (pid in /mnt/nvme/tlrb2/logs/dosboxx.pid) is on :98.

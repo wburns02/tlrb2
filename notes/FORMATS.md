@@ -169,3 +169,20 @@ Old-format MAJ = 58789 B; UTIL 4000:74ad upgrades 0xE625 to 0xE97B.
   start date, series lengths, required vs current league panels, NEW SEASON (430,592). YES/NO warning, Set DH dialog, injuries question,
   then Play Standard Games. Effects listed under MAJ and V20 above.
 - Still TBD: GAME.TMP internals, SCREENS/*.SCR, *.ANM, *.PAG, *.PAL, *.FNT, saved seasons.
+
+## GAME.TMP and saved games (Lane B s3, 2026-10-06, rig runs gt_*.tmp in /mnt/nvme/tlrb2/snaps)
+- GAME.TMP is the MAIN to BB hand-off, rewritten on every Play Ball (PLAY BALL on the lineup screen). Size 0x1d16 = 7446 B (the "0x11d16" in the decompile is
+  a stray prefix). Writer MAIN 4000:d07d (called from the pre-game menu loop 4000:cf80), reader BB 6000:c4da. 1.SAV..10.SAV are the same 7446 B format
+  (written by the in-game Escape menu > Save Game, plus the play log below); the save list caption ("EXHIBITION: BAL VS CAL (0 - 1) 2ND INNING, NO OUTS") is not in the file.
+- 0..4821: all zero at game start. In a saved game bytes at 0,80,260,305,480.. etc. become 1 (per play log, not decoded).
+- 4822..~6650: 3 byte records at stride 6, FF FF FF at start (log slots, not decoded).
+- ~6750..7150: lineup and defense tables for both teams (batting order indexes 0..39 per side, FF padded; position codes with 9 = DH appear when DH is on). Not fully decoded.
+- 7143: night game flag (0 day, 1 night). Proven by single-factor runs.
+- 7169: three NUL-less names: HOME team file stem (8, e.g. "clasale1" = CLASALE1.V20), VISITOR stem (8), set directory ("classic", NUL ended). Proved with
+  two team pairs (California visitor vs Baltimore home gives clasale1 first, so the first stem is the HOME team).
+- 7402..7416: per-game random bytes (differ between identical setups): probably weather, wind and temperature (7413 values 0..20, 7415/7416 vary widely).
+- 7419: stadium index byte (0x25 grass at Baltimore, 0x26 TURF at Texas), 7420..7427: stadium stem (8 B, stale bytes after the NUL, e.g. "TURF\0CFG").
+- 7428..7445: 7428 and 7429..7431 vary with the setup, 7432..7445 were constant in every run (01 01 01 03 01 f9 f2 04 02 02 00 00 68 c0).
+- NOT stored in the file (single-factor runs with only that Ground Rules switch changed, differences were only the random bytes above): designated hitter,
+  errors, injuries, computer pipes ball, use stats. Night game is the only General switch that changes a byte. These switches live elsewhere in BB memory.
+- Open: full decode of the lineup/defense block and of the play log (needs a saved game mid-inning with known events).
