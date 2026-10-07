@@ -153,3 +153,119 @@ HISTWR.EXE (C, OpenWatcom large model; the same source also builds on the host w
 - Any error (missing PRE_DIR MAJ, unreadable file): HIST_PATH unchanged, exit 2. Success exit 0.
 Reference fixes in the same amendment: mark_retired skips unmapped files (ALLSTAR copies of real players), and
 seasons past 64 skip the season-table write (careers still update; the table would overlap the player table).
+
+## C6. Roster management, ROSTERS (DRAFT 2026-10-07: structure fixed, constants in the T table are tunable until
+## the 50-season validation locks them; design and research in notes/M4_ROSTER.md)
+
+Runs after DYNASTY rolled and HISTWR recorded: BAT line `if errorlevel 1 rosters` after the histwr line. Inputs:
+the rolled league dir (TEAMS\CLASSIC), the pre-roll snapshot C:\DYNSNAP (V20s, MAJ), C:\DYNSNAP\RETIRED.DAT,
+HISTORY.DAT. It rewrites team V20s, the pool files, HISTORY header bytes 1..2 and 16..17, and ROSTERS.TXT.
+Same integer conventions and xorshift16 as C1. All lists below are in ascending order unless stated.
+
+Files and header bytes:
+- Teams = mapped_teams (C2): V20s whose stem matches a MAJ slot, sorted file order. ALLSTAR files are never touched.
+- Pool = POOL1.V20..POOL4.V20 in the league dir (unmapped, so the game and HISTWR ignore them; DYNASTY rolls them
+  like any V20: pool players age and can retire, and the C4 fill turns pool vacancies into the draft class).
+  Missing pool files are created by ROSTERS: header all zero except name "FREE AGENTS" (+0) and league code
+  copied from the first team, 80 zero records. 4 x 40 slots: pitcher slots 0..15, batter slots 16..39 (as teams).
+- HISTORY header (C2 bytes 10..31 were zero): 10 u8 era mode (0 real calendar, 1 reserve clause always, 2 free
+  agency always), 11 zero, 12..15 u32 managed-team mask (bit k = league-global id k; 0 = all AI), 16..17 u16 rng
+  word at ROSTERS start. ROSTERS reads its rng from bytes 1..2 (DYNASTY's end word; 0 -> 1) and writes the end
+  word back to 1..2, so the next roll continues the stream. Missing HISTORY -> ROSTERS does nothing, exit 2.
+- Year = record byte 21 + 1870 of the first named record of the first team (the season being started).
+- Record byte 141 = pool years (0 on every team record; ROSTERS zeroes it on signing, both halves).
+- A "player" = the record pair (i, i + 40) of one file. Every move copies both records together and vacates the
+  source (both records zeroed). Pitcher slots only ever take pitchers, batter slots only batters.
+
+Definitions:
+- Ratings come from the roster half (record i). Batter: power, hit_run, speed, range, arm. Pitcher: control,
+  velocity, endurance.
+- Primary position p = pos1 (0x1f lo). Field weights (rw, aw) by p: C(1) 1,3; 1B(2) 1,0; 2B(3) 3,1; 3B(4) 2,2;
+  SS(5) 3,2; LF(6) 1,1; CF(7) 3,1; RF(8) 1,2; DH(9) 0,0; OF(10) 2,1; IF(11) 2,2; O/I(12) 2,1; C/O(13), C/I(14),
+  C/3(15) 1,3; 0 (pitcher code in a batter slot) 0,0.
+- can_play(player, q) for field positions q = 1..8: true if pos1 or pos2 is q, or a group code covers q:
+  OF -> 6,7,8; IF -> 2,3,4,5; O/I -> 2..8; C/O -> 1,6,7,8; C/I -> 1..5; C/3 -> 1,4. Every batter can DH.
+- Off = 3*power + 3*hit_run + speed. Fld(q) = rw[q]*range + aw[q]*arm (weights of position q, not of p).
+- Score: batter S = Off + Fld(p); pitcher S = 3*control + 3*velocity + 2*endurance.
+- Potential ratings: for each rating r, pot = min(cap, r + ((G[age] + 128) >> 8)) if r < cap else r; cap 10 for
+  endurance, 12 otherwise; G[age] = sum of g(x) for x = age+1..26 with g = 90 (x <= 22), 64 (23..24), 32 (25..26);
+  G = 0 for age >= 26. Age = record byte 20 (already aged by the roll). Spot = S computed on pot ratings.
+- Value V = (S*(256 - w) + Spot*w) >> 8, w by age: <= 20 179, 21..22 154, 23 141, 24 102, 25 77, 26 38, 27 13,
+  else 0. Then age discount V = (V * f) >> 8, f: <= 29 256, 30..31 248, 32..33 236, 34..35 220, 36..37 200,
+  38+ 180. (Depth decisions use S, roster decisions use V.)
+- Playing time from the snapshot season record (DYNSNAP record i + 40, same file and index): batter PA = ab_l+ab_r+
+  bb_l+bb_r (war.py's pa), pitcher outs = war.ipiv_outs(ip10). Class: none if games = 0; batter low PA < 100, mid
+  100..399, reg 400+; pitcher low outs < 90, mid 90..299, reg 300+. A slot that was vacant in the snapshot or is a
+  C4 rookie: class none.
+- C4 rookie = a slot that is named now and was vacant in the snapshot or flagged in RETIRED.DAT.
+- SP = pitcher with endurance >= T.SP_END, else RP.
+- Reverse standings order: teams by W/(W+L) ascending, compared as W1*(W2+L2) vs W2*(W1+L1) (0-0 counts as .500),
+  ties by sorted file order. W, L from the snapshot MAJ (maj.wl).
+
+Pipeline (each step over teams in sorted file order unless stated):
+1. Pool cleanup: every pool player with byte 141 >= T.POOL_YEARS retires unsigned (vacated, logged).
+2. Draft class: every C4 rookie on a team (AI or managed) moves to the pool list (vacates its team slot).
+   Pool C4 rookies stay in the pool. Draft class = all pool players with exp = 0 and byte 141 = 0 after this step.
+3. Release (AI teams only), per team, pitchers (slots 0..15) then batters (16..39), slots ascending:
+   protected = top T.KEEP_P pitchers / T.KEEP_B batters by V (ties lowest slot), plus the best V batter whose
+   pos1 is C, SS, 2B and CF (one each, if any), plus exp <= 1 and age <= 24. Each unprotected player, while the
+   team's release count < T.REL_CAP: p = T.REL[band][class] (band: age <= 24, 25..29, 30..33, 34+); if V >= the
+   median V of the team's group (lower median of the sorted V list) then p = p >> 1. d = draw() & 0xff; released
+   iff d < p. Released players move to the pool list. No draw once the cap is reached.
+4. Market (AI teams only, only when free agency is on: era 2, or era 0 and year >= 1976): same order, every
+   remaining non-rookie player with exp >= 6 draws once: d = draw() & 0xff; enters the pool iff d < T.MKT.
+5. Signing: pool list = pool file players (files sorted, slots ascending) then moved players in the order they
+   moved. Rounds: in reverse standings order, each team with a vacancy that has an eligible candidate takes one:
+   - AI team: candidates = pool players of a vacant slot type. Need for a batter candidate c with pos1 p:
+     best = the team's highest V among its batters with pos1 = p (0 if none); for a pitcher: best = the team's
+     5th highest V among its pitchers of c's role (SP/RP), 0 if fewer than 5. score = V(c) + 2 * max(0, V(c) -
+     best). Take the max score, ties earliest in the pool list.
+   - Managed team: candidates = draft-class players of a vacant slot type; take the max V, ties earliest.
+   The player goes to the team's lowest vacant slot of its type, byte 141 = 0. Rounds repeat until a full round
+   signs nobody.
+6. Trades (AI teams only, no draws). Starters per team = the depth rebuild's assignment (step 7) computed on the
+   current rosters. League median at position q = lower median of every AI team's starter S at q (SP: the 5
+   rotation S values of every team pooled; RP: the 5 relievers pooled). Need(team, q) = median(q) - starter S at
+   q (for SP/RP: median minus the team's worst rotation/relief S), a need exists if > T.NEED. Surplus(team, q) =
+   a non-starter whose can_play(q) (pitchers: role q) and whose S >= median(q). For each team A in standings order
+   best first, its largest need q (ties lowest q, C=1..RF=8, then SP, RP): search partners B in sorted order with a
+   surplus x at q, such that A has a surplus y of the same type (batter for batter, pitcher for pitcher) at some
+   q2 where B has a need; neither x nor y is in its team's top 3 V of its type; |V(x) - V(y)| * 100 <= T.BAND *
+   max(V(x), V(y)). First valid (B, x, y) in order of B, then x by slot, then y by slot: swap x and y (each takes
+   the other's slot). At most 1 trade per team, at most T.MAX_TRADES per offseason.
+7. Depth rebuild (AI teams) or repair (managed teams), then pool write-back.
+   Rebuild:
+   - Pitchers: active 10 = top 10 named pitchers by S (ties lowest slot). Rotation (+111..+115) = the 5 active with
+     the highest 3*control + 3*velocity + 4*endurance, in that order; relievers (+116..+120) = the other 5 by
+     3*control + 3*velocity descending; +121 = 0xff; +110 = 0.
+   - Batters: field starters greedy in order C, SS, 2B, CF, 3B, RF, LF, 1B: the unassigned named batter with
+     can_play(q) and max Off + Fld(q); if none can play q, the unassigned batter with max Off + Fld(q) - 20. DH =
+     unassigned max Off. Backup catcher = unassigned max Fld(1) among can_play(1) (if any). Active 15 = 8 field
+     starters + DH + backup C + the rest by S descending up to 15. Ties lowest slot.
+   - Batting order: the 9 starters (8 + DH) sorted by Off descending r1..r9 (ties lowest slot): DH sets r3, r2,
+     r1, r4, r5, r6, r7, r8, r9 with positions; no-DH sets the same order without the DH, 8 entries, then 0xff
+     with position 0 (pitcher). vs-LHP and vs-RHP sets are identical. Bench +194: the other active batters by S
+     descending (no-DH: 7 incl. the DH; DH: 6 then 0xff).
+   - Reserves +222..+236: the 6 inactive pitchers by slot, then the 9 inactive batters by slot.
+   Repair (managed): every header list entry whose slot changed occupant this offseason (or is vacant) is replaced
+   by the best S unchanged same-type reserve (lineup slots: one that can_play the slot's position if any); the
+   newcomer takes that reserve's place in +222..+236. Unchanged entries keep their bytes.
+   Pool write-back: unsigned pool-list players sorted by V descending (ties earliest); the first T.POOL_KEEP
+   (pitchers and batters counted separately: T.POOL_KEEP_P, T.POOL_KEEP_B) are written to POOL1..POOL4 lowest
+   vacant slots of their type with byte 141 += 1 (both halves); the rest retire unsigned. Vacant pool slots are
+   the next draft class.
+8. HISTORY bytes 16..17 = start word, 1..2 = end word. ROSTERS.TXT (CRLF, rewritten each run): one line per
+   event in order: `RET <team stem> <name>` (unsigned retirement), `DRAFT`, `REL`, `MKT`, `SIGN <team> <name>
+   <from>`, `TRADE <teamA> <nameX> <teamB> <nameY>`, `POOLRET`, names as "First Last" from the record.
+
+T table (initial values, tunable):
+- SP_END 6. POOL_YEARS 1. KEEP_P 7, KEEP_B 10. REL_CAP 8. MKT 24. NEED 8. BAND 5. MAX_TRADES 6.
+  POOL_KEEP_P 32, POOL_KEEP_B 48.
+- REL (/256) rows age <= 24, 25..29, 30..33, 34+; columns none, low, mid, reg:
+  16 69 33 5 / 48 120 41 5 / 96 156 51 8 / 128 192 77 18 (low/mid/reg columns = the 1970-90 Lahman gone rates).
+
+Known v1 gaps (accepted): pool retirements are not marked in HISTORY (status stays active); the Draft GM profiles
+are not used (category labels undecoded); no platoon lineups; no trades with the managed team; DYNASTY skips the
+C4 fill for a file with no named record, so an empty pool file gets no draft class until it holds a player
+(DYNASTY amendment: fall back to the previous file's year; until then ROSTERS seeds the bootstrap year by keeping
+at least one player per pool file when the pool has any).
