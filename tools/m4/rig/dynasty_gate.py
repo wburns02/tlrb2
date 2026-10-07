@@ -64,6 +64,9 @@ def setup_install(fresh=False):
         else:
             shutil.copy2(src, dst)
 
+    # Make everything writable
+    subprocess.run(['chmod', '-R', 'u+w', INSTALL_ROOT], check=True)
+
     # Patch BAT
     print(f'Patching {INSTALL_ROOT}/TONY2.BAT')
     if not bat_patch.patch(INSTALL_ROOT, revert=False):
