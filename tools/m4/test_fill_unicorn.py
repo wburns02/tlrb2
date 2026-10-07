@@ -296,3 +296,52 @@ def test_year_byte_written_verbatim():
     assert nvac == 1
     base = HDR + 4 * RECORD
     assert ref[base + 21] == year
+
+
+def test_image_at_nonzero_offset_like_dynasty_exe():
+    """DYNASTY.EXE passes DS = ES = its own segment and SI = team_buf (not 0),
+    with code and data below the image. Every write must land relative to
+    DS:SI, never at absolute HDR offsets, and nothing outside the image may
+    change. ES is set to an unrelated segment to prove the blob does not
+    rely on the caller's ES."""
+    import random
+    rnd = random.Random(77)
+    seg = 0x5000
+    for si_off in (0x0333, 0x1000 + 0x0255):
+        spec = {i: rnd.choice(range(10)) for i in range(40) if rnd.random() < 0.5}
+        image = _team(spec)
+        uc = Uc(UC_ARCH_X86, UC_MODE_16)
+        uc.mem_map(0x00000, 0x100000)
+        uc.mem_write(PBLOB, BLOB)
+        guard = bytes((i * 13 + 5) & 0xFF for i in range(0x10000))
+        uc.mem_write(seg << 4, guard)
+        uc.mem_write((seg << 4) + si_off, bytes(image))
+        uc.mem_write(PRNG, struct.pack("<H", 4321))
+        uc.mem_write(PSTACK + SP_TOP, struct.pack("<HH", 0, SEG_STACK))
+        uc.mem_write(PSTACK, b"\xF4")
+        uc.reg_write(UC_X86_REG_CS, SEG_BLOB)
+        uc.reg_write(UC_X86_REG_DS, seg)
+        uc.reg_write(UC_X86_REG_ES, 0x6000)
+        uc.reg_write(UC_X86_REG_FS, PRNG >> 4)
+        uc.reg_write(UC_X86_REG_SS, SEG_STACK)
+        uc.reg_write(UC_X86_REG_SI, si_off)
+        uc.reg_write(UC_X86_REG_BX, 0)
+        uc.reg_write(UC_X86_REG_AX, 50)
+        uc.reg_write(UC_X86_REG_SP, SP_TOP)
+        try:
+            uc.emu_start(PBLOB + ENTRY_FILL, 0, 0, 50_000_000)
+        except UcError as e:
+            if e.errno != UC_ERR_EXCEPTION:
+                raise
+        mem = bytes(uc.mem_read(seg << 4, 0x10000))
+        got = mem[si_off:si_off + TEAM_BYTES]
+        nvac, ref, ref_rng = _reference(image, 4321, 50)
+        assert nvac > 0
+        assert uc.reg_read(UC_X86_REG_AX) == nvac
+        assert uc.reg_read(UC_X86_REG_SI) == si_off
+        assert uc.reg_read(UC_X86_REG_ES) == 0x6000
+        assert got == bytes(ref)
+        assert mem[:si_off] == guard[:si_off]
+        assert mem[si_off + TEAM_BYTES:] == guard[si_off + TEAM_BYTES:]
+        assert bytes(uc.mem_read(0x60000, 0x10000)) == bytes(0x10000)
+        assert struct.unpack("<H", uc.mem_read(PRNG, 2))[0] == ref_rng

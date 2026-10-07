@@ -59,6 +59,9 @@ entry_fill:
 
         mov [cs:year_byte], al
         mov word [cs:rng_ptr_off], bx
+        mov [cs:img_base], si           ; image = DS:SI; every record write adds it
+        push ds
+        pop es                          ; writes go through ES = DS (es restored on exit)
 
         ; ---- pass 1: position counts + vacancy list ----------------------
         mov di, scan_counts
@@ -208,6 +211,7 @@ gen_loop:
         mov ax, dx
         imul ax, ax, REC
         add ax, SEASON_BASE_OFF
+        add ax, [cs:img_base]
         mov di, ax
         call copy_scratch_to_es_di
         mov si, season_zero_list
@@ -272,14 +276,15 @@ copy_scratch_to_es_di:
         pop si
         ret
 
-; copy_rookie: cx = code, dx = slot; roster offset = HDR + slot*REC.
-; ES must be the shell data segment; rebuilds DS = CS for the scratch read
-; and restores DS = shell afterwards.
+; copy_rookie: cx = code, dx = slot; roster offset = img_base + HDR + slot*REC.
+; ES = the image segment (set at entry); copy_scratch_to_es_di sets DS = CS for
+; the scratch read and restores DS afterwards.
 copy_rookie:
         push ax
         mov ax, dx
         imul ax, ax, REC
         add ax, HDR
+        add ax, [cs:img_base]
         mov di, ax
         call copy_scratch_to_es_di
         pop ax
@@ -630,5 +635,6 @@ bats_code:      dw 0
 hand_nib:       dw 0
 year_byte:      db 0
 rng_ptr_off:    dw 0
+img_base:       dw 0
 
 scratch:        db REC dup(0)
