@@ -36,6 +36,21 @@ Rating order (for evidence, drift and RNG draw order):
 Draw order per player: the drift draws (6 or 3) then the retirement draw. The RNG stream continues across players
 and teams exactly as in P1 (sorted *.V20 order, records 0..39).
 
+## C1b. Development trait (DRAFT 2026-10-07; Will approved the idea, constants tuned in R2 before the asm change)
+
+Record byte 142 (both halves) = dev grade 1..5 (1 bust, 2 slow, 3 normal, 4 good, 5 boom); 0 = not yet assigned
+(every stock record). FORMATS: bytes 141-142 are the UTIL import id, read only by the Utilities import path when a
+user imports stat lines, never by DYNASTY, PLAY or the season sim (C6 already uses 141 for pool years).
+- Assignment, in C1 per player right after step 2 (aging), only if the progression flag is set and byte 142 == 0:
+  d = draw() & 0xff; grade = 1 if d < 26, 2 if d < 77, 3 if d < 179, 4 if d < 230, else 5 (10/20/40/20/10 %).
+  Written to both halves. Players with a grade draw nothing here.
+- 3b growth (age2 <= 26): g = (g * GM[grade]) >> 2, GM = [-, 1, 3, 4, 5, 7] (x0.25 .. x1.75).
+- 3b decline (age2 >= 32): p = (p * DM[grade]) >> 2 after the tier multiplier, DM = [-, 6, 5, 4, 3, 2], capped 255.
+- Retirement (step 4) is unchanged: the tier already reflects what the trait produced.
+The RNG stream gains one draw per ungraded player at its first roll (C1 references and parity fixtures update).
+ROSTERS potential (C6 G table) reads the scaled g so scouts value boom prospects (hidden from the player, visible to
+the AI the way a scouting report would be).
+
 ## C2. HISTORY.DAT v1 (league dir, TEAMS\CLASSIC\HISTORY.DAT), little endian
 
 Header, 32 B:
