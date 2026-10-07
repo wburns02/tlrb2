@@ -64,6 +64,11 @@ Player table at offset 8224: entries x 160 B. Entry:
 Identity: same entry iff name bytes AND birth match (birth recomputed per sighting as 1000 + season_no - age).
 Careers count dynasty seasons only (entries start at zero; the shipped half-0 lines are NOT imported).
 
+Team mapping (amended 2026-10-07): a V20 file's league-global id = the MAJ slot whose 8 B stem equals the file's
+basename stem, compared case-insensitively (AL slot s -> id s, NL slot s -> id s + 16). Files with no match
+(ALLSTAR1/2.V20, whose MAJ stems start with NUL) are skipped by every history step: no league totals, no player
+entries. The P1 rollover still processes every *.V20 (RNG stream unchanged).
+
 Update order at rollover (Python reference `history.record_season(league_dir, hist_path, season_no, retirees)`),
 run BEFORE the P1 rollover mutates anything, then `history.mark_retired(...)` after it:
 1. read MAJ standings, champion; write the season entry.
