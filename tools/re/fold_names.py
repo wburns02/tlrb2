@@ -40,7 +40,7 @@ def resolve(p, t):
     from ghidra.program.model.data import (CategoryPath, ByteDataType, WordDataType, DWordDataType, ArrayDataType,
                                            PointerDataType, CharDataType, VoidDataType)
     import re
-    m = re.match(r'^(\w+)(?:\[(\d+)\])?(\*)?$', t.strip())
+    m = re.match(r'^(\w+)(?:\[(\d+|0x[0-9a-fA-F]+)\])?(\*)?$', t.strip())
     if not m:
         raise ValueError(t)
     base, n, ptr = m.groups()
@@ -52,7 +52,7 @@ def resolve(p, t):
         if dt is None:
             raise ValueError('unknown type ' + base)
     if n:
-        dt = ArrayDataType(dt, int(n), dt.getLength())
+        dt = ArrayDataType(dt, int(n, 0), dt.getLength())
     if ptr:
         dt = PointerDataType(dt, 4)
     return dt
