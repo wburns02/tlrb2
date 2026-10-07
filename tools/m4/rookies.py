@@ -90,7 +90,7 @@ PER_TEAM_DEFAULT_POS = POS_DH
 # Name pools (C4): our own, never harvested from game data. 128 lasts and
 # 64 firsts, mixed case like the shipped V20 data (first letter upper, rest
 # lower; "Mc" names keep the capital after Mc), last <= 11 chars, first <= 7
-# chars, stored NEW pct in rookie_fill.asm in identical order.
+# chars, emitted by blob/gen_names.py into rookie_names.inc in identical order.
 LAST_NAMES = [
     "Adams", "Allen", "Anderson", "Baker", "Barnes", "Bell", "Bennett",
     "Brooks", "Brown", "Butler", "Campbell", "Carter", "Clark", "Cole",
