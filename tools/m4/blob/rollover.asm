@@ -1,9 +1,9 @@
 ; ---------------------------------------------------------------------------
-; rollover.asm - TLRB2 M4 per-player season-rollover core.
+; rollover.asm - TLRB2 M4 per-player season-rollover core, contract C1.
 ; nasm -f bin -o rollover.bin rollover.asm   (BITS 16, ORG 0, flat binary)
-; Ported from the Python reference tools/m4/rollover.py with the formulas of
-; tools/ratings.py ported verbatim. The unicorn harness
-; (work/m4/test_blob_unicorn.py) pins it byte-for-byte against the reference.
+; Ported from the Python reference tools/m4/rollover.py (C1 aging, progression
+; and retirement) with the formulas of tools/ratings.py ported verbatim. The
+; unicorn harness pins it byte-for-byte against the reference.
 ;
 ; ABI:
 ;   far call to blob_base + ENTRY_ROLL_PLAYER (0x10)
@@ -14,7 +14,8 @@
 ;   out: AX = 1 if retired else 0; every other register preserved.
 ;   On retire: byte 0 of BOTH records cleared.
 ; Conventions inside:
-;   - BP holds the progression k across target calls (never clobbered).
+;   - Across the progression/drift/retirement steps: DH = quality tier (0..3),
+;     DL = aged age (age2). compute_tier and the drift/retire helpers keep both.
 ;   - SI/ESI: SI is the roster pointer at entry level; target functions may use
 ;     ESI as scratch but must restore the low word (push si / pop si).
 ;   - DI is the season pointer and is sacred: never clobbered anywhere except
@@ -97,36 +98,25 @@ entry_roll_player:
         mov al, [si+OFF_EXP]            ; exp byte differs in real leagues)
         mov es:[di+OFF_EXP], al
 .exp_done:
-
-        ; -- 4. progression (CX bit0): aged age, season games > 0, k != 0
-        test cx, 1
-        jz .no_prog
-        cmp byte es:[di+OFF_GAMES], 0
-        je .no_prog
-        mov bp, 192                     ; >= 35 bucket (and the default)
+        ; tier: computed ONCE from the pre-change roster ratings; tier and age2
+        ; live in CS scratch because the apply_delta stubs clobber DH/DL.
+        mov dh, 0x80
+        call compute_tier               ; CS tier_cell = tier (pre-change)
         mov al, [si+OFF_AGE]
-        cmp al, 20
-        jbe .k_set                      ; <= 20: 192
-        mov bp, 128                     ; 21..24
-        cmp al, 24
-        jbe .k_set
-        mov bp, 64                      ; 25..27
-        cmp al, 27
-        jbe .k_set
-        xor bp, bp                      ; 28
-        cmp al, 28
-        je .k_set
-        mov bp, 224                     ; 29..34
-        cmp al, 34
-        jbe .k_set
-        mov bp, 192                     ; >= 35
-.k_set:
-        or bp, bp
-        jz .no_prog
+        mov cs:[age2_cell], al          ; CS age2_cell = aged age
+        mov dl, al
+
+        ; -- 4. evidence (CX bit0, season games > 0, k = 96)
+        cmp byte es:[di+OFF_GAMES], 0
+        je .no_evidence
+        test cx, 1
+        jz .no_evidence
+        mov dh, cs:[tier_cell]          ; DH = tier (apply_delta stubs clobber it)
+        mov bp, 96                      ; evidence k (apply_delta reads BP)
         mov al, [si+OFF_POS]            ; pitcher decision on ROSTER pos1
         and al, 15
         or al, al
-        jz .prog_pitcher
+        jz .evidence_pitcher
         call t_power
         call apply_delta_lo74
         call t_bunt
@@ -135,51 +125,66 @@ entry_roll_player:
         call apply_delta_lo75
         call t_speed
         call apply_delta_hi29
-        call t_arm
-        call apply_delta_lo94
         call t_range
         call apply_delta_hi94
-        jmp .no_prog
-.prog_pitcher:
+        call t_arm
+        call apply_delta_lo94
+        jmp .no_evidence
+.evidence_pitcher:
         call t_control
         call apply_delta_lo134
         call t_velocity
         call apply_delta_hi134
         call t_endur
         call apply_delta_hi135
-.no_prog:
+.no_evidence:
 
-        ; -- 5. retirement (CX bit1)
-        test cx, 2
-        jz .not_retire
-        mov al, [si+OFF_AGE]
-        cmp al, 41
-        jae .retire
-        cmp al, 36
-        jb .endur_check
-        call xorshift16                 ; AX = new state (stored back at FS:BX)
-        mov dl, al                      ; low byte of the draw
-        mov al, [si+OFF_AGE]            ; aged age == age2 (xorshift16 clobbered AX)
-        mov ah, 0
-        sub al, 35
-        mov cl, 20
-        mul cl                          ; AX = (age-35)*20
-        cmp dl, al
-        jb .retire
-        jmp .not_retire
-.endur_check:
+        ; -- 5. drift (CX bit0, regardless of games), one draw per rating ALWAYS
+        test cx, 1
+        jz .no_drift
+        mov dh, cs:[tier_cell]          ; DH = tier (computed pre-change)
         mov al, [si+OFF_POS]
         and al, 15
         or al, al
-        jnz .not_retire                 ; batter: no endurance/arm branch
-        mov al, [si+OFF_ENDUR]
-        shr al, 4                       ; endurance = high nibble
-        cmp al, 3
-        jae .not_retire
-        mov al, [si+OFF_ARM]
-        and al, 15                      ; arm = low nibble
-        cmp al, 3
-        jae .not_retire
+        jz .drift_pitcher
+        call drift_lo74
+        call drift_hi74
+        call drift_lo75
+        call drift_hi29
+        call drift_hi94
+        call drift_lo94
+        jmp .no_drift
+.drift_pitcher:
+        call drift_lo134
+        call drift_hi134
+        call drift_hi135
+.no_drift:
+
+        ; -- 6. retirement (CX bit1): never forced, draw only at age2 >= 33
+        test cx, 2
+        jz .not_retire
+        mov al, cs:[age2_cell]
+        cmp al, 33
+        jb .not_retire                  ; age2 < 33: not retired, NO draw
+        mov dh, cs:[tier_cell]          ; DH = tier
+        call ret_base_of                ; AL = retirement base (10..110)
+        call mult_of                    ; CL = [4, 4, 3, 2][tier]
+        mov ah, 0
+        mul cl                          ; AX = base * mult (<= 440, no overflow)
+        shr ax, 1
+        shr ax, 1                       ; AX = p = (base * mult) >> 2
+        cmp byte es:[di+OFF_GAMES], 0   ; season games == 0: p = min(255, p * 2)
+        jne .p_have
+        add ax, ax
+        cmp ax, 255
+        jbe .p_have
+        mov ax, 255
+.p_have:
+        mov cx, ax                      ; CX = p (CX flags are spent)
+        call xorshift16                 ; AX = new state (BX, CX preserved)
+        cmp al, cl                      ; d = low byte of the draw, retired iff d < p
+        jb .retire
+        jmp .not_retire
 .retire:
         mov byte [si], 0
         mov byte es:[di], 0
@@ -200,6 +205,266 @@ entry_roll_player:
         pop es
         pop ds
         retf
+
+; ---------------------------------------------------------------------------
+; compute_tier: DH = C1 quality tier (0..3) computed from the ROSTER record
+; ratings (call it after aging, before any rating change; those steps never
+; touch the rating nibbles so the tier is the pre-change tier). Entry sets
+; DH = 0x80 as the not-yet-computed sentinel, so repeated calls in steps 4/5/6
+; cost one compare after the first.
+;   Clobbers AX, CX; preserves BX, DX, SI, DI, DS, ES, FS.
+compute_tier:
+        cmp dh, 0x80
+        jne .have                       ; tier 0..3 already computed this player
+        push ax
+        push bx
+        mov al, [si+OFF_POS]
+        and al, 15
+        or al, al
+        jz .pitcher
+        mov al, [si+OFF_POWER]          ; qs = power + hit_run + speed + range
+        and al, 0x0F
+        mov bl, [si+OFF_HITRUN]
+        and bl, 0x0F
+        add al, bl
+        mov bl, [si+OFF_SPEED]
+        shr bl, 4
+        add al, bl
+        mov bl, [si+OFF_RANGE]
+        shr bl, 4
+        add al, bl
+        xor ah, ah
+        mov bx, tier_thr_batter
+        jmp .lad
+.pitcher:
+        mov al, [si+OFF_CONTROL]        ; qs = control + velocity + endurance
+        and al, 0x0F
+        mov bl, [si+OFF_VELOCITY]
+        shr bl, 4
+        add al, bl
+        mov bl, [si+OFF_ENDUR]
+        shr bl, 4
+        add al, bl
+        xor ah, ah
+        mov bx, tier_thr_pitcher
+.lad:
+        call ladder32                   ; preserves BX, CX, DX; AX = 1..4
+        dec al
+        mov cs:[tier_cell], al          ; tier kept in CS scratch for every step
+        mov dh, al                      ; DH = tier 0..3
+        pop bx
+        pop ax
+        ret
+.have:
+        ret
+
+tier_cell:      db 0
+age2_cell:      db 0
+
+; ---------------------------------------------------------------------------
+; mult_of: CL = [4, 4, 3, 2][DH] (DH = tier). Every other register preserved.
+mult_of:
+        mov cl, 4
+        cmp dh, 2
+        jb .done
+        mov cl, 3
+        je .done
+        mov cl, 2
+.done:
+        ret
+
+; ---------------------------------------------------------------------------
+; ret_base_of: AL = C1 retirement base for age2 in AL
+;   10 (33..34), 20 (35..36), 36 (37..38), 56 (39..40), 80 (41..42), 110 (43+)
+;   (age2 < 33 never reaches retirement). Every other register preserved.
+ret_base_of:
+        cmp al, 34
+        jbe .b10
+        cmp al, 36
+        jbe .b20
+        cmp al, 38
+        jbe .b36
+        cmp al, 40
+        jbe .b56
+        cmp al, 42
+        jbe .b80
+        mov al, 110
+        ret
+.b10:   mov al, 10
+        ret
+.b20:   mov al, 20
+        ret
+.b36:   mov al, 36
+        ret
+.b56:   mov al, 56
+        ret
+.b80:   mov al, 80
+        ret
+
+; ---------------------------------------------------------------------------
+; drift_base_of: AL = C1 drift base for age2 in AL
+;   40 (32..33), 64 (34..35), 96 (36..37), 128 (38..39), 160 (40+)
+;   (younger buckets never reach the drop branch). Every other register preserved.
+drift_base_of:
+        cmp al, 33
+        jbe .b40
+        cmp al, 35
+        jbe .b64
+        cmp al, 37
+        jbe .b96
+        cmp al, 39
+        jbe .b128
+        mov al, 160
+        ret
+.b40:   mov al, 40
+        ret
+.b64:   mov al, 64
+        ret
+.b96:   mov al, 96
+        ret
+.b128:  mov al, 128
+        ret
+
+; ---------------------------------------------------------------------------
+; drift stubs: select the rating (byte offset + nibble flag in CS cells) and
+; chase into drift_nib, whose ret returns to the caller of the stub.
+drift_lo74:
+        mov byte cs:[drift_off], OFF_POWER
+        mov byte cs:[drift_hi], 0
+        jmp drift_nib
+drift_hi74:
+        mov byte cs:[drift_off], OFF_BUNT
+        mov byte cs:[drift_hi], 1
+        jmp drift_nib
+drift_lo75:
+        mov byte cs:[drift_off], OFF_HITRUN
+        mov byte cs:[drift_hi], 0
+        jmp drift_nib
+drift_hi29:
+        mov byte cs:[drift_off], OFF_SPEED
+        mov byte cs:[drift_hi], 1
+        jmp drift_nib
+drift_lo94:
+        mov byte cs:[drift_off], OFF_ARM
+        mov byte cs:[drift_hi], 0
+        jmp drift_nib
+drift_hi94:
+        mov byte cs:[drift_off], OFF_RANGE
+        mov byte cs:[drift_hi], 1
+        jmp drift_nib
+drift_lo134:
+        mov byte cs:[drift_off], OFF_CONTROL
+        mov byte cs:[drift_hi], 0
+        jmp drift_nib
+drift_hi134:
+        mov byte cs:[drift_off], OFF_VELOCITY
+        mov byte cs:[drift_hi], 1
+        jmp drift_nib
+drift_hi135:
+        mov byte cs:[drift_off], OFF_ENDUR
+        mov byte cs:[drift_hi], 1
+        jmp drift_nib
+
+; drift_nib ---------------------------------------------------------------
+drift_off:      db 0
+drift_hi:       db 0
+
+; ---------------------------------------------------------------------------
+; drift_nib: C1 drift for one rating. In: DH = tier, DL = age2; the selector
+; cells name the rating. One draw is ALWAYS consumed.
+;   - age2 <= 26: g = 90 (age2 <= 22), 64 (23..24), 32 (25..26);
+;     if d < g and v < cap (10 endurance, else 12): v += 1
+;   - 27 <= age2 <= 31: no change (the draw is still consumed)
+;   - age2 >= 32: p = drift_base(age2) * mult(tier) >> 2;
+;     if d < p and v > 1: v -= 1
+; Clobbers AX, CX, DX, BP (restored); preserves SI, DI, DS, ES, FS. BP enters
+; free and holds the RNG pointer while BX addresses the roster record: the
+; xorshift16 call needs BX = RNG pointer, so it is set from BP around the call.
+drift_nib:
+        push ax
+        push bx
+        push cx
+        push dx
+        push bp
+        mov bp, bx                      ; BP = RNG state pointer
+        movzx bx, byte cs:[drift_off]   ; BX = rating byte offset
+        mov al, [bx+si]
+        cmp byte cs:[drift_hi], 0
+        je .lo_nib
+        shr al, 4
+        jmp .have_v
+.lo_nib:
+        and al, 0x0F
+.have_v:
+        mov ch, al                      ; CH = v
+        ; cap = 10 for endurance (byte 135 high), else 12
+        mov cl, 12
+        cmp byte cs:[drift_off], OFF_ENDUR
+        jne .cap_ok
+        mov cl, 10
+.cap_ok:
+        mov bx, bp                      ; BX = RNG pointer for xorshift16
+        call xorshift16                 ; AX = new state (BX, CX preserved); AL = d
+        mov dl, cs:[age2_cell]          ; DL = age2 (stubs clobbered DL)
+        cmp dl, 27
+        jae .mid_or_old
+        ; youth (age2 <= 26): g = 90 (<= 22) / 64 (23..24) / 32 (25..26)
+        mov ah, 32
+        cmp dl, 22
+        ja .y24
+        mov ah, 90
+        jmp .y_bump
+.y24:
+        cmp dl, 24
+        ja .y_bump
+        mov ah, 64
+.y_bump:
+        cmp al, ah                      ; d < g?
+        jae .out
+        cmp ch, cl                      ; v < cap?
+        jae .out
+        inc ch
+        jmp .store
+.mid_or_old:
+        cmp dl, 31
+        jbe .out                        ; 27..31: no change, draw consumed
+        ; age2 >= 32: p = base * mult >> 2; drop when d < p and v > 1
+        cmp ch, 2
+        jb .out
+        mov bh, al                      ; BH = d
+        mov al, dl
+        call drift_base_of              ; AL = base
+        call mult_of                    ; CL = [4, 4, 3, 2][DH tier]
+        mov ah, 0
+        mul cl                          ; AX = base * mult (<= 440)
+        shr ax, 1
+        shr ax, 1                       ; AX = p
+        cmp bh, al                      ; d < p?
+        jae .out
+        dec ch
+.old_bucket:
+.store:
+        movzx bx, byte cs:[drift_off]   ; BX = rating byte offset again
+        mov al, [bx+si]
+        cmp byte cs:[drift_hi], 0
+        je .wr_lo
+        and al, 0x0F
+        mov cl, ch
+        shl cl, 4
+        or al, cl
+        mov [bx+si], al
+        jmp .out
+.wr_lo:
+        and al, 0xF0
+        or al, ch
+        mov [bx+si], al
+.out:
+        pop bp
+        pop dx
+        pop cx
+        pop bx
+        pop ax
+        ret
 
 ; ---------------------------------------------------------------------------
 ; merge_stats: roster = sat_add(roster, season) for every stat field.
@@ -997,6 +1262,10 @@ t_endur:
 
 ; ---------------------------------------------------------------------------
 ; data tables (CS-relative)
+tier_thr_batter: db 3
+                 dw 32, 36, 39
+tier_thr_pitcher: db 3
+                 dw 23, 26, 28
 pos_class_tbl:  db 0,0,1,2,4,3,5,5,5    ; pos code 0..8 -> FIELD_W row (3B<->SS swapped per game)
 field_w_tbl:    dw 140,200,0,500,2500 \
               , 67,250,300,200,340 \
