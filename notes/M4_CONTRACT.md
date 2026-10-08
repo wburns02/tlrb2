@@ -36,7 +36,7 @@ Rating order (for evidence, drift and RNG draw order):
 Draw order per player: the drift draws (6 or 3) then the retirement draw. The RNG stream continues across players
 and teams exactly as in P1 (sorted *.V20 order, records 0..39).
 
-## C1b. Development trait (DRAFT 2026-10-07; Will approved the idea, constants tuned in R2 before the asm change)
+## C1b. Development trait (2026-10-07; Will approved the idea; in DYNASTY since the asm port: rollover blob CX bit2, DYNASTY passes CX = 7)
 
 Record byte 142 (both halves) = dev grade 1..5 (1 bust, 2 slow, 3 normal, 4 good, 5 boom); 0 = not yet assigned
 (every stock record). FORMATS: bytes 141-142 are the UTIL import id, read only by the Utilities import path when a
@@ -136,6 +136,10 @@ The P2 WIP blob gave every rookie identical ratings. Rookies must vary and some 
 - grade: d = draw() & 0xff; grade = 0 if d < 154, 1 if d < 230, else 2 (60/30/10 %); bonus = [0, 2, 4][grade].
 - rating value = 3 + (d % 5) + bonus with d = draw() & 0xff, then clamp 1..cap (cap = 10 for endurance, else 12).
   Ratings not in the C1 order keep the WIP blob's constants.
+  (amended 2026-10-07) Off-role ratings are constants matching the shipped data's most common pattern, no draws:
+  pitchers bat power 1, bunt 1, hit_run 1, speed 7, range 7, arm 7 (74 = 0x11, 75 lo 1, 29 hi 7, 94 = 0x77); every
+  other rookie pitches control 1, velocity 3, endurance 1 (134 = 0x31, 135 hi 1). Written with the stat-line
+  constants, before the rating draws, which touch other nibbles only.
 - Everything else (stat lines, salary, portrait, season-twin copy) stays as the WIP blob defines it.
 
 ## C5. Runtime split for HISTORY.DAT (added 2026-10-07, T4)
@@ -293,9 +297,9 @@ T table (LOCKED by R2; changes are contract amendments):
 
 Known v1 gaps (accepted): pool retirements are not marked in HISTORY (status stays active); the Draft GM profiles
 are not used (category labels undecoded); no platoon lineups; no trades with the managed team; DYNASTY skips the
-C4 fill for a file with no named record, so an empty pool file gets no draft class until it holds a player
-(DYNASTY amendment: fall back to the previous file's year; until then ROSTERS seeds the bootstrap year by keeping
-at least one player per pool file when the pool has any).
+C4 fill for a file with no named record only when no earlier file (sorted 8.3 order) had one: a blank pool file
+takes the year byte of the last earlier file that had a named record (amended 2026-10-07, DYNASTY.EXE and
+dynasty_ref); ROSTERS still keeps at least one player per pool file when the pool has any.
 
 ## C7. Awards and milestones (DRAFT 2026-10-07; HISTWR + history.record_season, after the C2 step 3 player pass)
 
@@ -331,3 +335,26 @@ crosses the mark this season (before < mark <= after); season kinds when the sea
 Write order (HISTWR): MILESTON.DAT and HISTORY.DAT are each written to a temp file; both renames happen only after
 both temp files are complete, using the C5 BAK scheme, so on any exit 2 both files are unchanged.
 Known v1 gaps: per-season Gold Glove and Silver Slugger winners are only kept as career counts.
+
+## C8. The patched TONY2.BAT and DYNVIEW (added 2026-10-07; supersedes the C5 BAT block)
+
+tools/m4/rig/bat_patch.py replaces the stock `:start` / `control` pair with:
+```
+:start
+copy TEAMS\CLASSIC\*.* C:\DYNSNAP > NUL
+dynasty
+if errorlevel 1 goto rolled
+goto ctl
+:rolled
+histwr
+rosters
+dynview /review
+:ctl
+control
+```
+The labels `rolled` and `ctl` are free in the shipped BAT (DOS matches 8 chars, case-insensitive). Every earlier
+patched form (C5 with and without the histwr line) upgrades in place; --revert restores the stock pair from any form.
+DYNVIEW.EXE (C, OpenWatcom large model, read-only viewer; the Python reference is tools/m4/dynview.py) never writes a
+file in interactive mode. `/review` opens the season review; ESC from REVIEW goes to the menu, ESC from the menu
+exits 0 and the BAT falls through to control. A missing DYNVIEW or ROSTERS prints the DOS error and the BAT goes on.
+The install copies DYNASTY.EXE, HISTWR.EXE, ROSTERS.EXE and DYNVIEW.EXE into the game dir.

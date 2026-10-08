@@ -73,6 +73,46 @@ class TestBatPatch:
             assert bat_patch.patch(str(install), revert=False)
             assert bat.read_bytes().decode('cp437') == content
 
+    def test_c7_form_upgrades_every_earlier_form(self):
+        """C7: rolled seasons run histwr, rosters and dynview /review; every
+        earlier patched form upgrades in place and reverts to stock."""
+        body = bat_patch.PATCHED_START.replace('\r\n', '\n')
+        assert body == (':start\ncopy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\ndynasty\n'
+                        'if errorlevel 1 goto rolled\ngoto ctl\n:rolled\nhistwr\nrosters\n'
+                        'dynview /review\n:ctl\ncontrol\n')
+        for old in bat_patch.EARLIER_FORMS:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                install = Path(tmpdir) / 'TONY2'
+                install.mkdir()
+                bat = install / 'TONY2.BAT'
+                bat.write_bytes(('echo off\r\n' + old + 'goto x\r\n').encode('cp437'))
+                assert bat_patch.patch(str(install), revert=False)
+                assert bat.read_bytes().decode('cp437') == (
+                    'echo off\r\n' + bat_patch.PATCHED_START + 'goto x\r\n')
+                assert bat_patch.patch(str(install), revert=True)
+                assert bat.read_bytes().decode('cp437') == (
+                    'echo off\r\n' + bat_patch.STOCK_START + 'goto x\r\n')
+
+    def test_c7_labels_free_in_stock_bat(self):
+        """The new labels do not collide with the shipped TONY2.BAT (DOS
+        matches labels on 8 chars, case-insensitive)."""
+        stock = Path('/mnt/nvme/tlrb2/pristine/TONY2/TONY2.BAT')
+        if not stock.exists():
+            pytest.skip('no pristine install')
+        labels = [l.strip()[1:9].lower() for l in stock.read_bytes().decode('cp437').splitlines()
+                  if l.strip().startswith(':')]
+        assert 'rolled' not in labels and 'ctl' not in labels
+        with tempfile.TemporaryDirectory() as tmpdir:
+            install = Path(tmpdir) / 'TONY2'
+            install.mkdir()
+            (install / 'TONY2.BAT').write_bytes(stock.read_bytes())
+            assert bat_patch.patch(str(install), revert=False)
+            out = (install / 'TONY2.BAT').read_bytes().decode('cp437')
+            got = [l.strip()[1:9].lower() for l in out.splitlines() if l.strip().startswith(':')]
+            assert len(got) == len(set(got))
+            assert bat_patch.patch(str(install), revert=True)
+            assert (install / 'TONY2.BAT').read_bytes() == stock.read_bytes()
+
     def test_revert_from_old_form(self):
         """Reverting from the previous patched form restores stock."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -190,5 +230,169 @@ class TestDiskState:
         assert dynasty_gate.roll_seed(str(pre), str(post)) == 0x5678
 
 
+class TestHistoryCheck:
+    """G1: history_check against a synthetic pre/post pair built without DOS."""
+
+    _PRE = '/mnt/nvme/tlrb2/fixtures/t4/s1_pre'
+
+    def _pair(self, tmp_path, old_ms=None):
+        """pre (no HISTORY.DAT) rolled with the reference; pre/RETIRED.DAT from the
+        roll's retirees; post = rolled with the DYNASTY header + the HISTWR chain."""
+        import history as hist_mod
+        from m4 import dynasty_ref
+        if not os.path.isdir(self._PRE):
+            pytest.skip('fixtures missing')
+        pre = str(tmp_path / 'pre')
+        shutil.copytree(self._PRE, pre)
+        hp = os.path.join(pre, 'HISTORY.DAT')
+        if os.path.exists(hp):
+            os.remove(hp)
+        rolled = str(tmp_path / 'rolled')
+        res = dynasty_ref.roll_league(pre, rolled, seed=0x1234)
+        write_retired(os.path.join(pre, 'RETIRED.DAT'), res['retirees'])
+        post = str(tmp_path / 'post')
+        shutil.copytree(rolled, post)
+        rng_end = res['rng_end']
+        header = bytearray(32)
+        header[0], header[1], header[2] = 1, rng_end & 255, (rng_end >> 8) & 255
+        header[8], header[9] = 0x34, 0x12
+        open(os.path.join(post, 'HISTORY.DAT'), 'wb').write(bytes(header))
+        if old_ms is not None:
+            # an earlier season's MILESTON.DAT: in the league dir (so in the snapshot too)
+            open(os.path.join(pre, 'MILESTON.DAT'), 'wb').write(old_ms)
+            open(os.path.join(post, 'MILESTON.DAT'), 'wb').write(old_ms)
+        py_rets = {n: i for n, i in res['retirees'].items() if i}
+        season = hist_mod.History.load(os.path.join(post, 'HISTORY.DAT')).seasons_recorded + 1
+        hist_mod.record_season(pre, os.path.join(post, 'HISTORY.DAT'), season)
+        hist_mod.mark_retired(os.path.join(post, 'HISTORY.DAT'), pre, py_rets, season)
+        return pre, post
+
+    def test_pass(self, tmp_path):
+        pre, post = self._pair(tmp_path)
+        assert dynasty_gate.history_check(pre, post) == []
+
+    def test_pass_with_existing_mileston(self, tmp_path):
+        """pre already holds MILESTON.DAT (every season after the first): the expectation
+        must start from it, or the old records are reported as a difference."""
+        import struct as st
+        old = st.pack('<HHBBH', 0, 0, 33, 0, 210)
+        pre, post = self._pair(tmp_path, old_ms=old)
+        assert open(os.path.join(post, 'MILESTON.DAT'), 'rb').read()[:8] == old
+        assert dynasty_gate.history_check(pre, post) == []
+
+    def test_hist_byte_flip_reports_offset(self, tmp_path):
+        pre, post = self._pair(tmp_path)
+        hp = os.path.join(post, 'HISTORY.DAT')
+        raw = bytearray(open(hp, 'rb').read())
+        raw[40] ^= 0xff
+        open(hp, 'wb').write(bytes(raw))
+        errs = dynasty_gate.history_check(pre, post)
+        assert len(errs) == 1
+        assert 'offset 40' in errs[0]
+
+    def test_missing_mileston(self, tmp_path):
+        pre, post = self._pair(tmp_path)
+        os.remove(os.path.join(post, 'MILESTON.DAT'))
+        errs = dynasty_gate.history_check(pre, post)
+        assert any('MILESTON' in e for e in errs)
+
+    def test_gate_one_ok_wiring(self):
+        """history_check returns [] on a pass; gate_one must map that to 'PASS'
+        and count it as ok (source check: gate_one drives a live display)."""
+        src = open(os.path.join(os.path.dirname(dynasty_gate.__file__), 'dynasty_gate.py')).read()
+        body = src[src.index('def gate_one'):src.index('def main')]
+        assert "'PASS' if not herrs else herrs" in body
+        assert "rec['history_check'] in ('PASS', 'SKIPPED')" in body
+
+    def test_setup_fresh_source(self):
+        src = open(os.path.join(os.path.dirname(dynasty_gate.__file__), 'dynasty_gate.py')).read()
+        assert 'HISTWR.EXE' in src
+        assert 'bytes(4)' not in src
+
+
+def write_retired(path, retirees):
+    """C5 RETIRED.DAT: u8 nteam, then nteam x (13 B name + 40 B flags)."""
+    names = sorted(retirees)
+    with open(path, 'wb') as f:
+        f.write(bytes([len(names)]))
+        for n in names:
+            f.write(n.encode('latin-1').ljust(13, b'\0')[:13])
+            fb = bytearray(40)
+            for i in retirees[n]:
+                fb[i] = 1
+            f.write(bytes(fb))
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+def test_roster_checks_pitching_zero_only_for_non_pitchers(tmp_path):
+    """C4 batter rookies (any pos1 != 0, e.g. DH 9) may carry 0 pitching ratings; a pitcher (pos1 0) may not."""
+    pre_src = '/mnt/nvme/tlrb2/fixtures/t4/s1_pre'
+    if not os.path.isdir(pre_src):
+        pytest.skip('fixtures missing')
+    import v20
+    pre, post = str(tmp_path / 'pre'), str(tmp_path / 'post')
+    shutil.copytree(pre_src, pre)
+    shutil.copytree(pre_src, post)
+    fn = sorted(f for f in os.listdir(post) if f.upper().endswith('.V20'))[0]
+    t = v20.Team.load(os.path.join(post, fn))
+    bat = next(i for i in range(40) if t.players[i].active and (t.players[i].raw[31] & 15) != 0)
+    pit = next(i for i in range(40) if t.players[i].active and (t.players[i].raw[31] & 15) == 0)
+    for i in (bat, pit):
+        for r in ('control', 'velocity', 'endurance'):
+            t.players[i][r] = 0
+    t.save(os.path.join(post, fn))
+    errs, _ = dynasty_gate.roster_checks(pre, post, False)
+    rating = [e for e in errs if 'rating' in e]
+    assert rating == [f'{fn} rec {pit}: rating out of 1..15: [\'control\', \'velocity\', \'endurance\']'], rating
+
+
+class TestInstallLeague:
+    def _dirs(self, tmp_path):
+        lg, src = tmp_path / 'CLASSIC', tmp_path / '1985'
+        lg.mkdir()
+        src.mkdir()
+        for n in ('CLASSIC.MAJ', 'CLASALE1.V20', 'HISTORY.DAT'):
+            (lg / n).write_bytes(b'old')
+        for n in ('CLASSIC.MAJ', 'CLASALE1.V20'):
+            (src / n).write_bytes(b'new ' + n.encode())
+        return lg, src
+
+    def test_copies_same_named_files_only(self, tmp_path):
+        lg, src = self._dirs(tmp_path)
+        assert dynasty_gate.install_league(str(lg), str(src)) == ['CLASALE1.V20', 'CLASSIC.MAJ']
+        assert (lg / 'CLASSIC.MAJ').read_bytes() == b'new CLASSIC.MAJ'
+        assert (lg / 'HISTORY.DAT').read_bytes() == b'old'
+
+    def test_refuses_unknown_file(self, tmp_path):
+        import pytest
+        lg, src = self._dirs(tmp_path)
+        (src / 'BOGUS.V20').write_bytes(b'x')
+        with pytest.raises(SystemExit):
+            dynasty_gate.install_league(str(lg), str(src))
+        assert (lg / 'CLASSIC.MAJ').read_bytes() == b'old'
+
+    def test_refuses_empty_src(self, tmp_path):
+        import pytest
+        lg, src = self._dirs(tmp_path)
+        for p in src.iterdir():
+            p.unlink()
+        with pytest.raises(SystemExit):
+            dynasty_gate.install_league(str(lg), str(src))
+
+    def test_done_flag_missing_or_empty_history(self):
+        """A Lahman league's first roll has no HISTORY.DAT in DYNSNAP (gate crashed on s101)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assert dynasty_gate.done_flag(tmpdir) == 0
+            h = Path(tmpdir) / 'HISTORY.DAT'
+            h.write_bytes(b'')
+            assert dynasty_gate.done_flag(tmpdir) == 0
+            h.write_bytes(b'\x01\x02')
+            assert dynasty_gate.done_flag(tmpdir) == 1
+
+    def test_league_needs_fresh(self):
+        import pytest
+        with pytest.raises(SystemExit):
+            dynasty_gate.main(['--seasons', '1', '--league', '/nonexistent'])

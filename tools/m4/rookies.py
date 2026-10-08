@@ -313,10 +313,20 @@ class RookieGen:
             rec[138] = 0x77
             rec[139] = 0x77
             rec[140] = 7
+            # off-role batting, the stock pitcher pattern: power, bunt and
+            # hit_run 1; speed, range and arm 7.
+            rec[74] = 0x11
+            rec[75] |= 0x01
+            rec[29] |= 0x70
+            rec[94] = 0x77
         else:
             # 75 hi streak 7 (letter A); 76 hi day-night 7, lo clutch 8.
             rec[75] |= 0x70
             rec[76] = 0x78
+            # off-role pitching, the stock non-pitcher pattern: control 1,
+            # velocity 3, endurance 1.
+            rec[134] = 0x31
+            rec[135] |= 0x10
             # AB 40 split by bats code (hand nibble already drawn).
             bats = (rec[OFF_HAND] >> 1) & 0x3
             if bats == 2:    # switch

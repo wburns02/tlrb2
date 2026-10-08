@@ -1667,7 +1667,7 @@ racc:
         FILE *probe2 = fopen(msname, "rb");
         if (probe2) {
             fclose(probe2);
-            bak_of(msname, msbak, sizeof msbak);
+            tmp_of(hpath, msbak, 600, MS_BAK_NAME);
             remove(msbak);
             if (rename(msname, msbak) == 0)
                 ms_swapped = 1;

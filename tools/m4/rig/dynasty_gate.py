@@ -9,8 +9,10 @@ Python reference (check_roll), runs roster sanity checks, and relaunches for the
 usage: dynasty_gate.py --seasons N [--first K] [--fresh] [--full-rosters]
   --first K        number of the first season run here (default: one past the highest logs/t6/sN_post)
   --fresh          rebuild the dedicated install from work/c (never touches work/c itself), patch the BAT,
-                   install the repo DYNASTY.EXE, reset HISTORY.DAT to 4 zero bytes
+                   install the repo DYNASTY.EXE and HISTWR.EXE, remove HISTORY.DAT and MILESTON.DAT
   --full-rosters   require 40 named roster records per team after the roll (DYNASTY builds with the rookie fill)
+  --league DIR     with --fresh: copy a built league (e.g. /mnt/nvme/tlrb2/hist/1985) over TEAMS/CLASSIC; every
+                   file in DIR must already exist there under the same name
 Exit 0 only if every roll passes. Summary: logs/t6/gate_summary.json.
 """
 import argparse
@@ -21,6 +23,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -33,15 +36,30 @@ import bat_patch                # noqa: E402
 import check_roll               # noqa: E402
 import v20                      # noqa: E402
 from m4 import rollover         # noqa: E402
+from m4 import history          # noqa: E402
 
 INSTALL = season_sim.INSTALL
 SOURCE = '/mnt/nvme/tlrb2/work/c/TONY2'
 LOGS = season_sim.LOGS
 SUMMARY = os.path.join(LOGS, 'gate_summary.json')
 RATINGS = [n for n, _ in rollover.BATTER_RATINGS + rollover.PITCHER_RATINGS]
+PITCH_RATINGS = ('control', 'velocity', 'endurance')
 
 
-def setup_fresh(install):
+def install_league(lg, src):
+    """Copy every file of the built league src over the same-named files of the league dir lg.
+    Refuses (SystemExit) an empty src or a file name lg does not already have."""
+    names = sorted(n for n in os.listdir(src) if os.path.isfile(os.path.join(src, n)))
+    have = set(os.listdir(lg))
+    missing = [n for n in names if n not in have]
+    if not names or missing:
+        sys.exit(f'--league {src}: not a league dir for {lg} (unknown files {missing[:5]})')
+    for n in names:
+        shutil.copy2(os.path.join(src, n), os.path.join(lg, n))
+    return names
+
+
+def setup_fresh(install, league_src=None):
     if os.path.realpath(install) != os.path.realpath(INSTALL):
         sys.exit(f'--fresh only rebuilds the dedicated install {INSTALL}')
     if os.path.exists(install):
@@ -50,8 +68,22 @@ def setup_fresh(install):
     if not bat_patch.patch(install):
         sys.exit('BAT patch failed')
     shutil.copy2(os.path.join(TOOLS, 'm4', 'blob', 'DYNASTY.EXE'), os.path.join(install, 'DYNASTY.EXE'))
-    with open(os.path.join(season_sim.league(install), 'HISTORY.DAT'), 'wb') as f:
-        f.write(bytes(4))
+    shutil.copy2(os.path.join(TOOLS, 'm4', 'histwr', 'HISTWR.EXE'), os.path.join(install, 'HISTWR.EXE'))
+    # a stale DYNSNAP (an earlier run's HISTORY/MILESTON/RETIRED) would feed the
+    # next roll and the history check; the BAT copy only overwrites, so clear it
+    snap = os.path.join(os.path.dirname(install), 'DYNSNAP')
+    if os.path.isdir(snap):
+        for name in os.listdir(snap):
+            p = os.path.join(snap, name)
+            if os.path.isfile(p):
+                os.remove(p)
+    lg = season_sim.league(install)
+    for name in ('HISTORY.DAT', 'MILESTON.DAT'):
+        p = os.path.join(lg, name)
+        if os.path.exists(p):
+            os.remove(p)
+    if league_src:
+        install_league(lg, league_src)
 
 
 def launch(install):
@@ -70,6 +102,15 @@ def snapshot(src, dst):
             shutil.copy2(p, os.path.join(dst, f))
 
 
+def done_flag(league):
+    """HISTORY byte 0; a league that never rolled has no HISTORY.DAT (C2: missing = 0)."""
+    hp = os.path.join(league, 'HISTORY.DAT')
+    if not os.path.exists(hp):
+        return 0
+    b = open(hp, 'rb').read(1)
+    return b[0] if b else 0
+
+
 def roll_seed(pre, post):
     """The xorshift16 word DYNASTY started this roll from: C2 v1 files keep it at bytes 8..9; the 4-byte P1 file
     only has the word at bytes 1..2 of the pre-roll copy."""
@@ -80,7 +121,7 @@ def roll_seed(pre, post):
 
 
 def roster_checks(pre, post, full):
-    """Survivors aged exactly +1, ratings 1..15 on every named record, and (full) 40 named records per team."""
+    """Survivors aged exactly +1, ratings 1..15 on every named record (pitching ratings may be 0 on non-pitchers, C4), and (full) 40 named records per team."""
     errs, named = [], {}
     for pp in sorted(glob.glob(os.path.join(post, '*.V20'))):
         name = os.path.basename(pp)
@@ -91,7 +132,9 @@ def roster_checks(pre, post, full):
         for i in range(40):
             x, y = a.players[i], b.players[i]
             if y.active:
-                bad = [r for r in RATINGS if not 1 <= y[r] <= 15]
+                # C4 batter rookies carry no pitching ratings (nibbles 0); only pitchers need 1..15 there
+                lo = {r: (0 if r in PITCH_RATINGS and (y.raw[31] & 15) != 0 else 1) for r in RATINGS}
+                bad = [r for r in RATINGS if not lo[r] <= y[r] <= 15]
                 if bad:
                     errs.append(f'{name} rec {i}: rating out of 1..15: {bad}')
             if x.active and y.active and bytes(x.raw[0:20]) == bytes(y.raw[0:20]):
@@ -100,7 +143,58 @@ def roster_checks(pre, post, full):
     return errs, named
 
 
-def gate_one(n, install, full, fill=True):
+def history_check(pre, post):
+    """Byte-for-byte expectation for what HISTWR wrote after the roll (C5), from the
+    DYNSNAP snapshot (pre). Returns a list of error strings (empty = PASS)."""
+    errs = []
+    with tempfile.TemporaryDirectory() as tmp:
+        hp = os.path.join(tmp, 'HISTORY.DAT')
+        pp = os.path.join(pre, 'HISTORY.DAT')
+        base = bytearray(open(pp, 'rb').read()) if os.path.exists(pp) else bytearray()
+        if len(base) < 32:
+            base += bytes(32 - len(base))
+        ppost = open(os.path.join(post, 'HISTORY.DAT'), 'rb').read()
+        base[0] = 1
+        base[1:3] = ppost[1:3]
+        base[8:10] = ppost[8:10]
+        open(hp, 'wb').write(bytes(base))
+        pm = os.path.join(pre, 'MILESTON.DAT')
+        if os.path.exists(pm):
+            shutil.copyfile(pm, os.path.join(tmp, 'MILESTON.DAT'))
+        rp = os.path.join(pre, 'RETIRED.DAT')
+        if not os.path.exists(rp):
+            return ['RETIRED.DAT missing']
+        raw = open(rp, 'rb').read()
+        nteam = raw[0]
+        retirees = {}
+        off = 1
+        for _ in range(nteam):
+            name = bytes(raw[off:off + 13]).split(b'\0')[0].decode('latin-1')
+            flags = raw[off + 13:off + 53]
+            idxs = [i for i in range(40) if flags[i]]
+            if idxs:
+                retirees[name] = idxs
+            off += 53
+        season = history.History.load(hp).seasons_recorded + 1
+        history.record_season(pre, hp, season)
+        history.mark_retired(hp, pre, retirees, season)
+        want = open(hp, 'rb').read()
+        got = open(os.path.join(post, 'HISTORY.DAT'), 'rb').read()
+        if want != got:
+            d = next((i for i in range(min(len(want), len(got))) if want[i] != got[i]),
+                     min(len(want), len(got)))
+            errs.append(f'HISTORY.DAT differs at offset {d} '
+                        f'(want {len(want)} B, got {len(got)} B)')
+        ms_tmp = os.path.join(tmp, 'MILESTON.DAT')     # written by record_season
+        ms_post = os.path.join(post, 'MILESTON.DAT')
+        if os.path.exists(ms_tmp) != os.path.exists(ms_post):
+            errs.append('MILESTON.DAT exists on only one side')
+        elif os.path.exists(ms_tmp) and open(ms_tmp, 'rb').read() != open(ms_post, 'rb').read():
+            errs.append('MILESTON.DAT differs')
+    return errs
+
+
+def gate_one(n, install, full, fill=True, do_history=True):
     rec = {'season': n, 'ok': False}
     t0 = time.time()
     dr = season_sim.Driver(n, install)
@@ -118,7 +212,7 @@ def gate_one(n, install, full, fill=True):
     with open(os.path.join(pre, 'CLASSIC.MAJ'), 'rb') as f:
         f.seek(0x20a)
         pre_day = f.read(1)[0]
-    pre_h0 = open(os.path.join(pre, 'HISTORY.DAT'), 'rb').read(1)[0]
+    pre_h0 = done_flag(pre)
     if pre_day != 0xf3 or pre_h0 != 0:
         rec['error'] = f'DYNSNAP is not the pre-roll league (day 0x{pre_day:02x}, done flag {pre_h0})'
         dr.log(rec['error'])
@@ -129,9 +223,16 @@ def gate_one(n, install, full, fill=True):
     errs, named = roster_checks(pre, post, full)
     rec['roster_errors'] = errs[:50]
     rec['named_total'] = sum(named.values())
-    rec['ok'] = rec['check_roll'] == 'PASS' and not errs
+    if do_history:
+        herrs = history_check(pre, post)
+        rec['history_check'] = 'PASS' if not herrs else herrs
+    else:
+        rec['history_check'] = 'SKIPPED'
+    rec['ok'] = (rec['check_roll'] == 'PASS' and not errs
+                 and rec['history_check'] in ('PASS', 'SKIPPED'))
     dr.log(f'roll seed {seed}: check_roll {"PASS" if rec["check_roll"] == "PASS" else "FAIL"}, '
-           f'{len(errs)} roster errors, {rec["named_total"]} named records')
+           f'{len(errs)} roster errors, {rec["named_total"]} named records, '
+           f'history {rec["history_check"] if isinstance(rec["history_check"], str) else "FAIL"}')
     return rec, dr
 
 
@@ -143,19 +244,30 @@ def main(argv):
     ap.add_argument('--full-rosters', action='store_true')
     ap.add_argument('--install', default=INSTALL)
     ap.add_argument("--no-fill", action="store_true", help="installed DYNASTY.EXE predates the C4 fill")
+    ap.add_argument('--league', default=None)
+    ap.add_argument("--no-history", action="store_true",
+                    help="skip the history_check (install has no HISTWR.EXE)")
     a = ap.parse_args(argv)
+    if a.league and not a.fresh:
+        sys.exit('--league needs --fresh')
     if a.fresh:
-        setup_fresh(a.install)
-    if a.fresh or rig.window() is None:
-        launch(a.install)
+        setup_fresh(a.install, a.league)
     first = a.first
     if first is None:
         done = [int(os.path.basename(p)[1:-5]) for p in glob.glob(os.path.join(LOGS, 's*_post'))]
         first = max(done, default=0) + 1
+    if a.fresh or rig.window() is None:
+        launch(a.install)
+    else:
+        # resuming: a run that stopped after a roll leaves the game at the DOS prompt
+        dr = season_sim.Driver(first, a.install)
+        if dr.state()[0] == 'dos_prompt':
+            dr.relaunch()
     summary = {'started': time.strftime('%Y-%m-%d %H:%M:%S'), 'install': a.install, 'seasons': []}
     ok = True
     for n in range(first, first + a.seasons):
-        rec, dr = gate_one(n, a.install, a.full_rosters, fill=not a.no_fill)
+        rec, dr = gate_one(n, a.install, a.full_rosters, fill=not a.no_fill,
+                           do_history=not a.no_history)
         summary['seasons'].append(rec)
         json.dump(summary, open(SUMMARY, 'w'), indent=1)
         if not rec['ok']:

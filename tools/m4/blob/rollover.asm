@@ -10,7 +10,7 @@
 ;   in:  DS:SI = roster (career) record, 143 B
 ;        ES:DI = season record, 143 B
 ;        FS:BX = pointer to one word: xorshift16 RNG state (persisted by caller)
-;        CX    = flags: bit0 = progression, bit1 = retirement
+;        CX    = flags: bit0 = progression, bit1 = retirement, bit2 = dev trait (C1b)
 ;   out: AX = 1 if retired else 0; every other register preserved.
 ;   On retire: byte 0 of BOTH records cleared.
 ; Conventions inside:
@@ -50,6 +50,7 @@ OFF_A1       equ 81
 OFF_CONTROL  equ 134         ; lo
 OFF_VELOCITY equ 134         ; hi
 OFF_ENDUR    equ 135         ; hi
+OFF_DEV      equ 142         ; C1b dev grade 1..5, 0 = not yet assigned
 
         jmp short start                 ; offset 0x00
 start:  retf
@@ -98,6 +99,40 @@ entry_roll_player:
         mov al, [si+OFF_EXP]            ; exp byte differs in real leagues)
         mov es:[di+OFF_EXP], al
 .exp_done:
+        ; -- 3b. C1b dev grade (CX bit2). With bit0 too, an ungraded (0) player
+        ; draws once: grade 1..5 by DEV_CUTS 26/77/179/230. The grade is mirrored
+        ; to the season twin; dev_cell = grade for drift (0 = no scaling, also
+        ; for dev off and for an out-of-range byte > 5).
+        mov byte cs:[dev_cell], 0
+        test cx, 4
+        jz .dev_done
+        test cx, 1
+        jz .dev_mirror
+        cmp byte [si+OFF_DEV], 0
+        jne .dev_mirror
+        call xorshift16                 ; AL = d (BX, CX preserved)
+        mov ah, 1
+        cmp al, 26
+        jb .dev_set
+        mov ah, 2
+        cmp al, 77
+        jb .dev_set
+        mov ah, 3
+        cmp al, 179
+        jb .dev_set
+        mov ah, 4
+        cmp al, 230
+        jb .dev_set
+        mov ah, 5
+.dev_set:
+        mov [si+OFF_DEV], ah
+.dev_mirror:
+        mov al, [si+OFF_DEV]
+        mov es:[di+OFF_DEV], al
+        cmp al, 5
+        ja .dev_done
+        mov cs:[dev_cell], al
+.dev_done:
         ; tier: computed ONCE from the pre-change roster ratings; tier and age2
         ; live in CS scratch because the apply_delta stubs clobber DH/DL.
         mov dh, 0x80
@@ -260,6 +295,9 @@ compute_tier:
 
 tier_cell:      db 0
 age2_cell:      db 0
+dev_cell:       db 0
+gm_tab:         db 0, 1, 3, 4, 5, 7     ; C1b growth  g = (g * GM[grade]) >> 2
+dm_tab:         db 0, 6, 5, 4, 3, 2     ; C1b decline p = min(255, (p * DM[grade]) >> 2)
 
 ; ---------------------------------------------------------------------------
 ; mult_of: CL = [4, 4, 3, 2][DH] (DH = tier). Every other register preserved.
@@ -419,6 +457,17 @@ drift_nib:
         ja .y_bump
         mov ah, 64
 .y_bump:
+        movzx bx, byte cs:[dev_cell]
+        or bx, bx
+        jz .g_ok
+        mov dh, al                      ; DH = d (tier is not used on this path)
+        mov al, ah
+        mul byte cs:[gm_tab+bx]         ; AX = g * GM (<= 630)
+        shr ax, 1
+        shr ax, 1
+        mov ah, al                      ; AH = scaled g (<= 157)
+        mov al, dh                      ; AL = d
+.g_ok:
         cmp al, ah                      ; d < g?
         jae .out
         cmp ch, cl                      ; v < cap?
@@ -439,6 +488,20 @@ drift_nib:
         mul cl                          ; AX = base * mult (<= 440)
         shr ax, 1
         shr ax, 1                       ; AX = p
+        movzx dx, byte cs:[dev_cell]
+        or dx, dx
+        jz .p_ok
+        push bx
+        mov bx, dx
+        movzx dx, byte cs:[dm_tab+bx]
+        pop bx
+        mul dx                          ; AX = p * DM (<= 960)
+        shr ax, 1
+        shr ax, 1
+        cmp ax, 255
+        jbe .p_ok
+        mov ax, 255
+.p_ok:
         cmp bh, al                      ; d < p?
         jae .out
         dec ch
