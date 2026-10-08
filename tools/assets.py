@@ -5,7 +5,7 @@ usage: assets.py [--src DIR] [--out DIR] scr|fnt|anm|all [names...]
 """
 import os, struct, sys, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dcl import explode
+from dcl import explode, implode
 from PIL import Image
 
 SRC = '/mnt/nvme/tlrb2/files'
@@ -50,6 +50,69 @@ def parse_scr(d):
     cnt, fl, h, w, yo, xo, cl = struct.unpack_from('<7H', d)
     raw, _ = explode(d, 14)
     return fl >> 8, h, w, raw
+
+
+def read_scr(d):
+    """SCR: u16 count, 12 B header (flags, h, w, yo, xo, clen), one DCL stream."""
+    cnt, fl, h, w, yo, xo, cl = struct.unpack_from('<7H', d)
+    raw, end = explode(d, 14)
+    if len(raw) != h * w or end != len(d):
+        raise ValueError('SCR decodes to %d B ending at %d, want %d B ending at %d' % (len(raw), end, h * w, len(d)))
+    return dict(flags=fl, h=h, w=w, yo=yo, xo=xo, raw=raw)
+
+
+def write_scr(s, dict_bits=6):
+    raw = bytes(s['raw'])
+    if len(raw) != s['h'] * s['w']:
+        raise ValueError('raw is %d B, h*w is %d' % (len(raw), s['h'] * s['w']))
+    stream = implode(raw, dict_bits)
+    if len(stream) > 65535:
+        raise ValueError('SCR stream %d B exceeds clen field' % len(stream))
+    hdr = struct.pack('<7H', 1, s['flags'], s['h'], s['w'], s['yo'], s['xo'], len(stream))
+    return hdr + stream
+
+
+def read_frames(d):
+    """Normal ANM/OVL: u16 count, then per frame a 12 B header and clen == 0 (raw h*w) or one DCL stream."""
+    n = struct.unpack_from('<H', d)[0]
+    p = 2
+    frames = []
+    for _ in range(n):
+        if p + 12 > len(d):
+            raise ValueError('frame header at %d overruns data' % p)
+        fl, h, w, yo, xo, cl = struct.unpack_from('<6H', d, p)
+        p += 12
+        if cl == 0:
+            if p + h * w > len(d):
+                raise ValueError('stored frame at %d overruns data' % p)
+            raw = d[p:p + h * w]
+            p += h * w
+        else:
+            raw, p = explode(d, p)
+            if len(raw) != h * w:
+                raise ValueError('frame decodes to %d B, h*w is %d' % (len(raw), h * w))
+        frames.append(dict(flags=fl, h=h, w=w, yo=yo, xo=xo, raw=raw, stored=(cl == 0)))
+    if p != len(d):
+        raise ValueError('frames end at %d, data is %d B' % (p, len(d)))
+    return frames
+
+
+def write_frames(frames, dict_bits=6):
+    out = bytearray(struct.pack('<H', len(frames)))
+    for f in frames:
+        raw = bytes(f['raw'])
+        if len(raw) != f['h'] * f['w']:
+            raise ValueError('raw is %d B, h*w is %d' % (len(raw), f['h'] * f['w']))
+        if f['stored']:
+            body, cl = raw, 0
+        else:
+            body = implode(raw, dict_bits)
+            cl = len(body)
+            if cl > 65535:
+                raise ValueError('frame stream %d B exceeds clen field; store it' % cl)
+        out += struct.pack('<6H', f['flags'], f['h'], f['w'], f['yo'], f['xo'], cl)
+        out += body
+    return bytes(out)
 
 
 def to_img(raw, w, h, pal, trans=None):
