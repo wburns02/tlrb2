@@ -9,7 +9,8 @@ Flow, verified by hand on 2026-10-07 (coords are root coords on :98):
               (710,546), PLAY (512,592). The All-Star question (JULY 17) gets NO (540,440), which skips the game.
               The standings screen then sits still while the sim runs (Return would toggle game scores), so an
               unchanged screen is NOT a stall; only the ring screen ends the wait.
-  finish      ring, Return (WS grid), Return (game 1 box score), DONE (304,592), Escape (ball menu), QUIT (234,341).
+  finish      ring, Return (WS grid), Return (game 1 box score), DONE (304,592), Escape (ball menu), QUIT (234,341),
+              after a roll Escape twice out of DYNVIEW /REVIEW.
               On the way out the BAT loop copies the league to C:\\DYNSNAP and runs DYNASTY: day 0xf3, HISTORY
               byte 0 = 1, then the game ends at the C:\\TONY2> prompt.
   relaunch    type TONY2 + Return, Escape past the intro until the ball menu is up. DYNASTY skips (done flag set).
@@ -171,7 +172,14 @@ class Driver:
                 rig.key('Escape')
         self.wait_for('ball_menu', 60, every=3, nudge=nudge)
         self.act('QUIT', rig.press, 234, 341)
-        self.wait_for('dos_prompt', 120, every=3)
+        # a roll runs HISTWR, ROSTERS, then DYNVIEW /REVIEW (C8): Escape to its menu, Escape to leave
+        if self.wait_for(('dos_prompt', 'dynview'), 180, every=3) == 'dynview':
+            self.shot('dynview_review')
+            self.act('DYNVIEW Escape (menu)', rig.key, 'Escape')
+            time.sleep(2)
+            self.act('DYNVIEW Escape (exit)', rig.key, 'Escape')
+            self.wait_for('dos_prompt', 120, every=3,
+                          nudge=lambda st: st == 'dynview' and rig.key('Escape'))
         d, h = day(self.install), hist0(self.install)
         self.log(f'at DOS: day 0x{d:02x} HISTORY byte0 {h}')
         if d != 0xf3 or h != 1:

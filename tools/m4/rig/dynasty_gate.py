@@ -4,12 +4,13 @@
 Per season: season_sim drives the game through the World Series and QUIT (the BAT loop copies the league to
 C:\\DYNSNAP and DYNASTY rolls it), then this script snapshots DYNSNAP to logs/t6/sN_pre and TEAMS/CLASSIC to
 logs/t6/sN_post BEFORE relaunching (the relaunch overwrites DYNSNAP), checks the roll byte for byte against the
-Python reference (check_roll), runs roster sanity checks, and relaunches for the next season.
+Python reference (check_roll; with ROSTERS.EXE installed, the whole DYNASTY + HISTWR + ROSTERS chain, rosters_check),
+runs roster sanity checks, and relaunches for the next season.
 
 usage: dynasty_gate.py --seasons N [--first K] [--fresh] [--full-rosters]
   --first K        number of the first season run here (default: one past the highest logs/t6/sN_post)
   --fresh          rebuild the dedicated install from work/c (never touches work/c itself), patch the BAT,
-                   install the repo DYNASTY.EXE and HISTWR.EXE, remove HISTORY.DAT and MILESTON.DAT
+                   install the repo DYNASTY.EXE, HISTWR.EXE, ROSTERS.EXE and DYNVIEW.EXE, remove HISTORY.DAT and MILESTON.DAT
   --full-rosters   require 40 named roster records per team after the roll (DYNASTY builds with the rookie fill)
   --league DIR     with --fresh: copy a built league (e.g. /mnt/nvme/tlrb2/hist/1985) over TEAMS/CLASSIC; every
                    file in DIR must already exist there under the same name
@@ -69,6 +70,8 @@ def setup_fresh(install, league_src=None):
         sys.exit('BAT patch failed')
     shutil.copy2(os.path.join(TOOLS, 'm4', 'blob', 'DYNASTY.EXE'), os.path.join(install, 'DYNASTY.EXE'))
     shutil.copy2(os.path.join(TOOLS, 'm4', 'histwr', 'HISTWR.EXE'), os.path.join(install, 'HISTWR.EXE'))
+    shutil.copy2(os.path.join(TOOLS, 'm4', 'rosters_c', 'ROSTERS.EXE'), os.path.join(install, 'ROSTERS.EXE'))
+    shutil.copy2(os.path.join(TOOLS, 'm4', 'dynview_c', 'DYNVIEW.EXE'), os.path.join(install, 'DYNVIEW.EXE'))
     # a stale DYNSNAP (an earlier run's HISTORY/MILESTON/RETIRED) would feed the
     # next roll and the history check; the BAT copy only overwrites, so clear it
     snap = os.path.join(os.path.dirname(install), 'DYNSNAP')
@@ -125,6 +128,8 @@ def roster_checks(pre, post, full):
     errs, named = [], {}
     for pp in sorted(glob.glob(os.path.join(post, '*.V20'))):
         name = os.path.basename(pp)
+        if name.upper().startswith('POOL'):
+            continue                    # free-agent pools (C6): checked byte for byte by rosters_check
         a, b = v20.Team.load(os.path.join(pre, name)), v20.Team.load(pp)
         named[name] = sum(1 for i in range(40) if b.players[i].active)
         if full and named[name] != 40:
@@ -143,47 +148,66 @@ def roster_checks(pre, post, full):
     return errs, named
 
 
-def history_check(pre, post):
-    """Byte-for-byte expectation for what HISTWR wrote after the roll (C5), from the
-    DYNSNAP snapshot (pre). Returns a list of error strings (empty = PASS)."""
+def expect_histwr(pre, post, dst, rosters_ran=False):
+    """Write what HISTWR wrote after the roll (C5) into dst: HISTORY.DAT and MILESTON.DAT, from the DYNSNAP snapshot
+    (pre). The rng word HISTWR kept at bytes 1..2 is DYNASTY's end word: post bytes 1..2, or post bytes 16..17 when
+    ROSTERS ran after it (C6 moves it there and writes its own end word to 1..2). Returns [] or ['RETIRED.DAT missing']."""
+    hp = os.path.join(dst, 'HISTORY.DAT')
+    pp = os.path.join(pre, 'HISTORY.DAT')
+    base = bytearray(open(pp, 'rb').read()) if os.path.exists(pp) else bytearray()
+    if len(base) < 32:
+        base += bytes(32 - len(base))
+    ppost = open(os.path.join(post, 'HISTORY.DAT'), 'rb').read()
+    base[0] = 1
+    base[1:3] = ppost[16:18] if rosters_ran else ppost[1:3]
+    base[8:10] = ppost[8:10]
+    open(hp, 'wb').write(bytes(base))
+    pm = os.path.join(pre, 'MILESTON.DAT')
+    if os.path.exists(pm):
+        shutil.copyfile(pm, os.path.join(dst, 'MILESTON.DAT'))
+    rp = os.path.join(pre, 'RETIRED.DAT')
+    if not os.path.exists(rp):
+        return ['RETIRED.DAT missing']
+    raw = open(rp, 'rb').read()
+    nteam = raw[0]
+    retirees = {}
+    off = 1
+    for _ in range(nteam):
+        name = bytes(raw[off:off + 13]).split(b'\0')[0].decode('latin-1')
+        flags = raw[off + 13:off + 53]
+        idxs = [i for i in range(40) if flags[i]]
+        if idxs:
+            retirees[name] = idxs
+        off += 53
+    season = history.History.load(hp).seasons_recorded + 1
+    history.record_season(pre, hp, season)
+    history.mark_retired(hp, pre, retirees, season)
+    return []
+
+
+ROSTERS_HDR = (1, 2, 16, 17)      # HISTORY header bytes ROSTERS owns (C6); rosters_check verifies them
+
+
+def _first_diff(want, got):
+    return next((i for i in range(min(len(want), len(got))) if want[i] != got[i]), min(len(want), len(got)))
+
+
+def history_check(pre, post, rosters_ran=False):
+    """Byte-for-byte expectation for what HISTWR wrote after the roll (C5), from the DYNSNAP snapshot (pre). With
+    ROSTERS after it, the bytes ROSTERS owns are left to rosters_check. Returns a list of error strings (empty = PASS)."""
     errs = []
     with tempfile.TemporaryDirectory() as tmp:
-        hp = os.path.join(tmp, 'HISTORY.DAT')
-        pp = os.path.join(pre, 'HISTORY.DAT')
-        base = bytearray(open(pp, 'rb').read()) if os.path.exists(pp) else bytearray()
-        if len(base) < 32:
-            base += bytes(32 - len(base))
-        ppost = open(os.path.join(post, 'HISTORY.DAT'), 'rb').read()
-        base[0] = 1
-        base[1:3] = ppost[1:3]
-        base[8:10] = ppost[8:10]
-        open(hp, 'wb').write(bytes(base))
-        pm = os.path.join(pre, 'MILESTON.DAT')
-        if os.path.exists(pm):
-            shutil.copyfile(pm, os.path.join(tmp, 'MILESTON.DAT'))
-        rp = os.path.join(pre, 'RETIRED.DAT')
-        if not os.path.exists(rp):
-            return ['RETIRED.DAT missing']
-        raw = open(rp, 'rb').read()
-        nteam = raw[0]
-        retirees = {}
-        off = 1
-        for _ in range(nteam):
-            name = bytes(raw[off:off + 13]).split(b'\0')[0].decode('latin-1')
-            flags = raw[off + 13:off + 53]
-            idxs = [i for i in range(40) if flags[i]]
-            if idxs:
-                retirees[name] = idxs
-            off += 53
-        season = history.History.load(hp).seasons_recorded + 1
-        history.record_season(pre, hp, season)
-        history.mark_retired(hp, pre, retirees, season)
-        want = open(hp, 'rb').read()
-        got = open(os.path.join(post, 'HISTORY.DAT'), 'rb').read()
+        e = expect_histwr(pre, post, tmp, rosters_ran)
+        if e:
+            return e
+        want = bytearray(open(os.path.join(tmp, 'HISTORY.DAT'), 'rb').read())
+        got = bytearray(open(os.path.join(post, 'HISTORY.DAT'), 'rb').read())
+        if rosters_ran:
+            for i in ROSTERS_HDR:
+                if i < len(want) and i < len(got):
+                    want[i] = got[i]
         if want != got:
-            d = next((i for i in range(min(len(want), len(got))) if want[i] != got[i]),
-                     min(len(want), len(got)))
-            errs.append(f'HISTORY.DAT differs at offset {d} '
+            errs.append(f'HISTORY.DAT differs at offset {_first_diff(want, got)} '
                         f'(want {len(want)} B, got {len(got)} B)')
         ms_tmp = os.path.join(tmp, 'MILESTON.DAT')     # written by record_season
         ms_post = os.path.join(post, 'MILESTON.DAT')
@@ -191,6 +215,36 @@ def history_check(pre, post):
             errs.append('MILESTON.DAT exists on only one side')
         elif os.path.exists(ms_tmp) and open(ms_tmp, 'rb').read() != open(ms_post, 'rb').read():
             errs.append('MILESTON.DAT differs')
+    return errs
+
+
+def rosters_check(pre, post, seed, fill=True):
+    """The whole rolled branch of the C8 BAT replayed in Python on the DYNSNAP snapshot: DYNASTY (dynasty_ref), HISTWR
+    (expect_histwr), ROSTERS (rosters.run on DYNSNAP + DYNSNAP/RETIRED.DAT). Every V20 (teams and pools), HISTORY.DAT
+    and ROSTERS.TXT must equal the post league byte for byte. Returns a list of error strings (empty = PASS)."""
+    from m4 import dynasty_ref
+    from m4 import rosters
+    errs = []
+    with tempfile.TemporaryDirectory() as ref:
+        dynasty_ref.roll_league(pre, ref, seed, fill=fill)
+        e = expect_histwr(pre, post, ref, rosters_ran=True)
+        if e:
+            return e
+        rc = rosters.run(ref, pre, os.path.join(ref, 'HISTORY.DAT'), os.path.join(pre, 'RETIRED.DAT'))
+        if rc != 0:
+            return [f'rosters reference exit {rc}']
+        names = lambda d: {n for n in os.listdir(d) if n.upper().endswith('.V20')}
+        rn, pn = names(ref), names(post)
+        for n in sorted(rn ^ pn):
+            errs.append(f'{n} only in {"reference" if n in rn else "post"}')
+        for n in sorted(rn & pn) + ['HISTORY.DAT', 'ROSTERS.TXT']:
+            wp, gp = os.path.join(ref, n), os.path.join(post, n)
+            if not os.path.exists(wp) or not os.path.exists(gp):
+                errs.append(f'{n} missing ({"reference" if not os.path.exists(wp) else "post"})')
+                continue
+            want, got = open(wp, 'rb').read(), open(gp, 'rb').read()
+            if want != got:
+                errs.append(f'{n} differs at offset {_first_diff(want, got)}')
     return errs
 
 
@@ -218,13 +272,19 @@ def gate_one(n, install, full, fill=True, do_history=True):
         dr.log(rec['error'])
         return rec, dr
     seed = rec['seed'] = roll_seed(pre, post)
-    mm = check_roll.compare_dirs(pre, post, seed, fill=fill)
-    rec['check_roll'] = 'PASS' if not any(mm.values()) else {k: [str(x) for x in v] for k, v in mm.items() if v}
+    rosters_ran = rec['rosters'] = os.path.exists(os.path.join(install, 'ROSTERS.EXE'))
+    if rosters_ran:
+        # ROSTERS rewrote the rolled V20s: the reference is the whole DYNASTY + HISTWR + ROSTERS chain
+        rerrs = rosters_check(pre, post, seed, fill=fill)
+        rec['check_roll'] = 'PASS' if not rerrs else rerrs[:50]
+    else:
+        mm = check_roll.compare_dirs(pre, post, seed, fill=fill)
+        rec['check_roll'] = 'PASS' if not any(mm.values()) else {k: [str(x) for x in v] for k, v in mm.items() if v}
     errs, named = roster_checks(pre, post, full)
     rec['roster_errors'] = errs[:50]
     rec['named_total'] = sum(named.values())
     if do_history:
-        herrs = history_check(pre, post)
+        herrs = history_check(pre, post, rosters_ran)
         rec['history_check'] = 'PASS' if not herrs else herrs
     else:
         rec['history_check'] = 'SKIPPED'

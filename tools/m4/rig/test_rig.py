@@ -169,6 +169,31 @@ class TestScreens:
 
 
 
+class TestDynviewScreen:
+    def _panel(self):
+        img = Image.new('RGB', (1024, 768), (0, 0, 0))
+        for box, rgb, _ in screens.DYNVIEW_BARS:
+            img.paste(rgb, box)
+        return img
+
+    def test_bars_match(self):
+        assert screens.by_dynview(self._panel())
+
+    def test_blank_and_half_panel_miss(self):
+        assert not screens.by_dynview(Image.new('RGB', (1024, 768), (0, 0, 0)))
+        img = self._panel()
+        img.paste((207, 178, 154), screens.DYNVIEW_BARS[1][0])
+        assert not screens.by_dynview(img)
+
+    def test_no_game_screen_matches(self):
+        shots = '/mnt/nvme/tlrb2/logs/t6/shots'
+        if not os.path.isdir(shots):
+            pytest.skip('no rig screenshots')
+        names = [f for f in sorted(os.listdir(shots)) if f.endswith('.png') and 'dynview' not in f]
+        hits = [f for f in names if screens.by_dynview(Image.open(os.path.join(shots, f)))]
+        assert names and hits == []
+
+
 class TestBatPatchPaths:
     def test_dynsnap_at_drive_root(self, tmp_path):
         install = tmp_path / 'c' / 'TONY2'
@@ -296,6 +321,48 @@ class TestHistoryCheck:
         errs = dynasty_gate.history_check(pre, post)
         assert any('MILESTON' in e for e in errs)
 
+    def _chain(self, tmp_path):
+        """_pair plus ROSTERS on the post league, as the C8 BAT runs it (DYNSNAP = pre)."""
+        from m4 import rosters
+        pre, post = self._pair(tmp_path)
+        assert rosters.run(post, pre, os.path.join(post, 'HISTORY.DAT'), os.path.join(pre, 'RETIRED.DAT')) == 0
+        return pre, post
+
+    def test_rosters_chain_pass(self, tmp_path):
+        pre, post = self._chain(tmp_path)
+        assert os.path.exists(os.path.join(post, 'POOL1.V20'))
+        assert dynasty_gate.rosters_check(pre, post, 0x1234) == []
+        assert dynasty_gate.history_check(pre, post, rosters_ran=True) == []
+
+    def test_rosters_chain_without_flag_fails_history(self, tmp_path):
+        """ROSTERS moved the rng word: the C5-only expectation no longer holds."""
+        pre, post = self._chain(tmp_path)
+        assert dynasty_gate.history_check(pre, post) != []
+
+    def test_rosters_chain_catches_v20_flip(self, tmp_path):
+        pre, post = self._chain(tmp_path)
+        p = os.path.join(post, 'CLASALE1.V20')
+        raw = bytearray(open(p, 'rb').read())
+        raw[400] ^= 1
+        open(p, 'wb').write(bytes(raw))
+        assert dynasty_gate.rosters_check(pre, post, 0x1234) == ['CLASALE1.V20 differs at offset 400']
+
+    def test_rosters_chain_catches_start_word_flip(self, tmp_path):
+        """Bytes 16..17 (ROSTERS start word) seed the reference ROSTERS: a flip there fails rosters_check, while the
+        HISTWR check leaves those bytes to it."""
+        pre, post = self._chain(tmp_path)
+        hp = os.path.join(post, 'HISTORY.DAT')
+        h = bytearray(open(hp, 'rb').read())
+        h[16] ^= 1
+        open(hp, 'wb').write(bytes(h))
+        assert dynasty_gate.rosters_check(pre, post, 0x1234) != []
+        assert dynasty_gate.history_check(pre, post, rosters_ran=True) == []
+
+    def test_rosters_chain_missing_pool(self, tmp_path):
+        pre, post = self._chain(tmp_path)
+        os.remove(os.path.join(post, 'POOL2.V20'))
+        assert 'POOL2.V20 only in reference' in dynasty_gate.rosters_check(pre, post, 0x1234)
+
     def test_gate_one_ok_wiring(self):
         """history_check returns [] on a pass; gate_one must map that to 'PASS'
         and count it as ok (source check: gate_one drives a live display)."""
@@ -307,6 +374,7 @@ class TestHistoryCheck:
     def test_setup_fresh_source(self):
         src = open(os.path.join(os.path.dirname(dynasty_gate.__file__), 'dynasty_gate.py')).read()
         assert 'HISTWR.EXE' in src
+        assert 'ROSTERS.EXE' in src and 'DYNVIEW.EXE' in src
         assert 'bytes(4)' not in src
 
 

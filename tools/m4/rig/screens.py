@@ -32,6 +32,10 @@ WORDS = [
     ('standings', [{'SEATTIE'}, {'TDRDNTD'}, {'DETRDIT'}]),
 ]
 
+# DYNVIEW (our own C8 viewer, drawn with the game palette): the top two rows of its red title bar and of its amber
+# column header row are text-free on every screen. (root-coords box, RGB, max channel diff)
+DYNVIEW_BARS = (((212, 218, 810, 220), (182, 32, 0), 12), ((212, 250, 810, 252), (186, 125, 0), 12))
+
 _refs = {}
 
 
@@ -59,6 +63,16 @@ def by_pixels(img):
     return None
 
 
+def by_dynview(img):
+    """True when DYNVIEW's panel is up (its title bar over its header row)."""
+    import numpy as np
+    for box, rgb, tol in DYNVIEW_BARS:
+        a = np.asarray(img.convert('RGB').crop(box), dtype=np.int16)
+        if np.abs(a - np.array(rgb, dtype=np.int16)).max() > tol:
+            return False
+    return True
+
+
 def by_words(ws):
     present = {w[1] for w in ws}
     for name, alts in WORDS:
@@ -72,6 +86,8 @@ def identify(img=None):
     if img is None:
         rig.park()
         img = rig.shot()
+    if by_dynview(img):
+        return 'dynview', set()
     name = by_pixels(img)
     ws = rig.words(img)
     return (name or by_words(ws) or 'unknown'), {w[1] for w in ws}
