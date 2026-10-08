@@ -286,3 +286,17 @@ def test_k_two_rolls(tmp_path):
 
 if __name__ == '__main__':
     sys.exit(pytest.main([__file__, '-v']))
+
+
+def test_dosemu_path_containment(tmp_path):
+    """dos_find never resolves outside the sandbox root ('..', '.', symlinks)."""
+    from m4.dosemu import dos_find
+    root = tmp_path / 'root'
+    (root / 'TONY2').mkdir(parents=True)
+    (root / 'TONY2' / 'A.DAT').write_bytes(b'x')
+    (tmp_path / 'SECRET').write_bytes(b's')
+    (root / 'LINK').symlink_to(tmp_path / 'SECRET')
+    assert dos_find(str(root), 'C:\\TONY2\\a.dat') == str(root / 'TONY2' / 'A.DAT')
+    for bad in ('C:\\..', 'C:\\..\\SECRET', 'C:\\TONY2\\..\\..\\SECRET', '..\\SECRET',
+                'C:\\.\\TONY2', 'C:\\LINK'):
+        assert dos_find(str(root), bad) is None, bad

@@ -17,6 +17,7 @@ LOAD_SEG = 0x1000
 PSP_SEG = 0x0FF0
 MEM_SIZE = 0x100000
 DTA_SIZE = 43
+MAX_HANDLES = 15  # DOS default FILES= headroom; more open handles fail with 04h
 NAME_SLOT = 13  # DTA name field: 8.3 name + NUL
 CF = 0x001
 
@@ -36,16 +37,12 @@ def dos_find(root, dos_path):
     None. 'X:\\A\\B' resolves under root; other paths resolve from root too
     (cwd is prepended by the caller when the path is relative to TONY2)."""
     cur = root
-    drive_root = False  # a drive-letter prefix resets to the root
     for part in [p for p in dos_path.replace('/', '\\').split('\\') if p]:
         if part.endswith(':') and len(part) == 2:
-            cur = root
-            drive_root = True
+            cur = root          # a drive-letter prefix resets to the root
             continue
-        if drive_root:
-            drive_root = False
-            cur = os.path.join(root, part.upper())
-            continue
+        if part in ('.', '..'):
+            return None         # never leave the sandbox root
         try:
             entries = os.listdir(cur)
         except OSError:
@@ -54,6 +51,10 @@ def dos_find(root, dos_path):
         if match is None:
             return None
         cur = os.path.join(cur, match)
+    real_root = os.path.realpath(root)
+    real = os.path.realpath(cur)
+    if real != real_root and not real.startswith(real_root + os.sep):
+        return None             # a symlink pointing out of the root
     return cur
 
 
@@ -151,6 +152,9 @@ class MiniDos:
         self.ok(uc)
 
     def new_handle(self, uc, f):
+        if len(self.handles) >= MAX_HANDLES:
+            f.close()
+            return self.fail(uc, 0x04)                      # too many open files
         h = self.next_handle
         self.next_handle += 1
         self.handles[h] = f
@@ -258,7 +262,11 @@ class MiniDos:
             return self.fail(uc, 0x12)
         name = names[idx]
         host = os.path.join(ddir, name)
-        st = os.stat(host)
+        try:
+            st = os.stat(host)
+        except OSError:
+            self.find_ctx = None
+            return self.fail(uc, 0x12)
         self.find_ctx[2] = idx + 1
         d = self.dta
         uc.mem_write(d + 0x15, b'\x20')                       # archive attr
@@ -282,7 +290,7 @@ def run_exe(exe_path, root, cwd='TONY2', ticks=0x1234, max_insns=200_000_000):
     """Run a 16-bit MZ EXE under the mini DOS; returns the AL exit code of
     int 21h AH=4Ch."""
     blob = open(exe_path, 'rb').read()
-    if blob[:2] != b'MZ':
+    if len(blob) < 28 or blob[:2] != b'MZ':
         raise ValueError(f'{exe_path}: not an MZ EXE')
     (e_magic, e_cblp, e_cp, e_crlc, e_cparhdr, e_minalloc, e_maxalloc,
      e_ss, e_sp, e_csum, e_ip, e_cs, e_lfarlc, e_ovno) = struct.unpack_from('<14H', blob, 0)
@@ -314,6 +322,10 @@ def run_exe(exe_path, root, cwd='TONY2', ticks=0x1234, max_insns=200_000_000):
         uc.emu_start((LOAD_SEG + e_cs) * 16 + e_ip, 0, count=max_insns)
     except UcError as e:
         raise DosError(f'unicorn fault: {e}')
+    finally:
+        for f in dos.handles.values():
+            f.close()
+        dos.handles.clear()
     if dos.exit_code is None:
         raise DosError('exited without int 21h AH=4Ch')
     return dos.exit_code
