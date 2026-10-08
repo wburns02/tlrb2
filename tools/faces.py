@@ -128,7 +128,9 @@ def gen(outdir, n=None, name='pilot', salt=0):
     seed0 += 1000 * salt                        # salt > 0 re-rolls faces whose raw png was removed
     raw = os.path.join(outdir, 'raw')
     os.makedirs(raw, exist_ok=True)
-    json.dump({'face%02d' % k: g for k, g in enumerate(groups)}, open(os.path.join(outdir, 'groups.json'), 'w'))
+    gj = os.path.join(outdir, 'groups.json')
+    if not os.path.exists(gj):                  # keep hand fixes made after eyeballing the renders
+        json.dump({'face%02d' % k: g for k, g in enumerate(groups)}, open(gj, 'w'))
     for k, who in enumerate(who_list[:n]):
         dst = os.path.join(raw, 'face%02d.png' % k)
         if os.path.exists(dst):
@@ -235,6 +237,9 @@ def build(outdir):
             if os.path.exists(stale):
                 os.remove(stale)
             continue
+        stale = os.path.join(outdir, 'rejects', os.path.basename(p)[:-4] + '.bin')
+        if os.path.exists(stale):               # a re-rolled face that now passes
+            os.remove(stale)
         open(os.path.join(fdir, os.path.basename(p)[:-4] + '.bin'), 'wb').write(px)
         tiles.append(px)
     # preview: row 1 under DEFAULT.PAL (red team), row 2 with the team ramp shown blue

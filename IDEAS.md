@@ -29,6 +29,13 @@ collars (BAL black/orange, CAL navy). Gotcha found on the way: the remap swaps a
 team ramp, browns in DEFAULT.PAL), so 56..63 must stay out of skin and beards. Open for a full set: the UTIL face
 picker (DS:776e group table) only knows faces 0..29, so new faces reach players only through our own tools
 (C4 rookies or a league builder); one pilot face (05) came out with a gray cap that does not take the team colour.
+Full set DONE 2026-10-08: 67 new faces (9 pilot + 58 of 60 set1; 2 rejected for caps that will not take the team
+colour), ids 30..96, built to /mnt/nvme/tlrb2/faces/install/TONY2/ANMS (PORTRAIT.ANM + FACEGRP.DAT). Every render
+was checked by eye against its group flag (one prompt for a Black player rendered light skin and was reflagged 0).
+The "picker" is UTIL's random generic-face assignment at league import, not a menu; it needs no patch, because
+dynasty rookies come from our C4 generator, which now draws from every installed face and copies the group flag
+from FACEGRP.DAT (amendment F1). To install: copy both files into the game's ANMS folder (keep a backup of the
+stock PORTRAIT.ANM). Existing players keep their faces; new faces appear on rookies from the next dynasty roll.
 
 ## Modern stadiums (Will, 2026-10-07)
 Real-life photos of modern parks, run through the GPU for the retro look, as new playable stadiums.
