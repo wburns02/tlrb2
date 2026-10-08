@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Sum per-field V20 deltas (before vs after one season game) per team and print them next to the box score.
 usage: gt_merge_check.py BEFORE.V20 AFTER.V20   (records 40..79 hold the season stats; 0..39 are the twin/bio half)"""
+import os
 import sys
-sys.path.insert(0, '/home/will/tlrb2/tools')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import v20
 HDR, REC = v20.HDR, v20.REC
 U8 = {'R': 0x20, 'RBI': 0x21, 'SH': 0x22, 'SB': 0x23, 'CS': 0x24, 'G': 0x17, 'PB': 0x59, 'W': 0x5f, 'L': 0x60, 'CG': 0x61,

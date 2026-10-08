@@ -33,7 +33,9 @@ for _p in (_TOOLS, _BLOB_DIR):
 
 from m4 import team_fill  # noqa: E402
 from m4.rollover import Rng  # noqa: E402
-from m4.rookies import RookieGen  # noqa: E402
+from m4.rookies import (  # noqa: E402
+    RookieGen, STOCK_FACE_GROUP, default_faces, load_faces,
+)
 
 ASM = os.path.join(_BLOB_DIR, "rookie_fill.asm")
 BIN = os.path.join(_BLOB_DIR, "rookie_fill.bin")
@@ -107,12 +109,12 @@ def _all_active(spec_pos):
 # Emulation.
 # ---------------------------------------------------------------------------
 
-def _run_blob(image, seed, year, image_phys, pre_draws=0):
+def _run_blob(image, seed, year, image_phys, pre_draws=0, blob=None):
     """Run entry 0x10 on `image` (bytes) with the given rng seed. Returns
-    (ax, image_after, rng_word)."""
+    (ax, image_after, rng_word). blob: alternate blob bytes (default BLOB)."""
     uc = Uc(UC_ARCH_X86, UC_MODE_16)
     uc.mem_map(0x00000, 0x100000)
-    uc.mem_write(PBLOB, BLOB)
+    uc.mem_write(PBLOB, BLOB if blob is None else blob)
     uc.mem_write(image_phys, bytes(image))
     rng_word = seed & 0xFFFF
     if pre_draws:
@@ -144,21 +146,22 @@ def _run_blob(image, seed, year, image_phys, pre_draws=0):
     return ax, after, rng_word
 
 
-def _reference(image, seed, year, pre_draws=0):
+def _reference(image, seed, year, pre_draws=0, faces=None):
     """The Python reference fill on a copy of `image`. Returns
-    (nvac, image_after, rng_end_word)."""
+    (nvac, image_after, rng_end_word). faces: (n, grp) or None (default)."""
     ref = bytearray(image)
     rng = Rng(seed)
     for _ in range(pre_draws):
         rng.draw()
-    gen = RookieGen(rng)
+    gen = RookieGen(rng, faces=faces)
     nvac, vac, pos = team_fill.fill_image(ref, year & 0xFF, rng, gen)
     return nvac, ref, rng.s
 
 
-def _assert_parity(image, seed, year, image_phys=PTeamA, pre_draws=0):
-    ax, got, rng_word = _run_blob(image, seed, year, image_phys, pre_draws)
-    nvac, ref, ref_rng = _reference(image, seed, year, pre_draws)
+def _assert_parity(image, seed, year, image_phys=PTeamA, pre_draws=0,
+                   blob=None, faces=None):
+    ax, got, rng_word = _run_blob(image, seed, year, image_phys, pre_draws, blob)
+    nvac, ref, ref_rng = _reference(image, seed, year, pre_draws, faces)
     diffs = [i for i in range(TEAM_BYTES) if got[i] != ref[i]]
     assert ax == nvac, "AX %d != nvac %d" % (ax, nvac)
     assert rng_word == ref_rng, "rng word %04x != %04x" % (rng_word, ref_rng)
@@ -345,3 +348,162 @@ def test_image_at_nonzero_offset_like_dynasty_exe():
         assert mem[si_off + TEAM_BYTES:] == guard[si_off + TEAM_BYTES:]
         assert bytes(uc.mem_read(0x60000, 0x10000)) == bytes(0x10000)
         assert struct.unpack("<H", uc.mem_read(PRNG, 2))[0] == ref_rng
+
+
+# ---------------------------------------------------------------------------
+# Face table (ANMS rule): patched header, default flags, load_faces.
+# ---------------------------------------------------------------------------
+
+def _patched_blob(n, table):
+    """BLOB with header word 2 = n and the first n table bytes = table."""
+    b = bytearray(BLOB)
+    struct.pack_into("<H", b, 2, n)
+    off = struct.unpack_from("<H", BLOB, 4)[0]
+    b[off:off + n] = bytes(table)
+    return bytes(b)
+
+
+def _new_rookies(before, after):
+    """(face, flag) of every roster slot filled between before and after."""
+    out = []
+    for i in range(40):
+        base = HDR + i * RECORD
+        if before[base] == 0 and after[base] != 0:
+            face = after[base + 27] | (after[base + 28] << 8)
+            out.append((face, after[base + 29] & 1))
+    return out
+
+
+def test_default_header_is_stock():
+    assert struct.unpack_from("<H", BLOB, 2)[0] == 30
+    off = struct.unpack_from("<H", BLOB, 4)[0]
+    assert bytes(BLOB[off:off + 30]) == bytes(
+        1 if i in STOCK_FACE_GROUP else 0 for i in range(30))
+    assert bytes(BLOB[off + 30:off + 981]) == bytes(951)
+
+
+def test_default_header_stock_flag_rule():
+    """Default header == Python default. The stock flag rule (faces 3, 4, 16,
+    18, 20, 21, 22, 25, 27 carry bit0) is checked on the rookies produced."""
+    seen_set_flag1 = seen_mid_flag0 = 0
+    for seed in (15, 16, 17, 18):
+        image = _team({})                  # 40 vacancies: 40 rookies per case
+        ax, got, _ = _run_blob(image, seed, 50, PTeamA)
+        nvac, ref, _ = _reference(image, seed, 50)
+        assert got == bytes(ref) and ax == nvac == 40
+        for face, flag in _new_rookies(image, got):
+            assert 0 <= face < 30
+            assert flag == (1 if face in STOCK_FACE_GROUP else 0), face
+            if face in STOCK_FACE_GROUP:
+                seen_set_flag1 += flag
+            elif 15 <= face <= 29:
+                seen_mid_flag0 += 1 - flag
+    assert seen_set_flag1 > 0
+    assert seen_mid_flag0 > 0
+
+
+def test_patched_face_table_matches_python():
+    """Header n = 40 with flags at 30..39 mixed: blob == Python faces=(40, table)."""
+    table = list(default_faces()[1]) + [1, 0, 1, 1, 0, 0, 1, 0, 1, 1]
+    assert len(table) == 40
+    blob = _patched_blob(40, table)
+    faces = (40, bytes(table))
+    import random
+    rnd = random.Random(40)
+    hi_faces = set()
+    for seed in (7, 4000, 9, 77):
+        spec = {i: rnd.choice(range(10)) for i in range(40) if rnd.random() < 0.5}
+        image = _team(spec)
+        _vacate(image, [i for i in range(40) if i not in spec])
+        _assert_parity(image, seed, 50, blob=blob, faces=faces)
+        nvac, ref, _ = _reference(image, seed, 50, faces=faces)
+        for face, flag in _new_rookies(image, ref):
+            assert flag == table[face]
+            if face >= 30:
+                hi_faces.add((face, flag))
+    assert any(f == 1 for _, f in hi_faces)
+    assert any(f == 0 for _, f in hi_faces)
+    # empty roster: 40 rookies through the patched blob
+    image = _team({})
+    _assert_parity(image, 4321, 50, blob=blob, faces=faces)
+
+
+def test_patched_face_table_large_n_u16_portrait():
+    """n = 981 (the BB ceiling): faces above 255 need both bytes of u16@27."""
+    import random
+    rnd = random.Random(981)
+    table = list(default_faces()[1]) + [rnd.randrange(2) for _ in range(951)]
+    blob = _patched_blob(981, table)
+    faces = (981, bytes(table))
+    image = _team({})
+    _assert_parity(image, 2024, 50, blob=blob, faces=faces)
+    _, ref, _ = _reference(image, 2024, 50, faces=faces)
+    assert any(face > 255 for face, _ in _new_rookies(image, ref))
+
+
+def test_patched_face_table_small_n():
+    """n = 30 through the patched path equals the default table (a header
+    rewrite with the stock contents is a no-op)."""
+    blob = _patched_blob(30, default_faces()[1])
+    image = _team({i: i % 10 for i in range(0, 40, 2)})
+    _assert_parity(image, 88, 50, blob=blob, faces=default_faces())
+
+
+def _anms(tmp_path, portrait=None, grp=None):
+    d = tmp_path / "ANMS"
+    d.mkdir(parents=True, exist_ok=True)
+    if portrait is not None:
+        (d / "PORTRAIT.ANM").write_bytes(portrait)
+    if grp is not None:
+        (d / "FACEGRP.DAT").write_bytes(grp)
+    return str(d)
+
+
+def _u16(n):
+    return bytes([n & 0xFF, (n >> 8) & 0xFF])
+
+
+def test_load_faces_none_is_default():
+    assert load_faces(None) == default_faces()
+    n, grp = default_faces()
+    assert n == 30 and len(grp) == 30
+    assert {i for i in range(30) if grp[i]} == set(STOCK_FACE_GROUP)
+
+
+def test_load_faces_missing_files(tmp_path):
+    assert load_faces(_anms(tmp_path / "a")) == default_faces()
+    assert load_faces(_anms(tmp_path / "b", portrait=_u16(45))) == default_faces()
+    assert load_faces(_anms(tmp_path / "c", grp=bytes(50))) == default_faces()
+    assert load_faces(str(tmp_path / "nowhere")) == default_faces()
+
+
+def test_load_faces_length_bounds(tmp_path):
+    p = _u16(45)
+    assert load_faces(_anms(tmp_path / "l29", portrait=p, grp=bytes(29))) == default_faces()
+    assert load_faces(_anms(tmp_path / "l982", portrait=p, grp=bytes(982))) == default_faces()
+    n, grp = load_faces(_anms(tmp_path / "l981", portrait=p, grp=bytes(981)))
+    assert n == 45 and len(grp) == 45
+    n, grp = load_faces(_anms(tmp_path / "l30", portrait=_u16(45), grp=bytes(30)))
+    assert n == 30 and len(grp) == 30
+
+
+def test_load_faces_min_rules(tmp_path):
+    grp = bytes(range(60))                      # low bits alternate by value
+    # c < L: n = c
+    n, got = load_faces(_anms(tmp_path / "cl", portrait=_u16(45), grp=grp[:50]))
+    assert n == 45 and got == bytes(b & 1 for b in grp[:45])
+    # L < c: n = L
+    n, got = load_faces(_anms(tmp_path / "lc", portrait=_u16(55), grp=grp[:50]))
+    assert n == 50 and got == bytes(b & 1 for b in grp[:50])
+    # min < 30: default
+    assert load_faces(_anms(tmp_path / "c29", portrait=_u16(29), grp=grp[:50])) == default_faces()
+    assert load_faces(_anms(tmp_path / "c0", portrait=_u16(0), grp=grp[:50])) == default_faces()
+    # short PORTRAIT.ANM (fewer than 2 bytes): default
+    assert load_faces(_anms(tmp_path / "p1", portrait=b"\x2d", grp=grp[:50])) == default_faces()
+
+
+def test_load_faces_masks_to_bit0(tmp_path):
+    grp = bytes([2, 3, 0xFF, 0x80, 1, 0, 0x7E] + [0] * 23)
+    n, got = load_faces(_anms(tmp_path / "m", portrait=_u16(30), grp=grp))
+    assert n == 30
+    assert got == bytes([0, 1, 1, 0, 1, 0, 0] + [0] * 23)

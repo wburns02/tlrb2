@@ -1,16 +1,15 @@
 """Tests for TLRB2 M4 team_fill (post-rollover rookie fill).
 
 Run with:
-  cd /home/will/tlrb2 && python3 -m pytest \
-      /mnt/nvme/tlrb2/work/m4/test_team_fill.py -q
+  python3 -m pytest -q tools/m4/test_team_fill.py
 """
 
 import os
 import shutil
 import sys
 
-_TOOLS = "/home/will/tlrb2/tools"
-_M4 = "/home/will/tlrb2/tools/m4"
+_M4 = os.path.dirname(os.path.abspath(__file__))
+_TOOLS = os.path.dirname(_M4)
 for _p in (_TOOLS, _M4):
     if _p not in sys.path:
         sys.path.insert(0, _p)

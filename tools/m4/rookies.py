@@ -18,7 +18,7 @@ Pipeline per rookie (see RookieGen.make):
      pitchers control, velocity, endurance), value = 3 + d % 5 + bonus,
      clamped 1..cap (cap = 10 endurance, 12 else)
   7. salary: 255 pitchers / 109 batters (as the WIP blob)
-  8. portrait + group flag
+  8. portrait (face = d % n from the face table) + group flag
   9. throws/bats nibble
 
 Draw order per rookie (C4): last-name, first-name, age, throws, switch,
@@ -68,10 +68,13 @@ AGE_WEIGHTS = [4, 10, 24, 26, 22, 14]
 THROWS_R_PER_100 = 72
 BATS_S_PER_100 = 16
 
-# Portrait: generic face index 0..29; group flag byte29 bit0 per FORMATS.md
-# line 264 (776e table): flag 0 for faces 0..14, flag 1 for faces 15..29.
-PORTRAIT_MAX = 29
-PORTRAIT_FLAG_SPLIT = 15  # faces >= this carry group flag bit set
+# Portrait face table (see load_faces): n faces, each with a group flag
+# (record byte 29 bit0, UTIL DS:776e, dark skin = 1). Default = the stock
+# PORTRAIT.ANM frames 0..29, flagged per STOCK_FACE_GROUP. A mod that appends
+# faces (tools/faces.py writes ANMS/FACEGRP.DAT) widens the table up to 981.
+DEFAULT_FACE_N = 30
+STOCK_FACE_GROUP = frozenset({3, 4, 16, 18, 20, 21, 22, 25, 27})
+FACE_TABLE_MAX = 981      # BB reads PORTRAIT.ANM only below index 981
 
 # Salary (as the WIP blob): constant per position code.
 SALARY_PITCHER = 255
@@ -210,17 +213,55 @@ FIRST_TABLE = _name_table(FIRST_NAMES, 8)
 # The generator (the fill path; the rookie_fill.asm port matches this).
 # ---------------------------------------------------------------------------
 
+def default_faces():
+    """(30, STOCK group bytes): the table used when no ANMS files apply."""
+    grp = bytes(1 if i in STOCK_FACE_GROUP else 0 for i in range(DEFAULT_FACE_N))
+    return (DEFAULT_FACE_N, grp)
+
+
+def load_faces(anms_dir):
+    """Face table (n, grp) for the rookie portrait draw.
+
+    anms_dir None -> default_faces(). Otherwise PORTRAIT.ANM's first u16 is c
+    and FACEGRP.DAT (one byte per face, stock 30 first) has length L. With
+    30 <= L <= 981 and min(L, c) >= 30, n = min(L, c) and grp = the first n
+    bytes of FACEGRP.DAT, each masked to bit0. Any other case (a missing or
+    short file, L out of range, min < 30) gives the default table.
+    """
+    if anms_dir is None:
+        return default_faces()
+    try:
+        with open(os.path.join(anms_dir, "PORTRAIT.ANM"), "rb") as f:
+            head = f.read(2)
+        with open(os.path.join(anms_dir, "FACEGRP.DAT"), "rb") as f:
+            data = f.read(FACE_TABLE_MAX + 1)
+    except OSError:
+        return default_faces()
+    if len(head) < 2:
+        return default_faces()
+    c = head[0] | (head[1] << 8)
+    length = len(data)
+    if not (DEFAULT_FACE_N <= length <= FACE_TABLE_MAX):
+        return default_faces()
+    n = min(length, c)
+    if n < DEFAULT_FACE_N:
+        return default_faces()
+    return (n, bytes(b & 1 for b in data[:n]))
+
+
 class RookieGen:
     """Generates one 143-byte rookie record per make() call."""
 
-    def __init__(self, rng, team_paths=None):
+    def __init__(self, rng, team_paths=None, faces=None):
         self.rng = rng
         # C4: our own name pools, identical order to the rookie_fill.asm
         # tables (kept there by gen_names.py). No game data is loaded: the
         # fill path works offline. team_paths is accepted and ignored for
-        # call-site compatibility.
+        # call-site compatibility. faces = (n, grp) from load_faces; None
+        # means the default table.
         self.last_pool = list(LAST_TABLE)
         self.first_pool = list(FIRST_TABLE)
+        self.face_n, self.face_grp = faces if faces is not None else default_faces()
 
     # -- small rng helpers --------------------------------------------------
 
@@ -283,9 +324,9 @@ class RookieGen:
         _set_nibble_hi(rec, OFF_POS, 0)
 
     def _write_portrait(self, rec):
-        face = self.rng.draw() % 30
+        face = self.rng.draw() % self.face_n
         _put_u16(rec, OFF_PORTRAIT, face)
-        flag = 1 if face >= PORTRAIT_FLAG_SPLIT else 0
+        flag = self.face_grp[face] & 1
         if flag:
             rec[OFF_HAND] |= 0x01
         else:

@@ -98,6 +98,9 @@ have_seed:
         cmp byte [done_flag], 1
         je      x_ok                    ; already rolled at this season stop
 
+        ; ---- ANMS face table, once per run (before any team) -------------
+        call load_faces
+
         ; ---- enumerate + sort *.V20 -------------------------------------
         mov dx, dta
         mov ah, 0x1a                    ; set DTA
@@ -368,6 +371,81 @@ wr_close:
 wr_done:
         ret
 
+; load_faces: apply ANMS\PORTRAIT.ANM + ANMS\FACEGRP.DAT to the rookie blob
+; (contract: notes/M4_CONTRACT.md C4 face table). Any failure leaves the
+; default stock table (30 faces, already in the blob) untouched. Rule:
+;   c = PORTRAIT.ANM first u16 (2 B read), L = FACEGRP.DAT length (read up
+;   to 982 B), need 30 <= L <= 981 and n = min(L, c) >= 30; then blob word 2
+;   = n and table bytes 0..n-1 = FACEGRP byte & 1.
+load_faces:
+        mov dx, portrait_path
+        mov ax, 0x3d00                  ; open PORTRAIT.ANM read-only
+        int 0x21
+        jc lf_ret                       ; missing: default
+        mov [h], ax
+        mov bx, ax
+        mov ah, 0x3f
+        mov cx, 2
+        mov dx, face_head
+        int 0x21
+        jnc lf_hok
+        xor ax, ax
+lf_hok:
+        mov [face_hlen], ax
+        mov ah, 0x3e
+        mov bx, [h]
+        int 0x21
+        cmp word [face_hlen], 2
+        jne lf_ret                      ; short read: default
+
+        mov dx, facegrp_path
+        mov ax, 0x3d00                  ; open FACEGRP.DAT read-only
+        int 0x21
+        jc lf_ret                       ; missing: default
+        mov [h], ax
+        mov bx, ax
+        mov ah, 0x3f
+        mov cx, 982                     ; 981 + 1: a 982+ B file reads as L > 981
+        mov dx, face_buf
+        int 0x21
+        jnc lf_gok
+        xor ax, ax
+lf_gok:
+        mov [face_glen], ax
+        mov ah, 0x3e
+        mov bx, [h]
+        int 0x21
+
+        cmp word [face_glen], 30
+        jb lf_ret
+        cmp word [face_glen], 981
+        ja lf_ret
+        mov cx, [face_glen]             ; cx = L
+        mov dx, [face_head]             ; dx = c
+        cmp cx, dx
+        jbe lf_n
+        mov cx, dx                      ; cx = min(L, c)
+lf_n:
+        cmp cx, 30
+        jb lf_ret
+
+        ; apply: table at ROOKIE segment : blob word 4, count into blob word 2
+        mov ax, cs
+        add ax, ROOKIE_PARA
+        mov es, ax
+        mov di, [rookie_start+4]
+        mov [es:2], cx
+        mov si, face_buf
+lf_copy:
+        lodsb
+        and al, 1
+        stosb
+        loop lf_copy
+        mov ax, cs
+        mov es, ax                      ; ES = CS again for the caller
+lf_ret:
+        ret
+
 ; roll one team file (ASCIZ path in work_path)
 roll_team:
         mov dx, work_path
@@ -484,6 +562,11 @@ prefix     db 'TEAMS\CLASSIC\'
 prefix_len equ $ - prefix
 ret_path   db 'C:\DYNSNAP\RETIRED.DAT', 0
 day_byte   db 0
+portrait_path  db 'ANMS\PORTRAIT.ANM', 0
+facegrp_path   db 'ANMS\FACEGRP.DAT', 0
+face_head  dw 0
+face_hlen  dw 0
+face_glen  dw 0
 hist_buf   db 4 dup(0)
 hist_len   dw 0
 zeros      db HIST_SIZE dup(0)
@@ -507,6 +590,7 @@ dta        db 43 dup(0)
 names      db MAX_TEAMS*NAME_LEN dup(0)
 ret_flags  db MAX_TEAMS*40 dup(0)
 team_buf   db FILE_BYTES dup(0)
+face_buf   db 982 dup(0)
 
 align 16
 BLOB_PARA equ ($ - $$) / 16

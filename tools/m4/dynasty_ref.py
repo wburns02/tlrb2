@@ -8,7 +8,7 @@ byte 21 of the first named record in 0..79 after the rollover (the asm's year sc
 (a blank pool) takes the year of the last earlier file that had one (C4 amendment 2026-10-07), and is not filled
 only when no earlier file had one.
 
-usage: dynasty_ref.py IN_DIR OUT_DIR --seed N [--no-fill]
+usage: dynasty_ref.py IN_DIR OUT_DIR --seed N [--no-fill] [--anms-dir DIR]
 """
 import glob
 import os
@@ -20,7 +20,7 @@ if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
 from m4 import rollover, team_fill          # noqa: E402
-from m4.rookies import RookieGen            # noqa: E402
+from m4.rookies import RookieGen, load_faces  # noqa: E402
 
 CFG = {'progress': True, 'retire': True, 'dev': True}   # the asm passes CX = 7 (progress + retire + C1b dev)
 HDR, REC, OFF_YEAR = 295, 143, 21
@@ -34,12 +34,13 @@ def season_year(image):
     return None
 
 
-def roll_league(in_dir, out_dir, seed, fill=True, cfg=None):
+def roll_league(in_dir, out_dir, seed, fill=True, cfg=None, anms_dir=None):
     """Roll every *.V20 of in_dir into out_dir; CLASSIC.MAJ is copied through. Returns
-    {'seed', 'rng_end', 'retirees': {file: [rec]}, 'filled': {file: [rec]}, 'players': rollover report}."""
+    {'seed', 'rng_end', 'retirees': {file: [rec]}, 'filled': {file: [rec]}, 'players': rollover report}.
+    anms_dir: the ANMS folder holding PORTRAIT.ANM / FACEGRP.DAT (None = default face table)."""
     os.makedirs(out_dir, exist_ok=True)
     rng = rollover.Rng(seed)
-    gen = RookieGen(rng)
+    gen = RookieGen(rng, faces=load_faces(anms_dir))
     report, retirees, filled = [], {}, {}
     last_year = None
     for p in sorted(glob.glob(os.path.join(in_dir, '*.V20'))):
@@ -73,8 +74,9 @@ def main(argv):
     ap.add_argument('out_dir')
     ap.add_argument('--seed', type=int, required=True)
     ap.add_argument('--no-fill', action='store_true')
+    ap.add_argument('--anms-dir', default=None)
     a = ap.parse_args(argv)
-    r = roll_league(a.in_dir, a.out_dir, a.seed, fill=not a.no_fill)
+    r = roll_league(a.in_dir, a.out_dir, a.seed, fill=not a.no_fill, anms_dir=a.anms_dir)
     print(f"rng_end {r['rng_end']}  retired {sum(map(len, r['retirees'].values()))}  "
           f"filled {sum(map(len, r['filled'].values()))}")
 

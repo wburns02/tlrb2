@@ -2,7 +2,7 @@
 """Sample the live GAME.TMP buffer (7446 B) from a running DOSBox-X process every STEP s plus a screenshot.
 usage: gt_sample.py PID PREFIX N STEP [HOMESTEM+VISSTEM]   writes /mnt/nvme/tlrb2/s6/PREFIX_KKK.bin (only when changed) and shots PREFIX_KKK.png
 The buffer is found by regex: two 8 char lowercase team stems + 'classic\\0' at buffer offset 7169 (home stem first)."""
-import re, sys, time, subprocess
+import os, re, sys, time, subprocess
 pid = int(sys.argv[1]); pre = sys.argv[2]; n = int(sys.argv[3]); step = float(sys.argv[4])
 pat = re.compile((sys.argv[5] if len(sys.argv) > 5 else 'clasale1clasale3').encode() + b'classic\x00', re.S)
 last = None
@@ -27,5 +27,5 @@ for k in range(n):
     if best and best[1] != last:
         last = best[1]
         open(f'/mnt/nvme/tlrb2/s6/{pre}_{k:03d}.bin', 'wb').write(last)
-    subprocess.run(['/home/will/tlrb2/scripts/xc.sh', 'shot', f'../s6/{pre}_{k:03d}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'scripts', 'xc.sh'), 'shot', f'../s6/{pre}_{k:03d}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(max(0, step - (time.time() - t0)))

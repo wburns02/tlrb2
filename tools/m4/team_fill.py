@@ -33,7 +33,7 @@ for _p in (_TOOLS, _HERE):
 
 import rollover  # noqa: E402
 import v20  # noqa: E402
-from m4.rookies import RookieGen  # noqa: E402, F401
+from m4.rookies import RookieGen, load_faces  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
 # Season stat byte offsets, from notes/FORMATS.md ("player record"
@@ -268,16 +268,18 @@ def fill_team(team_in_path, team_out_path, season_year, rng, rookie_gen):
     return {"vacancies": vacancies, "positions": positions}
 
 
-def fill_league(in_dir, out_dir, season_year, seed):
+def fill_league(in_dir, out_dir, season_year, seed, anms_dir=None):
     """Fill every *.V20 team in in_dir, writing results to out_dir.
 
     One RookieGen and one rollover.Rng(seed) are created once and shared
     across the whole league.
 
+    anms_dir: ANMS folder for PORTRAIT.ANM / FACEGRP.DAT (None = default faces).
+
     Returns {team_basename: {'vacancies': [...], 'positions': [...]}}.
     """
     rng = rollover.Rng(seed)
-    rookie_gen = RookieGen(rng)
+    rookie_gen = RookieGen(rng, faces=load_faces(anms_dir))
 
     names = sorted(
         n for n in os.listdir(in_dir) if n.upper().endswith(".V20")
