@@ -1311,6 +1311,36 @@ def test_allstar_refresh_runs_out_and_vacates():
         assert _pair(star, s) == (bytes(REC), bytes(REC))
 
 
+def test_allstar_refresh_q6_playing_time_floor():
+    """Q6: a 31 AB call-up loses to regulars; G = 150 here, so batters need 75 games
+    and pitchers 150 outs. A slot with no qualifier left falls back to the old rule."""
+    a1 = img_blank('clasale1')
+    put_player(a1, 0, 'Opener', 'P', 27, 0, {'control': 12, 'velocity': 12, 'endurance': 10},
+               season_outs=30, games=10)
+    put_player(a1, 1, 'Workhorse', 'P', 27, 0, {'control': 5, 'velocity': 5, 'endurance': 5},
+               season_outs=600, games=33)
+    put_player(a1, 2, 'Closer', 'P', 27, 0, {'control': 9, 'velocity': 9, 'endurance': 9},
+               season_outs=180, games=60)
+    put_player(a1, 16, 'Greenwell', 'B', 22, 7, _bat(power=12, hit_run=12), season_pa=31, games=20)
+    put_player(a1, 17, 'Regular', 'B', 27, 7, _bat(), season_pa=600, games=150)
+    put_player(a1, 18, 'Utility', 'B', 27, 3, _bat(), season_pa=400, games=100, pos2=7)
+    low = _bat(power=1, hit_run=1, speed=1, range=1, arm=1)
+    for k in range(8):                              # unqualified 1B fillers for a full lineup
+        put_player(a1, 19 + k, 'Fill%d' % k, 'B', 27, 2, low, season_pa=20, games=10)
+    star = make_img('allstar1', pit=[(0, 'OldP1', 40, {'control': 1}), (1, 'OldP2', 40, {'control': 1}),
+                                     (2, 'OldP3', 40, {'control': 1})],
+                    bat=[(16, 'OldCF', 40, 7), (17, 'OldCF2', 40, 7), (18, 'OldSS', 40, 5)]
+                    + [(19 + k, 'Old1B%d' % k, 40, 2) for k in range(8)])
+    rosters.allstar_refresh(star, [('clasale1', 0, a1)], 0)
+    assert _pair(star, 0) == _pair(a1, 2)           # Closer: max S among qualified
+    assert _pair(star, 1) == _pair(a1, 1)
+    assert _pair(star, 2) == _pair(a1, 0)           # no qualifier left: old rule
+    assert _pair(star, 16) == _pair(a1, 17)         # Regular over the 31 AB Greenwell
+    assert _pair(star, 17) == _pair(a1, 18)         # qualified can_play beats unqualified pos1
+    assert _pair(star, 18) == _pair(a1, 16)         # fallback: max S of what is left
+    assert [_pair(star, 19 + k) for k in range(8)] == [_pair(a1, 19 + k) for k in range(8)]
+
+
 def _real_rolled(root):
     """Roll the real t4 fixture with the Python chain; returns (league, snap, hist, retired) or None."""
     src = '/mnt/nvme/tlrb2/fixtures/t4/s1_pre'

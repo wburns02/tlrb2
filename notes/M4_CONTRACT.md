@@ -319,6 +319,12 @@ played), so a dynasty keeps fielding the original stars forever, retired or not.
   remaining batter whose pos1 == q, max S; else the remaining batter that can_play(q) (C6), max Off + Fld(q); else
   the remaining batter with max S.
   Ties: earliest candidate. No candidate left: the slot is vacated (both records).
+- Qualifier (Q6, amended 2026-10-08): read from each candidate's season record (s + 40), which still holds the
+  season just played when ROSTERS runs. G = the max u8 games over every candidate of that league (0 when nobody
+  played). A pitcher (is_pitcher on the roster record) qualifies when outs >= G (outs = ipiv_outs(ip10), about a
+  third of an inning per team game); a batter qualifies when 2 * games >= G. Each slot first runs its whole
+  preference chain above over qualified candidates only; if that finds nobody, it runs the same chain over every
+  remaining candidate. G = 0 makes everyone qualify (the pre-Q6 rule).
 - The chosen player's two records (s, s + 40) are copied byte for byte into the template slot (i, i + 40). The
   source team is not changed.
 - Header: the C6 step 7 depth rebuild with no form draws (no rng use, so the C6 rng stream and every other output

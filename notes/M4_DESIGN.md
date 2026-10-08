@@ -175,6 +175,9 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
 
 ## Answers (Will, 2026-10-07)
 
+- Q6 (2026-10-08): yes. All-Star picks need a playing-time floor (C9 qualifier: batters half the league's max
+  games, pitchers outs >= that many games), falling back to the old rule when a slot has no qualifier.
+
 - Q2: season leaders and career leaders are two separate screens. P1 stays as built (Will, 2026-10-07: do not
   redo it). Career totals are already recorded by the P1 merge into half 0; the second screen is a P3 display task
   in DYNASTY, which also reads HISTORY.DAT u32 totals where half 0 saturates (u8 HR/RBI).

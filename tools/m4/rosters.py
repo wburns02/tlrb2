@@ -1039,29 +1039,48 @@ def allstar_refresh(star, teams, lg_base):
                     cands.append((bytes(img[HDR + REC * s:HDR + REC * (s + 1)]), img, s))
     used = set()
 
-    def best(ok, key):
+    def season(img, s):
+        return img[HDR + REC * (s + 40):HDR + REC * (s + 41)]
+
+    # Q6 qualifier: G = max season games over the league's candidates
+    g_max = max((_get(season(img, s), *F['games']) for _, img, s in cands), default=0)
+
+    def qualifies(r, img, s):
+        sr = season(img, s)
+        if is_pitcher(r):
+            return war.ipiv_outs(_get(sr, *F['ip10'])) >= g_max
+        return 2 * _get(sr, *F['games']) >= g_max
+
+    qual = [qualifies(*c) for c in cands]
+
+    def best(ok, key, only_q):
         pick = None
         for k, (r, _, _) in enumerate(cands):
-            if k in used or not ok(r):
+            if k in used or (only_q and not qual[k]) or not ok(r):
                 continue
             if pick is None or key(r) > key(cands[pick][0]):
                 pick = k
         return pick
 
+    def chain(i, only_q):
+        if i < 16:                                # C6 slot types, not the template record
+            return best(is_pitcher, score, only_q)  # (a DYNASTY fill can leave a batter in 0..15)
+        q = pos1f(star[HDR + REC * i:HDR + REC * (i + 1)])
+        k = best(lambda r: not is_pitcher(r) and pos1f(r) == q, score, only_q)
+        if k is None:
+            k = best(lambda r: not is_pitcher(r) and can_play(r, q),
+                     lambda r: off(r) + fld(r, q), only_q)
+        if k is None:
+            k = best(lambda r: not is_pitcher(r), score, only_q)
+        return k
+
     for i in range(40):
         o = HDR + REC * i
         if not star[o]:
             continue
-        if i < 16:                                # C6 slot types, not the template record
-            k = best(is_pitcher, score)           # (a DYNASTY fill can leave a batter in 0..15)
-        else:
-            q = pos1f(star[o:o + REC])
-            k = best(lambda r: not is_pitcher(r) and pos1f(r) == q, score)
-            if k is None:
-                k = best(lambda r: not is_pitcher(r) and can_play(r, q),
-                         lambda r: off(r) + fld(r, q))
-            if k is None:
-                k = best(lambda r: not is_pitcher(r), score)
+        k = chain(i, True)
+        if k is None:
+            k = chain(i, False)
         if k is None:
             vacate(star, i)
             continue

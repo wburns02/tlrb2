@@ -1273,13 +1273,17 @@ static void depth_rebuild(Team *t, const int32_t *form)
  * the refresh), so this stays under the DOS 64 KB object limit */
 static uint8_t g_star_cand[2560][2];
 static uint8_t g_star_used[2560];
+static uint8_t g_star_qual[2560];  /* Q6: candidate meets the playing-time floor */
+static int g_star_only_q;          /* 1 = star_best skips unqualified candidates */
 static int g_nstar_cand;
 static uint8_t *g_star_img[2];     /* the loaded ALLSTAR1 / ALLSTAR2 images */
 static int32_t g_star_tmp[2];      /* g_tmps index of each, -1 = skipped */
 
 /* one best() over the star candidates. ok: 0 = any pitcher, 1 = batter with
  * pos1 == q, 2 = batter that can play q, 3 = any batter. key: 0 = Score,
- * 1 = Off + Fld(q). Max key, ties keep the earliest candidate. -1 = none. */
+ * 1 = Off + Fld(q). Max key, ties keep the earliest candidate. Candidates
+ * not yet used, and when g_star_only_q is set also not Q6-qualified, are
+ * skipped. -1 = none. */
 static int star_best(int ok, int q, int key)
 {
     int k, pick = -1;
@@ -1288,6 +1292,8 @@ static int star_best(int ok, int q, int key)
         const uint8_t *r;
         int32_t v;
         if (g_star_used[k])
+            continue;
+        if (g_star_only_q && !g_star_qual[k])
             continue;
         r = RIMG(g_tp[g_star_cand[k][0]]->img, g_star_cand[k][1]);
         if (ok == 0) {
@@ -1307,6 +1313,20 @@ static int star_best(int ok, int q, int key)
     return pick;
 }
 
+/* one slot's C9 preference chain over the remaining candidates */
+static int star_chain(int i, const uint8_t *o)
+{
+    int k;
+    if (i < 16)
+        return star_best(0, 0, 0);
+    k = star_best(1, pos1f(o), 0);
+    if (k < 0)
+        k = star_best(2, pos1f(o), 1);
+    if (k < 0)
+        k = star_best(3, pos1f(o), 0);
+    return k;
+}
+
 /* rebuild one ALLSTAR image in place from the teams whose league-global id
  * is in lg_base..lg_base + 15 (rosters.py allstar_refresh) */
 static void allstar_refresh(uint8_t *star, int32_t lg_base)
@@ -1324,21 +1344,35 @@ static void allstar_refresh(uint8_t *star, int32_t lg_base)
             g_nstar_cand++;
         }
     }
+    {
+        int32_t gmax = 0;
+        int k;
+        for (k = 0; k < g_nstar_cand; k++) {
+            const uint8_t *so = RIMG(g_tp[g_star_cand[k][0]]->img, g_star_cand[k][1] + 40);
+            if ((int32_t)so[R_GAMES] > gmax)
+                gmax = so[R_GAMES];
+        }
+        for (k = 0; k < g_nstar_cand; k++) {
+            const uint8_t *img = g_tp[g_star_cand[k][0]]->img;
+            int s2 = g_star_cand[k][1];
+            const uint8_t *so = RIMG(img, s2 + 40);
+            if (is_pitcher(RIMG(img, s2)))
+                g_star_qual[k] = ipiv_outs((int32_t)rd16(so + 0x65)) >= gmax;
+            else
+                g_star_qual[k] = 2 * (int32_t)so[R_GAMES] >= gmax;
+        }
+    }
     memset(g_star_used, 0, sizeof g_star_used);
     for (i = 0; i < 40; i++) {
         uint8_t *o = RIMG(star, i);
         int k;
         if (o[0] == 0)
             continue;
-        if (i < 16) {
-            k = star_best(0, 0, 0);
-        } else {
-            int q = pos1f(o);
-            k = star_best(1, q, 0);
-            if (k < 0)
-                k = star_best(2, q, 1);
-            if (k < 0)
-                k = star_best(3, q, 0);
+        g_star_only_q = 1;
+        k = star_chain(i, o);
+        if (k < 0) {
+            g_star_only_q = 0;
+            k = star_chain(i, o);
         }
         if (k < 0) {
             vacate(star, i);

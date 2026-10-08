@@ -72,7 +72,7 @@ Install = DATA1.ARJ extracted to C:\TONY2 (what INSTALL does). The game reads ar
 2. Nothing is "done" until a screenshot Claude reads itself shows it. Every patch has a positive control.
 3. Ghidra is the source of truth: every function/struct identified gets renamed/typed in the project in the same step.
 4. Find code by tracing (debugger breakpoints, memory watches, file traces), not by guess-and-patch.
-5. Commit to git after each verified milestone. Never push without asking.
+5. Commit to git after each verified milestone and push to GitHub right after. Never ask before pushing.
 
 ## Third-party
 
