@@ -73,6 +73,46 @@ class TestBatPatch:
             assert bat_patch.patch(str(install), revert=False)
             assert bat.read_bytes().decode('cp437') == content
 
+    def test_c7_form_upgrades_every_earlier_form(self):
+        """C7: rolled seasons run histwr, rosters and dynview /review; every
+        earlier patched form upgrades in place and reverts to stock."""
+        body = bat_patch.PATCHED_START.replace('\r\n', '\n')
+        assert body == (':start\ncopy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\ndynasty\n'
+                        'if errorlevel 1 goto rolled\ngoto ctl\n:rolled\nhistwr\nrosters\n'
+                        'dynview /review\n:ctl\ncontrol\n')
+        for old in bat_patch.EARLIER_FORMS:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                install = Path(tmpdir) / 'TONY2'
+                install.mkdir()
+                bat = install / 'TONY2.BAT'
+                bat.write_bytes(('echo off\r\n' + old + 'goto x\r\n').encode('cp437'))
+                assert bat_patch.patch(str(install), revert=False)
+                assert bat.read_bytes().decode('cp437') == (
+                    'echo off\r\n' + bat_patch.PATCHED_START + 'goto x\r\n')
+                assert bat_patch.patch(str(install), revert=True)
+                assert bat.read_bytes().decode('cp437') == (
+                    'echo off\r\n' + bat_patch.STOCK_START + 'goto x\r\n')
+
+    def test_c7_labels_free_in_stock_bat(self):
+        """The new labels do not collide with the shipped TONY2.BAT (DOS
+        matches labels on 8 chars, case-insensitive)."""
+        stock = Path('/mnt/nvme/tlrb2/pristine/TONY2/TONY2.BAT')
+        if not stock.exists():
+            pytest.skip('no pristine install')
+        labels = [l.strip()[1:9].lower() for l in stock.read_bytes().decode('cp437').splitlines()
+                  if l.strip().startswith(':')]
+        assert 'rolled' not in labels and 'ctl' not in labels
+        with tempfile.TemporaryDirectory() as tmpdir:
+            install = Path(tmpdir) / 'TONY2'
+            install.mkdir()
+            (install / 'TONY2.BAT').write_bytes(stock.read_bytes())
+            assert bat_patch.patch(str(install), revert=False)
+            out = (install / 'TONY2.BAT').read_bytes().decode('cp437')
+            got = [l.strip()[1:9].lower() for l in out.splitlines() if l.strip().startswith(':')]
+            assert len(got) == len(set(got))
+            assert bat_patch.patch(str(install), revert=True)
+            assert (install / 'TONY2.BAT').read_bytes() == stock.read_bytes()
+
     def test_revert_from_old_form(self):
         """Reverting from the previous patched form restores stock."""
         with tempfile.TemporaryDirectory() as tmpdir:

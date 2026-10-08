@@ -335,3 +335,26 @@ crosses the mark this season (before < mark <= after); season kinds when the sea
 Write order (HISTWR): MILESTON.DAT and HISTORY.DAT are each written to a temp file; both renames happen only after
 both temp files are complete, using the C5 BAK scheme, so on any exit 2 both files are unchanged.
 Known v1 gaps: per-season Gold Glove and Silver Slugger winners are only kept as career counts.
+
+## C8. The patched TONY2.BAT and DYNVIEW (added 2026-10-07; supersedes the C5 BAT block)
+
+tools/m4/rig/bat_patch.py replaces the stock `:start` / `control` pair with:
+```
+:start
+copy TEAMS\CLASSIC\*.* C:\DYNSNAP > NUL
+dynasty
+if errorlevel 1 goto rolled
+goto ctl
+:rolled
+histwr
+rosters
+dynview /review
+:ctl
+control
+```
+The labels `rolled` and `ctl` are free in the shipped BAT (DOS matches 8 chars, case-insensitive). Every earlier
+patched form (C5 with and without the histwr line) upgrades in place; --revert restores the stock pair from any form.
+DYNVIEW.EXE (C, OpenWatcom large model, read-only viewer; the Python reference is tools/m4/dynview.py) never writes a
+file in interactive mode. `/review` opens the season review; ESC from REVIEW goes to the menu, ESC from the menu
+exits 0 and the BAT falls through to control. A missing DYNVIEW or ROSTERS prints the DOS error and the BAT goes on.
+The install copies DYNASTY.EXE, HISTWR.EXE, ROSTERS.EXE and DYNVIEW.EXE into the game dir.
