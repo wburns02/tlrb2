@@ -89,11 +89,25 @@ def setup_fresh(install, league_src=None):
         install_league(lg, league_src)
 
 
-def launch(install):
-    subprocess.run(['bash', os.path.join(HERE, 'dyn_launch.sh'), install], check=True)
-    time.sleep(15)
-    dr = season_sim.Driver(0, install)
-    dr.wait_for('ball_menu', 120, every=3, nudge=lambda st: rig.key('Escape'))
+def launch(install, tries=2):
+    """Start DOSBox-X and wait for the ball menu. An Escape during the PLAY intro has hung the boot on a black
+    screen, so wait quietly first, nudge only after that, and relaunch once if the menu never comes."""
+    for attempt in range(tries):
+        subprocess.run(['bash', os.path.join(HERE, 'dyn_launch.sh'), install], check=True)
+        time.sleep(15)
+        dr = season_sim.Driver(0, install)
+        try:
+            dr.wait_for('ball_menu', 60, every=3)
+            return
+        except season_sim.SimError:
+            pass
+        try:
+            dr.wait_for('ball_menu', 60, every=3, nudge=lambda st: rig.key('Escape'))
+            return
+        except season_sim.SimError:
+            if attempt == tries - 1:
+                raise
+            dr.log('no ball menu after 135s: relaunching')
 
 
 def snapshot(src, dst):
