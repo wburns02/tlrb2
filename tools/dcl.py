@@ -70,3 +70,107 @@ def explode(data, start=0):
     except EOFError:
         pass
     return bytes(out), s.p
+
+# ---------------------------------------------------------------------------
+# Encoder: implode(data, dict_bits) -> DCL stream readable by explode().
+
+def _stream_codes(h):
+    """sym -> (value, nbits): stream bits LSB first, each bit = code bit ^ 1, code MSB first."""
+    table = {}
+    code = index = 0
+    for l in range(1, 16):
+        c = h.count[l]
+        for k in range(c):
+            sym = h.symbol[index + k]
+            v = 0
+            for i in range(l):
+                bit = (((code + k) >> (l - 1 - i)) & 1) ^ 1
+                v |= bit << i
+            table[sym] = (v, l)
+        index += c
+        code = (code + c) << 1
+    return table
+
+def _len_symbol(L):
+    for sym in range(16):
+        if _BASE[sym] <= L < _BASE[sym] + (1 << _EXTRA[sym]):
+            return sym
+    raise ValueError('no length symbol for %d' % L)
+
+_LEN_CODES = _stream_codes(_len)
+_DIST_CODES = _stream_codes(_dist)
+_LEN_SYM = [None, None] + [_len_symbol(L) for L in range(2, 520)]
+
+def implode(data, dict_bits=6):
+    if dict_bits not in (4, 5, 6):
+        raise ValueError('dict_bits must be 4, 5 or 6')
+    data = bytes(data)
+    n = len(data)
+    maxd = 64 << dict_bits
+    out = bytearray([0, dict_bits])
+    acc = 0
+    nacc = 0
+    head = {}
+    prev = [-1] * n
+
+    def put(v, nb):
+        nonlocal acc, nacc
+        acc |= v << nacc
+        nacc += nb
+        while nacc >= 8:
+            out.append(acc & 255)
+            acc >>= 8
+            nacc -= 8
+
+    i = 0
+    while i < n:
+        best_len = 0
+        best_d = 0
+        if i + 2 < n:
+            key = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2]
+            cand = head.get(key, -1)
+            maxlen = min(518, n - i)
+            depth = 0
+            lo = i - maxd
+            while cand >= 0 and cand >= lo and depth < 64:
+                if best_len == 0 or (best_len < maxlen and data[cand + best_len] == data[i + best_len]):
+                    k = 0
+                    while k < maxlen and data[cand + k] == data[i + k]:
+                        k += 1
+                    if k > best_len:
+                        best_len = k
+                        best_d = i - cand
+                        if k == maxlen:
+                            break
+                cand = prev[cand]
+                depth += 1
+        if best_len >= 3:
+            L = best_len
+            sym = _LEN_SYM[L]
+            put(1, 1)
+            v, nb = _LEN_CODES[sym]
+            put(v, nb)
+            put(L - _BASE[sym], _EXTRA[sym])
+            d = best_d - 1
+            v, nb = _DIST_CODES[d >> dict_bits]
+            put(v, nb)
+            put(d & ((1 << dict_bits) - 1), dict_bits)
+            step = L
+        else:
+            put(0, 1)
+            put(data[i], 8)
+            step = 1
+        for j in range(i, min(i + step, n - 2)):
+            key = (data[j] << 16) | (data[j + 1] << 8) | data[j + 2]
+            prev[j] = head.get(key, -1)
+            head[key] = j
+        i += step
+
+    # End marker: length 519 (sym 15, extra 255), no distance.
+    put(1, 1)
+    v, nb = _LEN_CODES[15]
+    put(v, nb)
+    put(255, _EXTRA[15])
+    if nacc:
+        out.append(acc & 255)
+    return bytes(out)
