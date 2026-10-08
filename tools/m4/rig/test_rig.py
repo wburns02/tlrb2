@@ -190,5 +190,85 @@ class TestDiskState:
         assert dynasty_gate.roll_seed(str(pre), str(post)) == 0x5678
 
 
+class TestHistoryCheck:
+    """G1: history_check against a synthetic pre/post pair built without DOS."""
+
+    _PRE = '/mnt/nvme/tlrb2/fixtures/t4/s1_pre'
+
+    def _pair(self, tmp_path):
+        """pre (no HISTORY.DAT) rolled with the reference; pre/RETIRED.DAT from the
+        roll's retirees; post = rolled with the DYNASTY header + the HISTWR chain."""
+        import history as hist_mod
+        from m4 import dynasty_ref
+        if not os.path.isdir(self._PRE):
+            pytest.skip('fixtures missing')
+        pre = str(tmp_path / 'pre')
+        shutil.copytree(self._PRE, pre)
+        hp = os.path.join(pre, 'HISTORY.DAT')
+        if os.path.exists(hp):
+            os.remove(hp)
+        rolled = str(tmp_path / 'rolled')
+        res = dynasty_ref.roll_league(pre, rolled, seed=0x1234)
+        write_retired(os.path.join(pre, 'RETIRED.DAT'), res['retirees'])
+        post = str(tmp_path / 'post')
+        shutil.copytree(rolled, post)
+        rng_end = res['rng_end']
+        header = bytearray(32)
+        header[0], header[1], header[2] = 1, rng_end & 255, (rng_end >> 8) & 255
+        header[8], header[9] = 0x34, 0x12
+        open(os.path.join(post, 'HISTORY.DAT'), 'wb').write(bytes(header))
+        py_rets = {n: i for n, i in res['retirees'].items() if i}
+        season = hist_mod.History.load(os.path.join(post, 'HISTORY.DAT')).seasons_recorded + 1
+        hist_mod.record_season(pre, os.path.join(post, 'HISTORY.DAT'), season)
+        hist_mod.mark_retired(os.path.join(post, 'HISTORY.DAT'), pre, py_rets, season)
+        return pre, post
+
+    def test_pass(self, tmp_path):
+        pre, post = self._pair(tmp_path)
+        assert dynasty_gate.history_check(pre, post) == []
+
+    def test_hist_byte_flip_reports_offset(self, tmp_path):
+        pre, post = self._pair(tmp_path)
+        hp = os.path.join(post, 'HISTORY.DAT')
+        raw = bytearray(open(hp, 'rb').read())
+        raw[40] ^= 0xff
+        open(hp, 'wb').write(bytes(raw))
+        errs = dynasty_gate.history_check(pre, post)
+        assert len(errs) == 1
+        assert 'offset 40' in errs[0]
+
+    def test_missing_mileston(self, tmp_path):
+        pre, post = self._pair(tmp_path)
+        os.remove(os.path.join(post, 'MILESTON.DAT'))
+        errs = dynasty_gate.history_check(pre, post)
+        assert any('MILESTON' in e for e in errs)
+
+    def test_gate_one_ok_wiring(self):
+        """history_check returns [] on a pass; gate_one must map that to 'PASS'
+        and count it as ok (source check: gate_one drives a live display)."""
+        src = open(os.path.join(os.path.dirname(dynasty_gate.__file__), 'dynasty_gate.py')).read()
+        body = src[src.index('def gate_one'):src.index('def main')]
+        assert "'PASS' if not herrs else herrs" in body
+        assert "rec['history_check'] in ('PASS', 'SKIPPED')" in body
+
+    def test_setup_fresh_source(self):
+        src = open(os.path.join(os.path.dirname(dynasty_gate.__file__), 'dynasty_gate.py')).read()
+        assert 'HISTWR.EXE' in src
+        assert 'bytes(4)' not in src
+
+
+def write_retired(path, retirees):
+    """C5 RETIRED.DAT: u8 nteam, then nteam x (13 B name + 40 B flags)."""
+    names = sorted(retirees)
+    with open(path, 'wb') as f:
+        f.write(bytes([len(names)]))
+        for n in names:
+            f.write(n.encode('latin-1').ljust(13, b'\0')[:13])
+            fb = bytearray(40)
+            for i in retirees[n]:
+                fb[i] = 1
+            f.write(bytes(fb))
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
