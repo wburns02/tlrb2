@@ -1071,6 +1071,23 @@ def allstar_refresh(star, teams, lg_base):
     depth_rebuild(star)
 
 
+def refresh_allstars(league_dir):
+    """C9 outside a roll: rebuild the league's ALLSTAR files in place from its current team files (a freshly built
+    league, H1). Same selection as run(); a missing or wrong-size ALLSTAR file is skipped. Returns the files rewritten."""
+    m = maj_load(history_mod.maj_or_none(league_dir))
+    teams = [(os.path.basename(p)[:-4].lower(), lg, bytearray(open(p, 'rb').read()))
+             for p, lg in history_mod.mapped_teams(league_dir, m)]
+    done = []
+    for name, base in ALLSTAR_FILES:
+        sp = _file_ci(league_dir, name)
+        if sp and os.path.getsize(sp) == HDR + REC * 80:
+            img = bytearray(open(sp, 'rb').read())
+            allstar_refresh(img, teams, base)
+            open(sp, 'wb').write(bytes(img))
+            done.append(sp)
+    return done
+
+
 # ---------------------------------------------------------------------------
 # File wrapper. 0 ok, 2 error (files untouched on error).
 # ---------------------------------------------------------------------------

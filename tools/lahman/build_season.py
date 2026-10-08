@@ -2,8 +2,8 @@
 """Lahman season -> playable TLRB2 league (H1).
 usage: build_season.py YEAR OUT_DIR [--db PATH] [--template DIR]
 YEAR 1977..1992. Copies the template league dir to OUT_DIR (must not exist or be empty), then
-rewrites the 26 CLAS*.V20 files. MAJ, the ALLSTAR files and every V20 header bytes 0..110 are
-kept from the template. Exit 0 ok, 2 on any error."""
+rewrites the 26 CLAS*.V20 files, then rebuilds ALLSTAR1/2 from them (C9, rosters.refresh_allstars).
+MAJ and every V20 header bytes 0..110 are kept from the template. Exit 0 ok, 2 on any error."""
 import os
 import shutil
 import sqlite3
@@ -395,6 +395,7 @@ def main(argv):
             shutil.copy2(os.path.join(template, f), os.path.join(out, f))
             os.chmod(os.path.join(out, f), 0o644)
         build_league(db, year, out, template)
+        rosters.refresh_allstars(out)               # else the template's classic stars play the first All-Star game
     except Exception as e:
         print('build failed: %s' % e)
         return 2

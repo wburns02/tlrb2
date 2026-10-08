@@ -57,11 +57,17 @@ def test_files_and_alignment(league):
             d = f.read()
         # header bytes 0..110 kept from the template (name, colors, strategy, GM profile)
         assert s[:111] == d[:111]
-    for name in ('CLASSIC.MAJ', 'ALLSTAR1.V20', 'ALLSTAR2.V20'):
+    with open(os.path.join(TEMPLATE, 'CLASSIC.MAJ'), 'rb') as f:
+        s = f.read()
+    with open(os.path.join(league, 'CLASSIC.MAJ'), 'rb') as f:
+        assert s == f.read()
+    # ALLSTAR files are rebuilt from the built rosters (C9); their header bytes 0..110 stay the template's
+    for name in ('ALLSTAR1.V20', 'ALLSTAR2.V20'):
         with open(os.path.join(TEMPLATE, name), 'rb') as f:
             s = f.read()
         with open(os.path.join(league, name), 'rb') as f:
-            assert s == f.read()
+            d = f.read()
+        assert len(s) == len(d) and s[:111] == d[:111]
 
 
 def test_roster_counts(league):
@@ -277,3 +283,23 @@ def test_fielding_by_position_1985(league):
         for p in t.players[16:40]:
             if p.active and 1 <= (p.raw[31] & 15) <= 5 and p['games'] >= 40:
                 assert p['po1'] > 0, (stem, v20.pname(p.raw, 0))
+
+
+def test_allstars_from_built_rosters(league):
+    """C9 at build time: every ALLSTAR record is a copy of a record on a built team of its own league (AL file from
+    AL teams, NL from NL), not a template classic star."""
+    for name, al in (('ALLSTAR1.V20', True), ('ALLSTAR2.V20', False)):
+        star = open(os.path.join(league, name), 'rb').read()
+        pool = set()
+        for stem, _ in BUILT:
+            if stem.startswith('clasal') != al:
+                continue
+            img = open(team_path(league, stem), 'rb').read()
+            for s in range(40):
+                r = img[295 + 143 * s:295 + 143 * (s + 1)]
+                if r[0]:
+                    pool.add(r)
+        named = [star[295 + 143 * s:295 + 143 * (s + 1)] for s in range(40) if star[295 + 143 * s]]
+        assert len(named) >= 30, (name, len(named))
+        stale = [r[:14] for r in named if r not in pool]
+        assert not stale, (name, stale[:3])
