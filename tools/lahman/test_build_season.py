@@ -249,3 +249,31 @@ def test_year_out_of_range(tmp_path):
     rc = build_season.main(['build_season.py', '1993', str(out)])
     assert rc == 2
     assert os.listdir(out) == []
+
+
+def test_fielding_by_position_1985(league):
+    """Fielding comes from Lahman fielding.POS strings ('C', '1B', ..., 'OF'): Mattingly's 1B line and
+    Carlton Fisk's catcher line (with PB) land in po1/a1/e1/dp1; every named infielder and catcher has po1 > 0."""
+    import sqlite3
+    c = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+
+    def fld(pid, tid, pos):
+        return c.execute('select sum(PO), sum(A), sum(E), sum(DP), sum(PB) from fielding'
+                         ' where playerID=? and yearID=? and teamID=? and POS=?',
+                         (pid, YEAR, tid, pos)).fetchone()
+
+    nya = v20.Team.load(team_path(league, 'clasale6'))
+    cha = v20.Team.load(team_path(league, 'clasalw2'))
+    matt = next(p for p in nya.players[:40] if p.active and p['last'].upper() == 'MATTINGLY')
+    po, a, e, dp, _ = fld('mattido01', 'NYA', '1B')
+    assert po > 1000
+    assert (matt['po1'], matt['a1'], matt['e1'], matt['dp1']) == (po, a, e, min(dp, 255))
+    fisk = next(p for p in cha.players[:40] if p.active and p['last'].upper() == 'FISK')
+    assert fisk.raw[31] & 15 == 1
+    po, a, e, dp, pb = fld('fiskca01', 'CHA', 'C')
+    assert (fisk['po1'], fisk['a1'], fisk['pb']) == (po, a, pb)
+    for stem, _ in BUILT:
+        t = v20.Team.load(team_path(league, stem))
+        for p in t.players[16:40]:
+            if p.active and 1 <= (p.raw[31] & 15) <= 5 and p['games'] >= 40:
+                assert p['po1'] > 0, (stem, v20.pname(p.raw, 0))

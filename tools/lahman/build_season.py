@@ -124,9 +124,9 @@ def select(c, year):
     return tm
 
 
-# Lahman fielding POS char by TLRB pos code (pos char for pos1/pos2 fielding); OF codes
+# Lahman fielding.POS string by TLRB pos code (C, 1B, 2B, 3B, SS, OF, P); OF codes
 # 6..8 use the Lahman 'OF' totals rows.
-FLD_CHAR = {1: '2', 2: '3', 3: '4', 4: '5', 5: '6', 6: 'OF', 7: 'OF', 8: 'OF'}
+FLD_CHAR = {1: 'C', 2: '1B', 3: '2B', 4: '3B', 5: 'SS', 6: 'OF', 7: 'OF', 8: 'OF'}
 
 
 def split_u16(p, name, total, share):
@@ -197,7 +197,7 @@ def write_fielding(p, pos1, pos2, fld):
         p['dp2'] = clamp255(x[4])
     else:
         p['po2'] = p['a2'] = p['e2'] = p['dp2'] = 0
-    p['pb'] = clamp255(fld_totals(fld, '2')[5]) if pos1 == 1 else 0
+    p['pb'] = clamp255(fld_totals(fld, 'C')[5]) if pos1 == 1 else 0
 
 
 def pos2_code(pos1, games):
