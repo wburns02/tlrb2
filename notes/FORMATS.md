@@ -9,8 +9,8 @@ Method: single-field edit in Utilities (work install), Main > QUIT is what write
 
 Record offsets (dec, within the 143 B record). u16 is little endian. "hi/lo" = nibble of that byte.
 - 0 last name (12), 12 first name (8), 20 age, 21 year-1870, 22 exp, 23 games, 25 u16 salary
-- 27 u16 PORTRAIT INDEX (session 7, dynamic). 0..29 = generic colour face (ANMS\PORTRAIT.ANM), 981..1507 = real-player b/w photo (OLDPORT.ANM frame idx-981). Proved: all BAL batters set to 1000 showed one identical photo, CAL pitcher set to 3 showed a generic colour face. Twin halves hold the same value except 168 of 2200 pairs. (Session 6 saw no change only because a season game does not touch it.)
-- 29: hi speed. lo: bit3 throws R (0=L), bits2-1 bats (1=R, 2=S, L presumably 0), bit0 third header box (L/D, meaning unknown)
+- 27 u16 PORTRAIT INDEX (session 7, dynamic). 0..29 = generic colour face (ANMS\PORTRAIT.ANM; frames appended by tools/faces.py extend this up to 980), 981..1507 = real-player b/w photo (OLDPORT.ANM frame idx-981). Proved: all BAL batters set to 1000 showed one identical photo, CAL pitcher set to 3 showed a generic colour face. Twin halves hold the same value except 168 of 2200 pairs. (Session 6 saw no change only because a season game does not touch it.)
+- 29: hi speed. lo: bit3 throws R (0=L), bits2-1 bats (1=R, 2=S, L presumably 0), bit0 portrait group flag (third header box; matched against UTIL DS:776e by the random face assignment, dark skin = 1, see session 7)
 - 30: hi exper, lo consist. 31: hi pos2, lo pos1. Pos: 0 P,1 C,2 1B,3 2B,4 3B,5 SS,6 LF,7 CF,8 RF,9 DH,10 OF,11 IF,12 O/I,13 C/O,14 C/I,15 C/3
 - 32 R, 33 RBI, 34 SH, 35 SB, 36 CS (u8)
 - 37 AB_L, 39 AB_R, 41 H_L, 43 H_R, 45 2B_L, 47 2B_R (u16); 49 3B_L, 50 3B_R, 51 HR_L, 52 HR_R (u8);

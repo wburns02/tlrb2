@@ -141,6 +141,12 @@ The P2 WIP blob gave every rookie identical ratings. Rookies must vary and some 
   other rookie pitches control 1, velocity 3, endurance 1 (134 = 0x31, 135 hi 1). Written with the stat-line
   constants, before the rating draws, which touch other nibbles only.
 - Everything else (stat lines, salary, portrait, season-twin copy) stays as the WIP blob defines it.
+  (amended 2026-10-08, F1) Portrait: face = d % n, u16@27 = face, byte 29 bit0 = grp[face]. (n, grp) default to
+  30 and the stock UTIL DS:776e table (1 at 3, 4, 16, 18, 20, 21, 22, 25, 27: dark skin); the old `face >= 15` flag
+  rule was wrong. When ANMS\PORTRAIT.ANM (count c) and ANMS\FACEGRP.DAT (length L, one flag byte per face, written
+  by tools/faces.py append) both read and 30 <= L <= 981: n = min(L, c) if that is >= 30, grp = those bytes & 1;
+  else the default. DYNASTY reads both files once at startup and patches the rookie blob header (word 2 = n,
+  word 4 = table offset). Draw order and count are unchanged.
 
 ## C5. Runtime split for HISTORY.DAT (added 2026-10-07, T4)
 
