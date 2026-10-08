@@ -81,6 +81,14 @@ DRIFT_BASE = lambda age2: 40 if age2 <= 33 else 64 if age2 <= 35 else 96 \
 RETIRE_BASE = lambda age2: 10 if age2 <= 34 else 20 if age2 <= 36 else 36 \
     if age2 <= 38 else 56 if age2 <= 40 else 80 if age2 <= 42 else 110
 TIER_MULT = (4, 4, 3, 2)
+# C1b hidden development trait: byte 142 = grade 1..5 (1 bust .. 5 boom), 0 = not
+# yet assigned. Assignment (progression flag on, byte 142 == 0, right after aging):
+# one draw, cut at 26/77/179/230 -> 10/20/40/20/10 %. 3b growth scales g by
+# GM[grade] >> 2, decline scales p by DM[grade] >> 2 (capped 255).
+OFF_DEV = 142
+DEV_CUTS = (26, 77, 179, 230)
+GM = (0, 1, 3, 4, 5, 7)
+DM = (0, 6, 5, 4, 3, 2)
 DRAFT_CAP = {'endurance': 10, 'control': 12, 'velocity': 12, 'power': 12, 'bunt': 12,
              'hit_run': 12, 'speed': 12, 'range': 12, 'arm': 12}
 ENDURANCE_CAP = 10
@@ -131,6 +139,8 @@ def rollover_player(rec_roster, rec_season, cfg, rng, log):
     s_b = s_bio(rec_season)
     # tier from the ROSTER half BEFORE any change
     tier = tier_of(rec_roster)
+    # C1b grade: 0 = not yet assigned
+    grade = rec_roster[OFF_DEV]
     # 1. career merge with saturation
     for f in STAT_FIELDS:
         off, kind = F[f]
@@ -145,6 +155,14 @@ def rollover_player(rec_roster, rec_season, cfg, rng, log):
     _set(rec_roster, *F['year_off'], (s_b['year_off'] + 1) & 0xff)
     if s_b['games'] > 0:
         _set(rec_roster, *F['exp'], min(255, _get(rec_roster, *F['exp']) + 1))
+    # C1b assignment: one draw per still-ungraded player (progression flag on,
+    # right after aging); graded players consume nothing
+    if cfg.get('dev') and cfg.get('progress', True) and grade == 0:
+        d = rng.draw() & 0xff
+        cuts = cfg.get('DEV_CUTS', DEV_CUTS)
+        grade = 1 if d < cuts[0] else 2 if d < cuts[1] else 3 if d < cuts[2] \
+            else 4 if d < cuts[3] else 5
+        rec_roster[OFF_DEV] = grade
     # 3a. evidence: only with the progression AND evidence flags AND season games > 0
     if cfg.get('progress', True) and cfg.get('evidence', True) and s_b['games'] > 0:
         pitcher = _get(rec_roster, *F['pos1']) & 15 == 0   # pos code 0 = P
@@ -168,6 +186,8 @@ def rollover_player(rec_roster, rec_season, cfg, rng, log):
             v = _get(rec_roster, off, kind)
             if age2 <= 26:
                 g = 90 if age2 <= 22 else 64 if age2 <= 24 else 32
+                if cfg.get('dev') and grade >= 1:
+                    g = (g * cfg.get('GM', GM)[grade]) >> 2
                 if d < g and v < DRAFT_CAP[name]:
                     v += 1
             elif age2 <= 31:
@@ -175,6 +195,8 @@ def rollover_player(rec_roster, rec_season, cfg, rng, log):
             else:
                 base = DRIFT_BASE(age2)
                 p = (base * TIER_MULT[tier]) >> 2
+                if cfg.get('dev') and grade >= 1:
+                    p = min(255, (p * cfg.get('DM', DM)[grade]) >> 2)
                 if d < p and v > 1:
                     v -= 1
             _set(rec_roster, off, kind, v)
@@ -203,6 +225,8 @@ def rollover_team(path_in, path_out, cfg, rng, report):
         for f in ('age', 'year_off', 'exp'):
             off, kind = F[f]
             _set(r_season, off, kind, _get(r_roster, off, kind))
+        if cfg.get('dev'):
+            r_season[OFF_DEV] = r_roster[OFF_DEV]
         if retire:
             retirees.append(i)
             r_roster[0] = 0

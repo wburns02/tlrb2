@@ -10,6 +10,9 @@ usage: sim50.py --seasons N --seed S --era E [--managed LGID ...]
   only. Season dirs DIR/<k> (k = 1..seasons, the current and previous season
   kept on disk), metrics one JSON line per season in DIR/metrics.jsonl, the
   summary in DIR/summary.txt and stdout.
+  --dev: the C1b hidden development trait (grades 1..5 at byte 142). --set
+  GM=.., DM=.., DEV_CUTS=.. goes into the roll cfg; metrics gain per-season
+  dev_counts (grade shares among active players) when --dev.
 """
 import argparse
 import glob
@@ -41,6 +44,8 @@ ROLL_CFG = {'progress': True, 'retire': True, 'evidence': False}
 MKeys = ('season', 'retired', 'released', 'market', 'signed', 'traded',
          'unsigned_retirements', 'draft_class', 'pool_size', 'turnover',
          'team_change', 'avg_age', 'spread', 'best_w', 'worst_w')
+# extra keys with --dev
+DEV_KEYS = ('dev_counts',)
 
 # season-model stat lines. Batters: (games, ab_l, bb_l); pitchers:
 # (games, ip10). Field starters = the 8 field positions of the DH vs-RHP
@@ -247,13 +252,40 @@ def pool_size(league_dir):
     return n
 
 
-def one_season(snap, rolled, word):
+def dev_counts(league_dir):
+    """Grades 1..5 among the active players (byte 142 of the roster half),
+    active = the header lists of every team (10 P + 15 B per set)."""
+    out = {g: 0 for g in range(1, 6)}
+    files = [p for p in sorted(glob.glob(os.path.join(league_dir, '*.V20')))
+             if not os.path.basename(p).startswith('ALLSTAR')
+             and os.path.basename(p) not in POOL_FILES]
+    for p in files:
+        img = open(p, 'rb').read()
+        active = set()
+        for s in img[v20.H_STAFF:v20.H_STAFF + 10]:
+            if s != 0xff:
+                active.add(s)
+        for dh in (0, 1):
+            for vs in (0, 1):
+                o = v20.H_LINEUP + dh * 18 + vs * 9
+                active.update(s for s in img[o:o + 9] if s != 0xff)
+                o = v20.H_BENCH + dh * 14 + vs * 7
+                active.update(s for s in img[o:o + 7] if s != 0xff)
+        for s in active:
+            g = img[HDR + REC * s + 142]
+            if 1 <= g <= 5:
+                out[g] += 1
+    return out
+
+
+def one_season(snap, rolled, word, roll_cfg=None):
     """3. The C1 roll of SNAP with the carried stream word, the C5
     RETIRED.DAT from the retirees, then the C6 offseason reading SNAP as the
     pre-roll snapshot; HISTORY bytes 1..2 = the ROSTERS end word, 8..9 = the
     roll start word. Returns the roll result and the event counts."""
+    roll_cfg = roll_cfg or ROLL_CFG
     hist_path = os.path.join(snap, 'HISTORY.DAT')
-    result = dynasty_ref.roll_league(snap, rolled, word, cfg=ROLL_CFG)
+    result = dynasty_ref.roll_league(snap, rolled, word, cfg=roll_cfg)
     retired_path = os.path.join(rolled, 'RETIRED.DAT')
     write_retired(retired_path, result['retirees'])
     rc = rosters.run(rolled, snap, hist_path, retired_path)
@@ -319,9 +351,10 @@ def active_sets(league_dir, season):
 
 
 def season_metrics(season, league_dir, counts, strengths, wl, prev_active,
-                   prev_team_of):
+                   prev_team_of, dev=False):
     """One metrics line. prev_active = last season's active identity -> team
-    index (None in season 1)."""
+    index (None in season 1). With dev: dev_counts = grades 1..5 among the
+    active players (byte 142 of the roster half)."""
     actives, active_ages = active_sets(league_dir, season)
     now = {}
     now_team_of = {}
@@ -359,6 +392,8 @@ def season_metrics(season, league_dir, counts, strengths, wl, prev_active,
         'best_w': max(wvals) if wvals else 0,
         'worst_w': min(wvals) if wvals else 0,
     }
+    if dev:
+        line['dev_counts'] = dev_counts(league_dir)
     return line
 
 
@@ -451,6 +486,11 @@ def parse_set(args):
         if k == 'REL':
             row = [int(x) for x in v.split(',')]
             t['REL'] = [row[i:i + 4] for i in range(0, len(row), 4)]
+        elif k in ('GM', 'DM'):
+            row = [int(x) for x in v.split(',')]
+            t[k] = [0] + row
+        elif k == 'DEV_CUTS':
+            t[k] = tuple(int(x) for x in v.split(','))
         else:
             t[k] = int(v)
     return t
@@ -464,11 +504,18 @@ def main(argv):
     ap.add_argument('--managed', type=int, nargs='*', default=[])
     ap.add_argument('--set', nargs='*', default=[])
     ap.add_argument('--out', required=True)
+    ap.add_argument('--dev', action='store_true', help='C1b hidden development trait')
     ap.add_argument('--noise', type=int, default=0,
                     help='form noise p/256 per rating per season (evidence stand-in), 0 = off')
     a = ap.parse_args(argv)
-    for k, v in parse_set(a.set).items():
+    set_t = parse_set(a.set)
+    dev_sets = {k: set_t.pop(k) for k in ('GM', 'DM', 'DEV_CUTS') if k in set_t}
+    for k, v in set_t.items():
         rosters.T[k] = v
+    roll_cfg = dict(ROLL_CFG)
+    if a.dev:
+        roll_cfg['dev'] = True
+        roll_cfg.update(dev_sets)
     mask = 0
     for lg in (a.managed or []):
         mask |= 1 << lg
@@ -508,7 +555,7 @@ def main(argv):
             wl, strengths = season_model(snap, season_model_rng)
             # 3. the roll with the carried word, then the C6 offseason; ROSTERS
             # reads the season stats from SNAP (the pre-roll snapshot)
-            result, counts = one_season(snap, rolled, word)
+            result, counts = one_season(snap, rolled, word, roll_cfg)
             # 4. ROLLED becomes the league for season k + 1; only the current
             # and previous season dirs stay on disk and RETIRED.DAT is not
             # carried
@@ -519,7 +566,7 @@ def main(argv):
             season_dirs.append(cur)
             # metrics: the active sets come from the league after ROSTERS
             line = season_metrics(k, league, counts, strengths, wl,
-                                  prev_active, prev_team_of)
+                                  prev_active, prev_team_of, dev=a.dev)
             mf.write(json.dumps(line) + '\n')
             mf.flush()
             # identity seasons and ages (for the career stats and summary), the

@@ -31,7 +31,7 @@ _TOOLS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
 
-from m4.rollover import Rng              # noqa: E402  (xorshift16)
+from m4.rollover import Rng, GM          # noqa: E402  (xorshift16, dev grade)
 from m4 import history as history_mod    # noqa: E402  (mapped_teams)
 from v20 import HDR, REC, F, _get        # noqa: E402
 import war                               # noqa: E402  (ipiv_outs)
@@ -89,10 +89,14 @@ def _g_of(x):
     return 90 if x <= 22 else 64 if x <= 24 else 32
 
 
-def g_sum(age):
-    """G[age] = sum of g(x) for x = age+1..26; 0 for age >= 26."""
+def g_sum(age, grade=0):
+    """G[age] = sum of g(x) for x = age+1..26; 0 for age >= 26. With a dev grade
+    1..5 (C1b) each term is scaled: (g(x) * GM[grade]) >> 2, so scouts value
+    boom prospects."""
     if age >= 26:
         return 0
+    if grade:
+        return sum((_g_of(x) * GM[grade]) >> 2 for x in range(age + 1, 27))
     return sum(_g_of(x) for x in range(age + 1, 27))
 
 
@@ -169,9 +173,10 @@ def discount_of(age):
 def pot_ratings(rec):
     """pot = min(cap, r + ((G[age] + 128) >> 8)) if r < cap else r; cap 10
     endurance, 12 otherwise. Order: control velocity endurance (pitcher) or
-    power hit_run speed range arm (batter)."""
+    power hit_run speed range arm (batter). G[age] reads the dev grade byte 142
+    (C1b)."""
     age = _get(rec, *F['age'])
-    add = (g_sum(age) + 128) >> 8
+    add = (g_sum(age, rec[142]) + 128) >> 8
     names = ('control', 'velocity', 'endurance') if is_pitcher(rec) \
         else ('power', 'hit_run', 'speed', 'range', 'arm')
     out = []

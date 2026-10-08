@@ -195,3 +195,8 @@ team file holds 40 players and there are no minor leagues, so the only replaceme
 reserves plus 4 pool files, all long-tenured. Real MLB pulled from thousands of minor leaguers, most of whom got
 one or two seasons. Closing it needs a feeder system (a later idea), not a constant. Aging (C1) is left as is so
 DYNASTY's asm does not change for R2; the B1 dev trait (C1b) is the next lever on the age curve.
+
+B1 dev trait (C1b, sim50 --dev, same seed): league metrics unchanged (turnover .216, team_change .176, careers
+12.4 / 13). Grade shares among actives 10/19/41/19/12 %. At ages 27..31 in season 50, mean batter S by grade
+1..5 = 71.6 / 72.1 / 71.9 / 75.6 / 80.6 (pitchers 54.7 .. 61.9), and busts are thinned out by releases (10 batters
+left at peak age vs 21 booms). Python reference only; the DYNASTY asm port waits until R3 lands.
