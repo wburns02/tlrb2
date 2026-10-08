@@ -358,3 +358,6 @@ DYNVIEW.EXE (C, OpenWatcom large model, read-only viewer; the Python reference i
 file in interactive mode. `/review` opens the season review; ESC from REVIEW goes to the menu, ESC from the menu
 exits 0 and the BAT falls through to control. A missing DYNVIEW or ROSTERS prints the DOS error and the BAT goes on.
 The install copies DYNASTY.EXE, HISTWR.EXE, ROSTERS.EXE and DYNVIEW.EXE into the game dir.
+DOS limit: DYNVIEW reads at most the first 7000 MILESTON.DAT records (one far allocation under 64 KB); later
+records are not listed (about 200 seasons at the observed 20 to 35 records a season). HISTORY.DAT has no cap (entries are read one
+at a time).
