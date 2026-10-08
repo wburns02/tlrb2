@@ -195,7 +195,7 @@ class TestHistoryCheck:
 
     _PRE = '/mnt/nvme/tlrb2/fixtures/t4/s1_pre'
 
-    def _pair(self, tmp_path):
+    def _pair(self, tmp_path, old_ms=None):
         """pre (no HISTORY.DAT) rolled with the reference; pre/RETIRED.DAT from the
         roll's retirees; post = rolled with the DYNASTY header + the HISTWR chain."""
         import history as hist_mod
@@ -217,6 +217,10 @@ class TestHistoryCheck:
         header[0], header[1], header[2] = 1, rng_end & 255, (rng_end >> 8) & 255
         header[8], header[9] = 0x34, 0x12
         open(os.path.join(post, 'HISTORY.DAT'), 'wb').write(bytes(header))
+        if old_ms is not None:
+            # an earlier season's MILESTON.DAT: in the league dir (so in the snapshot too)
+            open(os.path.join(pre, 'MILESTON.DAT'), 'wb').write(old_ms)
+            open(os.path.join(post, 'MILESTON.DAT'), 'wb').write(old_ms)
         py_rets = {n: i for n, i in res['retirees'].items() if i}
         season = hist_mod.History.load(os.path.join(post, 'HISTORY.DAT')).seasons_recorded + 1
         hist_mod.record_season(pre, os.path.join(post, 'HISTORY.DAT'), season)
@@ -225,6 +229,15 @@ class TestHistoryCheck:
 
     def test_pass(self, tmp_path):
         pre, post = self._pair(tmp_path)
+        assert dynasty_gate.history_check(pre, post) == []
+
+    def test_pass_with_existing_mileston(self, tmp_path):
+        """pre already holds MILESTON.DAT (every season after the first): the expectation
+        must start from it, or the old records are reported as a difference."""
+        import struct as st
+        old = st.pack('<HHBBH', 0, 0, 33, 0, 210)
+        pre, post = self._pair(tmp_path, old_ms=old)
+        assert open(os.path.join(post, 'MILESTON.DAT'), 'rb').read()[:8] == old
         assert dynasty_gate.history_check(pre, post) == []
 
     def test_hist_byte_flip_reports_offset(self, tmp_path):
@@ -272,3 +285,25 @@ def write_retired(path, retirees):
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+def test_roster_checks_pitching_zero_only_for_non_pitchers(tmp_path):
+    """C4 batter rookies (any pos1 != 0, e.g. DH 9) may carry 0 pitching ratings; a pitcher (pos1 0) may not."""
+    pre_src = '/mnt/nvme/tlrb2/fixtures/t4/s1_pre'
+    if not os.path.isdir(pre_src):
+        pytest.skip('fixtures missing')
+    import v20
+    pre, post = str(tmp_path / 'pre'), str(tmp_path / 'post')
+    shutil.copytree(pre_src, pre)
+    shutil.copytree(pre_src, post)
+    fn = sorted(f for f in os.listdir(post) if f.upper().endswith('.V20'))[0]
+    t = v20.Team.load(os.path.join(post, fn))
+    bat = next(i for i in range(40) if t.players[i].active and (t.players[i].raw[31] & 15) != 0)
+    pit = next(i for i in range(40) if t.players[i].active and (t.players[i].raw[31] & 15) == 0)
+    for i in (bat, pit):
+        for r in ('control', 'velocity', 'endurance'):
+            t.players[i][r] = 0
+    t.save(os.path.join(post, fn))
+    errs, _ = dynasty_gate.roster_checks(pre, post, False)
+    rating = [e for e in errs if 'rating' in e]
+    assert rating == [f'{fn} rec {pit}: rating out of 1..15: [\'control\', \'velocity\', \'endurance\']'], rating

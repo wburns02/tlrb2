@@ -837,3 +837,49 @@ def test_milestone_rerun_idempotent(tmp_path):
         outs.append(open(ms_path_of(hp), 'rb').read())
     assert outs[0] == outs[1]
     assert len(outs[0]) > 0, 'no milestone records written'
+
+
+# ---------------- round 5: second season under DOS (MILESTON.DAT already present) ----------------
+
+def test_dos_second_season_existing_milestones(tmp_path):
+    """Season 2 under real DOS with TEAMS\\CLASSIC\\HISTORY.DAT and MILESTON.DAT already present (season 1
+    written by the host build). DOS rename never overwrites, so the MILESTON BAK step must move the old file
+    aside; regression for the 5-season gate failure (bak_of got sizeof a pointer). Output equals the host."""
+    if not _dos_ready():
+        import pytest
+        pytest.skip('HISTWR.EXE or dosbox-x missing')
+    pre = '/mnt/nvme/tlrb2/fixtures/t4/s1_pre'
+    if not os.path.isdir(pre):
+        import pytest
+        pytest.skip('fixture missing')
+    _build()
+    d = str(tmp_path)
+    cd = os.path.join(d, 'cd')
+    snap = os.path.join(cd, 'DYNSNAP')
+    shutil.copytree(pre, snap)
+    open(os.path.join(snap, 'HISTORY.DAT'), 'wb').write(bytes([1]) + bytes(31))
+    res = dynasty_ref.roll_league(snap, os.path.join(d, 'o'), seed=0x1234)
+    write_retired(os.path.join(snap, 'RETIRED.DAT'), res['retirees'])
+    lg = os.path.join(cd, 'TEAMS', 'CLASSIC')
+    os.makedirs(lg)
+    # season 1 by the host build into the league dir
+    r = HISTWR(snap, os.path.join(lg, 'HISTORY.DAT'), os.path.join(snap, 'RETIRED.DAT'))
+    assert r.returncode == 0, r.stderr
+    ms = os.path.join(lg, 'MILESTON.DAT')
+    if not os.path.exists(ms):
+        open(ms, 'wb').close()
+    # host reference for season 2 on its own copy
+    hc = os.path.join(d, 'host')
+    shutil.copytree(lg, hc)
+    r = HISTWR(snap, os.path.join(hc, 'HISTORY.DAT'), os.path.join(snap, 'RETIRED.DAT'))
+    assert r.returncode == 0, r.stderr
+    rc = run_dos(cd, ['HISTWR.EXE'])
+    assert rc == 0, rc
+    for leaf in ('HISTORY.DAT', 'MILESTON.DAT'):
+        a = open(os.path.join(hc, leaf), 'rb').read()
+        b = open(os.path.join(lg, leaf), 'rb').read()
+        off, ent = first_diff(a, b)
+        assert off < 0, f'{leaf}: first diff at offset {off} (entry {ent})'
+    assert history.History.load(os.path.join(lg, 'HISTORY.DAT')).seasons_recorded == 2
+    left = [n for n in os.listdir(lg) if n.upper().endswith(('.BAK', '.TMP'))]
+    assert not left, left

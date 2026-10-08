@@ -41,6 +41,7 @@ SOURCE = '/mnt/nvme/tlrb2/work/c/TONY2'
 LOGS = season_sim.LOGS
 SUMMARY = os.path.join(LOGS, 'gate_summary.json')
 RATINGS = [n for n, _ in rollover.BATTER_RATINGS + rollover.PITCHER_RATINGS]
+PITCH_RATINGS = ('control', 'velocity', 'endurance')
 
 
 def setup_fresh(install):
@@ -94,7 +95,7 @@ def roll_seed(pre, post):
 
 
 def roster_checks(pre, post, full):
-    """Survivors aged exactly +1, ratings 1..15 on every named record, and (full) 40 named records per team."""
+    """Survivors aged exactly +1, ratings 1..15 on every named record (pitching ratings may be 0 on non-pitchers, C4), and (full) 40 named records per team."""
     errs, named = [], {}
     for pp in sorted(glob.glob(os.path.join(post, '*.V20'))):
         name = os.path.basename(pp)
@@ -105,7 +106,9 @@ def roster_checks(pre, post, full):
         for i in range(40):
             x, y = a.players[i], b.players[i]
             if y.active:
-                bad = [r for r in RATINGS if not 1 <= y[r] <= 15]
+                # C4 batter rookies carry no pitching ratings (nibbles 0); only pitchers need 1..15 there
+                lo = {r: (0 if r in PITCH_RATINGS and (y.raw[31] & 15) != 0 else 1) for r in RATINGS}
+                bad = [r for r in RATINGS if not lo[r] <= y[r] <= 15]
                 if bad:
                     errs.append(f'{name} rec {i}: rating out of 1..15: {bad}')
             if x.active and y.active and bytes(x.raw[0:20]) == bytes(y.raw[0:20]):
@@ -129,6 +132,9 @@ def history_check(pre, post):
         base[1:3] = ppost[1:3]
         base[8:10] = ppost[8:10]
         open(hp, 'wb').write(bytes(base))
+        pm = os.path.join(pre, 'MILESTON.DAT')
+        if os.path.exists(pm):
+            shutil.copyfile(pm, os.path.join(tmp, 'MILESTON.DAT'))
         rp = os.path.join(pre, 'RETIRED.DAT')
         if not os.path.exists(rp):
             return ['RETIRED.DAT missing']
