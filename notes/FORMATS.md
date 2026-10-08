@@ -312,13 +312,25 @@ u16 frame count, then per frame 12 B header (flags word with transparent colour 
 
 ### STADIUMS/<stem>.CFG (1289 B, 41 files) and .SDM
 BB loader 2000:1b40 (called from 6000:15a0): stadium stem is 8 chars at GAME.TMP+0x1cfc; opens stadiums\<stem>.cfg, fread 0x509 B x 1 into a fixed DS buffer (BB DS:4b73), then the .sdm.
-- CFG: 0x00..0x1e stadium name (NUL padded), 0x1f type byte (0, 1 or 2), 0x20 u16[5] fence distances in feet LF, LCF, CF, RCF, RF (FENWAY 315, 379, 389, 383, 302; ASTRODOME 330, 380, 400, 380, 330), 0x2a.. small header and byte triples up to 0x32f, 0x330.. u16 pairs (x, y) polylines, a zero gap 0x390..0x46f, u16 tables at 0x470..0x500, and at 0x501 two (u16, u16) points indexed by buf[0x1cf3]*4 (BB reads them as screen positions); 0x508 = 0xff. Only the name, the type byte and the five distances are confirmed to differ per stadium; the rest is structure by inspection, semantics unproven.
-- SDM: the whole file is one DCL stream. Explodes to 497280 B (1120 x 444, row stride 0x460 as used by the EMS writer BB 2000:dfba) or 501779 B (bigger stadiums). It is the pre-rendered 8-bit stadium panorama (FENWAY.SDM shows the park from behind home plate). Its palette is not in the CFG (a CFG offset 0x2e palette test failed) and is loaded elsewhere at runtime; colours in assets are not verified.
+- CFG: 0x00..0x1e stadium name (one NUL-terminated string, up to 30 chars: "THREE RIVERS STADIUM" crosses 0x13; text after the NUL, e.g. GRASS's "STADIUM", is stale and not shown), 0x1f type byte (0, 1 or 2), 0x20 u16[5] fence distances in feet LF, LCF, CF, RCF, RF (FENWAY 315, 379, 389, 383, 302; ASTRODOME 330, 380, 400, 380, 330), 0x2a.. small header and byte triples up to 0x32f, 0x330.. u16 pairs (x, y) polylines, a zero gap 0x390..0x46f, u16 tables at 0x470..0x500, and at 0x501 two (u16, u16) points indexed by buf[0x1cf3]*4 (BB reads them as screen positions); 0x508 = 0xff. Only the name, the type byte and the five distances are confirmed to differ per stadium; the rest is structure by inspection, semantics unproven.
+- SDM: the whole file is one DCL stream. Explodes to 497280 B (1120 x 444, row stride 0x460 as used by the EMS writer BB 2000:dfba) or 501779 B (bigger stadiums). It is the pre-rendered 8-bit stadium panorama (FENWAY.SDM shows the park from behind home plate). Its palette IS in the CFG: bytes 0x33..0x152 are 96 VGA DAC triples (6-bit) for entries 80..175; the rest of the DAC is DEFAULT.PAL and the panorama uses only 0..16 there. Proved 2026-10-08 against all 45 confidently observed colours of a rig screenshot (panorama offset 448,215); the older "offset 0x2e failed" note was 5 bytes off. tools/stadium.py render draws a park in its real colours.
 - Path: both files open as `<CD>:\stadiums\<stem>.*` through auto_prepend_drive_to_path (BB 6000:c620, drive = SYSTEM
   byte 0x4b), so stadiums always come from the CD drive, never C:. Modded parks ship as a rebuilt CD image
   (tools/stadium.py iso, xorriso). Proved 2026-10-08: tools/dcl.py implode re-encoded GRASS.SDM with a 120 x 50 block
   of index 0 at (500, 190); CAL @ BAL exhibition on the rig shows the block above the infield in the fielding view and
   the rest of the park unchanged, so the game's explode accepts our streams. The at-bat view is not the panorama.
+- Stadium list: MAIN 5000:834e (auto_load_all_stadium_configs) scans `stadiums\*.cfg` on the CD with findfirst/findnext,
+  so the stadium list is built from whatever CFGs the disc holds (UTIL 4000:fb46 is a second loader). A team picks its
+  park by the 8 B stem in its V20 header (+19, tools/v20.py set_stadium). Capacity of the list array is not measured.
+- ANMS/<stem>.OVL: one 174 x 73 frame, a thumbnail of the park that renders correctly only under that park's CFG palette
+  (indices 0..179). Where the game shows it is not seen yet: Assign Stadiums' VIEW STADIUM scrolls the SDM itself.
+- New parks: tools/parkgen.py keeps GRASS's field pixels exactly, regenerates stands and sky with SDXL inpainting,
+  fills the 24 CFG palette slots the field does not use by k-means, and writes SDM, CFG and OVL. Proved 2026-10-08:
+  ZMODERN (stem `zmodern` on BAL in the work install, CD rebuilt with tools/stadium.py iso) runs a CAL @ BAL
+  exhibition (50 s of play sampled, no crash) with the new skyline, video boards and stands in the outfield and fielding
+  views. Assign Stadiums lists it last (after OLD YANKEE STADIUM, as the Z stem intends), shows its name, fences and
+  conditions for BAL, and VIEW STADIUM shows the new panorama. Wind, humidity, temperature and altitude on that screen
+  come from the base CFG (GRASS) unchanged.
 
 ### Saved seasons
 There is no season save file. LOAD SAVED GAME is the in-game mid-game save (1.SAV..10.SAV, see GAME.TMP above). MAIN has "SAVE SEASON": it saves the simulated stats as a NEW LEAGUE (requires the regular season over and at least 81 games, and enough disk: 0xe97b (MAJ size 59771) + 0x2dd7 (V20 size 11735) per team, MAIN 6000:021b) i.e. a new TEAMS/<set> directory of V20s and a MAJ in the existing formats. Static only, the menu path was not run.
