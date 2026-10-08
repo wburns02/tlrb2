@@ -765,3 +765,43 @@ def test_commit_success_leaves_no_tmp_or_bak(tmp_path):
             if f.upper().endswith(('.TMP', '.BAK'))]
     assert left == []
     assert after != before
+
+
+def test_dos_big_history_parity(tmp_path):
+    """HISTORY.DAT past 64 KB (a long dynasty: 6 real seasons are ~200 KB) under DOS: ROSTERS patches header bytes
+    1..2 and 16..17 and keeps every other byte and the length. Two sizes: 200000 B and 65536 + 16 B (16-bit size_t
+    wraps below the 32 B header)."""
+    if not _dos_ready():
+        import pytest
+        pytest.skip('ROSTERS.EXE or dosbox-x missing')
+    if not os.path.isdir(S1_PRE):
+        import pytest
+        pytest.skip('fixtures missing')
+    for size in (200000, 65536 + 16):
+        d = os.path.join(str(tmp_path), 'h%d' % size)
+        lc, ls, lh, lr = setup_case(os.path.join(d, '_w'), S1_PRE, 0x1234, 0, 0)
+        hdr = open(lh, 'rb').read()[:32]
+        body = bytes((i * 7 + 3) & 0xff for i in range(size - 32))
+        open(lh, 'wb').write(hdr + body)
+        cd = os.path.join(d, 'dos')
+        os.makedirs(cd)
+        for f in os.listdir(lc):
+            if f.upper().endswith('.V20') or f.upper().endswith('.MAJ'):
+                shutil.copy2(os.path.join(lc, f), os.path.join(cd, f))
+        shutil.copy2(lr, os.path.join(cd, 'RETIRED.DAT'))
+        shutil.copy2(lh, os.path.join(cd, 'HISTORY.DAT'))
+        dd = os.path.join(d, 'SNAP')
+        os.makedirs(dd)
+        for f in os.listdir(ls):
+            if f.upper().endswith('.V20'):
+                shutil.copy2(os.path.join(ls, f), os.path.join(dd, f.upper()))
+        assert rosters_py.run(lc, ls, lh, lr) == 0
+        want = open(lh, 'rb').read()
+        assert len(want) == size and want[32:] == body
+        rc = run_dos(cd, ['ROSTERS.EXE . D: HISTORY.DAT RETIRED.DAT'], dd)
+        assert rc == 0, f'{size}: dos rc {rc}'
+        got = open(os.path.join(cd, 'HISTORY.DAT'), 'rb').read()
+        assert len(got) == size, (size, len(got))
+        assert got == want, (size, first_diff(want, got))
+        compare('ROSTERS.TXT', open(os.path.join(lc, ROSTERS_TXT), 'rb').read(),
+                open(os.path.join(cd, ROSTERS_TXT), 'rb').read())

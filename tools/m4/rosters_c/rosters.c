@@ -817,7 +817,7 @@ static int load_snap(Team *t)
     }
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
     sz = ftell(f);
-    if (sz < 0 || sz > 2000000L) { fclose(f); return -1; }
+    if (sz < 0 || sz > 60000L) { fclose(f); return -1; }   /* one DOS object; a V20 is 11735 B */
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
     buf = (uint8_t *)malloc((size_t)sz);
     if (!buf) { fclose(f); return -1; }
@@ -2288,7 +2288,7 @@ static int do_run(void)
                 break;
             if (fseek(f, 0, SEEK_END) != 0) { fclose(f); break; }
             sz = ftell(f);
-            if (sz < 0 || sz > 2000000L) { fclose(f); break; }
+            if (sz < 0) { fclose(f); break; }
             if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); break; }
             histlen = (int32_t)sz;
             memset(hist0, 0, HIST_HDR_SIZE);
@@ -2400,70 +2400,63 @@ static int do_run(void)
             if (!wfail) {
                 int hi = 1 + g_nt + POOL_FILES;
                 /* HISTORY header bytes 1..2 and 16..17 only; padded to 32 B
-                 * if shorter, otherwise length kept */
-                uint8_t *out = (uint8_t *)malloc((size_t)(histlen <
-                    HIST_HDR_SIZE ? HIST_HDR_SIZE : histlen));
-                if (!out) {
-                    wfail = 1;
-                } else {
-                    FILE *src;
-                    memset(out, 0, (size_t)(histlen < HIST_HDR_SIZE
-                        ? HIST_HDR_SIZE : histlen));
-                    if (histlen > 0) {
-                        size_t want = (histlen < HIST_HDR_SIZE)
-                            ? (size_t)histlen : HIST_HDR_SIZE;
+                 * if shorter, otherwise length kept. Only the 32 B header is
+                 * buffered (a long dynasty's HISTORY is far past the 64 KB a
+                 * DOS object can hold); the rest streams through. */
+                static uint8_t out[HIST_HDR_SIZE];
+                FILE *src;
+                memset(out, 0, sizeof out);
+                if (histlen > 0) {
+                    size_t want = (histlen < HIST_HDR_SIZE)
+                        ? (size_t)histlen : HIST_HDR_SIZE;
+                    src = fopen(g_histpath, "rb");
+                    if (!src) {
+                        wfail = 1;
+                    } else {
+                        if (fread(out, 1, want, src) != want)
+                            wfail = 1;
+                        fclose(src);
+                    }
+                }
+                if (!wfail) {
+                    out[1] = g_hist32[1];
+                    out[2] = g_hist32[2];
+                    out[16] = g_hist32[16];
+                    out[17] = g_hist32[17];
+                    if (!write_file(g_tmps[hi], out, sizeof out))
+                        wfail = 1;
+                }
+                if (!wfail && histlen > HIST_HDR_SIZE) {
+                    /* append the rest of the original history through */
+                    FILE *g = fopen(g_tmps[hi], "ab");
+                    static uint8_t chunk[8192];
+                    long rem;
+                    if (!g) {
+                        wfail = 1;
+                    } else {
                         src = fopen(g_histpath, "rb");
                         if (!src) {
                             wfail = 1;
+                        } else if (fseek(src, HIST_HDR_SIZE,
+                                         SEEK_SET) != 0) {
+                            fclose(src);
+                            wfail = 1;
                         } else {
-                            if (fread(out, 1, want, src) != want)
-                                wfail = 1;
+                            rem = histlen - HIST_HDR_SIZE;
+                            while (rem > 0 && !wfail) {
+                                size_t want = (rem > 8192) ? 8192
+                                                           : (size_t)rem;
+                                size_t got = fread(chunk, 1, want, src);
+                                if (got == 0
+                                    || fwrite(chunk, 1, got, g) != got)
+                                    wfail = 1;
+                                rem -= (long)got;
+                            }
                             fclose(src);
                         }
-                    }
-                    if (!wfail) {
-                        out[1] = g_hist32[1];
-                        out[2] = g_hist32[2];
-                        out[16] = g_hist32[16];
-                        out[17] = g_hist32[17];
-                        if (!write_file(g_tmps[hi], out,
-                                        (size_t)(histlen < HIST_HDR_SIZE
-                                        ? HIST_HDR_SIZE : histlen)))
+                        if (fclose(g) != 0)
                             wfail = 1;
                     }
-                    if (!wfail && histlen > HIST_HDR_SIZE) {
-                        /* append the rest of the original history through */
-                        FILE *g = fopen(g_tmps[hi], "ab");
-                        static uint8_t chunk[8192];
-                        long rem;
-                        if (!g) {
-                            wfail = 1;
-                        } else {
-                            src = fopen(g_histpath, "rb");
-                            if (!src) {
-                                wfail = 1;
-                            } else if (fseek(src, HIST_HDR_SIZE,
-                                             SEEK_SET) != 0) {
-                                fclose(src);
-                                wfail = 1;
-                            } else {
-                                rem = histlen - HIST_HDR_SIZE;
-                                while (rem > 0 && !wfail) {
-                                    size_t want = (rem > 8192) ? 8192
-                                                               : (size_t)rem;
-                                    size_t got = fread(chunk, 1, want, src);
-                                    if (got == 0
-                                        || fwrite(chunk, 1, got, g) != got)
-                                        wfail = 1;
-                                    rem -= (long)got;
-                                }
-                                fclose(src);
-                            }
-                            if (fclose(g) != 0)
-                                wfail = 1;
-                        }
-                    }
-                    free(out);
                 }
             }
             if (wfail)
