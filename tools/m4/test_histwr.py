@@ -207,6 +207,31 @@ def test_m3_end_single_season(tmp_path):
     chain(tmp_path, 'm3_', [pre], 'dynasty32')
 
 
+def test_awards_interleaved_leagues(tmp_path):
+    """Real s106 snapshot: AL and NL candidates interleave by entry index (ROSTERS
+    trades, appended entries). Every AL candidate must be considered, not just the
+    first n_al of the index-sorted array (dropped three AL award winners before)."""
+    pre = '/mnt/nvme/tlrb2/fixtures/h6_awards'
+    if not os.path.isdir(pre):
+        import pytest
+        pytest.skip('fixture missing')
+    seed = 0x1234
+    pc = prep_dir(pre, os.path.join(str(tmp_path), 'c'), dynasty_header(seed, seed))
+    pr = prep_dir(pre, os.path.join(str(tmp_path), 'r'), dynasty_header(seed, seed))
+    hp_c, hp_r = os.path.join(pc, 'HISTORY.DAT'), os.path.join(pr, 'HISTORY.DAT')
+    res = dynasty_ref.roll_league(pc, os.path.join(str(tmp_path), 'o'), seed=seed)
+    ret_path = os.path.join(str(tmp_path), 'ret.DAT')
+    write_retired(ret_path, res['retirees'])
+    season = history.History.load(hp_c).seasons_recorded + 1
+    assert season == 3
+    history.record_season(pc, hp_c, season)
+    history.mark_retired(hp_c, pc, {n: i for n, i in res['retirees'].items() if i}, season)
+    rc = HISTWR(pr, hp_r, ret_path)
+    assert rc.returncode == 0, rc.stderr
+    off, ent = first_diff(open(hp_c, 'rb').read(), open(hp_r, 'rb').read())
+    assert off < 0, f'first diff at offset {off} (entry {ent})'
+
+
 # ---------------- synthetic tests (test_history.py helpers) ----------------
 
 def synth_league(tmp_path, players):

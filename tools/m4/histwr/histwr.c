@@ -1537,7 +1537,7 @@ static int do_run(const char *pre_dir, const char *hpath)
         goto fail;
     if (g_cands != NULL) {
         static int32_t alwin[20], nlwin[20];
-        int32_t n_al = 0, n_nl = 0, ci;
+        int32_t ci;
         int k, q, i;
         Cand *c;
         /* history sorts the collected records by player ENTRY index (stable),
@@ -1553,14 +1553,10 @@ static int do_run(const char *pre_dir, const char *hpath)
             }
             g_cands[j + 1] = t;
         }
-        n_al = 0;
-        n_nl = 0;
-        for (ci = 0; ci < g_ncands; ci++)
-            if (g_cands[ci].league == 0)
-                n_al++;
-            else
-                n_nl++;
-        pick_league(g_cands, (int)n_al, 0, alwin);
+        /* both leagues scan the whole array (pick_league filters by
+         * league): sorted by entry index, AL and NL interleave once
+         * ROSTERS trades and appended entries mix the index order */
+        pick_league(g_cands, (int)g_ncands, 0, alwin);
         pick_league(g_cands, (int)g_ncands, 1, nlwin);
         /* award counts on the temp entries (already written): seek and patch */
         g = fopen(tmp, "r+b");
