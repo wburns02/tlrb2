@@ -102,6 +102,15 @@ def snapshot(src, dst):
             shutil.copy2(p, os.path.join(dst, f))
 
 
+def done_flag(league):
+    """HISTORY byte 0; a league that never rolled has no HISTORY.DAT (C2: missing = 0)."""
+    hp = os.path.join(league, 'HISTORY.DAT')
+    if not os.path.exists(hp):
+        return 0
+    b = open(hp, 'rb').read(1)
+    return b[0] if b else 0
+
+
 def roll_seed(pre, post):
     """The xorshift16 word DYNASTY started this roll from: C2 v1 files keep it at bytes 8..9; the 4-byte P1 file
     only has the word at bytes 1..2 of the pre-roll copy."""
@@ -203,7 +212,7 @@ def gate_one(n, install, full, fill=True, do_history=True):
     with open(os.path.join(pre, 'CLASSIC.MAJ'), 'rb') as f:
         f.seek(0x20a)
         pre_day = f.read(1)[0]
-    pre_h0 = open(os.path.join(pre, 'HISTORY.DAT'), 'rb').read(1)[0]
+    pre_h0 = done_flag(pre)
     if pre_day != 0xf3 or pre_h0 != 0:
         rec['error'] = f'DYNSNAP is not the pre-roll league (day 0x{pre_day:02x}, done flag {pre_h0})'
         dr.log(rec['error'])

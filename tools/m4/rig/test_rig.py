@@ -382,6 +382,16 @@ class TestInstallLeague:
         with pytest.raises(SystemExit):
             dynasty_gate.install_league(str(lg), str(src))
 
+    def test_done_flag_missing_or_empty_history(self):
+        """A Lahman league's first roll has no HISTORY.DAT in DYNSNAP (gate crashed on s101)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assert dynasty_gate.done_flag(tmpdir) == 0
+            h = Path(tmpdir) / 'HISTORY.DAT'
+            h.write_bytes(b'')
+            assert dynasty_gate.done_flag(tmpdir) == 0
+            h.write_bytes(b'\x01\x02')
+            assert dynasty_gate.done_flag(tmpdir) == 1
+
     def test_league_needs_fresh(self):
         import pytest
         with pytest.raises(SystemExit):
