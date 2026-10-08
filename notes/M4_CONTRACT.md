@@ -293,9 +293,9 @@ T table (LOCKED by R2; changes are contract amendments):
 
 Known v1 gaps (accepted): pool retirements are not marked in HISTORY (status stays active); the Draft GM profiles
 are not used (category labels undecoded); no platoon lineups; no trades with the managed team; DYNASTY skips the
-C4 fill for a file with no named record, so an empty pool file gets no draft class until it holds a player
-(DYNASTY amendment: fall back to the previous file's year; until then ROSTERS seeds the bootstrap year by keeping
-at least one player per pool file when the pool has any).
+C4 fill for a file with no named record only when no earlier file (sorted 8.3 order) had one: a blank pool file
+takes the year byte of the last earlier file that had a named record (amended 2026-10-07, DYNASTY.EXE and
+dynasty_ref); ROSTERS still keeps at least one player per pool file when the pool has any.
 
 ## C7. Awards and milestones (DRAFT 2026-10-07; HISTWR + history.record_season, after the C2 step 3 player pass)
 

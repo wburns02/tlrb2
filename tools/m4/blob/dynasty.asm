@@ -415,8 +415,9 @@ pl_loop:
 pl_done:
         ; ---- rookie fill pass (P2) --------------------------------------
         ; Season year byte = any active record's byte 21 (all active players
-        ; aged +1 this roll, so the league year is uniform). Skip the fill
-        ; entirely if no active record exists.
+        ; aged +1 this roll, so the league year is uniform). A file with no
+        ; active record (a blank pool) takes the last year found in an earlier
+        ; file (C4 amendment 2026-10-07); skip the fill only if none was.
         mov word [year_byte], 0xFFFF    ; sentinel: none found
         mov word [fi], 0
 year_scan:
@@ -436,8 +437,15 @@ year_scan_next:
         inc word [fi]
         jmp year_scan
 year_scan_done:
-        cmp word [year_byte], 0xFFFF
+        mov ax, [year_byte]
+        cmp ax, 0xFFFF
+        jne year_found
+        mov ax, [last_year]
+        mov [year_byte], ax
+        cmp ax, 0xFFFF
         je  no_fill
+year_found:
+        mov [last_year], ax
         mov ax, cs
         add ax, ROOKIE_PARA
         mov [farptr2+2], ax
@@ -489,6 +497,7 @@ ti         dw 0
 pi         dw 0
 fi         dw 0
 year_byte  dw 0
+last_year  dw 0xFFFF                    ; once per run: files are rolled in one pass
 farptr2    dw 0, 0
 i          dw 0
 j          dw 0
