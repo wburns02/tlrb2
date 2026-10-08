@@ -36,6 +36,14 @@ PROMPTS = {
                'glass-fronted luxury suites between the decks, a huge LED video scoreboard beyond center field, '
                'downtown city skyline beyond the outfield, clear blue afternoon sky, detailed retro video game '
                'background art, 1990s pixel art style'),
+    'night': ('wide panoramic view from behind home plate of a modern major league baseball ballpark during a night game, '
+              'dark night sky, bright stadium light towers, sold-out crowd filling two curved decks, glowing LED ribbon '
+              'boards along the upper deck, a huge lit video scoreboard beyond center field, city lights beyond the '
+              'outfield, detailed retro video game background art, 1990s pixel art style'),
+    'brick': ('wide panoramic view from behind home plate of a retro-classic brick baseball ballpark, red brick facade '
+              'and arches, dark green seats in two decks filled with a sold-out crowd, a long old brick warehouse beyond '
+              'right field, a manual scoreboard and a video board beyond center field, sunny afternoon, blue sky, '
+              'detailed retro video game background art, 1990s pixel art style'),
 }
 NEG = ('empty seats, empty stands, text, words, signage, watermark, logo, letters, blurry, distorted perspective, '
        'fisheye, people close to camera, players')

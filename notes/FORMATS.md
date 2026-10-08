@@ -320,8 +320,9 @@ BB loader 2000:1b40 (called from 6000:15a0): stadium stem is 8 chars at GAME.TMP
   of index 0 at (500, 190); CAL @ BAL exhibition on the rig shows the block above the infield in the fielding view and
   the rest of the park unchanged, so the game's explode accepts our streams. The at-bat view is not the panorama.
 - Stadium list: MAIN 5000:834e (auto_load_all_stadium_configs) scans `stadiums\*.cfg` on the CD with findfirst/findnext,
-  so the stadium list is built from whatever CFGs the disc holds (UTIL 4000:fb46 is a second loader). A team picks its
-  park by the 8 B stem in its V20 header (+19, tools/v20.py set_stadium). Capacity of the list array is not measured.
+  so the stadium list is built from whatever CFGs the disc holds (UTIL 4000:fb46 is a second loader); 44 parks (3 added)
+  list and play fine, so capacity is at least 44. A team picks its
+  park by the 8 B stem in its V20 header (+19, tools/v20.py set_stadium).
 - ANMS/<stem>.OVL: one 174 x 73 frame, a thumbnail of the park that renders correctly only under that park's CFG palette
   (indices 0..179). Where the game shows it is not seen yet: Assign Stadiums' VIEW STADIUM scrolls the SDM itself.
 - New parks: tools/parkgen.py keeps GRASS's field pixels exactly, regenerates stands and sky with SDXL inpainting,
