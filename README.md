@@ -73,3 +73,7 @@ Install = DATA1.ARJ extracted to C:\TONY2 (what INSTALL does). The game reads ar
 3. Ghidra is the source of truth: every function/struct identified gets renamed/typed in the project in the same step.
 4. Find code by tracing (debugger breakpoints, memory watches, file traces), not by guess-and-patch.
 5. Commit to git after each verified milestone. Never push without asking.
+
+## Third-party
+
+`tools/m4/rosters_c/ROSTERS.EXE` is a 32-bit program with the DOS/32 Advanced DOS Extender bound in as its stub (from the Open Watcom 2.0 distribution, `binw/dos32a.exe`). This product uses DOS/32 Advanced DOS Extender technology. DOS/32 Advanced DOS Extender, Copyright (C) 1996-2006 Narech K.
