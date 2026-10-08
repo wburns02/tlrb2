@@ -454,6 +454,11 @@ sal_done:
         mov byte [cs:scratch+138], 0x77
         mov byte [cs:scratch+139], 0x77
         mov byte [cs:scratch+140], 0x07
+        ; off-role batting, the stock pitcher pattern (1,1,1,7,7,7)
+        mov byte [cs:scratch+74], 0x11
+        or byte [cs:scratch+75], 0x01
+        or byte [cs:scratch+29], 0x70
+        mov byte [cs:scratch+94], 0x77
         jmp ratings_c4
 batter_rec:
         ; AB 40 split by bats code
@@ -474,6 +479,9 @@ ab_left:
 ab_set:
         or byte [cs:scratch+75], 0x70   ; streak: letter A (7)
         mov byte [cs:scratch+76], 0x78  ; day/night 7, clutch 8
+        ; off-role pitching, the stock non-pitcher pattern (1,3,1)
+        mov byte [cs:scratch+134], 0x31
+        or byte [cs:scratch+135], 0x10
 ratings_c4:
         ; ---- C4: grade draw, then one draw per rating -------------------
         ; grade: d = draw() & 0xff; 0 if d < 154, 1 if d < 230, else 2;

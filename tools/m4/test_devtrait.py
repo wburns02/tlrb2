@@ -64,20 +64,22 @@ def season_rec(games=100):
 
 @pytest.mark.skipif(not os.path.isdir(SIM50), reason='s1_pre fixture missing')
 def test_a_dev_off_identical(tmp_path):
-    """dev off: the full roll (C1 + C4 fill) is byte-identical with the default
-    cfg, a copy of it and the copy with 'dev': False; and dev on differs."""
+    """dev off: the full roll (C1 + C4 fill) is byte-identical with the pre-C1b cfg
+    (progress + retire) and with that cfg plus 'dev': False; the DYNASTY default
+    (dev on since the C1b asm port) equals 'dev': True and differs from off."""
     import dynasty_ref
     runs = {}
-    for tag, cfg in (('default', None), ('copy', dict(dynasty_ref.CFG)),
-                     ('off', dict(dynasty_ref.CFG, dev=False)),
-                     ('on', dict(dynasty_ref.CFG, dev=True))):
+    base = {'progress': True, 'retire': True}
+    for tag, cfg in (('base', base), ('off', dict(base, dev=False)),
+                     ('default', None), ('on', dict(base, dev=True))):
         out = str(tmp_path / tag)
         r = dynasty_ref.roll_league(SIM50, out, 0x1234, cfg=cfg)
         runs[tag] = (r['rng_end'], {p: open(os.path.join(out, p), 'rb').read()
                                     for p in sorted(os.listdir(out))})
-    assert len(runs['default'][1]) >= 26
-    assert runs['copy'] == runs['default'] and runs['off'] == runs['default']
-    assert runs['on'] != runs['default']
+    assert len(runs['base'][1]) >= 26
+    assert runs['off'] == runs['base']
+    assert dynasty_ref.CFG['dev'] is True and runs['default'] == runs['on']
+    assert runs['on'] != runs['base']
 
 
 # ---------------------------------------------------------------------------

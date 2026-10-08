@@ -11,6 +11,8 @@ usage: dynasty_gate.py --seasons N [--first K] [--fresh] [--full-rosters]
   --fresh          rebuild the dedicated install from work/c (never touches work/c itself), patch the BAT,
                    install the repo DYNASTY.EXE and HISTWR.EXE, remove HISTORY.DAT and MILESTON.DAT
   --full-rosters   require 40 named roster records per team after the roll (DYNASTY builds with the rookie fill)
+  --league DIR     with --fresh: copy a built league (e.g. /mnt/nvme/tlrb2/hist/1985) over TEAMS/CLASSIC; every
+                   file in DIR must already exist there under the same name
 Exit 0 only if every roll passes. Summary: logs/t6/gate_summary.json.
 """
 import argparse
@@ -41,9 +43,23 @@ SOURCE = '/mnt/nvme/tlrb2/work/c/TONY2'
 LOGS = season_sim.LOGS
 SUMMARY = os.path.join(LOGS, 'gate_summary.json')
 RATINGS = [n for n, _ in rollover.BATTER_RATINGS + rollover.PITCHER_RATINGS]
+PITCH_RATINGS = ('control', 'velocity', 'endurance')
 
 
-def setup_fresh(install):
+def install_league(lg, src):
+    """Copy every file of the built league src over the same-named files of the league dir lg.
+    Refuses (SystemExit) an empty src or a file name lg does not already have."""
+    names = sorted(n for n in os.listdir(src) if os.path.isfile(os.path.join(src, n)))
+    have = set(os.listdir(lg))
+    missing = [n for n in names if n not in have]
+    if not names or missing:
+        sys.exit(f'--league {src}: not a league dir for {lg} (unknown files {missing[:5]})')
+    for n in names:
+        shutil.copy2(os.path.join(src, n), os.path.join(lg, n))
+    return names
+
+
+def setup_fresh(install, league_src=None):
     if os.path.realpath(install) != os.path.realpath(INSTALL):
         sys.exit(f'--fresh only rebuilds the dedicated install {INSTALL}')
     if os.path.exists(install):
@@ -66,6 +82,8 @@ def setup_fresh(install):
         p = os.path.join(lg, name)
         if os.path.exists(p):
             os.remove(p)
+    if league_src:
+        install_league(lg, league_src)
 
 
 def launch(install):
@@ -84,6 +102,15 @@ def snapshot(src, dst):
             shutil.copy2(p, os.path.join(dst, f))
 
 
+def done_flag(league):
+    """HISTORY byte 0; a league that never rolled has no HISTORY.DAT (C2: missing = 0)."""
+    hp = os.path.join(league, 'HISTORY.DAT')
+    if not os.path.exists(hp):
+        return 0
+    b = open(hp, 'rb').read(1)
+    return b[0] if b else 0
+
+
 def roll_seed(pre, post):
     """The xorshift16 word DYNASTY started this roll from: C2 v1 files keep it at bytes 8..9; the 4-byte P1 file
     only has the word at bytes 1..2 of the pre-roll copy."""
@@ -94,7 +121,7 @@ def roll_seed(pre, post):
 
 
 def roster_checks(pre, post, full):
-    """Survivors aged exactly +1, ratings 1..15 on every named record, and (full) 40 named records per team."""
+    """Survivors aged exactly +1, ratings 1..15 on every named record (pitching ratings may be 0 on non-pitchers, C4), and (full) 40 named records per team."""
     errs, named = [], {}
     for pp in sorted(glob.glob(os.path.join(post, '*.V20'))):
         name = os.path.basename(pp)
@@ -105,7 +132,9 @@ def roster_checks(pre, post, full):
         for i in range(40):
             x, y = a.players[i], b.players[i]
             if y.active:
-                bad = [r for r in RATINGS if not 1 <= y[r] <= 15]
+                # C4 batter rookies carry no pitching ratings (nibbles 0); only pitchers need 1..15 there
+                lo = {r: (0 if r in PITCH_RATINGS and (y.raw[31] & 15) != 0 else 1) for r in RATINGS}
+                bad = [r for r in RATINGS if not lo[r] <= y[r] <= 15]
                 if bad:
                     errs.append(f'{name} rec {i}: rating out of 1..15: {bad}')
             if x.active and y.active and bytes(x.raw[0:20]) == bytes(y.raw[0:20]):
@@ -129,6 +158,9 @@ def history_check(pre, post):
         base[1:3] = ppost[1:3]
         base[8:10] = ppost[8:10]
         open(hp, 'wb').write(bytes(base))
+        pm = os.path.join(pre, 'MILESTON.DAT')
+        if os.path.exists(pm):
+            shutil.copyfile(pm, os.path.join(tmp, 'MILESTON.DAT'))
         rp = os.path.join(pre, 'RETIRED.DAT')
         if not os.path.exists(rp):
             return ['RETIRED.DAT missing']
@@ -180,7 +212,7 @@ def gate_one(n, install, full, fill=True, do_history=True):
     with open(os.path.join(pre, 'CLASSIC.MAJ'), 'rb') as f:
         f.seek(0x20a)
         pre_day = f.read(1)[0]
-    pre_h0 = open(os.path.join(pre, 'HISTORY.DAT'), 'rb').read(1)[0]
+    pre_h0 = done_flag(pre)
     if pre_day != 0xf3 or pre_h0 != 0:
         rec['error'] = f'DYNSNAP is not the pre-roll league (day 0x{pre_day:02x}, done flag {pre_h0})'
         dr.log(rec['error'])
@@ -212,17 +244,25 @@ def main(argv):
     ap.add_argument('--full-rosters', action='store_true')
     ap.add_argument('--install', default=INSTALL)
     ap.add_argument("--no-fill", action="store_true", help="installed DYNASTY.EXE predates the C4 fill")
+    ap.add_argument('--league', default=None)
     ap.add_argument("--no-history", action="store_true",
                     help="skip the history_check (install has no HISTWR.EXE)")
     a = ap.parse_args(argv)
+    if a.league and not a.fresh:
+        sys.exit('--league needs --fresh')
     if a.fresh:
-        setup_fresh(a.install)
-    if a.fresh or rig.window() is None:
-        launch(a.install)
+        setup_fresh(a.install, a.league)
     first = a.first
     if first is None:
         done = [int(os.path.basename(p)[1:-5]) for p in glob.glob(os.path.join(LOGS, 's*_post'))]
         first = max(done, default=0) + 1
+    if a.fresh or rig.window() is None:
+        launch(a.install)
+    else:
+        # resuming: a run that stopped after a roll leaves the game at the DOS prompt
+        dr = season_sim.Driver(first, a.install)
+        if dr.state()[0] == 'dos_prompt':
+            dr.relaunch()
     summary = {'started': time.strftime('%Y-%m-%d %H:%M:%S'), 'install': a.install, 'seasons': []}
     ok = True
     for n in range(first, first + a.seasons):

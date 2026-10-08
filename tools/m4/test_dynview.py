@@ -502,3 +502,15 @@ def test_no_history_row_uses_single_column(tmp_path):
         cols = dynview.body_cols(st(screen), data)
         assert cols == dynview.COLS_SINGLE
         assert len(dynview.rows(st(screen), data)[0][0]) <= cols[0][2]
+
+
+def test_unknown_chars_draw_question_mark():
+    font = [(1, 1, 7, bytes([0x80]), 1)] * 95
+    font = list(font)
+    font[31] = (1, 1, 7, bytes([0x80]), 1)
+    marker = (2, 1, 7, bytes([0x80, 0x80]), 1)
+    font[31] = marker
+    assert dynview.glyph_of(font, '\x01') is marker
+    assert dynview.glyph_of(font, '\xe9') is marker
+    assert dynview.glyph_of(font, '?') is marker
+    assert dynview.glyph_of(font, '/') is not marker

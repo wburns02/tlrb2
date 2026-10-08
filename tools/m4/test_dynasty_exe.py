@@ -300,3 +300,29 @@ def test_dosemu_path_containment(tmp_path):
     for bad in ('C:\\..', 'C:\\..\\SECRET', 'C:\\TONY2\\..\\..\\SECRET', '..\\SECRET',
                 'C:\\.\\TONY2', 'C:\\LINK'):
         assert dos_find(str(root), bad) is None, bad
+
+
+# --- l: empty files fall back to the last year found (C4 amendment 2026-10-07) ---
+def test_l_empty_pool_year_fallback(tmp_path):
+    """POOL1.V20 (blank, sorts after the CLAS* teams) takes the last year found in an earlier
+    file and gets a draft class; AAEMPTY.V20 (blank, sorts first) has no earlier year and
+    stays unfilled. DYNASTY.EXE equals dynasty_ref byte for byte."""
+    from m4.rosters import pool_blank
+    src = one_league()
+    work = tmp_path / 'src'
+    shutil.copytree(src, work)
+    first = (work / league_files(src)[0]).read_bytes()
+    (work / 'POOL1.V20').write_bytes(bytes(pool_blank(first)))
+    (work / 'AAEMPTY.V20').write_bytes(bytes(pool_blank(first)))
+    lg = make_root(tmp_path / 'root', str(work))
+    r = expected(str(work), tmp_path / 'root', 0x1234)
+    assert run(str(tmp_path / 'root'), 0x1234) == 1
+    check_v20s(lg, os.path.join(tmp_path / 'root', 'ref'))
+    assert r['filled']['AAEMPTY.V20'] == []
+    assert len(r['filled']['POOL1.V20']) == 40
+    pool = (lg / 'POOL1.V20').read_bytes()
+    years = {pool[295 + 143 * i + 21] for i in range(40)}
+    last_team = sorted(f for f in league_files(src))[-1]
+    img = (tmp_path / 'root' / 'ref' / last_team).read_bytes()
+    from m4.dynasty_ref import season_year
+    assert len(years) == 1 and years.pop() == season_year(img)

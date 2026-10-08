@@ -106,7 +106,7 @@ def load_data(league_dir, font_dir=None):
 def glyph_of(font, ch):
     k = ord(ch) - 32
     if k < 0 or k > 94:
-        k = 15                                  # '?'
+        k = ord('?') - 32                       # glyph 31
     return font[k]
 
 
@@ -527,7 +527,7 @@ def screen_title(state, data):
     return 'SEASON %d IN REVIEW' % data['hist'].seasons_recorded
 
 
-def draw_panel(fb, title):
+def draw_panel(fb):
     fill(fb, C_BG_BROWN)
     rect(fb, 4, 4, 315, 195, C_FRAME_TAN)
     rect(fb, 8, 8, 311, 20, C_TITLE_RED)
@@ -552,8 +552,8 @@ def render(state, data):
     fonts = data['fonts']
     main_ft, bold_ft = fonts
     fb = bytearray(FB_SIZE)
-    draw_panel(fb, screen_title(state, data))
     title = screen_title(state, data)
+    draw_panel(fb)
     tx = 8 + (304 - text_width(bold_ft, title)) // 2
     draw_text(fb, bold_ft, tx + 1, 11, title, C_BLACK)
     draw_text(fb, bold_ft, tx, 10, title, C_WHITE)

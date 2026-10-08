@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-r"""Patch TONY2.BAT to call DYNASTY.EXE before control, with pre-roll backup.
+r"""Patch TONY2.BAT to run the dynasty programs before control (contract C7).
 
-Inserts after `:start` (the current form, contract C5):
+Replaces the stock `:start` / `control` with:
+  :start
   copy TEAMS\CLASSIC\*.* C:\DYNSNAP > NUL
   dynasty
-  if errorlevel 1 histwr
+  if errorlevel 1 goto rolled
+  goto ctl
+  :rolled
+  histwr
+  rosters
+  dynview /review
+  :ctl
+  control
 
-Upgrades the previous patched form (the same without the histwr line) in
+Every earlier patched form (C5 with and without the histwr line) upgrades in
 place. CRLF line endings, idempotent, asserts stock content, refuses
 live/pristine paths.
 Usage:
@@ -25,17 +33,29 @@ PATCHED_START = (
     ':start\r\n'
     'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
     'dynasty\r\n'
-    'if errorlevel 1 histwr\r\n'
+    'if errorlevel 1 goto rolled\r\n'
+    'goto ctl\r\n'
+    ':rolled\r\n'
+    'histwr\r\n'
+    'rosters\r\n'
+    'dynview /review\r\n'
+    ':ctl\r\n'
     'control\r\n'
 )
 
-# the previous patched form (no histwr line): upgraded in place by patch()
-PATCHED_START_OLD = (
-    ':start\r\n'
-    'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
-    'dynasty\r\n'
-    'control\r\n'
+# earlier patched forms, newest first: upgraded in place by patch()
+EARLIER_FORMS = (
+    (':start\r\n'
+     'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
+     'dynasty\r\n'
+     'if errorlevel 1 histwr\r\n'
+     'control\r\n'),
+    (':start\r\n'
+     'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
+     'dynasty\r\n'
+     'control\r\n'),
 )
+PATCHED_START_OLD = EARLIER_FORMS[-1]
 
 # Will's live install, the pristine copy, and the shared work install are never patched
 REFUSE = ('/mnt/nvme/tlrb2/c/', '/mnt/nvme/tlrb2/pristine/', '/mnt/nvme/tlrb2/work/c/')
@@ -60,23 +80,25 @@ def patch(install_root, revert=False):
         content = f.read().decode('cp437')
 
     if revert:
-        if PATCHED_START not in content and PATCHED_START_OLD not in content:
+        forms = (PATCHED_START,) + EARLIER_FORMS
+        if not any(f in content for f in forms):
             print("Already reverted or never patched", file=sys.stderr)
             return True
-        content = content.replace(PATCHED_START, STOCK_START)
-        content = content.replace(PATCHED_START_OLD, STOCK_START)
+        for f in forms:
+            content = content.replace(f, STOCK_START)
     else:
         if PATCHED_START in content:
             print("Already patched", file=sys.stderr)
             return True
-        if PATCHED_START_OLD in content:
-            # upgrade the previous form: add the histwr line in place
-            content = content.replace(PATCHED_START_OLD, PATCHED_START)
-        elif STOCK_START in content:
-            content = content.replace(STOCK_START, PATCHED_START)
+        for f in EARLIER_FORMS:
+            if f in content:
+                content = content.replace(f, PATCHED_START)
+                break
         else:
-            print(f"ERROR: stock :start pattern not found in {bat_path}", file=sys.stderr)
-            return False
+            if STOCK_START not in content:
+                print(f"ERROR: stock :start pattern not found in {bat_path}", file=sys.stderr)
+                return False
+            content = content.replace(STOCK_START, PATCHED_START)
         os.makedirs(dynsnap_path, exist_ok=True)
 
     with open(bat_path, 'wb') as f:

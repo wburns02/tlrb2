@@ -4,8 +4,9 @@
 Per team, in sorted file name order (the asm insertion-sorts the 8.3 names the same way): the C1 rollover of all 80
 records, then the C4 rookie fill of the vacated roster slots. Both blobs get the same rng word, so the whole league
 is one xorshift16 stream: team A rollover, team A fill, team B rollover, ... The fill's season year byte is record
-byte 21 of the first named record in 0..79 after the rollover (the asm's year scan); a team with no named record is
-not filled.
+byte 21 of the first named record in 0..79 after the rollover (the asm's year scan); a file with no named record
+(a blank pool) takes the year of the last earlier file that had one (C4 amendment 2026-10-07), and is not filled
+only when no earlier file had one.
 
 usage: dynasty_ref.py IN_DIR OUT_DIR --seed N [--no-fill]
 """
@@ -21,7 +22,7 @@ if _TOOLS not in sys.path:
 from m4 import rollover, team_fill          # noqa: E402
 from m4.rookies import RookieGen            # noqa: E402
 
-CFG = {'progress': True, 'retire': True}    # the asm passes CX = 3 (progress + retire)
+CFG = {'progress': True, 'retire': True, 'dev': True}   # the asm passes CX = 7 (progress + retire + C1b dev)
 HDR, REC, OFF_YEAR = 295, 143, 21
 
 
@@ -40,6 +41,7 @@ def roll_league(in_dir, out_dir, seed, fill=True, cfg=None):
     rng = rollover.Rng(seed)
     gen = RookieGen(rng)
     report, retirees, filled = [], {}, {}
+    last_year = None
     for p in sorted(glob.glob(os.path.join(in_dir, '*.V20'))):
         name = os.path.basename(p)
         out = os.path.join(out_dir, name)
@@ -49,8 +51,11 @@ def roll_league(in_dir, out_dir, seed, fill=True, cfg=None):
         image = bytearray(open(out, 'rb').read())
         year = season_year(image)
         if year is None:
+            year = last_year
+        if year is None:
             filled[name] = []
             continue
+        last_year = year
         _, vac, _ = team_fill.fill_image(image, year, rng, gen)
         filled[name] = list(vac)
         with open(out, 'wb') as f:
