@@ -492,3 +492,13 @@ def test_list_max_caps_rows_and_paging(tmp_path, monkeypatch):
     monkeypatch.setattr(dynview, 'LIST_MAX', 3)
     assert len(dynview.milestone_rows(data['hist'], data['ms'])) == 3
     assert dynview.milestone_rows(data['hist'], data['ms'])[0][0] == '3'
+
+
+def test_no_history_row_uses_single_column(tmp_path):
+    ldir = tmp_path / 'empty'
+    ldir.mkdir()
+    data = dynview.load_data(str(ldir))
+    for screen in range(6):
+        cols = dynview.body_cols(st(screen), data)
+        assert cols == dynview.COLS_SINGLE
+        assert len(dynview.rows(st(screen), data)[0][0]) <= cols[0][2]

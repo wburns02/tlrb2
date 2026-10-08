@@ -537,6 +537,17 @@ def draw_panel(fb, title):
     rect(fb, 315, 4, 315, 195, C_BLACK)
 
 
+def body_cols(state, data):
+    """Column table of the current screen; the one-cell 'NO DYNASTY HISTORY YET' row
+    always uses COLS_SINGLE so it is never cut to a narrow first column."""
+    hist = data['hist']
+    if hist is None or hist.seasons_recorded == 0:
+        return COLS_SINGLE
+    return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
+            SCREEN_HOF: COLS_HOF, SCREEN_LEADERS: COLS_LEADERS,
+            SCREEN_MILESTONES: COLS_MILESTONES, SCREEN_REVIEW: COLS_SINGLE}[state[0]]
+
+
 def render(state, data):
     fonts = data['fonts']
     main_ft, bold_ft = fonts
@@ -547,9 +558,7 @@ def render(state, data):
     draw_text(fb, bold_ft, tx + 1, 11, title, C_BLACK)
     draw_text(fb, bold_ft, tx, 10, title, C_WHITE)
     _screen, _page, _cat = state
-    cols = {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
-            SCREEN_HOF: COLS_HOF, SCREEN_LEADERS: COLS_LEADERS,
-            SCREEN_MILESTONES: COLS_MILESTONES, SCREEN_REVIEW: COLS_SINGLE}[_screen]
+    cols = body_cols(state, data)
     rect(fb, 8, 24, 311, 33, C_HEADER_GOLD)
     for header, x, w, align in cols:
         h = header[:w]
