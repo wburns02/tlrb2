@@ -1,25 +1,20 @@
-; DYNASTY.EXE - M4 season rollover, standalone DOS program (T4a, contract C2/C5).
+; DYNASTY.EXE - M4 season rollover, standalone DOS program (contract C2/C5).
 ; Invoked from the patched TONY2.BAT before `control`. Exit code 1 when it
 ; rolled (including the no-V20 case that only writes the header), else 0.
 ;   - reads TEAMS\CLASSIC\CLASSIC.MAJ byte 0x20a; acts only when it is 0xf3
 ;     (season over). No MAJ: exit 0, nothing written.
-;   - seed: HISTORY.DAT bytes 1..2 when the file exists and is >= 3 B, else
-;     the BIOS tick count low word (int 1Ah AH=00), and 1 when that is 0.
-;     start = the rng word in effect at the start of the roll.
-;   - rolls every TEAMS\CLASSIC\*.V20 in sorted name order (insertion sort on
-;     the 13 B DTA names, matching the Python reference sorted glob), 80
-;     records x 143 B, records i / i+40, CX = 3 (progress + retire)
-;   - collects per-team retire flags (40 B: the rollover blob's AX for roster
-;     record i) into ret_flags, then rewrites C:\DYNSNAP\RETIRED.DAT from
-;     scratch (u8 nteam, then per team 13 B NUL padded upper-case name + 40 B
-;     flags, in the roll's sorted order; a team that failed to open or read
-;     has all-zero flags). Create failure (no C:\DYNSNAP): skipped silently.
-;   - day 0xf3, after the teams: HISTORY.DAT keeps its length or grows, never
-;     shrinks. Missing -> created as 32 B of zero. Shorter than 32 B ->
-;     zero-extended to 32 B (existing bytes kept). Then byte 0 = 1, bytes
-;     1..2 = rng after the roll, bytes 8..9 = start. No other byte is touched.
-;   - day != 0xf3 with byte 0 = 1: byte 0 = 0 written in place, nothing else
-;     touched, length unchanged. Byte 0 = 0 already: nothing written.
+;   - TEAMS\CLASSIC\HISTORY.DAT header (DYNASTY owns bytes 0..2 and 8..9):
+;       [0] done flag (1 = rolled this season stop, cleared when day != 0xf3)
+;       [1..2] rng word, [8..9] start seed of the last roll (little endian)
+;     seed = bytes 1..2 when the file is >= 3 B and they are nonzero, else the
+;     BIOS tick count low word (int 1Ah), and 1 when that is 0.
+;     The file is only ever patched in place: it keeps its length or grows
+;     (missing -> 32 B of zero, shorter -> zero-extended to 32 B).
+;   - rolls every TEAMS\CLASSIC\*.V20 in sorted name order (matches the Python
+;     reference `sorted(glob(...))`), 80 records x 143 B, records i / i+40
+;   - C:\DYNSNAP\RETIRED.DAT rewritten after each roll: u8 nteam, then per
+;     team 13 B NUL padded name + 40 B flags (blob AX per roster record).
+;     No C:\DYNSNAP: skipped silently.
 ;   - core = incbin'd rollover.bin at para offset BLOB_PARA, entry +0x10:
 ;     DS:SI roster rec, ES:DI season rec, FS:BX rng word, CX flags, AX=retire
 ; Build: nasm -f bin -o dynasty.img dynasty.asm && python3 build_dynasty.py
@@ -48,7 +43,7 @@ entry:
         mov dx, maj_path
         mov ax, 0x3d00                  ; open, read-only
         int 0x21
-        jc      x_quiet                 ; no MAJ: not our league, leave quietly
+        jc      x_ok                    ; no MAJ: not our league, leave quietly
         mov [h], ax
         mov bx, ax
         mov ax, 0x4200                  ; seek from start
@@ -66,48 +61,40 @@ entry:
 
         ; ---- HISTORY.DAT: done flag + seed --------------------------------
         mov byte [done_flag], 0
-        mov word [rng_word], 1          ; fallback when no file / ticks = 0
+        mov word [hist_len], 0
         mov dx, hist_path
         mov ax, 0x3d00
         int 0x21
-        jc seed_ticks                   ; missing file -> ticks
-        mov [h], ax                     ; (also saved for the roll-path ops)
+        jc seed_ticks                   ; missing file
         mov bx, ax
         mov ah, 0x3f
         mov cx, 3
         mov dx, hist_buf
         int 0x21
+        jc hr_close
+        mov [hist_len], ax              ; bytes present, 0..3
+hr_close:
         mov ah, 0x3e
         int 0x21
-        cmp ax, 3                       ; bytes 1..2 exist only when >= 3 B
+        cmp word [hist_len], 1
         jb seed_ticks
         mov al, [hist_buf]
         mov [done_flag], al
+        cmp word [hist_len], 3
+        jb seed_ticks                   ; no rng word in a 1..2 B file
         mov ax, [hist_buf+1]            ; rng word (LE) at +1
-        mov [rng_word], ax
-        jmp have_seed
+        or ax, ax
+        jnz have_seed
 seed_ticks:
         mov ah, 0
-        int 0x1a                        ; CX:DX = tick count, AL = 0
-        mov [rng_word], dx              ; the low word
-        cmp dx, 0
-        jne have_seed
-        mov word [rng_word], 1          ; xorshift16 seeded 0 stays 0 forever
+        int 0x1a                        ; CX:DX = ticks
+        mov ax, dx
+        or ax, ax
+        jnz have_seed
+        mov ax, 1                       ; xorshift seeded 0 stays 0
 have_seed:
-        mov ax, [rng_word]
+        mov [rng_word], ax
         mov [start_seed], ax
-        ; copy the rng word into SEG_RNG (the blobs' rng pointer target)
-        mov ax, cs
-        mov ds, ax
-        mov si, rng_word
-        mov di, 0                       ; RNG_PHYS is para aligned
-        mov cx, 1
-        cld
-        push es
-        mov ax, SEG_RNG
-        mov es, ax
-        rep movsw
-        pop es
         cmp byte [done_flag], 1
         je      x_ok                    ; already rolled at this season stop
 
@@ -116,12 +103,11 @@ have_seed:
         mov ah, 0x1a                    ; set DTA
         int 0x21
         mov word [nteam], 0
-        mov word [ti], 0                ; retire flag write index (roll order)
         mov dx, find_spec
         mov cx, 0
         mov ah, 0x4e                    ; find first
         int 0x21
-        jc do_retired                   ; none found: retiree file + header only
+        jc do_retired                   ; none found: RETIRED + header only
 collect:
         mov ax, [nteam]
         cmp ax, MAX_TEAMS
@@ -130,19 +116,18 @@ collect:
         mov di, ax
         imul di, di, NAME_LEN
         add di, names
-        ; zero-fill the 13 B slot first: DTA leftovers from longer names
-        ; must not leak into the stored name
-        push di
-        mov al, 0
         mov cx, NAME_LEN
-zap_name:
-        mov [di], al
-        inc di
-        loop zap_name
-        pop di
-        mov cx, NAME_LEN
+        mov dl, 0                       ; 1 once the NUL is seen
 cp_name:
         lodsb
+        or dl, dl
+        jz cpn_keep
+        mov al, 0                       ; DTA leftovers after the NUL: zero
+cpn_keep:
+        or al, al
+        jnz cpn_store
+        mov dl, 1
+cpn_store:
         stosb
         loop cp_name
         inc word [nteam]
@@ -181,10 +166,7 @@ cmp_loop:
         loop cmp_loop
         jmp sort_next
 do_insert:
-        ; swap the names AND the retire-flag slots so ret_flags stays in
-        ; ROLL order (ti) while names[] becomes sorted order for the paths
         call swap_j
-        call swap_flags
         dec word [j]
         jmp sort_j
 sort_next:
@@ -195,13 +177,14 @@ sort_done:
         ; ---- roll each team ---------------------------------------------
         mov word [ti], 0
 team_loop:
+        cld                             ; the blobs need not preserve DF
         mov ax, [ti]
         cmp ax, [nteam]
         jae do_retired
         imul ax, ax, NAME_LEN
         add ax, names
         mov bx, ax
-        ; build path: prefix + name (the stored 13 B slot is NUL padded)
+        ; build path: prefix + name
         mov si, prefix
         mov di, work_path
         mov cx, prefix_len
@@ -224,74 +207,85 @@ cp_nm_done:
         inc word [ti]
         jmp team_loop
 
-        ; ---- RETIRED.DAT, then the HISTORY header (this order) -----------
+        ; ---- RETIRED.DAT, then the HISTORY header, then exit -------------
 do_retired:
         call write_retired
 
-        ; ---- HISTORY.DAT: grow to >= 32 B, set bytes 0 / 1..2 / 8..9 -----
-do_hist_write:
+        ; HISTORY.DAT is patched in place: never 3Ch on an existing file and
+        ; never 40h with CX=0 (both truncate)
         mov dx, hist_path
-        mov ax, 0x3d02                  ; open r/w: keeps the existing bytes
+        mov ax, 0x3d02                  ; open r/w
         int 0x21
         jnc hw_open
-        ; missing: create, then grow (3Ch only for files that do not exist)
         mov dx, hist_path
         mov cx, 0
-        mov ah, 0x3c
+        mov ah, 0x3c                    ; missing: create (0 B)
         int 0x21
-        jc      x_ok
-        mov [h], ax                     ; 0 B: grown to 32 B below
-        jmp hw_zero
+        jc      x_rolled
 hw_open:
         mov [h], ax
-        mov ax, 0x4202                  ; seek to end -> DX:AX = length
-        mov bx, [h]
+        mov bx, ax
+        mov ax, 0x4202                  ; seek to end: DX:AX = length
         mov cx, 0
         mov dx, 0
         int 0x21
+        or dx, dx
+        jnz hw_patch
         cmp ax, HIST_SIZE
-        jae hw_seek                     ; >= 32 B: keep the length untouched
-hw_zero:
-        call zero_extend                ; shorter: zero-extend to 32 B
-hw_seek:
-        ; fill the seed block: bytes 1..2 = rng after the roll, 8..9 = start
+        jae hw_patch
+        mov cx, HIST_SIZE               ; short: append zeros up to 32 B
+        sub cx, ax                      ; 1..32, never 0
+        mov dx, zeros
+        mov ah, 0x40
+        int 0x21
+hw_patch:
+        mov byte [hist_buf], 1
         mov ax, [rng_word]
-        mov [hist_seed+1], ax
-        mov ax, [start_seed]
-        mov [hist_start], ax
-        mov ax, 0x4200                  ; seek to start
+        mov [hist_buf+1], ax
+        mov ax, 0x4200                  ; bytes 0..2 = 1, rng after the roll
         mov bx, [h]
         mov cx, 0
         mov dx, 0
         int 0x21
         mov ah, 0x40
-        mov bx, [h]
-        mov cx, HIST_SIZE
-        mov dx, hist_seed
-        int 0x21                        ; bytes 0..2 + 8..9 only
-        mov ah, 0x3e
-        mov bx, [h]
+        mov cx, 3
+        mov dx, hist_buf
         int 0x21
-        ; exit 1: it rolled (including the no-V20 header-only case)
+        mov ax, 0x4200                  ; bytes 8..9 = start seed
+        mov cx, 0
+        mov dx, 8
+        int 0x21
+        mov ah, 0x40
+        mov cx, 2
+        mov dx, start_seed
+        int 0x21
+        mov ah, 0x3e
+        int 0x21
+x_rolled:
         mov ax, 0x4c01
-        jmp exit_dos
+        int 0x21
+x_ok:
+        mov ax, 0x4c00
+        int 0x21
 
 ; day left 0xf3 without a fresh roll (new season started): clear byte 0 in
-; place. One-byte write: nothing else touched, length unchanged.
+; place, nothing else touched
 clear_flag:
         mov dx, hist_path
-        mov ax, 0x3d02                  ; r/w
+        mov ax, 0x3d02
         int 0x21
         jc      x_ok
         mov [h], ax
+        mov bx, ax
         mov ah, 0x3f
         mov cx, 1
         mov dx, hist_buf
         int 0x21
+        jc cf_close
         cmp ax, 1
-        jb cf_close                     ; empty file: nothing to clear
+        jb cf_close                     ; empty file
         cmp byte [hist_buf], 0
-        je cf_close                     ; byte 0 already 0: no write at all
+        je cf_close
         mov byte [hist_buf], 0
         mov ax, 0x4200
         mov bx, [h]
@@ -299,7 +293,7 @@ clear_flag:
         mov dx, 0
         int 0x21
         mov ah, 0x40
-        mov cx, 1                       ; never CX=0 (DOS truncates on that)
+        mov cx, 1
         mov dx, hist_buf
         int 0x21
 cf_close:
@@ -308,44 +302,7 @@ cf_close:
         int 0x21
         jmp x_ok
 
-x_quiet:
-x_ok:
-        mov ax, 0x4c00                  ; exit 0: did not roll
-exit_dos:
-        int 0x21
-
-; zero-extend the open file (handle [h]) to 32 B, existing bytes kept.
-zero_extend:
-        mov ax, 0x4200
-        mov bx, [h]
-        mov cx, 0
-        mov dx, 0
-        int 0x21
-        mov ah, 0x3f
-        mov cx, HIST_SIZE
-        mov dx, hist_buf
-        int 0x21                        ; AX = bytes present, <= 32
-        mov di, dx
-        add di, ax
-        mov cx, HIST_SIZE
-        sub cx, ax
-        mov al, 0
-ze_fill:
-        mov [di], al
-        inc di
-        loop ze_fill
-        mov ax, 0x4200
-        mov bx, [h]
-        mov cx, 0
-        mov dx, 0
-        int 0x21
-        mov ah, 0x40
-        mov cx, HIST_SIZE
-        mov dx, hist_buf
-        int 0x21
-        ret
-
-; swap names[j-1] and names[j] (3-step copy through swap_tmp)
+; swap names[j-1] and names[j]
 swap_j:
         push cx
         push si
@@ -354,102 +311,24 @@ swap_j:
         dec ax
         imul ax, ax, NAME_LEN
         add ax, names
-        mov si, ax
-        mov di, swap_tmp
+        mov si, ax                      ; names[j-1]
+        lea di, [si+NAME_LEN]           ; names[j]
         mov cx, NAME_LEN
-        ; swap_tmp <- names[j-1]
-sj1:
-        lodsb
+sj:
+        mov al, [si]
+        mov ah, [di]
+        mov [si], ah
         mov [di], al
+        inc si
         inc di
-        loop sj1
-        mov ax, [j]
-        dec ax
-        imul ax, ax, NAME_LEN
-        add ax, names
-        mov di, ax
-        mov ax, [j]
-        imul ax, ax, NAME_LEN
-        add ax, names
-        mov si, ax
-        mov cx, NAME_LEN
-        ; names[j-1] <- names[j]
-sj2:
-        lodsb
-        mov [di], al
-        inc di
-        loop sj2
-        mov ax, [j]
-        imul ax, ax, NAME_LEN
-        add ax, names
-        mov di, ax
-        mov si, swap_tmp
-        mov cx, NAME_LEN
-        ; names[j] <- swap_tmp
-sj3:
-        lodsb
-        mov [di], al
-        inc di
-        loop sj3
+        loop sj
         pop di
         pop si
         pop cx
         ret
 
-; swap ret_flags[(j-1)*40 .. ] and ret_flags[j*40 ..] (same 3-step copy)
-swap_flags:
-        push cx
-        push si
-        push di
-        mov ax, [j]
-        dec ax
-        imul ax, ax, 40
-        add ax, ret_flags
-        mov si, ax
-        mov di, flags_tmp
-        mov cx, 40
-        ; flags_tmp <- ret_flags[(j-1)*40]
-sf1:
-        lodsb
-        mov [di], al
-        inc di
-        loop sf1
-        mov ax, [j]
-        dec ax
-        imul ax, ax, 40
-        add ax, ret_flags
-        mov di, ax
-        mov ax, [j]
-        imul ax, ax, 40
-        add ax, ret_flags
-        mov si, ax
-        mov cx, 40
-        ; ret_flags[(j-1)*40] <- ret_flags[j*40]
-sf2:
-        lodsb
-        mov [di], al
-        inc di
-        loop sf2
-        mov ax, [j]
-        imul ax, ax, 40
-        add ax, ret_flags
-        mov di, ax
-        mov si, flags_tmp
-        mov cx, 40
-        ; ret_flags[j*40] <- flags_tmp
-sf3:
-        lodsb
-        mov [di], al
-        inc di
-        loop sf3
-        pop di
-        pop si
-        pop cx
-        ret
-
-; rewrite C:\DYNSNAP\RETIRED.DAT from scratch (create/truncate). nteam, then
-; per team 13 B NUL padded name + 40 B flags, all +ti*40 read at once from
-; ret_flags. Create fails (no C:\DYNSNAP): skip silently.
+; C:\DYNSNAP\RETIRED.DAT from scratch: u8 nteam, then per team (sorted roll
+; order) 13 B name + 40 B flags
 write_retired:
         mov dx, ret_path
         mov cx, 0
@@ -457,23 +336,31 @@ write_retired:
         int 0x21
         jc      wr_done                 ; no C:\DYNSNAP: silent skip
         mov [h], ax
-        mov ax, 0x4200
-        mov bx, [h]
-        mov cx, 0
-        mov dx, 0
-        int 0x21
+        mov bx, ax
         mov ah, 0x40
         mov cx, 1
-        mov dx, nteam
+        mov dx, nteam                   ; low byte (nteam <= 32)
         int 0x21
-        mov ax, [nteam]
-        mov cx, ax
-        imul cx, cx, 53                 ; 13 B name + 40 B flags per team
-        jcxz wr_close
+        mov word [wi], 0
+wr_loop:
+        mov ax, [wi]
+        cmp ax, [nteam]
+        jae wr_close
+        imul dx, ax, NAME_LEN
+        add dx, names
         mov ah, 0x40
-        mov dx, names
-        int 0x21        ; names[0..nteam-1] and ret_flags[0..] are contiguous:
-                        ; write them as one run (13 B name + 40 B flags each)
+        mov bx, [h]
+        mov cx, NAME_LEN
+        int 0x21
+        mov ax, [wi]
+        imul dx, ax, 40
+        add dx, ret_flags
+        mov ah, 0x40
+        mov bx, [h]
+        mov cx, 40
+        int 0x21
+        inc word [wi]
+        jmp wr_loop
 wr_close:
         mov ah, 0x3e
         mov bx, [h]
@@ -481,16 +368,13 @@ wr_close:
 wr_done:
         ret
 
-; roll one team file (ASCIZ path in work_path, roll index [ti]). The team
-; image lives in its OWN segment (SEG_TEAM at TEAM_PHYS) so the blobs can
-; never write through DS/ES into this program's code or data; the rng word
-; lives in SEG_RNG. Both match the unicorn harness layouts (P1/P2).
+; roll one team file (ASCIZ path in work_path)
 roll_team:
         mov dx, work_path
         mov ax, 0x3d02                  ; open read+write
         int 0x21
         jnc rt_open
-        ret                             ; open failed: all-zero flags (they are)
+        ret
 rt_open:
         mov [h], ax
         mov bx, ax
@@ -499,26 +383,11 @@ rt_open:
         mov dx, team_buf
         int 0x21
         cmp ax, FILE_BYTES
-        jne rt_close                    ; short read: file untouched, flags zero
-        ; copy team_buf -> TEAM_PHYS (the blobs' segment)
+        jne rt_close
         mov ax, cs
-        mov ds, ax
-        mov si, team_buf
-        mov di, 0                       ; TEAM_PHYS is para aligned
-        mov cx, (FILE_BYTES + 15) / 16
-        mov ax, SEG_TEAM
-        mov es, ax
-        cld
-rt_copy:
-        movsw
-        movsw
-        movsw
-        movsw
-        movsw
-        movsw
-        movsw
-        movsw
-        loop rt_copy
+        add ax, BLOB_PARA
+        mov [farptr+2], ax
+        mov word [farptr], 0x10
         mov word [pi], 0
 pl_loop:
         mov ax, [pi]
@@ -527,48 +396,20 @@ pl_loop:
         imul ax, ax, REC
         add ax, HDR
         mov si, ax
-        add si, TEAM_PHYS & 0xF
+        add si, team_buf
         mov di, si
         add di, 40*REC
-        mov ax, SEG_TEAM
+        mov ax, cs
         mov ds, ax
         mov es, ax
-        ; fs:bx -> the rng word in SEG_RNG
-        mov ax, SEG_RNG
         mov fs, ax
-        mov bx, RNG_PHYS & 0xF
+        mov bx, rng_word
         mov cx, 3                       ; progress + retire
-        ; the blob's far address goes in the team segment's tail cell (the
-        ; image is 11735 B, the segment is 64k): 'call far' reads it through
-        ; DS = SEG_TEAM, the same segment DS:SI already points into
-        mov ax, 0x10                    ; the blob's entry offset at [off]
-        mov es:[FARPTR_OFF], ax
-        mov ax, cs
-        add ax, BLOB_PARA               ; the blob's paragraph at [seg]
-        mov es:[FARPTR_OFF + 2], ax
-        call far [FARPTR_OFF]
-pl_ret:
-        ; AX = 1 if retired else 0; every other register preserved by the
-        ; blob (DF may not be: clear it for the string ops below)
-        cld
-        ; read the rng word back into cs:rng_word
-        push ds
-        push es
-        mov ax, SEG_RNG
-        mov ds, ax
-        mov si, RNG_PHYS & 0xF
-        mov ax, cs
-        mov es, ax
-        mov di, rng_word
-        movsw
-        mov ax, cs
-        mov ds, ax
-        mov di, [ti]
+        call far [farptr]
+        mov di, [ti]                    ; DS = CS still (blob preserves it)
         imul di, di, 40
         add di, [pi]
         mov [ret_flags + di], al        ; 1 retired this roll, else 0
-        pop es
-        pop ds
         inc word [pi]
         jmp pl_loop
 pl_done:
@@ -585,9 +426,7 @@ year_scan:
         imul ax, ax, REC
         add ax, HDR
         mov si, ax
-        add si, TEAM_PHYS & 0xF
-        mov ax, SEG_TEAM
-        mov ds, ax
+        add si, team_buf
         cmp byte [si], 0
         je year_scan_next
         mov al, [si+OFF_YEAR]
@@ -597,59 +436,21 @@ year_scan_next:
         inc word [fi]
         jmp year_scan
 year_scan_done:
-        mov ax, cs
-        mov ds, ax
         cmp word [year_byte], 0xFFFF
         je  no_fill
-        mov ax, [year_byte]             ; the fill's season year
-        mov [year_input], ax            ; stashed: DS switches below
-        ; the fill addresses the team image as DS:SI (base = the image
-        ; segment) and writes the rookie records at ES:HDR+slot*REC inside
-        ; the same segment
-        mov ax, SEG_TEAM
-        mov ds, ax
-        mov es, ax
-        mov si, TEAM_PHYS & 0xF
-        mov ax, SEG_RNG
-        mov fs, ax
-        mov bx, RNG_PHYS & 0xF
-        mov ax, [year_input]
-        ; the fill's far address in the team segment's tail cell (same as
-        ; the roll's call far above)
-        mov ax, 0x10
-        mov es:[FARPTR_OFF], ax
         mov ax, cs
         add ax, ROOKIE_PARA
-        mov es:[FARPTR_OFF + 2], ax
-        call far [FARPTR_OFF]
-nofill_ret:
-        cld                             ; the blob may leave DF set
+        mov [farptr2+2], ax
+        mov word [farptr2], 0x10
         mov ax, cs
         mov ds, ax
         mov es, ax
+        mov fs, ax
+        mov si, team_buf
+        mov bx, rng_word
+        mov ax, [year_byte]
+        call far [farptr2]
 no_fill:
-        ; copy TEAM_PHYS -> team_buf, then write the image back
-        mov si, TEAM_PHYS & 0xF
-        mov ax, SEG_TEAM
-        mov ds, ax
-        mov di, team_buf
-        push es
-        mov ax, cs
-        mov es, ax
-        pop ax
-        mov cx, (FILE_BYTES + 15) / 16
-tb_copy:
-        movsw
-        movsw
-        movsw
-        movsw
-        movsw
-        movsw
-        movsw
-        movsw
-        loop tb_copy
-        mov ax, cs
-        mov ds, ax
         mov ax, 0x4200                  ; seek to start
         mov bx, [h]
         mov cx, 0
@@ -675,48 +476,28 @@ prefix     db 'TEAMS\CLASSIC\'
 prefix_len equ $ - prefix
 ret_path   db 'C:\DYNSNAP\RETIRED.DAT', 0
 day_byte   db 0
-hist_buf   db HIST_SIZE dup(0)
-; the 32 B seed block written at HISTORY offset 0 after the roll:
-; byte 0 = 1, 1..2 = rng after the roll, 8..9 = start, rest zero
-hist_seed  db 1
-           db 0, 0               ; 1..2 = rng_word
-           db 6 dup(0)           ; 3..7 zero
-hist_start db 0, 0               ; 8..9 = start_seed
-           db 22 dup(0)          ; 10..31 zero
+hist_buf   db 4 dup(0)
+hist_len   dw 0
+zeros      db HIST_SIZE dup(0)
 done_flag  db 0
 rng_word   dw 1
 start_seed dw 0
+wi         dw 0
 h          dw 0
 nteam      dw 0
 ti         dw 0
 pi         dw 0
 fi         dw 0
 year_byte  dw 0
-year_input dw 0
+farptr2    dw 0, 0
 i          dw 0
 j          dw 0
+farptr     dw 0, 0
 work_path  db 32 dup(0)
 dta        db 43 dup(0)
-names      db MAX_TEAMS*13 dup(0)
-; ret_flags must be contiguous with names for RETIRED.DAT (13+40 per team);
-; the sort temps live after ret_flags
+names      db MAX_TEAMS*NAME_LEN dup(0)
 ret_flags  db MAX_TEAMS*40 dup(0)
-swap_tmp   db 13 dup(0)
-flags_tmp  db 40 dup(0)
 team_buf   db FILE_BYTES dup(0)
-
-; team_buf's segment/offset split: the blobs work in their own segments
-; (SEG_TEAM holds the team image, SEG_RNG the rng word) so no blob write can
-; reach this program's code or data. The rng word in cs:rng_word is synced
-; to SEG_RNG:RNG_PHYS before each call and read back after. FARPTR_OFF = the
-; far-call cell in the team segment's unused tail (the image is 11735 B).
-TEAM_BUF_SEG equ (team_buf - $$) / 16
-TEAM_BUF_OFF equ (team_buf - $$) % 16
-SEG_TEAM     equ 0x2000
-TEAM_PHYS    equ 0x20000
-SEG_RNG      equ 0x3000
-RNG_PHYS     equ 0x30000
-FARPTR_OFF   equ 0xF000
 
 align 16
 BLOB_PARA equ ($ - $$) / 16

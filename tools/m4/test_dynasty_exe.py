@@ -123,6 +123,7 @@ def test_a_fresh_roll(tmp_path):
     teams = league_files(src)
     assert len(names) == len(teams)
     assert [n.upper() for n in names] == sorted(teams)
+    assert any(any(f) for f in flags), 'no retirees: flags check is vacuous'
     for fn, ret in r['retirees'].items():
         i = sorted(teams).index(fn)
         assert flags[i] == [1 if k in ret else 0 for k in range(40)], fn
@@ -268,20 +269,19 @@ def test_k_two_rolls(tmp_path):
     src = one_league()
     lg = make_root(tmp_path / 'root', src)
     assert run(str(tmp_path / 'root'), 0x1234) == 1
-    h = (lg / 'HISTORY.DAT').read_bytes()
+    h = bytearray((lg / 'HISTORY.DAT').read_bytes())
     first_end = (h[2] << 8) | h[1]
-    # patch byte 0 back to 0 and copy the a-output league in as input
-    h = bytearray(h)
+    # the first roll's output league is the second roll's input
+    snap = tmp_path / 'snap'
+    shutil.copytree(lg, snap)
     h[0] = 0
-    for f in sorted(x for x in os.listdir(lg) if x.endswith('.V20')):
-        os.remove(lg / f)
-    shutil.copytree(os.path.join(tmp_path / 'root', 'ref'), lg,
-                    dirs_exist_ok=True,
-                    ignore=lambda d, names: ['CLASSIC.MAJ'] if 'CLASSIC.MAJ' in names else [])
     (lg / 'HISTORY.DAT').write_bytes(bytes(h))
-    assert run(str(tmp_path / 'root'), 0x1234) == 1
+    assert run(str(tmp_path / 'root'), 0x9999) == 1
     after = (lg / 'HISTORY.DAT').read_bytes()
     assert ((after[9] << 8) | after[8]) == first_end
+    r = roll_league(str(snap), str(tmp_path / 'ref2'), first_end)
+    check_v20s(lg, str(tmp_path / 'ref2'))
+    assert after[1] | (after[2] << 8) == r['rng_end']
 
 
 if __name__ == '__main__':
