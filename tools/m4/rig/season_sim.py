@@ -94,6 +94,16 @@ class Driver:
         p = self.shot('timeout')
         raise SimError(f'waited {timeout}s for {want}, last screen {st}, shot {p}')
 
+    def repress(self, screen, desc, x, y, after=8.0):
+        """nudge for wait_for: press (x, y) again while the screen is still `screen`, at most every `after` s."""
+        last = [time.time()]
+
+        def nudge(st):
+            if st == screen and time.time() - last[0] >= after:
+                self.act(f'{desc} (again, still at {screen})', rig.press, x, y)
+                last[0] = time.time()
+        return nudge
+
     def act(self, desc, fn, *a):
         self.log(desc)
         fn(*a)
@@ -103,7 +113,8 @@ class Driver:
         self.act('SEASON > START NEW SEASON', rig.menu, 304, 209, 340, 320)
         self.wait_for('new_season', 30)
         self.act('NEW SEASON', rig.press, 430, 592)
-        self.wait_for('destroy_dialog', 20)
+        # a press can be lost (s109 gate, 2026-10-07: still on the setup screen 20 s later)
+        self.wait_for('destroy_dialog', 30, nudge=self.repress('new_season', 'NEW SEASON', 430, 592))
         self.act('destroy dialog YES', rig.press, 514, 456)
         self.wait_for('dh_dialog', 20)
         self.act('DH DONE', rig.press, 458, 468)
