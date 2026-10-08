@@ -1199,7 +1199,6 @@ static void render(State st)
     uint8_t up[64];
     int tx, r, ci;
     draw_panel();
-    g_state = st;
     /* screen_title then the centered bold title with its shadow */
     {
         char tbuf[64];
@@ -1235,9 +1234,6 @@ static void render(State st)
             const uint8_t *cell = (const uint8_t *)row->cells[ci];
             /* cells cut to the column width in bytes (Python cell[:w]) */
             int cl = (int)strlen((const char *)cell);
-            uint8_t cut[8];
-            int kw = cd->w < 7 ? cd->w : 7;
-            (void)kw;
             if (cl > cd->w)
                 cl = cd->w;
             {
@@ -1253,19 +1249,8 @@ static void render(State st)
                 else
                     draw_text(g_fb, g_main, cd->x, y0 + 2, shown, C_BLACK);
             }
-            (void)cut;
         }
         rect_fb(8, y0 + 10, 311, y0 + 10, C_GRID_GRAY);
-    }
-    {
-        static const char *foo[6] = {
-            "1-5 SELECT   ESC EXIT",
-            "PGUP PGDN   ESC MENU",
-            "PGUP PGDN   ESC MENU",
-            "LEFT RIGHT CATEGORY   ESC MENU",
-            "PGUP PGDN   ESC MENU",
-            "ENTER MENU   ESC MENU" };
-        (void)foo;
     }
     draw_text(g_fb, g_main, 10, 185, (const uint8_t *)footers[st.screen],
               C_WHITE);
