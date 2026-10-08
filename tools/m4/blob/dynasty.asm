@@ -404,7 +404,7 @@ pl_loop:
         mov es, ax
         mov fs, ax
         mov bx, rng_word
-        mov cx, 3                       ; progress + retire
+        mov cx, 7                       ; progress + retire + dev trait (C1b)
         call far [farptr]
         mov di, [ti]                    ; DS = CS still (blob preserves it)
         imul di, di, 40

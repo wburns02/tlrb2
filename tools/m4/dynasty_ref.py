@@ -22,7 +22,7 @@ if _TOOLS not in sys.path:
 from m4 import rollover, team_fill          # noqa: E402
 from m4.rookies import RookieGen            # noqa: E402
 
-CFG = {'progress': True, 'retire': True}    # the asm passes CX = 3 (progress + retire)
+CFG = {'progress': True, 'retire': True, 'dev': True}   # the asm passes CX = 7 (progress + retire + C1b dev)
 HDR, REC, OFF_YEAR = 295, 143, 21
 
 

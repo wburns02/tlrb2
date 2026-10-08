@@ -36,7 +36,7 @@ Rating order (for evidence, drift and RNG draw order):
 Draw order per player: the drift draws (6 or 3) then the retirement draw. The RNG stream continues across players
 and teams exactly as in P1 (sorted *.V20 order, records 0..39).
 
-## C1b. Development trait (DRAFT 2026-10-07; Will approved the idea, constants tuned in R2 before the asm change)
+## C1b. Development trait (2026-10-07; Will approved the idea; in DYNASTY since the asm port: rollover blob CX bit2, DYNASTY passes CX = 7)
 
 Record byte 142 (both halves) = dev grade 1..5 (1 bust, 2 slow, 3 normal, 4 good, 5 boom); 0 = not yet assigned
 (every stock record). FORMATS: bytes 141-142 are the UTIL import id, read only by the Utilities import path when a

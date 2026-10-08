@@ -202,6 +202,8 @@ def assert_parity(roster, season, r_in, s_in, rng_start, cfg, label):
     exp_season = bytearray(ref_season)
     for f in ('age', 'year_off', 'exp'):
         exp_season[F[f][0]] = ref_roster[F[f][0]]
+    if cfg.get('dev'):
+        exp_season[rollover.OFF_DEV] = ref_roster[rollover.OFF_DEV]
     if retire:
         ref_roster[0] = 0
         exp_season[0] = 0
@@ -215,7 +217,8 @@ def assert_parity(roster, season, r_in, s_in, rng_start, cfg, label):
 
 
 def cx_flags(cfg):
-    return (1 if cfg.get('progress', True) else 0) | (2 if cfg.get('retire', True) else 0)
+    return ((1 if cfg.get('progress', True) else 0) | (2 if cfg.get('retire', True) else 0)
+            | (4 if cfg.get('dev') else 0))
 
 
 def _set_kind(rec, off, kind, v):  # convenience wrapper unused; parity via F
@@ -370,6 +373,46 @@ def test_random_sweep_200_players():
             continue
         assert_parity(r, s, bytearray(r), bytearray(s), rng.s, {},
                       f'sweep player {i}')
+
+
+# -- C1b dev trait (CX bit2) ---------------------------------------------------
+
+@pytest.mark.parametrize('progress,retire', [(True, True), (True, False), (False, True)])
+def test_dev_sweep(progress, retire):
+    """300 players, grades 0..5 preassigned (0 = draw), ages 15..50, dev on."""
+    rng = rollover.Rng(0xD3F1)
+    cfg = {'progress': progress, 'retire': retire, 'dev': True}
+    graded = 0
+    for i in range(300):
+        r, s, _ = build_pair({}, batter=(i % 4) != 3)
+        r[F['age'][0]] = 15 + (rng.draw() % 36)
+        s[F['age'][0]] = r[F['age'][0]]
+        s[23] = rng.draw() % 200
+        g = rng.draw() % 9
+        r[rollover.OFF_DEV] = g if g <= 5 else 0
+        s[rollover.OFF_DEV] = rng.draw() % 6          # stale twin byte: overwritten
+        graded += r[rollover.OFF_DEV] != 0
+        assert_parity(r, s, bytearray(r), bytearray(s), rng.s or 1, cfg, f'dev player {i}')
+    assert graded > 50
+
+
+@pytest.mark.parametrize('grade', [1, 2, 3, 4, 5])
+@pytest.mark.parametrize('age', [20, 23, 25, 32, 35, 38, 41])
+def test_dev_grade_age_grid(grade, age):
+    for seed in (0x0101, 0x7E57, 0xBEEF, 0x1234, 0xFFFF):
+        for batter in (True, False):
+            r, s, _ = build_pair({'age': age}, batter=batter)
+            r[rollover.OFF_DEV] = grade
+            assert_parity(r, s, bytearray(r), bytearray(s), seed,
+                          {'dev': True}, f'grade {grade} age {age} seed {seed:#x}')
+
+
+def test_dev_off_leaves_byte_142():
+    r, s, _ = build_pair({'age': 21})
+    r[rollover.OFF_DEV], s[rollover.OFF_DEV] = 4, 2
+    assert_parity(r, s, bytearray(r), bytearray(s), 0x4242, {}, 'dev off')
+    _ax, r_got, s_got, _gw = run_blob(bytes(r), bytes(s), 0x4242, cx_flags({}))
+    assert r_got[rollover.OFF_DEV] == 4 and s_got[rollover.OFF_DEV] == 2
 
 
 if __name__ == '__main__':
