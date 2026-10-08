@@ -51,6 +51,11 @@ to it), (3) a DCL encoder (we only have explode; a literal-only encoder is small
 accept it). Pipeline: photo from behind home plate -> img2img retro pass at 1120 x 444 -> quantize to the game
 palette -> DCL encode -> CFG cloned from a similar stock park with the real distances. First proof: re-encode a
 stock SDM losslessly and play a game in it, then swap in one AI panorama. Photos stay out of the public repo.
+Step 1 DONE 2026-10-08: DCL encoder (tools/dcl.py implode, all 41 stock SDMs round-trip at 1.02..1.05x size) and
+tools/stadium.py (unpack, pack, marker, iso). A re-encoded GRASS.SDM with a test block plays in game from a rebuilt
+CD image (stadiums load only from the CD drive). Next: the real stadium palette (not in the CFG; grab it from the
+VGA DAC during the fielding view) and the CFG polylines (fence and wall geometry in panorama coordinates), then a
+first photo-to-panorama park.
 
 ## From ClaudeBall (~/ClaudeBall, surveyed 2026-10-07)
 Taken: batting-order slot roles (src/engine/ai/LineupBuilder.ts) into C6 step 7. Earlier: trade value bands and

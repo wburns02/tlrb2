@@ -314,6 +314,11 @@ u16 frame count, then per frame 12 B header (flags word with transparent colour 
 BB loader 2000:1b40 (called from 6000:15a0): stadium stem is 8 chars at GAME.TMP+0x1cfc; opens stadiums\<stem>.cfg, fread 0x509 B x 1 into a fixed DS buffer (BB DS:4b73), then the .sdm.
 - CFG: 0x00..0x1e stadium name (NUL padded), 0x1f type byte (0, 1 or 2), 0x20 u16[5] fence distances in feet LF, LCF, CF, RCF, RF (FENWAY 315, 379, 389, 383, 302; ASTRODOME 330, 380, 400, 380, 330), 0x2a.. small header and byte triples up to 0x32f, 0x330.. u16 pairs (x, y) polylines, a zero gap 0x390..0x46f, u16 tables at 0x470..0x500, and at 0x501 two (u16, u16) points indexed by buf[0x1cf3]*4 (BB reads them as screen positions); 0x508 = 0xff. Only the name, the type byte and the five distances are confirmed to differ per stadium; the rest is structure by inspection, semantics unproven.
 - SDM: the whole file is one DCL stream. Explodes to 497280 B (1120 x 444, row stride 0x460 as used by the EMS writer BB 2000:dfba) or 501779 B (bigger stadiums). It is the pre-rendered 8-bit stadium panorama (FENWAY.SDM shows the park from behind home plate). Its palette is not in the CFG (a CFG offset 0x2e palette test failed) and is loaded elsewhere at runtime; colours in assets are not verified.
+- Path: both files open as `<CD>:\stadiums\<stem>.*` through auto_prepend_drive_to_path (BB 6000:c620, drive = SYSTEM
+  byte 0x4b), so stadiums always come from the CD drive, never C:. Modded parks ship as a rebuilt CD image
+  (tools/stadium.py iso, xorriso). Proved 2026-10-08: tools/dcl.py implode re-encoded GRASS.SDM with a 120 x 50 block
+  of index 0 at (500, 190); CAL @ BAL exhibition on the rig shows the block above the infield in the fielding view and
+  the rest of the park unchanged, so the game's explode accepts our streams. The at-bat view is not the panorama.
 
 ### Saved seasons
 There is no season save file. LOAD SAVED GAME is the in-game mid-game save (1.SAV..10.SAV, see GAME.TMP above). MAIN has "SAVE SEASON": it saves the simulated stats as a NEW LEAGUE (requires the regular season over and at least 81 games, and enough disk: 0xe97b (MAJ size 59771) + 0x2dd7 (V20 size 11735) per team, MAIN 6000:021b) i.e. a new TEAMS/<set> directory of V20s and a MAJ in the existing formats. Static only, the menu path was not run.
