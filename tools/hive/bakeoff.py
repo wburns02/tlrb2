@@ -53,7 +53,7 @@ _lc = None
 def b_local(user):
     global _lc
     if _lc is None:
-        l = importlib.machinery.SourceFileLoader('local_code', '/home/will/bin/local-code')
+        l = importlib.machinery.SourceFileLoader('local_code', os.path.expanduser('~/bin/local-code'))
         s = importlib.util.spec_from_loader('local_code', l); _lc = importlib.util.module_from_spec(s); l.exec_module(_lc)
     hit = _lc.owner_activity_recent(180)
     if hit:

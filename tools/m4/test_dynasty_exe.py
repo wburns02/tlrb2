@@ -284,6 +284,37 @@ def test_k_two_rolls(tmp_path):
     assert after[1] | (after[2] << 8) == r['rng_end']
 
 
+
+# --- m: ANMS face table staged in TONY2\\ANMS (PORTRAIT count 45, FACEGRP 50 B) ----
+def test_m_anms_face_table(tmp_path):
+    """DYNASTY.EXE reads ANMS\\PORTRAIT.ANM (count only) and ANMS\\FACEGRP.DAT, and its
+    rookies equal dynasty_ref.roll_league(anms_dir=...) byte for byte."""
+    from m4.rookies import load_faces
+    src = one_league()
+    lg = make_root(tmp_path / 'root', src)
+    anms = tmp_path / 'root' / 'TONY2' / 'ANMS'
+    anms.mkdir()
+    (anms / 'PORTRAIT.ANM').write_bytes(bytes([45, 0]))
+    grp = bytes((i * 5 + (i >> 2)) & 0xFF for i in range(50))   # bytes > 1 included
+    (anms / 'FACEGRP.DAT').write_bytes(grp)
+    n, table = load_faces(str(anms))
+    assert n == 45 and table == bytes(b & 1 for b in grp[:45])
+    r = roll_league(src, str(tmp_path / 'ref'), 0x1234, anms_dir=str(anms))
+    assert run(str(tmp_path / 'root'), 0x1234) == 1
+    check_v20s(lg, str(tmp_path / 'ref'))
+    hi = 0
+    for f in league_files(src):
+        d = (lg / f).read_bytes()
+        for i in r['filled'][f]:                  # rookies only, not stock players
+            base = 295 + 143 * i
+            face = d[base + 27] | (d[base + 28] << 8)
+            assert face < n
+            assert (d[base + 29] & 1) == table[face], (f, i)
+            if face >= 30:
+                hi += 1
+    assert hi > 0, 'no rookie drew a face >= 30: check is vacuous'
+
+
 if __name__ == '__main__':
     sys.exit(pytest.main([__file__, '-v']))
 

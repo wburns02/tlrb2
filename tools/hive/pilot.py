@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """GLM-Flash function-naming pilot. usage: pilot.py build | run | score
 build: items.jsonl (50 functions: A 18 DOS wrappers, B 18 RTL/known, C 14 game, no truth); run: Hive calls -> proposals.jsonl; score: report."""
-import json, sys, random, re, importlib.machinery, importlib.util, time
+import json, os, sys, random, re, importlib.machinery, importlib.util, time
 from concurrent.futures import ThreadPoolExecutor
 from fninfo import Program
 
@@ -105,7 +105,7 @@ def fn_block(it):
             f"callees: {callees}\n\nDisassembly:\n{P.disasm_text(f)}\n\nDecompiled:\n{c}\n")
 
 def load_hive():
-    l = importlib.machinery.SourceFileLoader('cloud_code', '/home/will/bin/cloud-code')
+    l = importlib.machinery.SourceFileLoader('cloud_code', os.path.expanduser('~/bin/cloud-code'))
     s = importlib.util.spec_from_loader('cloud_code', l); m = importlib.util.module_from_spec(s); l.exec_module(m)
     return m
 

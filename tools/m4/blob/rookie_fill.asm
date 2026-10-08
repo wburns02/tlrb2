@@ -41,8 +41,15 @@ OFF_HAND        equ 29
 OFF_EXPCONS     equ 30
 OFF_POS         equ 31
 
-; offset 0 is a bare retf stub (entry is 0x10 by design; see below).
+; Fixed header (patched by DYNASTY.EXE at startup and by the unicorn harness):
+;   offset 0  retf (bare stub; entry is 0x10 by design; see below)
+;   offset 2  face_n: dw 30, portrait faces (30..981)
+;   offset 4  face_grp: dw offset of the 981-byte group table inside this blob
+;             (bytes 0..29 = STOCK, the rest 0; each byte bit0 = group flag)
 start:  retf
+        db 0                            ; offset 1 pad
+face_n:         dw 30                   ; offset 2
+                dw face_grp             ; offset 4
 
 ; ---------------------------------------------------------------------------
 ; entry (must sit at offset 0x10; the shell and the unicorn harness both
@@ -403,23 +410,19 @@ bats_set:
         shl ax, 1
         or ax, [cs:hand_base]
         mov [cs:hand_nib], ax           ; bit0 set later by portrait
-        ; d5: portrait
-        mov cx, 30
+        ; d5: portrait, face = draw % face_n (header word 2)
+        mov cx, [cs:face_n]
         call randmod
         mov dx, ax                      ; face
-        mov [cs:scratch+OFF_PORTRAIT], al
-        mov byte [cs:scratch+OFF_PORTRAIT+1], 0
-        cmp dx, 15
-        jb face_lo
-        mov ax, [cs:hand_nib]
-        or ax, 1
-        mov [cs:hand_nib], ax
-        jmp face_done
-face_lo:
+        mov [cs:scratch+OFF_PORTRAIT], dx  ; u16: faces run to 980
+        ; group flag bit0 = face_grp[face] & 1 (table from the blob header)
+        mov bx, dx
+        mov cl, [cs:face_grp + bx]
+        and cl, 1
         mov ax, [cs:hand_nib]
         and ax, 0xFFFE
+        or al, cl
         mov [cs:hand_nib], ax
-face_done:
         mov al, [cs:hand_nib]
         mov [cs:scratch+OFF_HAND], al
         ; d6+d7: exper / consist
@@ -646,3 +649,12 @@ rng_ptr_off:    dw 0
 img_base:       dw 0
 
 scratch:        db REC dup(0)
+
+; group flag table (face_grp, header word 4): 981 bytes, first 30 = STOCK
+; (flag 1 at faces 3,4,16,18,20,21,22,25,27), the rest 0. DYNASTY.EXE may
+; overwrite the first face_n bytes at startup from ANMS\FACEGRP.DAT.
+face_grp:
+        db 0,0,0,1,1,0,0,0,0,0
+        db 0,0,0,0,0,0,1,0,1,0
+        db 1,1,1,0,0,1,0,1,0,0
+        times 981-30 db 0
