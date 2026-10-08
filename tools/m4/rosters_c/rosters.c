@@ -2375,7 +2375,7 @@ static int write_file(const char *path, const uint8_t *b, size_t n)
 
 static int do_run(void)
 {
-    int rc = 2, k, p, s;
+    int rc = 2, k, n, p, s;
     uint8_t hist0[HIST_HDR_SIZE];
     int32_t histlen;
 
@@ -2492,12 +2492,12 @@ static int do_run(void)
         /* C9: the star files AFTER the HISTORY TMP (missing, or one whose
          * size is not V20_SIZE, is skipped: never created, never written) */
         k = 0;                         /* 1 = a star TMP failed to register */
+        n = scan_dir(g_lgdir, ".V20", g_scan);
         for (s = 0; s < 2 && !k; s++) {
             char path[640];
-            int i, n;
+            int i;
             g_star_tmp[s] = -1;
             g_star_img[s] = NULL;
-            n = scan_dir(g_lgdir, ".V20", g_scan);
             for (i = 0; i < n; i++) {
                     static const char *NAMES[2] = { "ALLSTAR1.V20",
                                                     "ALLSTAR2.V20" };
@@ -2578,10 +2578,6 @@ static int do_run(void)
                     if (!write_file(g_tmps[hi], out, sizeof out))
                         wfail = 1;
                 }
-                for (s = 0; s < 2 && !wfail; s++)
-                    if (g_star_tmp[s] >= 0 && g_star_img[s])
-                        wfail = !write_file(g_tmps[g_star_tmp[s]],
-                                            g_star_img[s], V20_SIZE);
                 if (!wfail && histlen > HIST_HDR_SIZE) {
                     /* append the rest of the original history through */
                     FILE *g = fopen(g_tmps[hi], "ab");
@@ -2615,6 +2611,11 @@ static int do_run(void)
                     }
                 }
             }
+            /* C9: the star files after the HISTORY TMP is complete */
+            for (s = 0; s < 2 && !wfail; s++)
+                if (g_star_tmp[s] >= 0 && g_star_img[s])
+                    wfail = !write_file(g_tmps[g_star_tmp[s]],
+                                        g_star_img[s], V20_SIZE);
             if (wfail)
                 break;
         }
