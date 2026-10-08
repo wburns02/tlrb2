@@ -57,6 +57,46 @@ class TestBatPatch:
             assert bat_patch.patch(str(install), revert=True)
             assert bat.read_bytes().decode('cp437') == stock
 
+    def test_patch_upgrades_old_form(self):
+        """The previous patched form (no histwr line) upgrades in place."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            install = Path(tmpdir) / 'TONY2'
+            install.mkdir()
+            bat = install / 'TONY2.BAT'
+            old = ('REM START MAIN LOOP\r\n' + bat_patch.PATCHED_START_OLD)
+            bat.write_bytes(old.encode('cp437'))
+            assert bat_patch.patch(str(install), revert=False)
+            content = bat.read_bytes().decode('cp437')
+            assert content == 'REM START MAIN LOOP\r\n' + bat_patch.PATCHED_START
+            assert 'histwr' in content
+            # idempotent after the upgrade
+            assert bat_patch.patch(str(install), revert=False)
+            assert bat.read_bytes().decode('cp437') == content
+
+    def test_revert_from_old_form(self):
+        """Reverting from the previous patched form restores stock."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            install = Path(tmpdir) / 'TONY2'
+            install.mkdir()
+            bat = install / 'TONY2.BAT'
+            stock = 'REM START MAIN LOOP\r\n:start\r\ncontrol\r\n'
+            bat.write_bytes(('REM START MAIN LOOP\r\n'
+                             + bat_patch.PATCHED_START_OLD).encode('cp437'))
+            assert bat_patch.patch(str(install), revert=True)
+            assert bat.read_bytes().decode('cp437') == stock
+
+    def test_revert_from_new_form(self):
+        """Reverting from the current patched form restores stock."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            install = Path(tmpdir) / 'TONY2'
+            install.mkdir()
+            bat = install / 'TONY2.BAT'
+            stock = 'REM START MAIN LOOP\r\n:start\r\ncontrol\r\n'
+            bat.write_bytes(('REM START MAIN LOOP\r\n'
+                             + bat_patch.PATCHED_START).encode('cp437'))
+            assert bat_patch.patch(str(install), revert=True)
+            assert bat.read_bytes().decode('cp437') == stock
+
     def test_patch_refuses_live_path(self):
         """Should refuse /mnt/nvme/tlrb2/c."""
         with tempfile.TemporaryDirectory() as tmpdir:
