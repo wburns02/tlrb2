@@ -628,6 +628,8 @@ static int read_season(SeasonEntry *se, int season_no)
 }
 
 /* stream MILESTON.DAT (8 B records; a short tail is dropped like Python) */
+#define MS_MAX 7000L
+
 static int load_ms(const char *league_dir)
 {
     char path[600];
@@ -652,7 +654,11 @@ static int load_ms(const char *league_dir)
             break;
         if (g_nms >= cap) {
             MsRec *nm;
-            cap *= 2;
+            /* 16-bit size_t: stop below one 64 KB block (MS_MAX records,
+             * hundreds of seasons); the rest of the file is not shown */
+            if (cap >= MS_MAX)
+                break;
+            cap = cap * 2 > MS_MAX ? MS_MAX : cap * 2;
             nm = (MsRec *)realloc(g_ms, (size_t)cap * sizeof(MsRec));
             if (!nm) {
                 fclose(f);
@@ -1673,13 +1679,16 @@ int main(int argc, char **argv)
         fb_to_vram();
         while (!quit) {
             unsigned k = read_key();
+            State prev = st;
             st = step(st, (int32_t)k);
-            /* render only after a key changed the state */
-            render(st);
-            fb_to_vram();
             if (g_exit) {
                 exit_vga_text();
                 quit = 1;
+            } else if (st.screen != prev.screen || st.page != prev.page
+                       || st.cat != prev.cat) {
+                /* render only after a key changed the state */
+                render(st);
+                fb_to_vram();
             }
         }
         return 0;
