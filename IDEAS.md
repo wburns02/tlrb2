@@ -22,6 +22,13 @@ indices used (0, 7, 8, 48..64, 183..254). BB reads index i < 981 at i*0xa8c+0xe 
 appending frames may open slots 30..980 without a code patch (untested: count word, team colour remap). Plan:
 image model renders head-and-shoulders, Python crops/downscales to 48x56 and quantizes to the used indices, pilot
 10 faces on the rig before a full set. Fictional faces only. Replay ANMs stay blocked on the payload decode.
+Pilot DONE 2026-10-08 (tools/faces.py, art and shots in /mnt/nvme/tlrb2/faces/pilot): juggernautXL on the local
+ComfyUI, 10 fictional faces appended as ids 30..39 (count word 30 -> 40), every player of the work install pointed
+at them, exhibition CAL @ BAL played on the rig: new faces render in the at-bat panels with team-coloured caps and
+collars (BAL black/orange, CAL navy). Gotcha found on the way: the remap swaps all of 48..63 (56..63 = secondary
+team ramp, browns in DEFAULT.PAL), so 56..63 must stay out of skin and beards. Open for a full set: the UTIL face
+picker (DS:776e group table) only knows faces 0..29, so new faces reach players only through our own tools
+(C4 rookies or a league builder); one pilot face (05) came out with a gray cap that does not take the team colour.
 
 ## Modern stadiums (Will, 2026-10-07)
 Real-life photos of modern parks, run through the GPU for the retro look, as new playable stadiums.
