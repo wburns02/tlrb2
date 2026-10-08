@@ -1264,6 +1264,100 @@ static void depth_rebuild(Team *t, const int32_t *form)
     }
 }
 
+/* ---------------- C9 All-Star refresh ---------------- */
+
+/* candidates: (team index, slot) pairs in file order then slot order; the
+ * records are re-read at compare time (the team images do not change during
+ * the refresh), so this stays under the DOS 64 KB object limit */
+static uint8_t g_star_cand[2560][2];
+static uint8_t g_star_used[2560];
+static int g_nstar_cand;
+static uint8_t *g_star_img[2];     /* the loaded ALLSTAR1 / ALLSTAR2 images */
+static int32_t g_star_tmp[2];      /* g_tmps index of each, -1 = skipped */
+
+/* one best() over the star candidates. ok: 0 = any pitcher, 1 = batter with
+ * pos1 == q, 2 = batter that can play q, 3 = any batter. key: 0 = Score,
+ * 1 = Off + Fld(q). Max key, ties keep the earliest candidate. -1 = none. */
+static int star_best(int ok, int q, int key)
+{
+    int k, pick = -1;
+    int32_t pv = 0;
+    for (k = 0; k < g_nstar_cand; k++) {
+        const uint8_t *r;
+        int32_t v;
+        if (g_star_used[k])
+            continue;
+        r = RIMG(g_tp[g_star_cand[k][0]]->img, g_star_cand[k][1]);
+        if (ok == 0) {
+            if (!is_pitcher(r))
+                continue;
+        } else {
+            if (is_pitcher(r))
+                continue;
+            if (ok == 1 && pos1f(r) != q)
+                continue;
+            if (ok == 2 && !can_play(r, q))
+                continue;
+        }
+        v = key ? offv(r) + fld_of(r, q) : (int32_t)score(r);
+        if (pick < 0 || v > pv) { pick = k; pv = v; }
+    }
+    return pick;
+}
+
+/* rebuild one ALLSTAR image in place from the teams whose league-global id
+ * is in lg_base..lg_base + 15 (rosters.py allstar_refresh) */
+static void allstar_refresh(uint8_t *star, int32_t lg_base)
+{
+    int t, s, i;
+    g_nstar_cand = 0;
+    for (t = 0; t < g_nt; t++) {
+        if (g_tp[t]->lg < lg_base || g_tp[t]->lg >= lg_base + 16)
+            continue;
+        for (s = 0; s < 40; s++) {
+            if (!IS_ON(g_tp[t]->img, s))
+                continue;
+            g_star_cand[g_nstar_cand][0] = (uint8_t)t;
+            g_star_cand[g_nstar_cand][1] = (uint8_t)s;
+            g_nstar_cand++;
+        }
+    }
+    memset(g_star_used, 0, sizeof g_star_used);
+    for (i = 0; i < 40; i++) {
+        uint8_t *o = RIMG(star, i);
+        int k;
+        if (o[0] == 0)
+            continue;
+        if (i < 16) {
+            k = star_best(0, 0, 0);
+        } else {
+            int q = pos1f(o);
+            k = star_best(1, q, 0);
+            if (k < 0)
+                k = star_best(2, q, 1);
+            if (k < 0)
+                k = star_best(3, q, 0);
+        }
+        if (k < 0) {
+            vacate(star, i);
+            continue;
+        }
+        g_star_used[k] = 1;
+        {
+            uint8_t *img = g_tp[g_star_cand[k][0]]->img;
+            s = g_star_cand[k][1];
+            memcpy(o, RIMG(img, s), V20_REC);
+            memcpy(RIMG(star, i + 40), RIMG(img, s + 40), V20_REC);
+        }
+    }
+    {
+        static Team st;                /* depth_rebuild reads img and part only */
+        memset(&st, 0, sizeof st);
+        st.img = star;
+        depth_rebuild(&st, NULL);
+    }
+}
+
 /* ---------------- managed repair ---------------- */
 
 static uint8_t rp_newres[15];
@@ -2253,6 +2347,10 @@ static void free_all(void)
     g_tmv = NULL;
     g_ntm = 0;
     g_tcap = 0;
+    for (i = 0; i < 2; i++) {
+        free(g_star_img[i]);
+        g_star_img[i] = NULL;
+    }
     for (i = 0; i < 70; i++) {
         free(g_tmps[i]);
         g_tmps[i] = NULL;
@@ -2275,9 +2373,11 @@ static int write_file(const char *path, const uint8_t *b, size_t n)
 
 static int do_run(void)
 {
-    int rc = 2, k, p;
+    int rc = 2, k, p, s;
     uint8_t hist0[HIST_HDR_SIZE];
     int32_t histlen;
+
+    for (s = 0; s < 2; s++) { g_star_img[s] = NULL; g_star_tmp[s] = -1; }
 
     do {
         /* read the raw HISTORY bytes first (length kept on output) */
@@ -2387,8 +2487,58 @@ static int do_run(void)
             if (reg_tmp2(pathhh, g_histpath) != 0)
                 break;
         }
+        /* C9: the star files AFTER the HISTORY TMP (missing, or one whose
+         * size is not V20_SIZE, is skipped: never created, never written) */
+        k = 0;                         /* 1 = a star TMP failed to register */
+        for (s = 0; s < 2 && !k; s++) {
+            char path[640];
+            int i, n;
+            g_star_tmp[s] = -1;
+            g_star_img[s] = NULL;
+            n = scan_dir(g_lgdir, ".V20", g_scan);
+            for (i = 0; i < n; i++) {
+                    static const char *NAMES[2] = { "ALLSTAR1.V20",
+                                                    "ALLSTAR2.V20" };
+                    long sz;
+                    FILE *f;
+                    if (strcmp(g_scan[i], NAMES[s]) != 0)
+                        continue;
+                    if (!path_join(path, sizeof path, g_lgdir, g_scan[i]))
+                        break;
+                    f = fopen(path, "rb");
+                    if (!f)
+                        break;
+                    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); break; }
+                    sz = ftell(f);
+                    if (sz != V20_SIZE) { fclose(f); break; }
+                    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); break; }
+                    g_star_img[s] = (uint8_t *)malloc(V20_SIZE);
+                    if (!g_star_img[s]) { fclose(f); break; }
+                    if (fread(g_star_img[s], 1, V20_SIZE, f) != V20_SIZE) {
+                        free(g_star_img[s]);
+                        g_star_img[s] = NULL;
+                        fclose(f);
+                        break;
+                    }
+                    fclose(f);
+                    if (reg_tmp(path) != 0) {
+                        k = 1;
+                        break;
+                    }
+                    g_star_tmp[s] = g_ntmps - 1;
+                    break;
+                }
+        }
+        if (k)
+            break;
         if (offseason() != 0)
             break;
+        /* C9: the refresh runs after the offseason, before the TMP writes */
+        for (s = 0; s < 2; s++) {
+            static const int32_t LG_BASE[2] = { 0, 16 };
+            if (g_star_img[s])
+                allstar_refresh(g_star_img[s], LG_BASE[s]);
+        }
         /* the TMP writes: team images, pools, HISTORY */
         {
             int wfail = 0;
@@ -2426,6 +2576,10 @@ static int do_run(void)
                     if (!write_file(g_tmps[hi], out, sizeof out))
                         wfail = 1;
                 }
+                for (s = 0; s < 2 && !wfail; s++)
+                    if (g_star_tmp[s] >= 0 && g_star_img[s])
+                        wfail = !write_file(g_tmps[g_star_tmp[s]],
+                                            g_star_img[s], V20_SIZE);
                 if (!wfail && histlen > HIST_HDR_SIZE) {
                     /* append the rest of the original history through */
                     FILE *g = fopen(g_tmps[hi], "ab");
