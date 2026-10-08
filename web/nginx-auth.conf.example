@@ -1,0 +1,21 @@
+# Auth-first reverse proxy for a public hostname (for example through a Cloudflare tunnel).
+# nginx checks basic auth, then sets the identity header server.py checks, overwriting any value the
+# client sent, so an unauthenticated request never reaches the server and the header cannot be forged.
+# ALLOWED_LOGIN must equal TLRB2_ALLOW_LOGIN in the server's environment.
+server {
+    listen 127.0.0.1:8122;
+    server_name _;
+    auth_basic "TLRB2";
+    auth_basic_user_file /etc/nginx/.htpasswd-tlrb2;
+    client_max_body_size 64m;
+    location / {
+        proxy_pass http://127.0.0.1:8121;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header Tailscale-User-Login ALLOWED_LOGIN;
+        proxy_set_header Authorization "";
+        proxy_buffering off;
+        proxy_read_timeout 60s;
+    }
+}

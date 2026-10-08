@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Static site + save store for the TLRB2 browser build. Binds localhost only; put `tailscale serve` in front
-for HTTPS on the tailnet (js-dos needs a secure context). Never expose it publicly: the site holds the game.
+for HTTPS on the tailnet (js-dos needs a secure context), or a reverse proxy that authenticates first (see
+web/nginx-auth.conf.example). Never expose it without auth: the site holds the game.
 
 usage: server.py SITE_DIR SAVES_DIR [PORT]
 env:   TLRB2_ALLOW_LOGIN  only requests whose Tailscale-User-Login header equals it are served
