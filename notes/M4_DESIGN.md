@@ -126,6 +126,12 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
   nibbles 1..15) and tools/m4/team_fill.py (post-rollover fill: priority ladder P>=8, C>=2, IF>=1 each, OF>=4,
   rest DH; refuses half-vacant slots; zeroing limited to PROVEN season-stat offsets, bytes 59..70 are live
   per-half nibbles and are NOT zeroed).
+- P4 All-Star continuity DONE (C9, merged d71ca99): after the offseason ROSTERS rebuilds ALLSTAR1 (AL, league ids
+  0..15) and ALLSTAR2 (NL, 16..31) from the current rosters: pitchers by score into slots 0..15, batters by the
+  template's position, then depth_rebuild. The game never rewrites these files itself, so without C9 the All-Star
+  game kept the original classic stars forever.
+- ROSTERS.EXE is a 32-bit DOS/32A program (2026-10-07): the 16-bit build ran out of conventional memory on the first
+  mature real-game roll (570 free-agent market moves) and exited 2 with every file untouched.
 
 ## Phasing (each phase gated by rig verification before the next)
 
