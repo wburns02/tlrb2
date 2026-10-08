@@ -162,6 +162,12 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
    counting as a retirement for the Hall of Fame. Not built; needs your call. (Seasons 1 to 3 of the test dynasty
    looked like heavy turnover only because they rolled at seed 0, a degenerate rng that retired 192 a season;
    the T4a seed rule removes that.)
+6. All-Star picks (C9, found 2026-10-07 on the built 1985 league): selection is by rating score alone, and the game
+   rates from season stats, so small samples make stars. The refreshed 1985 AL squad has Eddie Murray, Mattingly,
+   Brett, Boggs, Ripken, Henderson, Saberhagen and Stieb, but also Karl Best, Dennis Burtt, Rob Woodward and a
+   31 AB Mike Greenwell. Recommendation: count only players who played at least half the team's games (pitchers:
+   a share of team innings) last season, falling back to the current rule when a slot has no qualifier. Low stakes
+   (one exhibition game a season), so not built; a contract change to C9 plus the C port when you say so.
 
 ## Answers (Will, 2026-10-07)
 
