@@ -63,6 +63,10 @@ SDXL inpainting, 24 free palette slots by k-means. It shows in Assign Stadiums a
 IP-Adapter reference for the masked region, photos kept out of the repo), (2) parks with other dimensions: real
 fence distances are one CFG edit, but a differently shaped field needs a new field render plus new edge tables,
 (3) more variety: a night prompt, a classic-park prompt, a dome base (TURF).
+Step 3 2026-10-08: the CFG is fully mapped (notes/FORMATS.md). Correction: the 0x20 fence distances are display only;
+play uses the edge tables, which are the real park in feet through BB's field to panorama map (GRASS inverts to
+326/372/402). Fence height per column is at 0x475 (FENWAY's wall 34 ft). tools/stadium.py fences / refence read and
+write it, so a new shape is: new fence rows plus a panorama redrawn to match.
 
 ## From ClaudeBall (~/ClaudeBall, surveyed 2026-10-07)
 Taken: batting-order slot roles (src/engine/ai/LineupBuilder.ts) into C6 step 7. Earlier: trade value bands and
