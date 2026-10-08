@@ -11,6 +11,8 @@ usage: dynasty_gate.py --seasons N [--first K] [--fresh] [--full-rosters]
   --fresh          rebuild the dedicated install from work/c (never touches work/c itself), patch the BAT,
                    install the repo DYNASTY.EXE and HISTWR.EXE, remove HISTORY.DAT and MILESTON.DAT
   --full-rosters   require 40 named roster records per team after the roll (DYNASTY builds with the rookie fill)
+  --league DIR     with --fresh: copy a built league (e.g. /mnt/nvme/tlrb2/hist/1985) over TEAMS/CLASSIC; every
+                   file in DIR must already exist there under the same name
 Exit 0 only if every roll passes. Summary: logs/t6/gate_summary.json.
 """
 import argparse
@@ -44,7 +46,20 @@ RATINGS = [n for n, _ in rollover.BATTER_RATINGS + rollover.PITCHER_RATINGS]
 PITCH_RATINGS = ('control', 'velocity', 'endurance')
 
 
-def setup_fresh(install):
+def install_league(lg, src):
+    """Copy every file of the built league src over the same-named files of the league dir lg.
+    Refuses (SystemExit) an empty src or a file name lg does not already have."""
+    names = sorted(n for n in os.listdir(src) if os.path.isfile(os.path.join(src, n)))
+    have = set(os.listdir(lg))
+    missing = [n for n in names if n not in have]
+    if not names or missing:
+        sys.exit(f'--league {src}: not a league dir for {lg} (unknown files {missing[:5]})')
+    for n in names:
+        shutil.copy2(os.path.join(src, n), os.path.join(lg, n))
+    return names
+
+
+def setup_fresh(install, league_src=None):
     if os.path.realpath(install) != os.path.realpath(INSTALL):
         sys.exit(f'--fresh only rebuilds the dedicated install {INSTALL}')
     if os.path.exists(install):
@@ -67,6 +82,8 @@ def setup_fresh(install):
         p = os.path.join(lg, name)
         if os.path.exists(p):
             os.remove(p)
+    if league_src:
+        install_league(lg, league_src)
 
 
 def launch(install):
@@ -218,11 +235,14 @@ def main(argv):
     ap.add_argument('--full-rosters', action='store_true')
     ap.add_argument('--install', default=INSTALL)
     ap.add_argument("--no-fill", action="store_true", help="installed DYNASTY.EXE predates the C4 fill")
+    ap.add_argument('--league', default=None)
     ap.add_argument("--no-history", action="store_true",
                     help="skip the history_check (install has no HISTWR.EXE)")
     a = ap.parse_args(argv)
+    if a.league and not a.fresh:
+        sys.exit('--league needs --fresh')
     if a.fresh:
-        setup_fresh(a.install)
+        setup_fresh(a.install, a.league)
     if a.fresh or rig.window() is None:
         launch(a.install)
     first = a.first

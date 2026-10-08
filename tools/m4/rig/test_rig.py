@@ -307,3 +307,42 @@ def test_roster_checks_pitching_zero_only_for_non_pitchers(tmp_path):
     errs, _ = dynasty_gate.roster_checks(pre, post, False)
     rating = [e for e in errs if 'rating' in e]
     assert rating == [f'{fn} rec {pit}: rating out of 1..15: [\'control\', \'velocity\', \'endurance\']'], rating
+
+
+class TestInstallLeague:
+    def _dirs(self, tmp_path):
+        lg, src = tmp_path / 'CLASSIC', tmp_path / '1985'
+        lg.mkdir()
+        src.mkdir()
+        for n in ('CLASSIC.MAJ', 'CLASALE1.V20', 'HISTORY.DAT'):
+            (lg / n).write_bytes(b'old')
+        for n in ('CLASSIC.MAJ', 'CLASALE1.V20'):
+            (src / n).write_bytes(b'new ' + n.encode())
+        return lg, src
+
+    def test_copies_same_named_files_only(self, tmp_path):
+        lg, src = self._dirs(tmp_path)
+        assert dynasty_gate.install_league(str(lg), str(src)) == ['CLASALE1.V20', 'CLASSIC.MAJ']
+        assert (lg / 'CLASSIC.MAJ').read_bytes() == b'new CLASSIC.MAJ'
+        assert (lg / 'HISTORY.DAT').read_bytes() == b'old'
+
+    def test_refuses_unknown_file(self, tmp_path):
+        import pytest
+        lg, src = self._dirs(tmp_path)
+        (src / 'BOGUS.V20').write_bytes(b'x')
+        with pytest.raises(SystemExit):
+            dynasty_gate.install_league(str(lg), str(src))
+        assert (lg / 'CLASSIC.MAJ').read_bytes() == b'old'
+
+    def test_refuses_empty_src(self, tmp_path):
+        import pytest
+        lg, src = self._dirs(tmp_path)
+        for p in src.iterdir():
+            p.unlink()
+        with pytest.raises(SystemExit):
+            dynasty_gate.install_league(str(lg), str(src))
+
+    def test_league_needs_fresh(self):
+        import pytest
+        with pytest.raises(SystemExit):
+            dynasty_gate.main(['--seasons', '1', '--league', '/nonexistent'])
