@@ -8,8 +8,9 @@ BB 2000:b6df remaps 48..63 per team (0x10: 64..79 -> 48..63, 0x20: 48..63 -> 64.
 team ramp, 56..63 the secondary. Only cap and collar pixels may land on 48..55; 56..63 is never used.
 
 usage:
-  faces.py gen OUTDIR [N] [SET]     render N (default all) prompts of SET (pilot, set1) on the local ComfyUI
-                                    (GPU courtesy check first); OUTDIR/groups.json gets each face's group flag
+  faces.py gen OUTDIR [N] [SET] [SALT]   render N (default all) prompts of SET (pilot, set1) on the local
+                                    ComfyUI (GPU courtesy check first), skipping existing raw pngs; SALT > 0 shifts
+                                    the seeds for re-rolls; OUTDIR/groups.json gets each face's group flag
   faces.py build OUTDIR             crop + quantize OUTDIR/raw/*.png to OUTDIR/frames/*.bin, preview sheets;
                                     frames whose cap does not take the team colour go to OUTDIR/rejects
   faces.py append ANM_IN ANM_OUT BIN...   copy ANM_IN with the frames appended (count updated) and write
@@ -44,14 +45,14 @@ TEAM = range(48, 56)                        # primary team colour ramp (cap, col
 TEAM2 = range(56, 64)                       # secondary team ramp: browns in DEFAULT.PAL, never used
 SKIP = {0, 7, 8, 64}                        # rare in stock faces, kept out of new art
 CAP_ROWS, COLLAR_ROW = 21, 38               # team colour only on the cap (rows 0..20) and collar/jersey (38..55)
-CAP_MIN = 100                               # team-ramp pixels in the cap rows; stock faces have 199..726
+CAP_MIN = 125                               # team-ramp pixels in the cap rows; stock faces have 199..726
 STOCK_GROUP = bytes(1 if i in (3, 4, 16, 18, 20, 21, 22, 25, 27) else 0 for i in range(30))   # UTIL DS:776e
 
 STYLE = ('head and shoulders portrait of a fictional professional baseball player from the 1980s, {who}, '
-         'wearing a plain bright red baseball cap with no logo and a light gray baseball jersey with thin dark '
+         'wearing a plain solid bright red baseball cap with a blank front panel and no logo and a light gray baseball jersey with thin dark '
          'piping, plain dark olive green background, painted illustration, soft studio light, centered, '
          'chest up, looking toward the camera')
-NEG = ('logo, letters, text, watermark, helmet, bat, glove, hands, sunglasses, two people, cropped head, '
+NEG = ('logo, letters, text, emblem on cap, letter on cap, green cap, white cap, navy cap, two-tone cap, watermark, helmet, bat, glove, hands, sunglasses, two people, cropped head, '
        'blurry, photo frame, border')
 PILOT = [
     'young white rookie with freckles, clean shaven, slight smile',
@@ -122,8 +123,9 @@ def _workflow(text, seed):
     }
 
 
-def gen(outdir, n=None, name='pilot'):
+def gen(outdir, n=None, name='pilot', salt=0):
     who_list, groups, seed0 = SETS[name]
+    seed0 += 1000 * salt                        # salt > 0 re-rolls faces whose raw png was removed
     raw = os.path.join(outdir, 'raw')
     os.makedirs(raw, exist_ok=True)
     json.dump({'face%02d' % k: g for k, g in enumerate(groups)}, open(os.path.join(outdir, 'groups.json'), 'w'))
@@ -185,7 +187,29 @@ def quantize(im, pal):
             red = band and (h < 0.03 or h > 0.95) and s > 0.6 and v > 0.25
             cache[key] = nearest(rgb, team if red else other)
         out.append(cache[key])
-    return bytes(out)
+    return fill_cap_logo(bytes(out))
+
+
+def fill_cap_logo(px, rounds=4):
+    """Paint over cap logos: in the cap rows, a non-team pixel with at least 5 team neighbours (of 8) takes the
+    most common neighbouring team index. Repeats `rounds` times so a letter fills from its edges inward. The image
+    model draws club letters (A, B, C) on most caps despite the negative prompt; stock faces have plain caps."""
+    px = bytearray(px)
+    for _ in range(rounds):
+        changed = []
+        for y in range(CAP_ROWS):
+            for x in range(W):
+                if px[y * W + x] in TEAM:
+                    continue
+                nb = [px[yy * W + xx] for yy in (y - 1, y, y + 1) for xx in (x - 1, x, x + 1)
+                      if (yy, xx) != (y, x) and 0 <= yy < H and 0 <= xx < W and px[yy * W + xx] in TEAM]
+                if len(nb) >= 5:
+                    changed.append((y * W + x, max(set(nb), key=nb.count)))
+        if not changed:
+            break
+        for k, v in changed:
+            px[k] = v
+    return bytes(px)
 
 
 def build(outdir):
@@ -256,7 +280,7 @@ def append(anm_in, anm_out, bins):
 if __name__ == '__main__':
     a = sys.argv[1:]
     if a[:1] == ['gen']:
-        gen(a[1], int(a[2]) if len(a) > 2 else None, a[3] if len(a) > 3 else 'pilot')
+        gen(a[1], int(a[2]) if len(a) > 2 else None, a[3] if len(a) > 3 else 'pilot', int(a[4]) if len(a) > 4 else 0)
     elif a[:1] == ['build']:
         build(a[1])
     elif a[:1] == ['append']:
