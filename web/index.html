@@ -72,14 +72,15 @@
 // A slot is just a different server key. js-dos saves on its sidebar Save button and, with autoSave, when the
 // tab is hidden, fullscreen is left or the mouse is unlocked. This page adds a SAVES panel on top of that.
 const DEFAULT_SLOT = 'tlrb2-main';
-const SLOT_RE = /^[A-Za-z0-9._-]{1,64}$/;
+const SLOT_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const WRITE = { 'X-TLRB2': '1' };   // the server refuses writes without it (cross-site guard)
 const PREFS_KEY = 'tlrb2.prefs';
 const byId = (id) => document.getElementById(id);
 const status = byId('status');
 
-function validSlot(s) { return typeof s === 'string' && SLOT_RE.test(s) && s.charAt(0) !== '.'; }
+function validSlot(s) { return typeof s === 'string' && SLOT_RE.test(s) && s.toLowerCase() !== 'old'; }
 function slotError(s) {
-  return validSlot(s) ? '' : 'Use 1 to 64 letters, digits, dots, dashes or underscores. No leading dot.';
+  return validSlot(s) ? '' : 'Use 1 to 64 letters, digits, dashes or underscores (not "old").';
 }
 function readPrefs() {
   try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; }
@@ -124,7 +125,7 @@ function makeFs(name) {
     },
     push: async (key, data) => {
       if (leaving) return;
-      const r = await fetch(slotUrl(key), { method: 'PUT', body: data });
+      const r = await fetch(slotUrl(key), { method: 'PUT', body: data, headers: WRITE });
       if (!r.ok) {
         if (name === slot) setStatus('slot ' + name + ': SAVE FAILED ' + r.status);
         throw new Error('save failed: ' + r.status);
@@ -135,7 +136,7 @@ function makeFs(name) {
         renderHeader();
       }
     },
-    delete: async (key) => { await fetch(slotUrl(key), { method: 'DELETE' }); },
+    delete: async (key) => { await fetch(slotUrl(key), { method: 'DELETE', headers: WRITE }); },
   };
 }
 
@@ -278,7 +279,7 @@ function slotRow(name, slotInfo, versions, gone) {
     const del = button('Delete', () => {
       del.hidden = true;
       const ok = button('Confirm delete', async () => {
-        const r = await fetch(slotUrl(name), { method: 'DELETE' });
+        const r = await fetch(slotUrl(name), { method: 'DELETE', headers: WRITE });
         if (!r.ok) setErr('delete failed: ' + r.status);
         await refreshList();
       });
@@ -313,7 +314,7 @@ function renderList() {
 
 async function restoreVersion(name, id) {
   setErr('');
-  const r = await fetch(slotUrl(name) + '?restore=' + encodeURIComponent(id), { method: 'POST' });
+  const r = await fetch(slotUrl(name) + '?restore=' + encodeURIComponent(id), { method: 'POST', headers: WRITE });
   if (!r.ok) { setErr('restore failed: ' + r.status); return; }
   // The current slot is reloaded without saving first, so the restored copy is not overwritten.
   const ok = name === slot ? await switchTo(name, { skipSave: true }) : await switchTo(name);
@@ -327,7 +328,7 @@ async function saveAs() {
   if (name === slot) { setErr('that is the current slot'); return; }
   setErr('');
   if (!(await saveNow())) { setErr('SAVE FAILED, nothing copied'); return; }
-  const r = await fetch(slotUrl(name) + '?copy=' + encodeURIComponent(slot), { method: 'POST' });
+  const r = await fetch(slotUrl(name) + '?copy=' + encodeURIComponent(slot), { method: 'POST', headers: WRITE });
   if (!r.ok) { setErr('copy failed: ' + r.status); return; }
   await switchTo(name);
 }

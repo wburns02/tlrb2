@@ -13,8 +13,10 @@ import server as srvmod
 def call(port, method, path, body=None, headers=None):
     if body is None and method in ('POST', 'PUT'):
         body = b''
+    if headers is None:
+        headers = {'X-TLRB2': '1'} if method in ('POST', 'PUT', 'DELETE') else {}
     req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', data=body, method=method,
-                                 headers=headers or {})
+                                 headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, r.read(), dict(r.headers)
@@ -32,6 +34,7 @@ def listing(port):
 @pytest.fixture
 def srv(tmp_path, monkeypatch):
     monkeypatch.delenv('TLRB2_ALLOW_LOGIN', raising=False)
+    monkeypatch.setenv('TLRB2_NO_AUTH', '1')
     site = tmp_path / 'site'
     site.mkdir()
     (site / 'index.html').write_text('<html></html>')
@@ -139,7 +142,7 @@ def test_restore_bad_ids_are_400(srv):
     assert call(p, 'GET', '/saves/alpha')[1] == b'v2'
 
 
-@pytest.mark.parametrize('name', ['.x', 'a/b', 'a b', 'a' * 65])
+@pytest.mark.parametrize('name', ['.x', 'a/b', 'a b', 'a' * 65, 'a.b', 'old', 'OLD', 'x.tmp'])
 def test_bad_slot_names_are_400(srv, name):
     p = port_of(srv)
     path = '/saves/' + urllib.parse.quote(name, safe='')
@@ -180,3 +183,32 @@ def test_login_header_enforced_per_request(srv, monkeypatch):
     assert call(p, 'GET', '/saves/alpha')[0] == 403
     assert call(p, 'GET', '/saves/alpha', headers={'Tailscale-User-Login': 'a@b'})[0] == 404
     assert call(p, 'GET', '/saves/', headers={'Tailscale-User-Login': 'other'})[0] == 403
+
+
+def test_write_without_guard_header_is_refused(srv):
+    p = port_of(srv)
+    for m in ('PUT', 'DELETE', 'POST'):
+        path = '/saves/alpha' + ('?copy=beta' if m == 'POST' else '')
+        assert call(p, m, path, body=b'x' if m == 'PUT' else None, headers={})[0] == 403
+    assert listing(p) == {'slots': [], 'versions': {}}
+
+
+def test_cross_origin_write_is_refused(srv):
+    p = port_of(srv)
+    evil = {'X-TLRB2': '1', 'Origin': 'https://evil.example'}
+    assert call(p, 'PUT', '/saves/alpha', body=b'x', headers=evil)[0] == 403
+    cross = {'X-TLRB2': '1', 'Sec-Fetch-Site': 'cross-site'}
+    assert call(p, 'PUT', '/saves/alpha', body=b'x', headers=cross)[0] == 403
+    proxied = {'X-TLRB2': '1', 'Origin': 'https://game.example:8443', 'X-Forwarded-Host': 'game.example:8443',
+               'Sec-Fetch-Site': 'same-origin'}
+    assert call(p, 'PUT', '/saves/alpha', body=b'x', headers=proxied)[0] == 204
+    same = {'X-TLRB2': '1', 'Origin': f'http://127.0.0.1:{p}'}
+    assert call(p, 'PUT', '/saves/alpha', body=b'x', headers=same)[0] == 204
+
+
+def test_no_auth_config_fails_closed(srv, monkeypatch):
+    p = port_of(srv)
+    monkeypatch.delenv('TLRB2_NO_AUTH')
+    assert call(p, 'GET', '/saves/')[0] == 403
+    assert call(p, 'GET', '/index.html')[0] == 403
+    assert call(p, 'PUT', '/saves/alpha', body=b'x')[0] == 403

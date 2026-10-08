@@ -3,7 +3,9 @@
 for HTTPS on the tailnet (js-dos needs a secure context). Never expose it publicly: the site holds the game.
 
 usage: server.py SITE_DIR SAVES_DIR [PORT]
-env:   TLRB2_ALLOW_LOGIN  if set, only requests whose Tailscale-User-Login header equals it are served
+env:   TLRB2_ALLOW_LOGIN  only requests whose Tailscale-User-Login header equals it are served
+       TLRB2_NO_AUTH=1    serve without it (local tests only); with neither set every request gets 403
+Writes (PUT, POST, DELETE) also need the header X-TLRB2: 1 and a same-origin Origin if one is sent.
 
 GET/PUT/DELETE /saves/<name>: the js-dos filesystem-changes blob. PUT keeps the previous KEEP versions in
 SAVES_DIR/old/, DELETE moves the save there, so a bad push never destroys a season.
@@ -22,12 +24,13 @@ import urllib.parse
 
 MAX_SAVE = 64 << 20
 KEEP = 20
-NAME = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
+NAME = re.compile(r'^[A-Za-z0-9_-]{1,64}$')   # no dots: version ids are <name>.<stamp>.<tag>
+RESERVED = ('old',)                              # SAVES_DIR/old holds the archive
 TAGS = ('prev', 'deleted')
 
 
 def _valid_name(name):
-    return bool(NAME.match(name)) and not name.startswith('.')
+    return bool(NAME.match(name)) and name.lower() not in RESERVED
 
 
 def _parse_version(fname):
@@ -43,12 +46,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                       '.wasm': 'application/wasm', '.jsdos': 'application/zip', '.js': 'text/javascript',
                       '.mjs': 'text/javascript'}
 
-    def _allowed(self):
+    def _allowed(self, write=False):
+        """Tailscale identity check (fail closed: no TLRB2_ALLOW_LOGIN means 403 unless TLRB2_NO_AUTH=1, for local
+        tests only). Writes also need the X-TLRB2 header and, if the browser sends Origin, a same-origin one: a
+        custom header forces a CORS preflight this server never answers, so another site cannot write saves."""
         want = os.environ.get('TLRB2_ALLOW_LOGIN')
-        if want and self.headers.get('Tailscale-User-Login') != want:
+        if want:
+            ok = self.headers.get('Tailscale-User-Login') == want
+        else:
+            ok = os.environ.get('TLRB2_NO_AUTH') == '1'
+        if ok and write:
+            origin = self.headers.get('Origin')
+            hosts = {self.headers.get('Host'), self.headers.get('X-Forwarded-Host')} - {None}
+            ok = (self.headers.get('X-TLRB2') == '1'
+                  and self.headers.get('Sec-Fetch-Site', 'same-origin') == 'same-origin'
+                  and (origin is None or urllib.parse.urlsplit(origin).netloc in hosts))
+        if not ok:
             self.send_error(403)
-            return False
-        return True
+        return ok
 
     def _save_path(self):
         """None if the path is not /saves/..., False if the name is invalid (400 already sent), else the file path."""
@@ -160,7 +175,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         os.replace(tmp, p)
 
     def do_PUT(self):
-        if not self._allowed():
+        if not self._allowed(write=True):
             return
         p = self._save_path()
         if not p:
@@ -180,7 +195,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_DELETE(self):
-        if not self._allowed():
+        if not self._allowed(write=True):
             return
         p = self._save_path()
         if not p:
@@ -191,7 +206,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if not self._allowed():
+        if not self._allowed(write=True):
             return
         url = urllib.parse.urlsplit(self.path)
         if not url.path.startswith('/saves/') or not url.query:
