@@ -28,6 +28,9 @@ C_FRAME_TAN, C_BG_BROWN, C_GRID_GRAY = 193, 215, 7
 
 ROW_H = 11
 ROWS_PER_PAGE = 12
+# list screens keep at most LIST_MAX rows after sorting (100 pages) so the DOS port can
+# hold them in a fixed top-K buffer
+LIST_MAX = 1200
 
 # BIOS int 16h codes; ASCII keys are their char code
 KEY_ESC, KEY_ENTER = 27, 13
@@ -310,7 +313,7 @@ def hof_rows(hist):
             items.append((-e['hof_season'], i, e))
     items.sort(key=lambda t: (t[0], t[1]))
     out = []
-    for _s, _i, e in items:
+    for _s, _i, e in items[:LIST_MAX]:
         t = e['totals']
         if e['pitcher']:
             s1, s2, s3 = fmt_count(t[13]), fmt_count(t[23]), fmt_era100(era100_of(t))
@@ -336,6 +339,7 @@ def leaders_rows(hist, cat_index, page=0):
         cands.sort(key=lambda t: (t[0], t[1]))
     else:
         cands.sort(key=lambda t: (-t[0], t[1]))
+    cands = cands[:LIST_MAX]
     out = []
     for rank in range(page * ROWS_PER_PAGE, min((page + 1) * ROWS_PER_PAGE,
                                                 len(cands))):
@@ -361,7 +365,7 @@ def milestone_rows(hist, ms):
         items.append((-season, pos, rec))
     items.sort(key=lambda t: (t[0], t[1]))
     out = []
-    for _s, _p, (season, idx, kind, value) in items:
+    for _s, _p, (season, idx, kind, value) in items[:LIST_MAX]:
         out.append(('%d' % season, entry_name(hist, idx, 16),
                     event_text(kind, value)))
     return out
@@ -403,7 +407,7 @@ def leaders_count(hist, cat_index):
     for i in range(n_entries(hist)):
         if cat_qualifies(hist.read_entry(i), cat):
             n += 1
-    return n
+    return min(n, LIST_MAX)
 
 
 def total_rows(state, data):

@@ -477,3 +477,18 @@ def test_name_cut_never_leaves_dangling_comma():
     assert dynview.name_display(n, 11) == 'PLAYER03, B'
     long = b'MCCORMACKSTE'.ljust(12, b'\0') + b'AL'.ljust(8, b'\0')
     assert dynview.name_display(long, 9) == 'MCCORMACK'
+
+
+def test_list_max_caps_rows_and_paging(tmp_path, monkeypatch):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    monkeypatch.setattr(dynview, 'LIST_MAX', 14)
+    # MVP leaders: 28 qualify, capped to 14 -> pages 0 and 1 only, page 1 has 2 rows
+    assert dynview.leaders_count(data['hist'], 10) == 14
+    s, _ex = dynview.step(st(dynview.SCREEN_LEADERS, 0, 10), dynview.KEY_PGDN, data)
+    assert s[1] == 1 and len(dynview.rows(s, data)) == 2
+    s, _ex = dynview.step(s, dynview.KEY_PGDN, data)
+    assert s[1] == 1
+    monkeypatch.setattr(dynview, 'LIST_MAX', 3)
+    assert len(dynview.milestone_rows(data['hist'], data['ms'])) == 3
+    assert dynview.milestone_rows(data['hist'], data['ms'])[0][0] == '3'
