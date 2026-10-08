@@ -169,10 +169,12 @@ HISTWR.EXE (C, OpenWatcom large model; the same source also builds on the host w
 Reference fixes in the same amendment: mark_retired skips unmapped files (ALLSTAR copies of real players), and
 seasons past 64 skip the season-table write (careers still update; the table would overlap the player table).
 
-## C6. Roster management, ROSTERS (DRAFT 2026-10-07: structure fixed, constants in the T table are tunable until
-## the 50-season validation locks them; design and research in notes/M4_ROSTER.md)
+## C6. Roster management, ROSTERS (LOCKED 2026-10-07 by the R2 50-season validation, notes/M4_ROSTER.md section 7;
+## design and research in notes/M4_ROSTER.md)
 
-Runs after DYNASTY rolled and HISTWR recorded: BAT line `if errorlevel 1 rosters` after the histwr line. Inputs:
+Runs after DYNASTY rolled and HISTWR recorded. HISTWR exits 0 and resets errorlevel, so the BAT block is
+`dynasty` / `if errorlevel 1 goto rolled` / `goto ctl` / `:rolled` / `histwr` / `rosters` / `:ctl` / `control`
+(amended 2026-10-07: the earlier `if errorlevel 1 rosters` after histwr could never fire). Inputs:
 the rolled league dir (TEAMS\CLASSIC), the pre-roll snapshot C:\DYNSNAP (V20s, MAJ), C:\DYNSNAP\RETIRED.DAT,
 HISTORY.DAT. It rewrites team V20s, the pool files, HISTORY header bytes 1..2 and 16..17, and ROSTERS.TXT.
 Same integer conventions and xorshift16 as C1. All lists below are in ascending order unless stated.
@@ -257,6 +259,11 @@ Pipeline (each step over teams in sorted file order unless stated):
      can_play(q) and max Off + Fld(q); if none can play q, the unassigned batter with max Off + Fld(q) - 20. DH =
      unassigned max Off. Backup catcher = unassigned max Fld(1) among can_play(1) (if any). Active 15 = 8 field
      starters + DH + backup C + the rest by S descending up to 15. Ties lowest slot.
+   - Form (amended 2026-10-07, R2): if T.FORM_A > 0, before each AI team's rebuild (teams in order) draw once per
+     named slot 0..39 in slot order: f = (draw() & 0xff) % (2 * FORM_A + 1) - FORM_A. f is added to that player's
+     S in the active 10 pitchers, the "rest by S" active batters and the bench order, and to Off + Fld(q) (and
+     Off + Fld(q) - 20) in the field picks and Off in the DH pick. Rotation, relief order, backup C and batting
+     order use no form. Managed teams draw nothing. Trades (step 6) compute starters with no form.
    - Batting order (slot roles after ClaudeBall's LineupBuilder), picked in turn from the starters, each pick
      removed, ties lowest slot: #1 max 3*speed + 2*hit_run, #2 max 2*hit_run + speed, #3 max Off, #4 max power,
      #5 max 3*power + hit_run, #6.. the rest by Off descending. DH sets pick over the 9 starters (8 + DH); no-DH
@@ -278,11 +285,11 @@ Pipeline (each step over teams in sorted file order unless stated):
    upper case, names as "First Last" from the record. (Amended 2026-10-07: every line carries its names, so a
    transactions screen can read the file.)
 
-T table (initial values, tunable):
-- SP_END 6. POOL_YEARS 1. KEEP_P 7, KEEP_B 10. REL_CAP 8. MKT 24. NEED 8. BAND 5. MAX_TRADES 6.
-  POOL_KEEP_P 32, POOL_KEEP_B 48.
+T table (LOCKED by R2; changes are contract amendments):
+- SP_END 6. POOL_YEARS 1. KEEP_P 7, KEEP_B 10. REL_CAP 8. MKT 64. NEED 8. BAND 5. MAX_TRADES 6.
+  POOL_KEEP_P 32, POOL_KEEP_B 48. FORM_A 16.
 - REL (/256) rows age <= 24, 25..29, 30..33, 34+; columns none, low, mid, reg:
-  16 69 33 5 / 48 120 41 5 / 96 156 51 8 / 128 192 77 18 (low/mid/reg columns = the 1970-90 Lahman gone rates).
+  32 138 66 10 / 96 240 82 10 / 192 255 102 16 / 255 255 154 36 (2x the 1970-90 Lahman gone rates, capped 255).
 
 Known v1 gaps (accepted): pool retirements are not marked in HISTORY (status stays active); the Draft GM profiles
 are not used (category labels undecoded); no platoon lineups; no trades with the managed team; DYNASTY skips the

@@ -145,8 +145,8 @@ def rollover_player(rec_roster, rec_season, cfg, rng, log):
     _set(rec_roster, *F['year_off'], (s_b['year_off'] + 1) & 0xff)
     if s_b['games'] > 0:
         _set(rec_roster, *F['exp'], min(255, _get(rec_roster, *F['exp']) + 1))
-    # 3a. evidence: only with the progression flag AND season games > 0
-    if cfg.get('progress', True) and s_b['games'] > 0:
+    # 3a. evidence: only with the progression AND evidence flags AND season games > 0
+    if cfg.get('progress', True) and cfg.get('evidence', True) and s_b['games'] > 0:
         pitcher = _get(rec_roster, *F['pos1']) & 15 == 0   # pos code 0 = P
         table = PITCHER_RATINGS if pitcher else BATTER_RATINGS
         for name, fn in table:

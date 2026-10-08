@@ -49,14 +49,17 @@ T = {
     'POOL_YEARS': 1,
     'KEEP_P': 7, 'KEEP_B': 10,
     'REL_CAP': 8,
-    'MKT': 24,
+    'MKT': 64,
     'NEED': 8,
     'BAND': 5,
     'MAX_TRADES': 6,
     'POOL_KEEP_P': 32, 'POOL_KEEP_B': 48,
+    # step 7 form: each named player's depth S/Off carries d % (2A+1) - A (one
+    # draw per named slot of an AI team, slot order); 0 = no draws
+    'FORM_A': 16,
     # release p (/256), rows age <= 24, 25..29, 30..33, 34+;
-    # columns none, low, mid, reg (the 1970-90 Lahman gone rates)
-    'REL': [[16, 69, 33, 5], [48, 120, 41, 5], [96, 156, 51, 8], [128, 192, 77, 18]],
+    # columns none, low, mid, reg (2x the 1970-90 Lahman gone rates, R2)
+    'REL': [[32, 138, 66, 10], [96, 240, 82, 10], [192, 255, 102, 16], [255, 255, 154, 36]],
 }
 
 POOL_FILES = ('POOL1.V20', 'POOL2.V20', 'POOL3.V20', 'POOL4.V20')
@@ -320,22 +323,27 @@ class _Scorer:
         return v
 
 
-def build_partition(img, scorer=None):
+def build_partition(img, scorer=None, form=None):
     """The step 7 assignment on the current rosters, no header writes.
 
     Returns {'active_p' (10 pitchers by S), 'roster' (the 5 rotation, 3c+3v+4e
     order), 'relief' (the other 5, 3c+3v desc), 'field' (8 (slot, q) greedy in
     C SS 2B CF 3B RF LF 1B order), 'dh', 'backup_c', 'active_b' (15),
     'order' (the batting order), 'bench7' (the other active batters by S)}. 
-    Ties are lowest slot."""
+    Ties are lowest slot. form = {slot: offset} is added to every S and
+    Off + Fld depth comparison (not the rotation, relief or batting order)."""
     sc = scorer or _Scorer()
+    fm = form or {}
 
     def rec(s):
         return img[HDR + REC * s:HDR + REC * (s + 1)]
 
+    def fS(s):
+        return sc.S(rec(s)) + fm.get(s, 0)
+
     pits = [s for s in range(16) if is_on(img, s)]
     bats = [s for s in range(16, 40) if is_on(img, s)]
-    active_p = sorted(pits, key=lambda s: (-sc.S(rec(s)), s))[:10]
+    active_p = sorted(pits, key=lambda s: (-fS(s), s))[:10]
     rot = sorted(set(active_p), key=lambda s: (-pitch_score4(rec(s)), s))[:5]
     rest = [s for s in active_p if s not in set(rot)]
     rest.sort(key=lambda s: (-relief_score2(rec(s)), s))
@@ -345,16 +353,17 @@ def build_partition(img, scorer=None):
         cands = [s for s in bats if s not in assigned and can_play(rec(s), q)]
         pick = None
         if cands:
-            pick = min(cands, key=lambda s: (-(off(rec(s)) + fld(rec(s), q)), s))
+            pick = min(cands, key=lambda s: (-(off(rec(s)) + fld(rec(s), q) + fm.get(s, 0)), s))
         else:
             cands = [s for s in bats if s not in assigned]
             if cands:
-                pick = min(cands, key=lambda s: (-(off(rec(s)) + fld(rec(s), q) - 20), s))
+                pick = min(cands, key=lambda s: (-(off(rec(s)) + fld(rec(s), q) - 20
+                                                    + fm.get(s, 0)), s))
         if pick is not None:
             field.append((pick, q))
             assigned.add(pick)
     rest_b = [s for s in bats if s not in assigned]
-    dh = min(rest_b, key=lambda s: (-off(rec(s)), s)) if rest_b else None
+    dh = min(rest_b, key=lambda s: (-(off(rec(s)) + fm.get(s, 0)), s)) if rest_b else None
     if dh is not None:
         assigned.add(dh)
     rest_b = [s for s in bats if s not in assigned]
@@ -363,7 +372,7 @@ def build_partition(img, scorer=None):
     if backup_c is not None:
         assigned.add(backup_c)
     rest_b = [s for s in bats if s not in assigned]
-    rest_b.sort(key=lambda s: (-sc.S(rec(s)), s))
+    rest_b.sort(key=lambda s: (-fS(s), s))
     n_reserved = len(field) + (1 if dh is not None else 0) \
         + (1 if backup_c is not None else 0)
     take = rest_b[:max(0, 15 - n_reserved)]
@@ -374,7 +383,7 @@ def build_partition(img, scorer=None):
     order = sorted(starters, key=lambda s: (-off(rec(s)), s))
     field_slots = {s for s, _ in field}
     bench7 = sorted((s for s in active_b if s not in field_slots),
-                    key=lambda s: (-sc.S(rec(s)), s))
+                    key=lambda s: (-fS(s), s))
     return {'active_p': active_p, 'roster': rot, 'relief': rest, 'field': field,
             'dh': dh, 'backup_c': backup_c, 'active_b': active_b, 'order': order,
             'bench7': bench7}
@@ -404,9 +413,17 @@ def order_lineup(starters, rec, pos_of_assign):
     return [(s, pos_of_assign[s]) for s in picks]
 
 
-def depth_rebuild(image):
+def form_draws(image, rng):
+    """T.FORM_A > 0: one draw per named slot (slot order), offset d % (2A+1) - A."""
+    a = T['FORM_A']
+    if a <= 0:
+        return None
+    return {s: (rng.draw() & 0xff) % (2 * a + 1) - a for s in range(40) if is_on(image, s)}
+
+
+def depth_rebuild(image, form=None):
     """Step 7 rebuild for an AI team: partition + header list writes."""
-    p = build_partition(image)
+    p = build_partition(image, form=form)
 
     def rec(s):
         return image[HDR + REC * s:HDR + REC * (s + 1)]
@@ -949,7 +966,7 @@ def offseason(teams, snaps, retired, pool, standings, hist_hdr, rng):
             snap = snap_of.get(stem)
             repair(img, changed_slots(stem, img, snap))
         else:
-            depth_rebuild(img)
+            depth_rebuild(img, form_draws(img, rng))
 
     unsigned = [e for e in pool_list if id(e) not in signed]
     list_pos = {id(e): i for i, e in enumerate(pool_list)}

@@ -410,7 +410,8 @@ def build_state(timg, standings=None, snaps=None, era=0, mask=0, year=None):
     return t, snaps or {}, {}, [None] * 4, st, hh
 
 
-def test_release_protected_cap_and_median():
+def test_release_protected_cap_and_median(monkeypatch):
+    monkeypatch.setitem(rosters.T, 'FORM_A', 0)      # count release draws only
     timg = full_image('BAL')
     for slot in range(16, 40):
         put_player(timg, slot, 'B%02d' % (slot - 16), 'B', 30, 2,
@@ -1219,3 +1220,27 @@ def test_run_io_error_leaves_files_untouched(tmp_path, monkeypatch):
     after = {p.name: p.read_bytes() for p in sorted(league.iterdir())}
     assert after == before
     assert not list(league.glob('*.TMP'))
+
+
+def test_form_draws_and_depth_effect(monkeypatch):
+    """Step 7 form: one draw per named slot, offsets in [-A, A], and a form
+    swing decides the last active batter."""
+    timg = full_image('BAL')
+    named = [s for s in range(40) if rosters.is_on(timg, s)]
+    rng = CountRng(7)
+    monkeypatch.setitem(rosters.T, 'FORM_A', 0)
+    assert rosters.form_draws(timg, rng) is None and rng.n == 0
+    monkeypatch.setitem(rosters.T, 'FORM_A', 16)
+    f = rosters.form_draws(timg, rng)
+    assert rng.n == len(named) and sorted(f) == named
+    assert all(-16 <= v <= 16 for v in f.values())
+    base = rosters.build_partition(timg)
+    assert rosters.build_partition(timg, form={}) == base
+    # the weakest active non-starter vs the best inactive batter: a +-big form
+    # swap flips who holds the last active batter spot
+    bench = base['bench7']
+    out = [s for s in range(16, 40) if rosters.is_on(timg, s) and s not in base['active_b']]
+    assert bench and out
+    last, first_out = bench[-1], out[0]
+    sw = rosters.build_partition(timg, form={last: -200, first_out: 200})
+    assert first_out in sw['active_b'] and last not in sw['active_b']

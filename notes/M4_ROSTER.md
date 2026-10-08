@@ -165,3 +165,33 @@ Decisions that follow (brain):
   wins, playing time from the depth chart). Track talent spread across teams, average age, roster churn, and how
   long stars stay. Tune constants until it looks like 1970-90 MLB, then lock the contract (new section C6).
 - Then the usual: Python reference, asm port with byte parity, real-game 5-season gate.
+
+## 7. R2 validation result (2026-10-07, tools/m4/sim50.py, 50 seasons, seed 8230, era 0)
+
+Targets recomputed from Lahman 1971-90 with the same definition sim50 uses: active set = the top 15 batters and
+10 pitchers by playing time per team-season (the 25-man roster). All-appearing numbers in brackets.
+
+| metric | locked C6 | target | stock T (pre-R2) |
+|---|---|---|---|
+| turnover (active last season, not this) | .218 | .216 [.194] | .106 |
+| team_change (active both, other team) | .170 | .210 [.243] | .066 |
+| career length mean / median | 12.3 / 13 | 7.0 / 6 [7.2 / 6] | 13.1 / 14 |
+| one-season careers | .051 | .181 [.162] | .037 |
+| cohort age first / last active | 22 / 34 | 24 / 30 | 22 / 33 |
+| final active age median | 28 | 28 | 29 |
+
+What moved what (grid under /mnt/nvme/tlrb2/sim50/tune):
+- MKT drives team_change: 24 -> .07, 64 with REL x2 -> .17-.18. BAND and NEED barely matter.
+- Turnover was stuck at .11-.13 under every T setting and under rating noise up to 96/256 (the permanent
+  `--noise` random walk), because depth used S alone and S is stable year to year, so the same 25 kept their
+  jobs. A per-season form draw on the depth comparison (FORM_A, a hot spring, a slump, a manager's hunch) is the
+  missing piece: A 8 -> .170, 16 -> .221, 30 -> .261. Locked at 16. Form also feeds playing time, so marginal
+  players drop to the low PT class and the existing release table finishes the job.
+- Aging variants (decline from 30, retire from 31, decline x1.5 with form on) cut careers only to ~10.5.
+- A youth seasoning penalty on depth moved entry age 22 -> 24 but did not shorten careers.
+
+Accepted gap: careers run ~12 seasons against a real 7, and one-season careers are rare. That is structural: a
+team file holds 40 players and there are no minor leagues, so the only replacement pool is the team's own
+reserves plus 4 pool files, all long-tenured. Real MLB pulled from thousands of minor leaguers, most of whom got
+one or two seasons. Closing it needs a feeder system (a later idea), not a constant. Aging (C1) is left as is so
+DYNASTY's asm does not change for R2; the B1 dev trait (C1b) is the next lever on the age curve.

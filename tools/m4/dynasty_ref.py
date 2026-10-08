@@ -33,7 +33,7 @@ def season_year(image):
     return None
 
 
-def roll_league(in_dir, out_dir, seed, fill=True):
+def roll_league(in_dir, out_dir, seed, fill=True, cfg=None):
     """Roll every *.V20 of in_dir into out_dir; CLASSIC.MAJ is copied through. Returns
     {'seed', 'rng_end', 'retirees': {file: [rec]}, 'filled': {file: [rec]}, 'players': rollover report}."""
     os.makedirs(out_dir, exist_ok=True)
@@ -43,7 +43,7 @@ def roll_league(in_dir, out_dir, seed, fill=True):
     for p in sorted(glob.glob(os.path.join(in_dir, '*.V20'))):
         name = os.path.basename(p)
         out = os.path.join(out_dir, name)
-        retirees[name] = rollover.rollover_team(p, out, CFG, rng, report)
+        retirees[name] = rollover.rollover_team(p, out, cfg or CFG, rng, report)
         if not fill:
             continue
         image = bytearray(open(out, 'rb').read())
