@@ -136,6 +136,10 @@ The P2 WIP blob gave every rookie identical ratings. Rookies must vary and some 
 - grade: d = draw() & 0xff; grade = 0 if d < 154, 1 if d < 230, else 2 (60/30/10 %); bonus = [0, 2, 4][grade].
 - rating value = 3 + (d % 5) + bonus with d = draw() & 0xff, then clamp 1..cap (cap = 10 for endurance, else 12).
   Ratings not in the C1 order keep the WIP blob's constants.
+  (amended 2026-10-07) Off-role ratings are constants matching the shipped data's most common pattern, no draws:
+  pitchers bat power 1, bunt 1, hit_run 1, speed 7, range 7, arm 7 (74 = 0x11, 75 lo 1, 29 hi 7, 94 = 0x77); every
+  other rookie pitches control 1, velocity 3, endurance 1 (134 = 0x31, 135 hi 1). Written with the stat-line
+  constants, before the rating draws, which touch other nibbles only.
 - Everything else (stat lines, salary, portrait, season-twin copy) stays as the WIP blob defines it.
 
 ## C5. Runtime split for HISTORY.DAT (added 2026-10-07, T4)

@@ -170,3 +170,19 @@ def _draws_for(pos):
 if __name__ == "__main__":
     test_c4_variety()
     print("C4 variety ok")
+
+
+def test_off_role_ratings_stock_pattern():
+    """C4 amendment 2026-10-07: rookie pitchers carry the stock pitcher batting pattern
+    (power/bunt/hit_run 1, speed/range/arm 7), every other rookie the stock non-pitcher
+    pitching pattern (control 1, velocity 3, endurance 1). Constants, no draws."""
+    from m4.rollover import Rng as R2
+    lo = lambda b: b & 15
+    hi = lambda b: b >> 4
+    for code in CODES:
+        rec = RookieGen(R2(0x5151)).make(code, SEASON_YEAR)
+        if code == 0:
+            assert (lo(rec[74]), hi(rec[74]), lo(rec[75]), hi(rec[29]), hi(rec[94]),
+                    lo(rec[94])) == (1, 1, 1, 7, 7, 7)
+        else:
+            assert (lo(rec[134]), hi(rec[134]), hi(rec[135])) == (1, 3, 1), code
