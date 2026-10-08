@@ -464,7 +464,7 @@ def depth_rebuild(image, form=None):
             b = H_BENCH + dh_flag * 14 + vs * 7
             bench = [s for s in p['bench7'] if not (dh_flag and s == p['dh'])]
             n = 7 if not dh_flag else 6
-            image[b:b + 7] = bytes(bench[:n]) + b'\xff' * (7 - n)
+            image[b:b + 7] = bytes(bench[:n]).ljust(7, b'\xff')   # short bench: pad (C pads)
     # reserves +222..+236: the 6 inactive pitchers, then the 9 inactive batters
     inactive_p = [s for s in range(16) if is_on(image, s)
                   and s not in set(p['active_p'])]
@@ -1022,6 +1022,56 @@ def offseason(teams, snaps, retired, pool, standings, hist_hdr, rng):
 
 
 # ---------------------------------------------------------------------------
+# C9 All-Star refresh
+# ---------------------------------------------------------------------------
+
+ALLSTAR_FILES = (('ALLSTAR1.V20', 0), ('ALLSTAR2.V20', 16))   # (file, league-global id base)
+
+
+def allstar_refresh(star, teams, lg_base):
+    """C9: rebuild one ALLSTAR image in place from the teams whose league-global
+    id is in lg_base..lg_base+15. teams = [(stem, lg, img)] after C6 step 7."""
+    cands = []                                    # (rec bytes, team img, slot), file then slot order
+    for _, lg, img in teams:
+        if lg_base <= lg < lg_base + 16:
+            for s in range(40):
+                if img[HDR + REC * s]:
+                    cands.append((bytes(img[HDR + REC * s:HDR + REC * (s + 1)]), img, s))
+    used = set()
+
+    def best(ok, key):
+        pick = None
+        for k, (r, _, _) in enumerate(cands):
+            if k in used or not ok(r):
+                continue
+            if pick is None or key(r) > key(cands[pick][0]):
+                pick = k
+        return pick
+
+    for i in range(40):
+        o = HDR + REC * i
+        if not star[o]:
+            continue
+        if i < 16:                                # C6 slot types, not the template record
+            k = best(is_pitcher, score)           # (a DYNASTY fill can leave a batter in 0..15)
+        else:
+            q = pos1f(star[o:o + REC])
+            k = best(lambda r: not is_pitcher(r) and pos1f(r) == q, score)
+            if k is None:
+                k = best(lambda r: not is_pitcher(r) and can_play(r, q),
+                         lambda r: off(r) + fld(r, q))
+            if k is None:
+                k = best(lambda r: not is_pitcher(r), score)
+        if k is None:
+            vacate(star, i)
+            continue
+        used.add(k)
+        _, img, s = cands[k]
+        write_pair(star, i, copy_pair(img, s))
+    depth_rebuild(star)
+
+
+# ---------------------------------------------------------------------------
 # File wrapper. 0 ok, 2 error (files untouched on error).
 # ---------------------------------------------------------------------------
 
@@ -1089,6 +1139,13 @@ def run(league_dir, snap_dir, hist_path, retired_path):
         rng = Rng(seed if seed else 1)
         ev = offseason(teams, snaps, retired, pool, league_standings(m),
                        hist_hdr, rng)
+        stars = []                                # C9: [(path, image)]
+        for name, base in ALLSTAR_FILES:
+            sp = _file_ci(league_dir, name)
+            if sp and os.path.getsize(sp) == HDR + REC * 80:
+                img = bytearray(open(sp, 'rb').read())
+                allstar_refresh(img, teams, base)
+                stars.append((sp, img))
         # write every output to <path>.TMP first, then os.replace them all only
         # after every TMP write succeeded (the except removes the TMPs), so an
         # IO error leaves every file untouched
@@ -1123,6 +1180,11 @@ def run(league_dir, snap_dir, hist_path, retired_path):
             with open(tp, 'wb') as f:
                 f.write(bytes(out))
             tmps.append((tp, p))
+            for p, img in stars:
+                tp = p + '.TMP'
+                with open(tp, 'wb') as f:
+                    f.write(bytes(img))
+                tmps.append((tp, p))
         except Exception:
             for tp, _ in tmps:
                 if os.path.exists(tp):
@@ -1133,6 +1195,14 @@ def run(league_dir, snap_dir, hist_path, retired_path):
         return 0
     except Exception:
         return 2
+
+
+def _file_ci(league_dir, name):
+    """The league-dir file named name, any case, or None."""
+    for f in sorted(os.listdir(league_dir)):
+        if f.upper() == name and os.path.isfile(os.path.join(league_dir, f)):
+            return os.path.join(league_dir, f)
+    return None
 
 
 def _team_path(league_dir, stem):

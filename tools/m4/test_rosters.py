@@ -1244,3 +1244,151 @@ def test_form_draws_and_depth_effect(monkeypatch):
     last, first_out = bench[-1], out[0]
     sw = rosters.build_partition(timg, form={last: -200, first_out: 200})
     assert first_out in sw['active_b'] and last not in sw['active_b']
+
+
+# ---------------------------------------------------------------------------
+# 12. C9 All-Star refresh
+# ---------------------------------------------------------------------------
+
+def _pair(img, slot):
+    return (bytes(img[HDR + REC * slot:HDR + REC * (slot + 1)]),
+            bytes(img[HDR + REC * (slot + 40):HDR + REC * (slot + 41)]))
+
+
+def _bat(**kw):
+    r = {'power': 5, 'hit_run': 5, 'speed': 5, 'range': 5, 'arm': 5}
+    r.update(kw)
+    return r
+
+
+def test_allstar_refresh_picks_by_template_position():
+    a1 = make_img('clasale1', pit=[(0, 'Ace', 27, {'control': 9, 'velocity': 9, 'endurance': 9}),
+                                   (1, 'Mid', 27, {'control': 5, 'velocity': 5, 'endurance': 5})],
+                  bat=[(16, 'CatchA', 27, 1, _bat(power=9)),
+                       (17, 'CatchB', 27, 1, _bat(power=3))])
+    put_player(a1, 18, 'Utility', 'B', 27, 2, _bat(hit_run=9), pos2=5)   # 1B who can play SS
+    low = _bat(power=1, hit_run=1, speed=1, range=1, arm=1)
+    a2 = make_img('clasale2', pit=[(0, 'Tie', 27, {'control': 9, 'velocity': 9, 'endurance': 9})],
+                  bat=[(16, 'Slugger', 27, 7, _bat(power=12, hit_run=12))]
+                  + [(17 + k, 'Fill%d' % k, 27, 2, low) for k in range(4)])
+    nl = make_img('clasnle1', pit=[(0, 'NLStar', 27, {'control': 12, 'velocity': 12, 'endurance': 10})],
+                  bat=[(16, 'NLCatch', 27, 1, _bat(power=12))])
+    teams = [('clasale1', 0, a1), ('clasale2', 1, a2), ('clasnle1', 16, nl)]
+    before = [bytes(t[2]) for t in teams]
+    star = make_img('allstar1', pit=[(0, 'OldP1', 40, {'control': 1}), (1, 'OldP2', 40, {'control': 1}),
+                                     (2, 'OldP3', 40, {'control': 1})],
+                    bat=[(16, 'OldC', 40, 1), (17, 'OldSS', 40, 5), (19, 'OldRF', 40, 8),
+                         (20, 'OldX', 40, 8)] + [(21 + k, 'Old1B%d' % k, 40, 2) for k in range(4)])
+    rosters.allstar_refresh(star, teams, 0)
+    # pitchers by S, tie -> earlier team; the NL star is never taken
+    assert _pair(star, 0) == _pair(a1, 0)
+    assert _pair(star, 1) == _pair(a2, 0)
+    assert _pair(star, 2) == _pair(a1, 1)
+    # C slot: the best catcher; SS slot: no pos1 5, the 1B whose pos2 is SS;
+    # RF slot: no RF and no one who can play it, max S (the CF slugger)
+    assert _pair(star, 16) == _pair(a1, 16)
+    assert _pair(star, 17) == _pair(a1, 18)
+    assert _pair(star, 19) == _pair(a2, 16)
+    assert not star[HDR + REC * 18]                 # vacant template slot stays vacant
+    # slot 20 (RF): max S of what is left is CatchB; the 1B slots take the 1B fillers
+    assert _pair(star, 20) == _pair(a1, 17)
+    assert [_pair(star, 21 + k) for k in range(4)] == [_pair(a2, 17 + k) for k in range(4)]
+    assert [bytes(t[2]) for t in teams] == before   # sources untouched
+    staff = [s for s in star[H_STAFF:H_STAFF + 10] if s != 0xff]
+    assert sorted(staff) == [0, 1, 2]
+
+
+def test_allstar_refresh_runs_out_and_vacates():
+    a1 = make_img('clasale1', pit=[(0, 'OnlyP', 27, {'control': 5})],
+                  bat=[(16 + k, 'B%d' % k, 27, 2) for k in range(5)])
+    # a batter left in a pitcher slot by a DYNASTY fill: the slot still takes a pitcher
+    star = make_img('allstar1', pit=[(1, 'OldP2', 40, {'control': 1})],
+                    bat=[(0, 'FillB', 20, 9)] + [(16 + k, 'OldB%d' % k, 40, 2) for k in range(6)])
+    rosters.allstar_refresh(star, [('clasale1', 0, a1)], 0)
+    assert _pair(star, 0) == _pair(a1, 0)
+    assert [_pair(star, 16 + k) for k in range(5)] == [_pair(a1, 16 + k) for k in range(5)]
+    for s in (1, 21):
+        assert _pair(star, s) == (bytes(REC), bytes(REC))
+
+
+def _real_rolled(root):
+    """Roll the real t4 fixture with the Python chain; returns (league, snap, hist, retired) or None."""
+    src = '/mnt/nvme/tlrb2/fixtures/t4/s1_pre'
+    if not os.path.isdir(src):
+        return None
+    league = os.path.join(root, 'rolled')
+    os.makedirs(league)
+    r = dynasty_ref.roll_league(src, league, 0x2026)
+    snap = os.path.join(root, 'snap')
+    shutil.copytree(src, snap)
+    rows = []
+    for name, recs in r['retirees'].items():
+        if recs:
+            flags = [0] * 40
+            for i in recs:
+                flags[i] = 1
+            rows.append((name.encode('latin-1')[:13].ljust(13, b'\0'), flags))
+    retired = os.path.join(root, 'RETIRED.DAT')
+    with open(retired, 'wb') as f:
+        f.write(bytes([len(rows)]))
+        for nam, flags in rows:
+            f.write(nam)
+            f.write(bytes(flags))
+    hist = os.path.join(root, 'HISTORY.DAT')
+    hh = bytearray(32)
+    struct.pack_into('<H', hh, 1, r['rng_end'])
+    open(hist, 'wb').write(bytes(hh))
+    return league, snap, hist, retired
+
+
+def test_allstar_run_real_league(tmp_path):
+    import glob as g
+    import pytest
+    from m4 import history as history_mod
+    ra, rb = str(tmp_path / 'a'), str(tmp_path / 'b')
+    os.makedirs(ra)
+    os.makedirs(rb)
+    sa, sb = _real_rolled(ra), _real_rolled(rb)
+    if sa is None:
+        pytest.skip('real fixture data missing')
+    for n in ('ALLSTAR1.V20', 'ALLSTAR2.V20'):
+        os.remove(os.path.join(sb[0], n))
+    old1 = open(os.path.join(sa[0], 'ALLSTAR1.V20'), 'rb').read()
+    assert rosters.run(*sa) == 0 and rosters.run(*sb) == 0
+    # missing ALLSTAR files are not created, and every other output is identical
+    assert not [p for p in os.listdir(sb[0]) if p.upper().startswith('ALLSTAR')]
+    for p in sorted(os.listdir(sb[0])) + ['../HISTORY.DAT']:
+        assert open(os.path.join(sa[0], p), 'rb').read() == open(os.path.join(sb[0], p), 'rb').read(), p
+    m = rosters.maj_load(history_mod.maj_or_none(sa[0]))
+    lg_of = {os.path.basename(p).upper(): lg for p, lg in history_mod.mapped_teams(sa[0], m)}
+    pairs = {}
+    for p in sorted(g.glob(os.path.join(sa[0], '*.V20'))):
+        n = os.path.basename(p).upper()
+        if n in lg_of:
+            d = open(p, 'rb').read()
+            for s in range(40):
+                if d[HDR + REC * s]:
+                    pairs[_pair(d, s)] = lg_of[n]
+    new1 = open(os.path.join(sa[0], 'ALLSTAR1.V20'), 'rb').read()
+    assert new1 != old1
+    for name, nl in (('ALLSTAR1.V20', False), ('ALLSTAR2.V20', True)):
+        d = open(os.path.join(sa[0], name), 'rb').read()
+        named = [s for s in range(40) if d[HDR + REC * s]]
+        assert len(named) >= 39
+        seen = set()
+        for s in named:
+            pr = _pair(d, s)
+            assert pr in pairs and (pairs[pr] >= 16) == nl, (name, s)
+            assert pr not in seen
+            seen.add(pr)
+            assert (s < 16) == rosters.is_pitcher(pr[0])
+
+
+def test_depth_rebuild_short_bench_keeps_image_size():
+    img = make_img('clasale1', pit=[(0, 'P', 27, {'control': 5})],
+                   bat=[(16 + k, 'B%d' % k, 27, 2) for k in range(6)])
+    rosters.depth_rebuild(img)
+    assert len(img) == V20_SIZE
+    for dh in (0, 1):
+        b = H_BENCH + dh * 14
+        assert [x for x in img[b:b + 7] if x != 0xff] == [x for x in img[b + 7:b + 14] if x != 0xff]

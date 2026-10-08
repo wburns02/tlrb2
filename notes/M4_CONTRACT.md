@@ -184,7 +184,8 @@ HISTORY.DAT. It rewrites team V20s, the pool files, HISTORY header bytes 1..2 an
 Same integer conventions and xorshift16 as C1. All lists below are in ascending order unless stated.
 
 Files and header bytes:
-- Teams = mapped_teams (C2): V20s whose stem matches a MAJ slot, sorted file order. ALLSTAR files are never touched.
+- Teams = mapped_teams (C2): V20s whose stem matches a MAJ slot, sorted file order. ALLSTAR files are not teams;
+  C9 (amended 2026-10-07) rebuilds them after step 7.
 - Pool = POOL1.V20..POOL4.V20 in the league dir (unmapped, so the game and HISTWR ignore them; DYNASTY rolls them
   like any V20: pool players age and can retire, and the C4 fill turns pool vacancies into the draft class).
   Missing pool files are created by ROSTERS: header all zero except name "FREE AGENTS" (+0) and league code
@@ -300,6 +301,29 @@ are not used (category labels undecoded); no platoon lineups; no trades with the
 C4 fill for a file with no named record only when no earlier file (sorted 8.3 order) had one: a blank pool file
 takes the year byte of the last earlier file that had a named record (amended 2026-10-07, DYNASTY.EXE and
 dynasty_ref); ROSTERS still keeps at least one player per pool file when the pool has any.
+
+## C9. All-Star refresh (added 2026-10-07, P4 All-Star continuity; ROSTERS, after C6 step 7, before step 8)
+
+Found 2026-10-07: ALLSTAR1/2.V20 (the MAJ slot-15 teams the All-Star game uses) are never rewritten by the game
+(snaps/season2_end ALLSTAR1 is byte-identical to the rolled league it started from, after an All-Star game was
+played), so a dynasty keeps fielding the original stars forever, retired or not. ROSTERS now rebuilds both.
+- ALLSTAR1.V20 draws from the AL teams (league-global id 0..15), ALLSTAR2.V20 from the NL (16..31). The file is
+  found case-insensitively in the league dir; a missing file, or one whose size is not a V20, is skipped (not
+  created, not written).
+- Candidates: every named roster slot s (0..39) of every team of that league (C6 teams, managed teams included,
+  pools excluded) after C6 step 7, in team file order then slot order. Each player is chosen at most once.
+- Template: the ALLSTAR file's own roster slots 0..39 in slot order. A vacant template slot stays vacant. Slot type
+  is the C6 convention, not the template record (DYNASTY rolls ALLSTAR files like any V20, and its C4 fill can put
+  a batter rookie in a slot below 16). A named slot 0..15 takes the remaining pitcher with max S (C6 S, the roster
+  record). A named slot 16..39 with q = pos1 of the template record takes, in this order of preference: the
+  remaining batter whose pos1 == q, max S; else the remaining batter that can_play(q) (C6), max Off + Fld(q); else
+  the remaining batter with max S.
+  Ties: earliest candidate. No candidate left: the slot is vacated (both records).
+- The chosen player's two records (s, s + 40) are copied byte for byte into the template slot (i, i + 40). The
+  source team is not changed.
+- Header: the C6 step 7 depth rebuild with no form draws (no rng use, so the C6 rng stream and every other output
+  are unchanged). Every other header byte is kept.
+- Written with the other outputs (same TMP and rollback rules); HISTORY and HISTWR ignore ALLSTAR files (C2).
 
 ## C7. Awards and milestones (DRAFT 2026-10-07; HISTWR + history.record_season, after the C2 step 3 player pass)
 
