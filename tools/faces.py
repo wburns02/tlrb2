@@ -8,9 +8,16 @@ BB 2000:b6df remaps 48..63 per team (0x10: 64..79 -> 48..63, 0x20: 48..63 -> 64.
 team ramp, 56..63 the secondary. Only cap and collar pixels may land on 48..55; 56..63 is never used.
 
 usage:
-  faces.py gen OUTDIR [N]           render N (default all) prompts on the local ComfyUI (GPU courtesy check first)
-  faces.py build OUTDIR             crop + quantize OUTDIR/raw/*.png to OUTDIR/frames/*.bin, preview sheets
-  faces.py append ANM_IN ANM_OUT BIN...   copy ANM_IN with the frames appended (count updated)
+  faces.py gen OUTDIR [N] [SET]     render N (default all) prompts of SET (pilot, set1) on the local ComfyUI
+                                    (GPU courtesy check first); OUTDIR/groups.json gets each face's group flag
+  faces.py build OUTDIR             crop + quantize OUTDIR/raw/*.png to OUTDIR/frames/*.bin, preview sheets;
+                                    frames whose cap does not take the team colour go to OUTDIR/rejects
+  faces.py append ANM_IN ANM_OUT BIN...   copy ANM_IN with the frames appended (count updated) and write
+                                    FACEGRP.DAT (one group flag byte per face) next to ANM_OUT
+
+Group flag: UTIL DS:776e flags the stock faces 3, 4, 16, 18, 20, 21, 22, 25, 27 (dark skin), and UTIL 5000:ea5e
+assigns a generic face whose flag matches the player record's +0x1d bit0. FACEGRP.DAT carries the same flag for
+every face, stock and new, so our rookie generator can keep face and record flag in agreement.
 """
 import colorsys
 import glob
@@ -37,6 +44,8 @@ TEAM = range(48, 56)                        # primary team colour ramp (cap, col
 TEAM2 = range(56, 64)                       # secondary team ramp: browns in DEFAULT.PAL, never used
 SKIP = {0, 7, 8, 64}                        # rare in stock faces, kept out of new art
 CAP_ROWS, COLLAR_ROW = 21, 38               # team colour only on the cap (rows 0..20) and collar/jersey (38..55)
+CAP_MIN = 100                               # team-ramp pixels in the cap rows; stock faces have 199..726
+STOCK_GROUP = bytes(1 if i in (3, 4, 16, 18, 20, 21, 22, 25, 27) else 0 for i in range(30))   # UTIL DS:776e
 
 STYLE = ('head and shoulders portrait of a fictional professional baseball player from the 1980s, {who}, '
          'wearing a plain bright red baseball cap with no logo and a light gray baseball jersey with thin dark '
@@ -44,7 +53,7 @@ STYLE = ('head and shoulders portrait of a fictional professional baseball playe
          'chest up, looking toward the camera')
 NEG = ('logo, letters, text, watermark, helmet, bat, glove, hands, sunglasses, two people, cropped head, '
        'blurry, photo frame, border')
-WHO = [
+PILOT = [
     'young white rookie with freckles, clean shaven, slight smile',
     'Black veteran in his thirties with a thick mustache, serious',
     'Latino shortstop in his twenties with a thin mustache, confident',
@@ -56,6 +65,27 @@ WHO = [
     'Black first baseman with a short goatee, calm expression',
     'Asian American utility player in his twenties, clean shaven, neutral expression',
 ]
+PILOT_GROUP = [0, 1, 0, 0, 1, 0, 0, 0, 1, 0]
+
+
+def _set1():
+    """60 faces, roughly a 1980s major league mix: 36 white, 12 Black, 10 Latino, 2 Asian American."""
+    kinds = [('white', 0)] * 36 + [('Black', 1)] * 12 + [('Latino', 0)] * 10 + [('Asian American', 0)] * 2
+    ages = ['young rookie', 'player in his mid twenties', 'veteran in his early thirties',
+            'veteran in his late thirties with a weathered face']
+    hair = ['clean shaven', 'with a thick mustache', 'with light stubble', 'with a short beard',
+            'with a thin mustache', 'clean shaven with sideburns']
+    looks = ['slight smile', 'serious expression', 'broad smile', 'intense stare', 'calm expression']
+    build = ['', 'heavyset ', 'lean ', '']
+    who, grp = [], []
+    for k, (kind, g) in enumerate(kinds):
+        who.append('%s%s %s, %s, %s' % (build[k % 4], kind, ages[(k * 7) % 4], hair[(k * 5) % 6], looks[(k * 3) % 5]))
+        grp.append(g)
+    order = sorted(range(len(who)), key=lambda k: (k * 37) % len(who))   # interleave kinds
+    return [who[k] for k in order], [grp[k] for k in order]
+
+
+SETS = {'pilot': (PILOT, PILOT_GROUP, 7100), 'set1': _set1() + (7300,)}
 
 
 def owner_busy(window_s=180):
@@ -92,16 +122,18 @@ def _workflow(text, seed):
     }
 
 
-def gen(outdir, n=None):
+def gen(outdir, n=None, name='pilot'):
+    who_list, groups, seed0 = SETS[name]
     raw = os.path.join(outdir, 'raw')
     os.makedirs(raw, exist_ok=True)
-    for k, who in enumerate(WHO[:n]):
+    json.dump({'face%02d' % k: g for k, g in enumerate(groups)}, open(os.path.join(outdir, 'groups.json'), 'w'))
+    for k, who in enumerate(who_list[:n]):
         dst = os.path.join(raw, 'face%02d.png' % k)
         if os.path.exists(dst):
             continue
         if owner_busy():
             sys.exit('GPU courtesy: companion app active in the last 180 s, stopping')
-        pid = _post('/prompt', {'prompt': _workflow(STYLE.format(who=who), 7100 + k)})['prompt_id']
+        pid = _post('/prompt', {'prompt': _workflow(STYLE.format(who=who), seed0 + k)})['prompt_id']
         for _ in range(600):
             time.sleep(1)
             h = json.load(urllib.request.urlopen(COMFY + '/history/' + pid, timeout=30))
@@ -170,6 +202,15 @@ def build(outdir):
         im = im.crop(((w - cw) // 2, 0, (w - cw) // 2 + cw, ch))
         im = ImageEnhance.Contrast(im.resize((W, H), Image.LANCZOS)).enhance(1.1)
         px = quantize(im, pal)
+        cap = sum(1 for k, b in enumerate(px) if k // W < CAP_ROWS and b in TEAM)
+        if cap < CAP_MIN:                       # cap would stay gray or brown instead of the team colour
+            os.makedirs(os.path.join(outdir, 'rejects'), exist_ok=True)
+            open(os.path.join(outdir, 'rejects', os.path.basename(p)[:-4] + '.bin'), 'wb').write(px)
+            print('reject %s: %d team pixels in the cap' % (os.path.basename(p), cap))
+            stale = os.path.join(fdir, os.path.basename(p)[:-4] + '.bin')
+            if os.path.exists(stale):
+                os.remove(stale)
+            continue
         open(os.path.join(fdir, os.path.basename(p)[:-4] + '.bin'), 'wb').write(px)
         tiles.append(px)
     # preview: row 1 under DEFAULT.PAL (red team), row 2 with the team ramp shown blue
@@ -194,19 +235,28 @@ def append(anm_in, anm_out, bins):
     for p in ('/mnt/nvme/tlrb2/c/', '/mnt/nvme/tlrb2/pristine/'):
         if os.path.abspath(anm_out).startswith(p):
             sys.exit('refusing to write under ' + p)
+    grp_in = os.path.join(os.path.dirname(anm_in), 'FACEGRP.DAT')
+    grp = bytearray(open(grp_in, 'rb').read() if os.path.exists(grp_in) else STOCK_GROUP)
+    if len(grp) != n:
+        sys.exit('%s has %d flags for %d faces' % (grp_in, len(grp), n))
     out = bytearray(struct.pack('<H', n + len(bins)) + d[2:])
     for b in bins:
         px = open(b, 'rb').read()
         assert len(px) == W * H, b
         out += FRAME_HDR + px
+        gj = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(b))), 'groups.json')
+        grp.append(json.load(open(gj))[os.path.basename(b)[:-4]] if os.path.exists(gj) else 0)
+    if n + len(bins) > 981:
+        sys.exit('BB reads PORTRAIT.ANM only below index 981')
     open(anm_out, 'wb').write(bytes(out))
+    open(os.path.join(os.path.dirname(anm_out), 'FACEGRP.DAT'), 'wb').write(bytes(grp))
     print('%s: %d -> %d frames, new ids %d..%d' % (anm_out, n, n + len(bins), n, n + len(bins) - 1))
 
 
 if __name__ == '__main__':
     a = sys.argv[1:]
     if a[:1] == ['gen']:
-        gen(a[1], int(a[2]) if len(a) > 2 else None)
+        gen(a[1], int(a[2]) if len(a) > 2 else None, a[3] if len(a) > 3 else 'pilot')
     elif a[:1] == ['build']:
         build(a[1])
     elif a[:1] == ['append']:
