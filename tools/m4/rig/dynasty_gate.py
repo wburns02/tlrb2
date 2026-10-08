@@ -252,12 +252,17 @@ def main(argv):
         sys.exit('--league needs --fresh')
     if a.fresh:
         setup_fresh(a.install, a.league)
-    if a.fresh or rig.window() is None:
-        launch(a.install)
     first = a.first
     if first is None:
         done = [int(os.path.basename(p)[1:-5]) for p in glob.glob(os.path.join(LOGS, 's*_post'))]
         first = max(done, default=0) + 1
+    if a.fresh or rig.window() is None:
+        launch(a.install)
+    else:
+        # resuming: a run that stopped after a roll leaves the game at the DOS prompt
+        dr = season_sim.Driver(first, a.install)
+        if dr.state()[0] == 'dos_prompt':
+            dr.relaunch()
     summary = {'started': time.strftime('%Y-%m-%d %H:%M:%S'), 'install': a.install, 'seasons': []}
     ok = True
     for n in range(first, first + a.seasons):
