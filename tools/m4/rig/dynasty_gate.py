@@ -307,6 +307,13 @@ def gate_one(n, install, full, fill=True, do_history=True):
     dr.log(f'roll seed {seed}: check_roll {"PASS" if rec["check_roll"] == "PASS" else "FAIL"}, '
            f'{len(errs)} roster errors, {rec["named_total"]} named records, '
            f'history {rec["history_check"] if isinstance(rec["history_check"], str) else "FAIL"}')
+    # a failure names its first few mismatches in the log (the record alone went unread once)
+    for key in ('check_roll', 'roster_errors', 'history_check'):
+        v = rec.get(key)
+        if v and v not in ('PASS', 'SKIPPED'):
+            items = v if isinstance(v, list) else [f'{k}: {x}' for k, x in v.items()] if isinstance(v, dict) else [v]
+            for x in items[:5]:
+                dr.log(f'  {key}: {x}')
     return rec, dr
 
 
