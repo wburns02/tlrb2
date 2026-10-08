@@ -132,6 +132,10 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
   game kept the original classic stars forever.
 - ROSTERS.EXE is a 32-bit DOS/32A program (2026-10-07): the 16-bit build ran out of conventional memory on the first
   mature real-game roll (570 free-agent market moves) and exited 2 with every file untouched.
+- Final gate (2026-10-07, full chain DYNASTY + HISTWR + ROSTERS + DYNVIEW): 7 straight real-game seasons byte-exact
+  against the Python chain, CLASSIC s107..s110 and Lahman 1985 s111..s113. Two real-game failures on the way were
+  fixed with tests on the real snapshots: ROSTERS out of conventional memory (s104) and HISTWR dropping AL award
+  winners once ROSTERS trades interleaved the leagues' entry indices (s106).
 
 ## Phasing (each phase gated by rig verification before the next)
 
