@@ -8,11 +8,13 @@ usage:
   stadium.py iso IN.iso OUT.iso FILE...    copy the CD image with STADIUMS/<name> (SDM, CFG) or
                                            ANMS/<name> (OVL) replaced or added
   stadium.py render SDM CFG OUT.png        panorama in its real colours
+  stadium.py info CFG...                   decoded header (name, surface, fences, conditions, notes id)
 
 BB reads stadiums from the CD drive (SYSTEM byte 0x4b, auto_prepend_drive_to_path), never from C:, so new or
 changed parks ship as a rebuilt CD image. Never writes under the live install or pristine.
 """
 import os
+import struct
 import subprocess
 import sys
 
@@ -64,6 +66,20 @@ def render(px, pal):
     return im.convert('RGB')
 
 
+SURFACE = {0: 'turf', 1: 'grass', 2: 'classic'}   # 0 = every 1992 turf park incl. domes, 2 = the historic parks
+EDGE_N, FENCE_EDGE, WALL_EDGE = 70, 0x153, 0x26b   # 70 x (u16 y, u16 column) per edge, column k = panorama x 16k..16k+15
+
+
+def info(cfg):
+    """decoded CFG header. Conditions as shown on Assign Stadiums; notes is a per-park id 0..40 (37 GRASS, 38 TURF)."""
+    lf, lcf, cf, rcf, rf = struct.unpack_from('<5H', cfg, 0x20)
+    return dict(name=cfg[:31].split(b'\0')[0].decode('latin-1'), surface=SURFACE.get(cfg[0x1f], cfg[0x1f]),
+                fences=(lf, lcf, cf, rcf, rf), wind_mph=cfg[0x2a], wind_dir=cfg[0x2b], temp_f=cfg[0x2c],
+                humidity=cfg[0x2d], altitude_ft=struct.unpack_from('<H', cfg, 0x2f)[0], notes=cfg[0x31],
+                fence_y=[struct.unpack_from('<H', cfg, FENCE_EDGE + 4 * k)[0] for k in range(EDGE_N)],
+                wall_y=[struct.unpack_from('<H', cfg, WALL_EDGE + 4 * k)[0] for k in range(EDGE_N)])
+
+
 def iso(src, dst, sdms):
     cmd = ['xorriso', '-indev', src, '-outdev', _out(dst), '-boot_image', 'any', 'keep']
     for s in sdms:                              # thumbnails (.OVL) live in ANMS, everything else in STADIUMS
@@ -85,6 +101,10 @@ if __name__ == '__main__':
         open(_out(a[2]), 'wb').write(implode(marker(unpack(a[1]))))
     elif a[:1] == ['render'] and len(a) == 4:
         render(unpack(a[1]), palette(open(a[2], 'rb').read())).save(_out(a[3]))
+    elif a[:1] == ['info'] and len(a) >= 2:
+        for f in a[1:]:
+            i = info(open(f, 'rb').read())
+            print('%s: %s' % (os.path.basename(f), ', '.join('%s=%s' % kv for kv in i.items() if not kv[0].endswith('_y'))))
     elif a[:1] == ['iso'] and len(a) >= 4:
         iso(a[1], a[2], a[3:])
     else:
