@@ -33,6 +33,7 @@ from v20 import SIZE as V20_SIZE                         # noqa: E402
 WATCOM = '/mnt/nvme/tools/openwatcom'
 DOSBOX = '/mnt/nvme/src/dosbox-x/src/dosbox-x'
 S1_PRE = '/mnt/nvme/tlrb2/fixtures/t4/s1_pre'
+MATURE = '/mnt/nvme/tlrb2/fixtures/r3_mature'   # league + snap of a real s104 roll
 RC = 'rosters_c'
 ROSTERS_C = os.path.join(HERE, RC, 'rosters.c')
 HOST = os.path.join(HERE, RC, 'rosters_host')
@@ -805,3 +806,26 @@ def test_dos_big_history_parity(tmp_path):
         assert got == want, (size, first_diff(want, got))
         compare('ROSTERS.TXT', open(os.path.join(lc, ROSTERS_TXT), 'rb').read(),
                 open(os.path.join(cd, ROSTERS_TXT), 'rb').read())
+
+
+def test_dos_mature_league_parity(tmp_path):
+    """A mature real-game league (the s104 CLASSIC roll: 570 market moves) under DOS. The 16-bit large-model build ran
+    out of conventional memory here (exit 2, every file untouched); the DOS/32A build must match Python byte for byte."""
+    if not _dos_ready():
+        import pytest
+        pytest.skip('ROSTERS.EXE or dosbox-x missing')
+    if not os.path.isdir(MATURE):
+        import pytest
+        pytest.skip('fixtures missing')
+    d = str(tmp_path)
+    lc, cd, dd = (os.path.join(d, n) for n in ('py', 'dos', 'SNAP'))
+    shutil.copytree(os.path.join(MATURE, 'league'), lc)
+    shutil.copytree(os.path.join(MATURE, 'league'), cd)
+    shutil.copytree(os.path.join(MATURE, 'snap'), dd)
+    assert rosters_py.run(lc, dd, os.path.join(lc, 'HISTORY.DAT'), os.path.join(dd, 'RETIRED.DAT')) == 0
+    rc = run_dos(cd, ['ROSTERS.EXE . D: HISTORY.DAT D:RETIRED.DAT'], dd)
+    assert rc == 0, f'dos rc {rc}'
+    names = sorted(f for f in os.listdir(lc) if f.upper().endswith('.V20')) + ['HISTORY.DAT', ROSTERS_TXT]
+    assert any(n.upper().startswith('ALLSTAR') for n in names)
+    for n in names:
+        compare(n, open(os.path.join(lc, n), 'rb').read(), open(os.path.join(cd, n), 'rb').read())

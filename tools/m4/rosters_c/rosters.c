@@ -1,7 +1,9 @@
 /* ROSTERS: C port of tools/m4/rosters.py, the C6 offseason
  * (notes/M4_CONTRACT.md C6; rosters.py is authoritative for every byte).
- * Host build: gcc (parity tests). DOS build: OpenWatcom, large model 16-bit
- * int. One malloc per team image (11735 B) and per pool image; snapshots are
+ * Host build: gcc (parity tests). DOS build: OpenWatcom 32-bit with the
+ * DOS/32A extender bound in (build_rosters.py; a 16-bit large-model build ran
+ * out of conventional memory on a mature league). The code still keeps every
+ * object under 64 KB. One malloc per team image (11735 B) and per pool image; snapshots are
  * reduced to per-slot compact structs at load (no whole snapshot image kept).
  * Outputs all land in <path>.TMP files first and are renamed over the
  * originals only after every TMP write succeeded.
