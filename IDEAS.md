@@ -87,3 +87,31 @@ Queued:
   from the game's own decoded stat-to-rating formulas (the C1 evidence targets), not ClaudeBall's conversion.
 Not worth taking: its HoF score (counting stats only, ours has WAR/JAWS), position assignment (takes the first
 candidate, not the best), morale/hot-cold/injury/schedule/commentary (the TLRB2 engine has its own).
+
+## Play in a web browser with saves (Will, 2026-10-08)
+DONE. web/: build_bundle.py packs an installed C: drive (plus overlays such as the faces install) and the parks CD
+image into a js-dos bundle; server.py serves it on localhost with a server-side save store; index.html runs it in
+js-dos (DOSBox-X backend). Host it behind a private HTTPS proxy only (the bundle is the game, never public). Saves
+are server-side named slots: Save now, Save as, Load, Delete (to history), New league from the clean bundle,
+restore any of the last 20 versions per slot, autosave every 2/5/10 min plus on tab hide. Slot switches reload
+the page (js-dos 8.5.3 props.stop() never resolves). The deployed bundle is a dynasty install: QUIT after the
+World Series loops back through TONY2.BAT, which rolls the season (the full DYNASTY + HISTWR + ROSTERS + DYNVIEW
+chain, byte-exact against the Python reference in the browser too; rookies draw from the new faces table).
+
+## Old seasons are never destroyed (Will, 2026-10-08)
+Stock Start New Season wipes the simulated season and box scores. Dynasty now archives first: ARCHIVE.BAT (written
+by bat_patch) copies the finished pre-roll league (all V20s, MAJ, PLAYOFFS, HISTORY, MILESTON, RETIRED) to the first
+free C:\SEASONS\Snn before the roll, verified byte-exact in the browser. Career stats, history, awards and the Hall
+of Fame already carry forward. Open: browse an archived season in game (DYNVIEW "past seasons": standings, leaders,
+playoff box scores from SEASONS\Snn), and a pre-roll guard if Start New Season is chosen without QUIT first.
+
+## Create a player, create a team (Will, 2026-10-08, deep research TODO)
+Stock: only UTIL Edit Player Stats (age, salary, names; ratings recomputed from stats unless the user-set flag at
+record byte 140 is on), Edit Team Names, Assign Stadiums, Team Colors. No generator, no face picker (faces are
+random at import), no create-team flow. Building blocks we own: V20 record and team header decode, ratings.py
+(all 9 formulas + salary), m4/rookies.py RookieGen, m4/team_fill.py, faces 30..96 + FACEGRP.DAT, parkgen +
+stadium refence, DYNVIEW as the pattern for new in-game screens, MAJ slot 7 unused. Candidate path, cheapest
+first: archetype player creator on RookieGen (position, grade, handedness, face), draft-style GM presets, create a
+team in MAJ slot 7 (name, abbr, colours, generated park, roster via fill_team or an expansion draft from the
+pools), then an in-game create screen (name entry, face browser over 30..96, rating sliders with live salary).
+Gaps: uniform drawing, logo, typed-name entry UI, position eligibility rules. Needs a design pass with Will.

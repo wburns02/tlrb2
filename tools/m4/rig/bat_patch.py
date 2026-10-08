@@ -8,6 +8,7 @@ Replaces the stock `:start` / `control` with:
   if errorlevel 1 goto rolled
   goto ctl
   :rolled
+  call archive
   histwr
   rosters
   dynview /review
@@ -16,7 +17,8 @@ Replaces the stock `:start` / `control` with:
 
 Every earlier patched form (C5 with and without the histwr line) upgrades in
 place. CRLF line endings, idempotent, asserts stock content, refuses
-live/pristine paths.
+live/pristine paths. Also writes ARCHIVE.BAT next to TONY2.BAT: it copies the finished season (the
+pre-roll snapshot in C:\DYNSNAP) to the first free C:\SEASONS\Snn, so a new season never destroys the old one.
 Usage:
   bat_patch.py INSTALL_ROOT [--revert]
 """
@@ -36,6 +38,7 @@ PATCHED_START = (
     'if errorlevel 1 goto rolled\r\n'
     'goto ctl\r\n'
     ':rolled\r\n'
+    'call archive\r\n'
     'histwr\r\n'
     'rosters\r\n'
     'dynview /review\r\n'
@@ -48,6 +51,17 @@ EARLIER_FORMS = (
     (':start\r\n'
      'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
      'dynasty\r\n'
+     'if errorlevel 1 goto rolled\r\n'
+     'goto ctl\r\n'
+     ':rolled\r\n'
+     'histwr\r\n'
+     'rosters\r\n'
+     'dynview /review\r\n'
+     ':ctl\r\n'
+     'control\r\n'),
+    (':start\r\n'
+     'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
+     'dynasty\r\n'
      'if errorlevel 1 histwr\r\n'
      'control\r\n'),
     (':start\r\n'
@@ -56,6 +70,22 @@ EARLIER_FORMS = (
      'control\r\n'),
 )
 PATCHED_START_OLD = EARLIER_FORMS[-1]
+
+ARCHIVE_SLOTS = 99
+
+
+def archive_bat(slots=ARCHIVE_SLOTS):
+    """ARCHIVE.BAT text (CRLF): copy C:\\DYNSNAP to the first C:\\SEASONS\\Snn without a CLASSIC.MAJ."""
+    lines = ['@echo off', 'if not exist C:\\SEASONS\\NUL md C:\\SEASONS']
+    names = ['S%02d' % i for i in range(1, slots + 1)]
+    lines += [f'if not exist C:\\SEASONS\\{n}\\CLASSIC.MAJ goto {n}' for n in names]
+    lines.append('goto done')
+    for n in names:
+        lines += [f':{n}', f'if not exist C:\\SEASONS\\{n}\\NUL md C:\\SEASONS\\{n}',
+                  f'copy C:\\DYNSNAP\\*.* C:\\SEASONS\\{n} > NUL', 'goto done']
+    lines.append(':done')
+    return '\r\n'.join(lines) + '\r\n'
+
 
 # Will's live install, the pristine copy, and the shared work install are never patched
 REFUSE = ('/mnt/nvme/tlrb2/c/', '/mnt/nvme/tlrb2/pristine/', '/mnt/nvme/tlrb2/work/c/')
@@ -103,6 +133,13 @@ def patch(install_root, revert=False):
 
     with open(bat_path, 'wb') as f:
         f.write(content.encode('cp437'))
+    arch = os.path.join(install_root, 'ARCHIVE.BAT')
+    if revert:
+        if os.path.exists(arch):
+            os.remove(arch)
+    else:
+        with open(arch, 'wb') as f:
+            f.write(archive_bat().encode('cp437'))
 
     return True
 

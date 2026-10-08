@@ -78,7 +78,7 @@ class TestBatPatch:
         earlier patched form upgrades in place and reverts to stock."""
         body = bat_patch.PATCHED_START.replace('\r\n', '\n')
         assert body == (':start\ncopy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\ndynasty\n'
-                        'if errorlevel 1 goto rolled\ngoto ctl\n:rolled\nhistwr\nrosters\n'
+                        'if errorlevel 1 goto rolled\ngoto ctl\n:rolled\ncall archive\nhistwr\nrosters\n'
                         'dynview /review\n:ctl\ncontrol\n')
         for old in bat_patch.EARLIER_FORMS:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -92,6 +92,30 @@ class TestBatPatch:
                 assert bat_patch.patch(str(install), revert=True)
                 assert bat.read_bytes().decode('cp437') == (
                     'echo off\r\n' + bat_patch.STOCK_START + 'goto x\r\n')
+
+    def test_archive_bat_written_and_reverted(self):
+        """patch() writes ARCHIVE.BAT (first free C:\\SEASONS\\Snn gets the DYNSNAP copy); revert removes it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            install = Path(tmpdir) / 'TONY2'
+            install.mkdir()
+            (install / 'TONY2.BAT').write_bytes(('echo off\r\n' + bat_patch.STOCK_START).encode('cp437'))
+            assert bat_patch.patch(str(install), revert=False)
+            text = (install / 'ARCHIVE.BAT').read_bytes().decode('cp437')
+            assert text == bat_patch.archive_bat()
+            lines = text.split('\r\n')
+            assert lines[-1] == '' and '\n' not in text.replace('\r\n', '')
+            n = bat_patch.ARCHIVE_SLOTS
+            assert lines.count('goto done') == n + 1
+            for i in (1, n):
+                s = 'S%02d' % i
+                assert f'if not exist C:\\SEASONS\\{s}\\CLASSIC.MAJ goto {s}' in lines
+                at = lines.index(':' + s)
+                assert lines[at + 2] == f'copy C:\\DYNSNAP\\*.* C:\\SEASONS\\{s} > NUL'
+            # the probes run in slot order, so the first free slot wins
+            probes = [l for l in lines if l.startswith('if not exist C:\\SEASONS\\S') and 'CLASSIC.MAJ' in l]
+            assert probes == sorted(probes) and len(probes) == n
+            assert bat_patch.patch(str(install), revert=True)
+            assert not (install / 'ARCHIVE.BAT').exists()
 
     def test_c7_labels_free_in_stock_bat(self):
         """The new labels do not collide with the shipped TONY2.BAT (DOS

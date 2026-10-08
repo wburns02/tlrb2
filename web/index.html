@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tony La Russa Baseball II</title>
+<link rel="stylesheet" href="js-dos.css">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; }
+  #dos { width: 100%; height: 100%; }
+  #status { position: fixed; right: 8px; bottom: 6px; font: 12px monospace; color: #9a9; pointer-events: none; }
+  #saves-toggle { font: 12px monospace; background: #111e; color: #ddd; border: 1px solid #444; padding: 3px 8px; cursor: pointer; }
+  #saves-panel { margin-top: 4px; width: 300px; max-height: 80vh; overflow: auto; box-sizing: border-box; padding: 8px;
+                 font: 12px monospace; background: #111e; color: #ddd; border: 1px solid #444; }
+  #saves-top { position: fixed; top: 8px; right: 8px; z-index: 10000; }
+  #saves-panel [hidden] { display: none !important; }
+  #saves-top [hidden] { display: none !important; }
+  #saves-panel button { font: 12px monospace; background: #222; color: #ddd; border: 1px solid #444; padding: 2px 6px; margin: 2px 0; cursor: pointer; }
+  #saves-panel input[type=text] { font: 12px monospace; background: #000; color: #ddd; border: 1px solid #444; width: 100%; box-sizing: border-box; padding: 2px 4px; margin: 2px 0; }
+  #saves-panel select { font: 12px monospace; background: #000; color: #ddd; border: 1px solid #444; }
+  #saves-panel .sec { margin-top: 8px; padding-top: 6px; border-top: 1px solid #333; }
+  #saves-panel ul { list-style: none; margin: 4px 0; padding: 0; }
+  #saves-panel li { border-top: 1px solid #333; padding: 4px 0; }
+  #saves-panel .muted { color: #888; }
+  #saves-err { color: #e88; min-height: 1em; }
+  #saves-msg { color: #9c9; min-height: 1em; }
+  #saves-panel details { margin-left: 8px; }
+  #saves-panel details li { border-top: 1px dotted #333; }
+</style>
+</head>
+<body>
+<div id="dos"></div>
+<div id="status"></div>
+<div id="saves-top">
+  <button id="saves-toggle" type="button">SAVES</button>
+  <div id="saves-panel" hidden>
+    <div><b id="saves-slot"></b></div>
+    <div class="muted" id="saves-last"></div>
+    <div class="sec">
+      <button id="saves-now" type="button">Save now</button>
+      <div id="saves-msg"></div>
+      <div id="saves-err"></div>
+      <button id="saves-force" type="button" hidden></button>
+    </div>
+    <div class="sec">
+      <div class="muted">Save as (copies the current slot)</div>
+      <input type="text" id="saves-as" maxlength="64" autocomplete="off" spellcheck="false">
+      <button id="saves-as-go" type="button">Save as</button>
+    </div>
+    <div class="sec">
+      <div class="muted">Slots</div>
+      <ul id="saves-list"></ul>
+    </div>
+    <div class="sec">
+      <div class="muted">New league (starts from the clean bundle)</div>
+      <input type="text" id="saves-league" maxlength="64" autocomplete="off" spellcheck="false">
+      <button id="saves-league-go" type="button">New league</button>
+    </div>
+    <div class="sec">
+      <label><input type="checkbox" id="saves-auto"> Autosave every</label>
+      <select id="saves-every">
+        <option value="2">2 min</option>
+        <option value="5">5 min</option>
+        <option value="10">10 min</option>
+      </select>
+    </div>
+  </div>
+</div>
+<script src="js-dos.js"></script>
+<script>
+// Saves live on the server (saves/<slot>), so a season follows you to any browser on the tailnet.
+// A slot is just a different server key. js-dos saves on its sidebar Save button and, with autoSave, when the
+// tab is hidden, fullscreen is left or the mouse is unlocked. This page adds a SAVES panel on top of that.
+const DEFAULT_SLOT = 'tlrb2-main';
+const SLOT_RE = /^[A-Za-z0-9._-]{1,64}$/;
+const PREFS_KEY = 'tlrb2.prefs';
+const byId = (id) => document.getElementById(id);
+const status = byId('status');
+
+function validSlot(s) { return typeof s === 'string' && SLOT_RE.test(s) && s.charAt(0) !== '.'; }
+function slotError(s) {
+  return validSlot(s) ? '' : 'Use 1 to 64 letters, digits, dots, dashes or underscores. No leading dot.';
+}
+function readPrefs() {
+  try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch (e) { return {}; }
+}
+function writePrefs(patch) {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(Object.assign(readPrefs(), patch))); } catch (e) { /* private mode */ }
+}
+function initialSlot() {
+  const m = /(?:^|[#&])slot=([^&]*)/.exec(location.hash);
+  if (m) {
+    try { const s = decodeURIComponent(m[1]); if (validSlot(s)) return s; } catch (e) { /* bad escape */ }
+  }
+  const p = readPrefs().slot;
+  return validSlot(p) ? p : DEFAULT_SLOT;
+}
+function setStatus(m) { status.textContent = m; }
+function setMsg(m) { byId('saves-msg').textContent = m; }
+function setErr(m) { byId('saves-err').textContent = m; }
+function slotUrl(name) { return 'saves/' + encodeURIComponent(name); }
+
+let slot = initialSlot();
+let dos = null;
+let busy = false;
+let lastSaved = null;      // ms, last successful save of the current slot this session
+let listing = { slots: [], versions: {} };
+let pendingSwitch = null;  // slot name blocked by a failed save, awaiting "Switch anyway"
+let autoTimer = null;
+let leaving = false;     // set once a slot switch starts reloading the page
+
+function makeFs(name) {
+  return {
+    urlToKey: () => name,
+    pull: async (key) => {
+      const r = await fetch(slotUrl(key), { cache: 'no-store' });
+      if (r.status === 404) {
+        if (name === slot) setStatus('slot ' + name + ': no save yet (new league)');
+        return null;
+      }
+      if (!r.ok) throw new Error('load failed: ' + r.status);
+      if (name === slot) setStatus('slot ' + name + ': loaded');
+      return new Uint8Array(await r.arrayBuffer());
+    },
+    push: async (key, data) => {
+      if (leaving) return;
+      const r = await fetch(slotUrl(key), { method: 'PUT', body: data });
+      if (!r.ok) {
+        if (name === slot) setStatus('slot ' + name + ': SAVE FAILED ' + r.status);
+        throw new Error('save failed: ' + r.status);
+      }
+      if (name === slot) {
+        lastSaved = Date.now();
+        setStatus('slot ' + name + ': saved ' + new Date(lastSaved).toLocaleTimeString());
+        renderHeader();
+      }
+    },
+    delete: async (key) => { await fetch(slotUrl(key), { method: 'DELETE' }); },
+  };
+}
+
+function boot(name) {
+  const old = byId('dos');
+  const host = document.createElement('div');
+  host.id = 'dos';
+  old.replaceWith(host);
+  return Dos(host, {
+    url: 'tlrb2.jsdos',
+    pathPrefix: 'emulators/',
+    backend: 'dosboxX',
+    autoStart: true,
+    autoSave: true,
+    noCloud: true,
+    fsChanges: makeFs(name),
+  });
+}
+
+async function saveNow() {
+  if (!dos) return false;
+  let ok = false;
+  try { ok = (await dos.save()) !== false; } catch (e) { ok = false; }
+  setMsg(ok ? 'saved ' + new Date().toLocaleTimeString() : 'SAVE FAILED');
+  if (ok && !leaving && !byId('saves-panel').hidden) refreshList();
+  return ok;
+}
+
+async function switchTo(name, opts) {
+  opts = opts || {};
+  if (busy) return false;
+  busy = true;
+  try {
+    if (dos && !opts.skipSave && !opts.force) {
+      const ok = await saveNow();
+      if (!ok) {
+        pendingSwitch = name;
+        renderPending();
+        return false;
+      }
+    }
+    pendingSwitch = null;
+    renderPending();
+    // js-dos 8.5.3 props.stop() never resolves, so a slot switch is a page reload with the slot in the hash.
+    // leaving blocks pushes from here on, so autoSave on unload cannot overwrite a just-restored slot.
+    leaving = true;
+    writePrefs({ slot: name });
+    location.hash = 'slot=' + encodeURIComponent(name);
+    location.reload();
+    return true;
+  } catch (e) {
+    setErr('switch failed: ' + e.message);
+    return false;
+  } finally {
+    busy = false;
+  }
+}
+
+function renderHeader() {
+  byId('saves-slot').textContent = 'slot ' + slot;
+  let t = lastSaved;
+  if (!t && listing.slots) {
+    const hit = listing.slots.find((s) => s.name === slot);
+    if (hit) t = hit.mtime * 1000;
+  }
+  byId('saves-last').textContent = t ? 'last saved ' + new Date(t).toLocaleString() : 'not saved yet';
+}
+
+function renderPending() {
+  const b = byId('saves-force');
+  b.hidden = !pendingSwitch;
+  if (pendingSwitch) {
+    b.textContent = 'Switch anyway to ' + pendingSwitch;
+    setErr('Save failed. Switching now drops unsaved progress in ' + slot + '.');
+  }
+}
+
+async function fetchListing() {
+  const r = await fetch('saves/', { cache: 'no-store' });
+  if (!r.ok) throw new Error('list failed: ' + r.status);
+  return r.json();
+}
+
+async function refreshList() {
+  try {
+    listing = await fetchListing();
+    renderList();
+    renderHeader();
+  } catch (e) {
+    setErr('could not load slot list');
+  }
+}
+
+function el(tag, text, cls) {
+  const n = document.createElement(tag);
+  if (text != null) n.textContent = text;
+  if (cls) n.className = cls;
+  return n;
+}
+
+function button(label, onClick) {
+  const b = el('button', label);
+  b.type = 'button';
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function fmtKB(size) { return (size / 1024).toFixed(1) + ' KB'; }
+function fmtTime(mtime) { return new Date(mtime * 1000).toLocaleString(); }
+
+function versionRows(name, versions) {
+  const d = el('details');
+  d.appendChild(el('summary', 'history (' + versions.length + ')', 'muted'));
+  const ul = el('ul');
+  for (const v of versions) {
+    const li = el('li');
+    li.appendChild(el('div', fmtTime(v.mtime) + '  ' + fmtKB(v.size) + '  ' + v.tag, 'muted'));
+    li.appendChild(button('Restore', () => restoreVersion(name, v.id)));
+    ul.appendChild(li);
+  }
+  d.appendChild(ul);
+  return d;
+}
+
+function slotRow(name, slotInfo, versions, gone) {
+  const li = el('li');
+  const label = name + (name === slot ? ' (current)' : '');
+  li.appendChild(el('div', label));
+  let meta;
+  if (slotInfo) meta = fmtKB(slotInfo.size) + ', ' + fmtTime(slotInfo.mtime);
+  else if (gone) meta = 'deleted';
+  else meta = 'not saved yet';
+  li.appendChild(el('div', meta, 'muted'));
+
+  const row = el('div');
+  if (name !== slot && !gone) {
+    row.appendChild(button('Load', () => { setErr(''); switchTo(name); }));
+  }
+  if (slotInfo && name !== slot) {
+    const del = button('Delete', () => {
+      del.hidden = true;
+      const ok = button('Confirm delete', async () => {
+        const r = await fetch(slotUrl(name), { method: 'DELETE' });
+        if (!r.ok) setErr('delete failed: ' + r.status);
+        await refreshList();
+      });
+      const no = button('Cancel', () => { ok.remove(); no.remove(); del.hidden = false; });
+      row.appendChild(ok);
+      row.appendChild(no);
+    });
+    row.appendChild(del);
+  }
+  li.appendChild(row);
+  if (versions && versions.length) li.appendChild(versionRows(name, versions));
+  return li;
+}
+
+function renderList() {
+  const ul = byId('saves-list');
+  ul.textContent = '';
+  const live = listing.slots || [];
+  const versions = listing.versions || {};
+  const liveNames = new Set(live.map((s) => s.name));
+  for (const s of live) {
+    ul.appendChild(slotRow(s.name, s, versions[s.name] || [], false));
+  }
+  if (!liveNames.has(slot) && !versions[slot]) {
+    ul.insertBefore(slotRow(slot, null, [], false), ul.firstChild);
+  }
+  for (const n of Object.keys(versions)) {
+    if (!liveNames.has(n)) ul.appendChild(slotRow(n, null, versions[n], true));
+  }
+  if (!ul.firstChild) ul.appendChild(el('li', 'no slots yet', 'muted'));
+}
+
+async function restoreVersion(name, id) {
+  setErr('');
+  const r = await fetch(slotUrl(name) + '?restore=' + encodeURIComponent(id), { method: 'POST' });
+  if (!r.ok) { setErr('restore failed: ' + r.status); return; }
+  // The current slot is reloaded without saving first, so the restored copy is not overwritten.
+  const ok = name === slot ? await switchTo(name, { skipSave: true }) : await switchTo(name);
+  if (!ok && !pendingSwitch) setErr('could not reload ' + name + ', try again');
+}
+
+async function saveAs() {
+  const name = byId('saves-as').value.trim();
+  const bad = slotError(name);
+  if (bad) { setErr(bad); return; }
+  if (name === slot) { setErr('that is the current slot'); return; }
+  setErr('');
+  if (!(await saveNow())) { setErr('SAVE FAILED, nothing copied'); return; }
+  const r = await fetch(slotUrl(name) + '?copy=' + encodeURIComponent(slot), { method: 'POST' });
+  if (!r.ok) { setErr('copy failed: ' + r.status); return; }
+  await switchTo(name);
+}
+
+async function newLeague() {
+  const name = byId('saves-league').value.trim();
+  const bad = slotError(name);
+  if (bad) { setErr(bad); return; }
+  setErr('');
+  try {
+    listing = await fetchListing();
+  } catch (e) {
+    setErr('could not check slot names');
+    return;
+  }
+  const taken = name === slot || (listing.slots || []).some((s) => s.name === name) ||
+                Object.prototype.hasOwnProperty.call(listing.versions || {}, name);
+  if (taken) { setErr(name + ' already exists'); return; }
+  await switchTo(name);
+}
+
+function applyAutosave() {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+  if (!byId('saves-auto').checked) return;
+  const mins = Number(byId('saves-every').value) || 5;
+  autoTimer = setInterval(() => {
+    if (document.hidden || busy || !dos) return;
+    saveNow();
+  }, mins * 60000);
+}
+
+function loadAutosavePrefs() {
+  const p = readPrefs();
+  const every = [2, 5, 10].includes(Number(p.every)) ? String(p.every) : '5';
+  byId('saves-auto').checked = p.auto !== false;
+  byId('saves-every').value = every;
+}
+
+// Wire the panel.
+byId('saves-toggle').addEventListener('click', () => {
+  const panel = byId('saves-panel');
+  panel.hidden = !panel.hidden;
+  writePrefs({ open: !panel.hidden });
+  if (!panel.hidden) refreshList();
+});
+byId('saves-now').addEventListener('click', () => saveNow());
+byId('saves-as-go').addEventListener('click', () => saveAs());
+byId('saves-league-go').addEventListener('click', () => newLeague());
+byId('saves-force').addEventListener('click', () => {
+  const name = pendingSwitch;
+  if (name) switchTo(name, { force: true });
+});
+byId('saves-auto').addEventListener('change', () => {
+  writePrefs({ auto: byId('saves-auto').checked });
+  applyAutosave();
+});
+byId('saves-every').addEventListener('change', () => {
+  writePrefs({ every: Number(byId('saves-every').value) });
+  applyAutosave();
+});
+
+// First boot.
+setStatus('slot ' + slot + ': loading');
+dos = window.tlrb2 = boot(slot);
+writePrefs({ slot: slot });
+loadAutosavePrefs();
+applyAutosave();
+byId('saves-panel').hidden = readPrefs().open !== true;
+renderHeader();
+refreshList();
+</script>
+</body>
+</html>
