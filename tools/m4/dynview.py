@@ -99,7 +99,28 @@ def load_data(league_dir, font_dir=None):
     hist = history.History.load(hp)
     ms = history.milestone_entries(hp)
     fonts = load_fonts(font_dir) if font_dir else None
-    return {'hist': hist, 'ms': ms, 'fonts': fonts}
+    return {'hist': hist, 'ms': ms, 'fonts': fonts, 'league_dir': league_dir}
+
+
+def team_name(league_dir, stem):
+    """V20 header name (bytes 0..13, NUL ended) of LEAGUE_DIR/<STEM>.V20, '' when
+    the file is missing or the name is blank. Stems are stored lower case."""
+    if not league_dir or not stem:
+        return ''
+    want = stem.decode('latin-1').upper() + '.V20'
+    try:
+        names = os.listdir(league_dir)
+    except OSError:
+        return ''
+    for f in names:
+        if f.upper() == want:
+            try:
+                with open(os.path.join(league_dir, f), 'rb') as fh:
+                    raw = fh.read(14)
+            except OSError:
+                return ''
+            return one_field(raw)
+    return ''
 
 
 # ---------------------------------------------------------------- primitives
@@ -110,8 +131,13 @@ def glyph_of(font, ch):
     return font[k]
 
 
+def ascii_upper(s):
+    """a-z only, like DOS: str.upper() would turn latin-1 0xDF into 'SS'."""
+    return ''.join(chr(ord(c) - 32) if 'a' <= c <= 'z' else c for c in s)
+
+
 def draw_text(fb, font, x, y, s, color):
-    for ch in s.upper():
+    for ch in ascii_upper(s):
         rows, bits, adv, data_, bpr = glyph_of(font, ch)
         for r in range(rows):
             py = y + r
@@ -129,7 +155,7 @@ def draw_text(fb, font, x, y, s, color):
 
 def text_width(font, s):
     w = 0
-    for ch in s.upper():
+    for ch in ascii_upper(s):
         w += glyph_of(font, ch)[2]
     return w
 
@@ -162,10 +188,10 @@ def name_display(name20, cap=18):
     return last[:cap]
 
 
-def stem_display(stem8):
+def stem_display(stem8, league_dir=None):
     if stem8.strip(b'\0') == b'':
         return '?'
-    return one_field(stem8).upper()
+    return team_name(league_dir, one_field(stem8).encode('latin-1')) or one_field(stem8).upper()
 
 
 def fmt_count(v):
@@ -280,13 +306,16 @@ def n_entries(hist):
 
 
 def entry_name(hist, idx, cap):
-    if idx == history.NO_AWARD or idx < 0 or idx >= n_entries(hist):
+    if idx == history.NO_AWARD:
+        return 'NONE'
+    if idx < 0 or idx >= n_entries(hist):
         return '?'
     return name_display(hist.read_entry(idx)['name'], cap) or '?'
 
 
-def history_rows(hist):
-    """One row per season, newest first: YEAR, CHAMPION, RUNNER-UP, AL MVP, NL MVP."""
+def history_rows(hist, league_dir=None):
+    """One row per season, newest first: YEAR, CHAMPION, AL MVP, NL MVP (the
+    runner-up is on REVIEW; dropping it leaves room for full team names)."""
     n = min(hist.seasons_recorded, history.SEASON_COUNT)
     items = []
     for pos in range(1, n + 1):
@@ -296,10 +325,9 @@ def history_rows(hist):
     out = []
     for _s, _p, se in items:
         out.append(('%d' % se['season_no'],
-                    stem_display(se['champion_stem']),
-                    stem_display(se['runner_up_stem']),
-                    entry_name(hist, se['awards'][0], 9),
-                    entry_name(hist, se['awards'][3], 9)))
+                    stem_display(se['champion_stem'], league_dir),
+                    entry_name(hist, se['awards'][0], 11),
+                    entry_name(hist, se['awards'][3], 11)))
     return out
 
 
@@ -371,7 +399,7 @@ def milestone_rows(hist, ms):
     return out
 
 
-def review_rows(hist, ms):
+def review_rows(hist, ms, league_dir=None):
     """REVIEW lines for the last recorded season; None when there is no history.
     Champion/runner-up, six award lines, new HoF entries, that season's milestones;
     cut at 12 lines."""
@@ -380,8 +408,8 @@ def review_rows(hist, ms):
     last = hist.seasons_recorded
     se = hist.read_season_entry(min(last, history.SEASON_COUNT))
     aw = se['awards']
-    lines = [('CHAMPION ' + stem_display(se['champion_stem']),),
-             ('RUNNER-UP ' + stem_display(se['runner_up_stem']),),
+    lines = [('CHAMPION ' + stem_display(se['champion_stem'], league_dir),),
+             ('RUNNER-UP ' + stem_display(se['runner_up_stem'], league_dir),),
              ('AL MVP ' + entry_name(hist, aw[0], 16),),
              ('AL CY YOUNG ' + entry_name(hist, aw[1], 16),),
              ('AL ROOKIE ' + entry_name(hist, aw[2], 16),),
@@ -440,13 +468,13 @@ def rows(state, data):
     if screen == SCREEN_LEADERS:
         return leaders_rows(hist, cat, page)
     if screen == SCREEN_HISTORY:
-        all_rows = history_rows(hist)
+        all_rows = history_rows(hist, data.get('league_dir'))
     elif screen == SCREEN_HOF:
         all_rows = hof_rows(hist)
     elif screen == SCREEN_MILESTONES:
         all_rows = milestone_rows(hist, data['ms'])
     else:
-        all_rows = review_rows(hist, data['ms'])
+        all_rows = review_rows(hist, data['ms'], data.get('league_dir'))
         if all_rows is None:
             return []
     return all_rows[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
@@ -493,9 +521,8 @@ def _cx(pos):
 
 
 COLS_SINGLE = [(' ', _cx(0), 42, 'L')]
-COLS_HISTORY = [('YEAR', _cx(0), 4, 'L'), ('CHAMPION', _cx(5), 8, 'L'),
-                ('2ND', _cx(14), 8, 'L'), ('AL MVP', _cx(23), 9, 'L'),
-                ('NL MVP', _cx(33), 9, 'L')]
+COLS_HISTORY = [('YEAR', _cx(0), 4, 'L'), ('CHAMPION', _cx(5), 13, 'L'),
+                ('AL MVP', _cx(19), 11, 'L'), ('NL MVP', _cx(31), 11, 'L')]
 COLS_HOF = [('NAME', _cx(0), 12, 'L'), ('IND', _cx(12), 4, 'R'), ('YRS', _cx(16), 4, 'R'),
             ('H/W', _cx(20), 5, 'R'), ('HR/K', _cx(25), 5, 'R'),
             ('AV/ER', _cx(30), 6, 'R'), ('WAR', _cx(36), 6, 'R')]

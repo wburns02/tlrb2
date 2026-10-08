@@ -120,9 +120,11 @@ def test_history_rows_newest_first(tmp_path):
     data = dynview.load_data(str(ldir))
     rows = dynview.rows(st(dynview.SCREEN_HISTORY), data)
     assert rows[0][0] == '3' and rows[1][0] == '2' and rows[2][0] == '1'
-    assert rows[0][1] == 'ALA03' and rows[0][2] == 'NL03'
-    # award names (PLAYER00.., cut to 12 chars)
-    assert rows[0][3] == 'HITTER, A'[:12]
+    # YEAR, CHAMPION (13), AL MVP (11), NL MVP (11); the runner-up is on REVIEW only
+    assert rows[0][1] == 'ALA03' and len(rows[0]) == 4
+    assert rows[0][2] == 'HITTER, A'
+    assert [c[2] for c in dynview.COLS_HISTORY] == [4, 13, 11, 11]
+    assert dynview.COLS_HISTORY[-1][1] + 11 * dynview.CHAR_W == dynview._cx(42)
 
 
 def test_hof_rows_order(tmp_path):
@@ -514,3 +516,39 @@ def test_unknown_chars_draw_question_mark():
     assert dynview.glyph_of(font, '\xe9') is marker
     assert dynview.glyph_of(font, '?') is marker
     assert dynview.glyph_of(font, '/') is not marker
+
+
+def test_upper_is_ascii_only():
+    """Only a-z upper-case: latin-1 0xDF must not become 'SS' (two glyphs), and
+    every byte outside 32..126 draws the '?' glyph, as DYNVIEW.EXE does."""
+    font = [(7, 7, 7 + k % 3, bytes(7), 1) for k in range(95)]
+    q = dynview.text_width(font, '?')
+    for b in (0xdf, 0xb5, 0xff, 0xe9, 0x07):
+        assert dynview.text_width(font, chr(b)) == q, hex(b)
+    assert dynview.text_width(font, 'ab') == dynview.text_width(font, 'AB')
+
+
+def test_team_names_from_v20(tmp_path):
+    """Champion/runner-up show the V20 header name (bytes 0..13, NUL ended),
+    matched case-insensitively on the stem; no file or a blank name keeps the stem."""
+    ldir, _ = make_data(tmp_path)
+    (ldir / 'ALA03.V20').write_bytes(b'PHILADELPHIA\0\0clPHI' + bytes(60))
+    (ldir / 'NL03.V20').write_bytes(bytes(80))                  # blank name
+    (ldir / 'ALA02.V20').write_bytes(b'Chicago A\0junk!' + bytes(60))
+    data = dynview.load_data(str(ldir))
+    rows = dynview.rows(st(dynview.SCREEN_HISTORY), data)
+    assert rows[0][1] == 'PHILADELPHIA'
+    assert rows[1][1] == 'Chicago A'
+    rev = [r[0] for r in dynview.rows(st(dynview.SCREEN_REVIEW, 0, 3), data)]
+    assert rev[0] == 'CHAMPION PHILADELPHIA' and rev[1] == 'RUNNER-UP NL03'
+
+
+def test_no_award_reads_none(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    write_season(d, 3, b'ALA03', b'NL03', awards=(0, 1, 0xffff, 3, 4, 0xffff))
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    rev = [r[0] for r in dynview.rows(st(dynview.SCREEN_REVIEW, 0, 3), data)]
+    assert 'AL ROOKIE NONE' in rev and 'NL ROOKIE NONE' in rev

@@ -190,9 +190,9 @@ def test_synthetic_every_screen(tmp_path):
     ldir, _ = make_data(tmp_path)
     # every screen, every leaders category, pages 0 and 1 where they exist
     check_parity(ldir, tmp_path, 'menu')
-    check_parity(ldir, tmp_path, 'hist')
-    check_parity(ldir, tmp_path, 'hof')
-    check_parity(ldir, tmp_path, 'ms')
+    check_parity(ldir, tmp_path, 'hist', keys=[48 + dynview.SCREEN_HISTORY])
+    check_parity(ldir, tmp_path, 'hof', keys=[48 + dynview.SCREEN_HOF])
+    check_parity(ldir, tmp_path, 'ms', keys=[48 + dynview.SCREEN_MILESTONES])
     check_parity(ldir, tmp_path, 'review', review=True)
     for cat in range(dynview.N_CATS):
         check_parity(ldir, tmp_path, 'lead%d' % cat,
@@ -202,6 +202,23 @@ def test_synthetic_every_screen(tmp_path):
         check_parity(ldir, tmp_path, 'lead10p1',
                      keys=[ord('3')] + [dynview.KEY_RIGHT] * 10
                      + [dynview.KEY_PGDN])
+
+
+def test_team_names_and_none_parity(tmp_path):
+    """V20 team names (named, blank, short file, missing) and NO_AWARD = NONE."""
+    ldir, _ = make_data(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    write_season(d, 3, b'ala03', b'nl03', awards=(0, 0xffff, 0xffff, 3, 0xffff, 5))
+    write_season(d, 2, b'ALA02', b'NL02', awards=(0xffff, 7, 8, 0xffff, 10, 11))
+    p.write_bytes(bytes(d))
+    (ldir / 'ALA03.V20').write_bytes(b'PHILADELPHIA  \0clPHI' + bytes(60))
+    (ldir / 'NL03.V20').write_bytes(bytes(80))
+    (ldir / 'ALA02.V20').write_bytes(b'Chicago A')
+    rev = [r[0] for r in dynview.rows((dynview.SCREEN_REVIEW, 0, 0), dynview.load_data(str(ldir)))]
+    assert rev[0] == 'CHAMPION PHILADELPHIA' and 'AL CY YOUNG NONE' in rev
+    check_parity(ldir, tmp_path, 'tn_hist', keys=[48 + dynview.SCREEN_HISTORY])
+    check_parity(ldir, tmp_path, 'tn_review', review=True)
 
 
 def test_synthetic_review_start(tmp_path):
@@ -400,9 +417,9 @@ def test_real_data(tmp_path):
     for f in os.listdir(real):
         shutil.copy2(os.path.join(real, f), str(ldir / f))
     check_parity(ldir, tmp_path, 'real_menu')
-    check_parity(ldir, tmp_path, 'real_hist')
-    check_parity(ldir, tmp_path, 'real_hof')
-    check_parity(ldir, tmp_path, 'real_ms')
+    check_parity(ldir, tmp_path, 'real_hist', keys=[48 + dynview.SCREEN_HISTORY])
+    check_parity(ldir, tmp_path, 'real_hof', keys=[48 + dynview.SCREEN_HOF])
+    check_parity(ldir, tmp_path, 'real_ms', keys=[48 + dynview.SCREEN_MILESTONES])
     check_parity(ldir, tmp_path, 'real_review', review=True)
     for cat in range(dynview.N_CATS):
         check_parity(ldir, tmp_path, 'real_lead%d' % cat,

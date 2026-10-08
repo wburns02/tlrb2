@@ -259,17 +259,17 @@ static void path_join(char *dst, const char *a, const char *b)
 
 /* ---------------- text ---------------- */
 
-/* glyph_of(font, ch): any byte outside 32..126 draws glyph 15 ('?') */
+/* glyph_of(font, ch): any byte outside 32..126 draws glyph 31 ('?') */
 static const Glyph *glyph_of(const Font *ft, uint8_t ch)
 {
     int k = (int)ch - 32;
     if (k < 0 || k > 94)
-        k = 15;
+        k = '?' - 32;
     return &ft->g[k];
 }
 
 /* draw_text upper-cases a-z only; any byte outside 32..126 after upper()
- * draws glyph 15 */
+ * draws glyph 31 ('?') */
 static void draw_text(uint8_t *fb, const Font *ft, int x, int y,
                       const uint8_t *s, int color)
 {
@@ -374,9 +374,37 @@ static void name_display(const uint8_t *name20, int cap, char *dst)
     }
 }
 
+static char g_lgdir[260];       /* LEAGUE_DIR, for the team V20 names */
+
+/* team_name: V20 header name (bytes 0..13, NUL ended, trailing spaces cut)
+ * of LEAGUE_DIR\<STEM>.V20; "" when the file is missing or the name blank */
+static void team_name(const char *stem, char *dst)
+{
+    char path[300], leaf[16];
+    uint8_t raw[14];
+    size_t i, n;
+    FILE *f;
+    dst[0] = 0;
+    n = strlen(stem);
+    if (n == 0 || n > 8 || strlen(g_lgdir) + 2 + n + 4 >= sizeof path)
+        return;
+    for (i = 0; i < n; i++)
+        leaf[i] = (char)(stem[i] >= 'a' && stem[i] <= 'z' ? stem[i] - 32 : stem[i]);
+    strcpy(leaf + n, ".V20");
+    path_join(path, g_lgdir, leaf);
+    f = fopen(path, "rb");
+    if (!f)
+        return;
+    memset(raw, 0, sizeof raw);
+    (void)fread(raw, 1, sizeof raw, f);
+    fclose(f);
+    field_of(raw, 14, dst);
+}
+
 static void stem_display(const uint8_t *stem8, char *dst)
 {
     int i;
+    char stem[9];
     for (i = 0; i < 8; i++)
         if (stem8[i])
             break;
@@ -385,7 +413,11 @@ static void stem_display(const uint8_t *stem8, char *dst)
         dst[1] = 0;
         return;
     }
-    field_of(stem8, 8, dst);
+    field_of(stem8, 8, stem);
+    team_name(stem, dst);
+    if (dst[0])
+        return;
+    strcpy(dst, stem);
     for (i = 0; dst[i]; i++)
         if (dst[i] >= 'a' && dst[i] <= 'z')
             dst[i] = (char)(dst[i] - 32);
@@ -638,12 +670,16 @@ static int load_ms(const char *league_dir)
     return 1;
 }
 
-/* entry_name: '?' for NO_AWARD / out of range / an empty display name */
+/* entry_name: NONE for NO_AWARD; '?' for out of range / an empty display name */
 static void entry_name(uint16_t idx, int cap, char *dst)
 {
     Entry e;
     char nm[NAME_CAP_MAX];
-    if (idx == NO_AWARD || idx >= n_entries()) {
+    if (idx == NO_AWARD) {
+        strcpy(dst, "NONE");
+        return;
+    }
+    if (idx >= n_entries()) {
         dst[0] = '?';
         dst[1] = 0;
         return;
@@ -774,12 +810,11 @@ static int build_hist_rows(int page)
         read_season(&se, (int)g_histl.idx[r]);
         sprintf(g_rows[n].cells[0], "%u", (unsigned)se.season_no);
         stem_display(se.champion_stem, g_rows[n].cells[1]);
-        stem_display(se.runner_up_stem, g_rows[n].cells[2]);
-        entry_name(se.awards[0], 9, nm);
+        entry_name(se.awards[0], 11, nm);
+        strcpy(g_rows[n].cells[2], nm);
+        entry_name(se.awards[3], 11, nm);
         strcpy(g_rows[n].cells[3], nm);
-        entry_name(se.awards[3], 9, nm);
-        strcpy(g_rows[n].cells[4], nm);
-        g_rows[n].ncells = 5;
+        g_rows[n].ncells = 4;
     }
     for (k = n; k < MAX_ROWS; k++)
         g_rows[k].ncells = 0;
@@ -1062,9 +1097,8 @@ static const ColDef COLS_SINGLE[] = {
     { " ", CX(0), 42, 0 } };
 
 static const ColDef COLS_HISTORY[] = {
-    { "YEAR", CX(0), 4, 0 }, { "CHAMPION", CX(5), 8, 0 },
-    { "2ND", CX(14), 8, 0 }, { "AL MVP", CX(23), 9, 0 },
-    { "NL MVP", CX(33), 9, 0 } };
+    { "YEAR", CX(0), 4, 0 }, { "CHAMPION", CX(5), 13, 0 },
+    { "AL MVP", CX(19), 11, 0 }, { "NL MVP", CX(31), 11, 0 } };
 
 static const ColDef COLS_HOF[] = {
     { "NAME", CX(0), 12, 0 }, { "IND", CX(12), 4, 1 }, { "YRS", CX(16), 4, 1 },
@@ -1079,17 +1113,19 @@ static const ColDef COLS_MILESTONES[] = {
     { "YEAR", CX(0), 4, 0 }, { "NAME", CX(5), 16, 0 },
     { "EVENT", CX(22), 20, 0 } };
 
+#define NCOLS(a) ((int)(sizeof(a) / sizeof((a)[0])))
+
 static int n_cols(const ColDef *cols)
 {
     if (cols == COLS_SINGLE)
-        return 1;
+        return NCOLS(COLS_SINGLE);
     if (cols == COLS_HISTORY)
-        return 5;
+        return NCOLS(COLS_HISTORY);
     if (cols == COLS_HOF)
-        return 7;
+        return NCOLS(COLS_HOF);
     if (cols == COLS_LEADERS)
-        return 5;
-    return 3;
+        return NCOLS(COLS_LEADERS);
+    return NCOLS(COLS_MILESTONES);
 }
 
 static const ColDef *body_cols(State st)
@@ -1233,28 +1269,41 @@ static void render(State st)
 
 static int read_fnt_file(const char *path, Font **out)
 {
-    static uint8_t FARDATA fbuf0[65535];
-    static uint8_t FARDATA fbuf1[65535];
-    static int which = 0;
-    uint8_t *fbuf = which ? fbuf1 : fbuf0;
+    uint8_t *fbuf;
     FILE *f;
     Font *ft;
     uint16_t count, i;
     size_t p = 2, n;
-    which = !which;             /* the next file lands in the other buffer */
+    long len;
     f = fopen(path, "rb");
     if (!f)
         return 0;
-    n = fread(fbuf, 1, 65535, f);
+    if (fseek(f, 0L, SEEK_END) != 0 || (len = ftell(f)) < 2 || len > 65000L
+            || fseek(f, 0L, SEEK_SET) != 0) {
+        fclose(f);
+        return 0;
+    }
+    fbuf = (uint8_t *)malloc((size_t)len);
+    if (!fbuf) {
+        fclose(f);
+        return 0;
+    }
+    n = fread(fbuf, 1, (size_t)len, f);
     fclose(f);
-    if (n < 2)
+    if (n != (size_t)len) {
+        free(fbuf);
         return 0;
+    }
     count = (uint16_t)(fbuf[0] | ((uint16_t)fbuf[1] << 8));
-    if (count < 95)
+    if (count < 95) {
+        free(fbuf);
         return 0;
+    }
     ft = (Font *)calloc(1, sizeof(Font));
-    if (!ft)
+    if (!ft) {
+        free(fbuf);
         return 0;
+    }
     ft->count = count;
     /* parse_fnt layout: per glyph u8 rows, u8 bits, u8 adv, rows*ceil(bits/8)
      * bytes, MSB first; the whole file must be consumed (assert p == len) */
@@ -1263,6 +1312,7 @@ static int read_fnt_file(const char *path, Font **out)
         size_t bpr, sz;
         if (p + 3 > n) {
             free(ft);
+            free(fbuf);
             return 0;
         }
         rows = fbuf[p];
@@ -1273,6 +1323,7 @@ static int read_fnt_file(const char *path, Font **out)
         sz = (size_t)rows * bpr;
         if (p + sz > n) {
             free(ft);
+            free(fbuf);
             return 0;
         }
         ft->g[i].rows = rows;
@@ -1285,11 +1336,21 @@ static int read_fnt_file(const char *path, Font **out)
     /* parse_fnt length check: the glyphs must consume exactly the file */
     if (p != n) {
         free(ft);
+        free(fbuf);
         return 0;
     }
     ft->bytes = fbuf;
     *out = ft;
     return 1;
+}
+
+static void free_font(Font **ft)
+{
+    if (*ft) {
+        free((*ft)->bytes);
+        free(*ft);
+        *ft = NULL;
+    }
 }
 
 static int load_font_file(const char *dir, const char *leaf, Font **out)
@@ -1353,8 +1414,7 @@ static int load_fonts_probe(const char *font_dir, int have_dir)
         if (!load_font_file(font_dir, "MAIN.FNT", &g_main))
             return 0;
         if (!load_font_file(font_dir, "BOLD.FNT", &g_bold)) {
-            free(g_main);
-            g_main = NULL;
+            free_font(&g_main);
             return 0;
         }
         load_palette_file(font_dir);
@@ -1371,8 +1431,7 @@ static int load_fonts_probe(const char *font_dir, int have_dir)
             return 1;
         }
         if (g_main) {
-            free(g_main);
-            g_main = NULL;
+            free_font(&g_main);
         }
         for (drv = 'D'; drv <= 'Z'; drv++) {
             cand[0] = (char)drv;
@@ -1384,8 +1443,7 @@ static int load_fonts_probe(const char *font_dir, int have_dir)
                 return 1;
             }
             if (g_main) {
-                free(g_main);
-                g_main = NULL;
+                free_font(&g_main);
             }
         }
         return 0;
@@ -1398,8 +1456,7 @@ static int load_fonts_probe(const char *font_dir, int have_dir)
         return 1;
     }
     if (g_main) {
-        free(g_main);
-        g_main = NULL;
+        free_font(&g_main);
     }
     return 0;
 #endif
@@ -1574,6 +1631,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "DYNVIEW: FONTS NOT FOUND\n");
         return 2;
     }
+    if (strlen(league) >= sizeof g_lgdir)
+        return 2;
+    strcpy(g_lgdir, league);
     if (!load_hist(league))
         return 2;
     if (!load_ms(league))
