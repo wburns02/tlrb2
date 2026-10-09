@@ -15,8 +15,13 @@ Replaces the stock `:start` / `control` with:
   :ctl
   control
 
+and, when the stock `:frontend` / `play` is present, runs the DYNASTY MODE screen at boot:
+  :frontend
+  dynview /title
+  play
+
 Every earlier patched form (C5 with and without the histwr line, C7 with
-dynview /review) upgrades in place. CRLF line endings, idempotent, asserts stock content, refuses
+dynview /review, any form without the boot screen) upgrades in place. CRLF line endings, idempotent, asserts stock content, refuses
 live/pristine paths. Also writes ARCHIVE.BAT next to TONY2.BAT: it copies the finished season (the
 pre-roll snapshot in C:\DYNSNAP) to the first free C:\SEASONS\Snn, so a new season never destroys the old one.
 Usage:
@@ -45,6 +50,9 @@ PATCHED_START = (
     ':ctl\r\n'
     'control\r\n'
 )
+
+STOCK_FRONTEND = ':frontend\r\nplay\r\n'
+PATCHED_FRONTEND = ':frontend\r\ndynview /title\r\nplay\r\n'
 
 # earlier patched forms, newest first: upgraded in place by patch()
 EARLIER_FORMS = (
@@ -123,24 +131,27 @@ def patch(install_root, revert=False):
 
     if revert:
         forms = (PATCHED_START,) + EARLIER_FORMS
-        if not any(f in content for f in forms):
+        if not any(f in content for f in forms) and PATCHED_FRONTEND not in content:
             print("Already reverted or never patched", file=sys.stderr)
             return True
         for f in forms:
             content = content.replace(f, STOCK_START)
+        content = content.replace(PATCHED_FRONTEND, STOCK_FRONTEND)
     else:
-        if PATCHED_START in content:
+        if PATCHED_START in content and STOCK_FRONTEND not in content:
             print("Already patched", file=sys.stderr)
             return True
-        for f in EARLIER_FORMS:
-            if f in content:
-                content = content.replace(f, PATCHED_START)
-                break
-        else:
-            if STOCK_START not in content:
-                print(f"ERROR: stock :start pattern not found in {bat_path}", file=sys.stderr)
-                return False
-            content = content.replace(STOCK_START, PATCHED_START)
+        content = content.replace(STOCK_FRONTEND, PATCHED_FRONTEND)
+        if PATCHED_START not in content:
+            for f in EARLIER_FORMS:
+                if f in content:
+                    content = content.replace(f, PATCHED_START)
+                    break
+            else:
+                if STOCK_START not in content:
+                    print(f"ERROR: stock :start pattern not found in {bat_path}", file=sys.stderr)
+                    return False
+                content = content.replace(STOCK_START, PATCHED_START)
         os.makedirs(dynsnap_path, exist_ok=True)
 
     with open(bat_path, 'wb') as f:

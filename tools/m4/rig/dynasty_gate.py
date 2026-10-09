@@ -91,13 +91,14 @@ def setup_fresh(install, league_src=None):
 
 def launch(install, tries=2):
     """Start DOSBox-X and wait for the ball menu. An Escape during the PLAY intro has hung the boot on a black
-    screen, so wait quietly first, nudge only after that, and relaunch once if the menu never comes."""
+    screen, so wait quietly first, nudge only after that, and relaunch once if the menu never comes. The boot
+    DYNASTY MODE screen (dynview /title, before the intro) is passed with Return."""
     for attempt in range(tries):
         subprocess.run(['bash', os.path.join(HERE, 'dyn_launch.sh'), install], check=True)
         time.sleep(15)
         dr = season_sim.Driver(0, install)
         try:
-            dr.wait_for('ball_menu', 60, every=3)
+            dr.wait_for('ball_menu', 60, every=3, nudge=lambda st: st == 'dynview' and rig.key('Return'))
             return
         except season_sim.SimError:
             pass

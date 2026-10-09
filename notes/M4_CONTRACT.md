@@ -397,6 +397,11 @@ The labels `rolled` and `ctl` are free in the shipped BAT (DOS matches 8 chars, 
 patched form (C5 with and without the histwr line, C8 with `dynview /review` and without `call archive`) upgrades in
 place; --revert restores the stock pair from any form. ARCHIVE.BAT copies the pre-roll C:\DYNSNAP to the first free
 C:\SEASONS\Snn.
+Boot screen (added 2026-10-08): when the stock `:frontend` / `play` pair is present the patch makes it
+`:frontend` / `dynview /title` / `play`, so DYNASTY MODE shows before the intro on every launch (re-patching an install
+from before this adds it; --revert removes it). /TITLE is the MENU with cat 16: title `DYNASTY MODE: SEASON N+1`,
+ENTER or ESC goes on to the game, 1-6 open a screen whose ESC returns to the plain menu. With no recorded season it
+shows the fixed TITLE_ROWS how-to text and the footer `ENTER PLAY BALL`. Precedence /OFFSEASON, /REVIEW, /TITLE.
 DYNVIEW.EXE (C, OpenWatcom large model, read-only viewer; the Python reference is tools/m4/dynview.py) never writes a
 file in interactive mode. `/review` opens the season review; ESC from REVIEW goes to the menu, ESC from the menu
 exits 0 and the BAT falls through to control. A missing DYNVIEW or ROSTERS prints the DOS error and the BAT goes on.

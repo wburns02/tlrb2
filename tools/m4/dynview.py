@@ -12,9 +12,9 @@ Display primitives (decor per notes/M4_CONTRACT.md integer rules):
   bytes, MSB first; glyph k = char 32 + k, anything else draws '?'
 - palette DEFAULT.PAL raw 6-bit bytes; PNG output scales (c & 63) * 255 // 63
 
-usage: python3 tools/m4/dynview.py [--review | --offseason] [--keys K,K,...]
+usage: python3 tools/m4/dynview.py [--review | --offseason | --title] [--keys K,K,...]
        [--png OUT.png] [--raw OUT.RAW] LEAGUE_DIR FONT_DIR
-(--offseason wins when both are given)
+(precedence --offseason, --review, --title)
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -55,6 +55,20 @@ OFF_TITLES = ['1/6 SEASON %d IN REVIEW', '2/6 RETIREMENTS', '3/6 ROOKIE DRAFT',
               '4/6 TRADES', '5/6 FREE AGENT SIGNINGS', '6/6 SEASON %d IS READY']
 OFF_LAUNCH_TEXT = 'ENTER: ON TO SEASON %d'
 OFF_STAY_TEXT = 'ENTER: BACK TO THE MENU'
+
+# /TITLE (run by TONY2.BAT at boot): the MENU with cat 16. ENTER or ESC goes on to the
+# game; a league with no recorded season shows TITLE_ROWS instead of the menu items
+TITLE_FLAG = 16
+TITLE_ROWS = ['YOUR LEAGUE NOW PLAYS SEASON AFTER SEASON.',
+              '',
+              'PLAY THROUGH THE WORLD SERIES, THEN PICK',
+              'SEASON > START NEW SEASON. THE OFFSEASON',
+              'RUNS: RETIREMENTS, ROOKIE DRAFT, TRADES',
+              'AND FREE AGENTS. EVERY SEASON IS ARCHIVED',
+              'FIRST, SO NOTHING IS LOST.',
+              '',
+              'HISTORY, HALL OF FAME, CAREER LEADERS AND',
+              'MILESTONES COLLECT HERE AS SEASONS PASS.']
 
 # career leader categories: (title label, kind, TOTALS index)
 # kind: 'count' | 'avg' | 'era' | 'war' | 'aw0' (MVP awards) | 'aw3' (GG awards)
@@ -659,9 +673,11 @@ def total_rows(state, data):
 def rows(state, data):
     """Model rows of the current page as cell tuples (no fonts needed)."""
     hist = data['hist']
-    if hist is None or hist.seasons_recorded == 0:
-        return [('NO DYNASTY HISTORY YET',)]
     screen, page, cat = state
+    if hist is None or hist.seasons_recorded == 0:
+        if screen == SCREEN_MENU and cat >> 4:
+            return [(t,) for t in TITLE_ROWS]
+        return [('NO DYNASTY HISTORY YET',)]
     if screen == SCREEN_MENU:
         return [('1  SEASON HISTORY',), ('2  HALL OF FAME',), ('3  CAREER LEADERS',),
                 ('4  MILESTONES',), ('5  LAST SEASON REVIEW',), ('6  OFFSEASON',)]
@@ -687,7 +703,8 @@ def step(state, key, data):
     """(state, exit_flag). ESC exits from MENU; from any other screen it goes back
     to MENU. PGUP/PGDN page by 12; LEFT/RIGHT cycle the LEADERS category. ENTER on
     REVIEW goes to MENU. ENTER walks the offseason phases; past the last one it exits
-    when the offseason was launched (cat >> 4) and goes to MENU otherwise."""
+    when the offseason was launched (cat >> 4) and goes to MENU otherwise. ENTER on the
+    /TITLE menu (cat >> 4) exits."""
     screen, page, cat = state
     if key == KEY_ESC:
         if screen == SCREEN_MENU:
@@ -696,6 +713,8 @@ def step(state, key, data):
     if screen == SCREEN_MENU:
         if 49 <= key <= 54:
             return (key - 48, 0, 0), 0
+        if key == KEY_ENTER and cat >> 4:
+            return state, 1
         return state, 0
     if screen == SCREEN_REVIEW and key == KEY_ENTER:
         return (SCREEN_MENU, 0, 0), 0
@@ -755,9 +774,19 @@ FOOTERS = {SCREEN_MENU: '1-6 SELECT   ESC EXIT',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU'}
 
 
-def footer_text(state):
-    """Footer line of state; the offseason's ENTER label follows its phase."""
+TITLE_FOOTER = '1-6 SELECT   ENTER PLAY BALL'
+TITLE_FOOTER_NEW = 'ENTER PLAY BALL'
+
+
+def footer_text(state, data=None):
+    """Footer line of state; the offseason's ENTER label follows its phase, the /TITLE
+    menu's follows whether any season is recorded."""
     screen, _page, cat = state
+    if screen == SCREEN_MENU and cat >> 4:
+        hist = data['hist'] if data else None
+        if hist is None or hist.seasons_recorded == 0:
+            return TITLE_FOOTER_NEW
+        return TITLE_FOOTER
     if screen == SCREEN_OFFSEASON:
         if (cat & 15) < OFF_READY:
             return 'ENTER NEXT   PGUP PGDN   ESC MENU'
@@ -768,6 +797,8 @@ def footer_text(state):
 def screen_title(state, data):
     screen, _page, cat = state
     if screen == SCREEN_MENU:
+        if cat >> 4:
+            return 'DYNASTY MODE: SEASON %d' % (data['hist'].seasons_recorded + 1)
         return 'DYNASTY'
     if screen == SCREEN_HISTORY:
         return 'SEASON HISTORY'
@@ -841,7 +872,7 @@ def render(state, data):
             else:
                 draw_text(fb, main_ft, x, y0 + 2, s, C_BLACK)
         rect(fb, 8, y0 + 10, 311, y0 + 10, C_GRID_GRAY)
-    draw_text(fb, main_ft, 10, 185, footer_text(state), C_WHITE)
+    draw_text(fb, main_ft, 10, 185, footer_text(state, data), C_WHITE)
     return fb
 
 
@@ -855,6 +886,7 @@ def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument('--review', action='store_true')
     ap.add_argument('--offseason', action='store_true')
+    ap.add_argument('--title', action='store_true')
     ap.add_argument('--keys', default='')
     ap.add_argument('--png', default=None)
     ap.add_argument('--raw', default=None)
@@ -866,6 +898,8 @@ def main(argv):
         state = (SCREEN_OFFSEASON, 0, 16)
     elif a.review:
         state = (SCREEN_REVIEW, 0, 0)
+    elif a.title:
+        state = (SCREEN_MENU, 0, TITLE_FLAG)
     else:
         state = (SCREEN_MENU, 0, 0)
     for k in parse_keys(a.keys):

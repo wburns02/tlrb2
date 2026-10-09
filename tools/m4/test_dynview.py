@@ -397,6 +397,42 @@ def test_no_history_every_screen(tmp_path):
         [('NO DYNASTY HISTORY YET',)]
 
 
+def test_title_mode(tmp_path):
+    """/TITLE: MENU with cat 16. No season: welcome rows, 'ENTER PLAY BALL', title
+    names season 1. With history: the menu items, season N+1. ENTER and ESC exit;
+    1-6 open a screen whose ESC returns to the plain menu."""
+    T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
+    ldir = tmp_path / 'empty'
+    ldir.mkdir()
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows(T, data) == [(t,) for t in dynview.TITLE_ROWS]
+    assert all(len(t) <= 42 and t == t.upper() for t in dynview.TITLE_ROWS)
+    assert len(dynview.TITLE_ROWS) <= dynview.ROWS_PER_PAGE
+    assert dynview.footer_text(T, data) == 'ENTER PLAY BALL'
+    assert dynview.screen_title(T, data) == 'DYNASTY MODE: SEASON 1'
+    assert dynview.body_cols(T, data) == dynview.COLS_SINGLE
+    assert dynview.step(T, dynview.KEY_ENTER, data) == (T, 1)
+    assert dynview.step(T, dynview.KEY_ESC, data)[1] == 1
+    # the plain menu ignores ENTER
+    assert dynview.step((dynview.SCREEN_MENU, 0, 0), dynview.KEY_ENTER, data) == \
+        ((dynview.SCREEN_MENU, 0, 0), 0)
+    assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data) == [('NO DYNASTY HISTORY YET',)]
+    hdir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(hdir))
+    assert dynview.rows(T, data)[0] == ('1  SEASON HISTORY',)
+    assert dynview.footer_text(T, data) == '1-6 SELECT   ENTER PLAY BALL'
+    assert dynview.screen_title(T, data) == 'DYNASTY MODE: SEASON 4'
+    s, ex = dynview.step(T, ord('2'), data)
+    assert s == (dynview.SCREEN_HOF, 0, 0) and ex == 0
+    s, ex = dynview.step(s, dynview.KEY_ESC, data)
+    assert s == (dynview.SCREEN_MENU, 0, 0) and ex == 0
+    # every title glyph exists in MAIN.FNT (no '?' fallback)
+    if os.path.exists(os.path.join(FILES, 'MAIN.FNT')):
+        main_ft, _bold = dynview.load_fonts(FILES)
+        for t in dynview.TITLE_ROWS + [dynview.TITLE_FOOTER]:
+            assert all(0 <= ord(c) - 32 < len(main_ft) for c in t), t
+
+
 # ---------------------------------------------------------------- previews
 PREVIEWS = [st(dynview.SCREEN_MENU, 0, 0),
             st(dynview.SCREEN_HISTORY, 0, 0),

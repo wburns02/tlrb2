@@ -93,6 +93,40 @@ class TestBatPatch:
                 assert bat.read_bytes().decode('cp437') == (
                     'echo off\r\n' + bat_patch.STOCK_START + 'goto x\r\n')
 
+    def test_boot_title_screen(self):
+        """The stock :frontend gets dynview /title before play; an install patched before
+        the boot screen existed gains it on re-patch; revert restores stock bytes."""
+        stock = ('echo off\r\n\r\n:memory\r\ncheckmem\r\n\r\n' + bat_patch.STOCK_FRONTEND
+                 + '\r\n' + bat_patch.STOCK_START + 'goto frontend\r\n')
+        patched = stock.replace(bat_patch.STOCK_FRONTEND, bat_patch.PATCHED_FRONTEND).replace(
+            bat_patch.STOCK_START, bat_patch.PATCHED_START)
+        assert bat_patch.PATCHED_FRONTEND == ':frontend\r\ndynview /title\r\nplay\r\n'
+        for start in (bat_patch.STOCK_START, bat_patch.PATCHED_START) + bat_patch.EARLIER_FORMS:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                install = Path(tmpdir) / 'TONY2'
+                install.mkdir()
+                bat = install / 'TONY2.BAT'
+                bat.write_bytes(stock.replace(bat_patch.STOCK_START, start).encode('cp437'))
+                assert bat_patch.patch(str(install), revert=False)
+                assert bat.read_bytes().decode('cp437') == patched
+                assert bat_patch.patch(str(install), revert=False)
+                assert bat.read_bytes().decode('cp437') == patched
+                assert bat_patch.patch(str(install), revert=True)
+                assert bat.read_bytes().decode('cp437') == stock
+        # the real stock BAT, when present
+        real = '/mnt/nvme/tlrb2/pristine/TONY2/TONY2.BAT'
+        if os.path.exists(real):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                install = Path(tmpdir) / 'TONY2'
+                install.mkdir()
+                orig = open(real, 'rb').read()
+                (install / 'TONY2.BAT').write_bytes(orig)
+                assert bat_patch.patch(str(install), revert=False)
+                text = (install / 'TONY2.BAT').read_bytes().decode('cp437')
+                assert bat_patch.PATCHED_FRONTEND in text and bat_patch.PATCHED_START in text
+                assert bat_patch.patch(str(install), revert=True)
+                assert (install / 'TONY2.BAT').read_bytes() == orig
+
     def test_archive_bat_written_and_reverted(self):
         """patch() writes ARCHIVE.BAT (first free C:\\SEASONS\\Snn gets the DYNSNAP copy); revert removes it."""
         with tempfile.TemporaryDirectory() as tmpdir:

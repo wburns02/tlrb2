@@ -59,13 +59,15 @@ def toks(seq):
 
 
 def run_host(league_dir, raw_path, keys=None, review=False, font_dir=None,
-             extra=None, offseason=False):
+             extra=None, offseason=False, title=False):
     """Host binary with /RAW; returns the 64000 B framebuffer."""
     argv = [HOST]
     if offseason:
         argv.append('/OFFSEASON')
     elif review:
         argv.append('/REVIEW')
+    elif title:
+        argv.append('/TITLE')
     if keys:
         argv.append('/KEYS:' + toks(keys))
     argv.append('/RAW:' + raw_path)
@@ -79,13 +81,16 @@ def run_host(league_dir, raw_path, keys=None, review=False, font_dir=None,
     return open(raw_path, 'rb').read()
 
 
-def fb_python(ldir, keys=None, review=False, font_dir=FILES, offseason=False):
+def fb_python(ldir, keys=None, review=False, font_dir=FILES, offseason=False,
+              title=False):
     """Python reference with the same state after the same keys."""
     data = dynview.load_data(str(ldir), font_dir)
     if offseason:
         s = (dynview.SCREEN_OFFSEASON, 0, 16)
     elif review:
         s = (dynview.SCREEN_REVIEW, 0, 0)
+    elif title:
+        s = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
     else:
         s = (dynview.SCREEN_MENU, 0, 0)
     for k in (keys or []):
@@ -178,12 +183,12 @@ def milestones_total(ldir):
 
 
 def check_parity(ldir, tmp_path, tag, keys=None, review=False, font_dir=FILES,
-                 offseason=False):
+                 offseason=False, title=False):
     raw = str(tmp_path / (tag + '.RAW'))
     a = run_host(str(ldir), raw, keys=keys, review=review, font_dir=font_dir,
-                 offseason=offseason)
+                 offseason=offseason, title=title)
     b = fb_python(ldir, keys=keys, review=review, font_dir=font_dir,
-                  offseason=offseason)
+                  offseason=offseason, title=title)
     if a != b:
         i = next((k for k in range(min(len(a), len(b))) if a[k] != b[k]),
                  min(len(a), len(b)))
@@ -229,6 +234,30 @@ def test_team_names_and_none_parity(tmp_path):
     assert rev[0] == 'CHAMPION PHILADELPHIA' and 'AL CY YOUNG NONE' in rev
     check_parity(ldir, tmp_path, 'tn_hist', keys=[48 + dynview.SCREEN_HISTORY])
     check_parity(ldir, tmp_path, 'tn_review', review=True)
+
+
+def test_title_parity(tmp_path):
+    """/TITLE: welcome rows on a league with no season, the menu with history,
+    ENTER (exit flag, state kept), a menu key, and ESC back to the plain menu."""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    check_parity(empty, tmp_path, 'title_new', title=True)
+    check_parity(empty, tmp_path, 'title_new_enter', title=True, keys=[dynview.KEY_ENTER])
+    check_parity(empty, tmp_path, 'title_new_hist', title=True, keys=[ord('1')])
+    ldir, _ = make_data(tmp_path)
+    check_parity(ldir, tmp_path, 'title_hist', title=True)
+    check_parity(ldir, tmp_path, 'title_hist_enter', title=True, keys=[dynview.KEY_ENTER])
+    check_parity(ldir, tmp_path, 'title_hist_lead', title=True, keys=[ord('3')])
+    check_parity(ldir, tmp_path, 'title_hist_esc', title=True,
+                 keys=[ord('2'), dynview.KEY_ESC])
+    # /OFFSEASON and /REVIEW win over /TITLE
+    raw = str(tmp_path / 'prec.RAW')
+    a = run_host(str(ldir), raw, extra=['/TITLE'], offseason=True, font_dir=FILES)
+    assert a == fb_python(ldir, offseason=True)
+    a = run_host(str(ldir), raw, extra=['/TITLE'], review=True, font_dir=FILES)
+    assert a == fb_python(ldir, review=True)
 
 
 def test_synthetic_review_start(tmp_path):

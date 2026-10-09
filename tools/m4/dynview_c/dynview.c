@@ -1294,6 +1294,29 @@ static void build_no_hist_rows(void)
     g_nrows = 1;
 }
 
+/* /TITLE menu of a league with no recorded season (dynview.TITLE_ROWS) */
+#define N_TITLE_ROWS 10
+static void build_title_rows(void)
+{
+    static const char *lines[N_TITLE_ROWS] = {
+        "YOUR LEAGUE NOW PLAYS SEASON AFTER SEASON.",
+        "",
+        "PLAY THROUGH THE WORLD SERIES, THEN PICK",
+        "SEASON > START NEW SEASON. THE OFFSEASON",
+        "RUNS: RETIREMENTS, ROOKIE DRAFT, TRADES",
+        "AND FREE AGENTS. EVERY SEASON IS ARCHIVED",
+        "FIRST, SO NOTHING IS LOST.",
+        "",
+        "HISTORY, HALL OF FAME, CAREER LEADERS AND",
+        "MILESTONES COLLECT HERE AS SEASONS PASS." };
+    int k;
+    for (k = 0; k < N_TITLE_ROWS; k++) {
+        strcpy(g_rows[k].cells[0], lines[k]);
+        g_rows[k].ncells = 1;
+    }
+    g_nrows = N_TITLE_ROWS;
+}
+
 /* retirees of the season just recorded (status 2 or 3, last_season == N) into g_retl:
  * WAR10 descending, index ascending, capped. *count gets the uncapped retirees and
  * *new_hof the status 3 entries with hof_season == N. */
@@ -1419,6 +1442,10 @@ static int total_rows(State st)
 static int refresh_rows(State st, const ColDef **cols)
 {
     *cols = body_cols(st);
+    if (g_hdr_seasons == 0 && st.screen == SCREEN_MENU && (st.cat >> 4)) {
+        build_title_rows();
+        return g_nrows;
+    }
     if (g_hdr_seasons == 0) {
         build_no_hist_rows();
         return g_nrows;
@@ -1464,6 +1491,9 @@ static State step(State in, int32_t key)
             s.screen = (int16_t)(key - 48);
             s.page = 0;
             s.cat = 0;
+        } else if (key == KEY_ENTER && (s.cat >> 4)) {
+            /* /TITLE: ENTER goes on to the game */
+            g_exit = 1;
         }
         return s;
     }
@@ -1652,6 +1682,8 @@ static const char *footer_of(State st)
         "LEFT RIGHT CATEGORY   ESC MENU",
         "PGUP PGDN   ESC MENU",
         "ENTER MENU   ESC MENU" };
+    if (st.screen == SCREEN_MENU && (st.cat >> 4))
+        return g_hdr_seasons == 0 ? "ENTER PLAY BALL" : "1-6 SELECT   ENTER PLAY BALL";
     if (st.screen == SCREEN_OFFSEASON) {
         if ((st.cat & 15) < OFF_READY)
             return "ENTER NEXT   PGUP PGDN   ESC MENU";
@@ -1662,7 +1694,9 @@ static const char *footer_of(State st)
 
 static void screen_title(State st, char *dst)
 {
-    if (st.screen == SCREEN_MENU)
+    if (st.screen == SCREEN_MENU && (st.cat >> 4))
+        sprintf(dst, "DYNASTY MODE: SEASON %lu", (unsigned long)g_hdr_seasons + 1);
+    else if (st.screen == SCREEN_MENU)
         strcpy(dst, "DYNASTY");
     else if (st.screen == SCREEN_HISTORY)
         strcpy(dst, "SEASON HISTORY");
@@ -2021,7 +2055,7 @@ static const uint8_t *arg_switch(const uint8_t *a, const char *name)
 
 static int usage(void)
 {
-    fprintf(stderr, "usage: DYNVIEW [/REVIEW] [/OFFSEASON] [/KEYS:k,k,...] "
+    fprintf(stderr, "usage: DYNVIEW [/REVIEW] [/OFFSEASON] [/TITLE] [/KEYS:k,k,...] "
             "[/RAW:FILE] [LEAGUE_DIR [FONT_DIR]]\n");
     return 2;
 }
@@ -2138,7 +2172,7 @@ int main(int argc, char **argv)
     const char *league = (DIR_SEP == '\\') ? DEF_LEAGUE : DEF_LEAGUE_HOST;
     const char *font_dir = NULL;
     const uint8_t *keys = NULL, *raw_path = NULL;
-    int have_fonts, raw_mode = 0, review = 0, offseason = 0, i, npos = 0;
+    int have_fonts, raw_mode = 0, review = 0, offseason = 0, title = 0, i, npos = 0;
     State st;
 
 #ifdef __WATCOMC__
@@ -2152,6 +2186,8 @@ int main(int argc, char **argv)
             review = 1;
         } else if (arg_flag((const uint8_t *)argv[i], "offseason")) {
             offseason = 1;
+        } else if (arg_flag((const uint8_t *)argv[i], "title")) {
+            title = 1;
         } else if ((v = arg_switch((const uint8_t *)argv[i], "keys")) != NULL) {
             keys = v;
         } else if ((v = arg_switch((const uint8_t *)argv[i], "raw")) != NULL) {
@@ -2206,10 +2242,11 @@ int main(int argc, char **argv)
         return 2;
     load_drafts();
 
-    /* /OFFSEASON starts at phase 0 with the launched flag (cat 16) */
+    /* /OFFSEASON starts at phase 0 with the launched flag (cat 16); /TITLE is the
+     * MENU with cat 16 (precedence /OFFSEASON, /REVIEW, /TITLE) */
     st.screen = offseason ? SCREEN_OFFSEASON : (review ? SCREEN_REVIEW : SCREEN_MENU);
     st.page = 0;
-    st.cat = offseason ? 16 : 0;
+    st.cat = (offseason || (title && !review)) ? 16 : 0;
     g_state = st;
     if (keys != NULL)
         parse_keys(keys);
