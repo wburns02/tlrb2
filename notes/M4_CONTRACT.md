@@ -402,8 +402,8 @@ Boot screen (added 2026-10-08): when the stock `:frontend` / `play` pair is pres
 from before this adds it; --revert removes it). /TITLE is the MENU with cat 16: title `DYNASTY MODE: SEASON N+1`,
 ENTER or ESC goes on to the game, 1-6 open a screen whose ESC returns to the plain menu. With no recorded season it
 shows the fixed TITLE_ROWS how-to text and the footer `ENTER PLAY BALL`. Precedence /OFFSEASON, /REVIEW, /TITLE.
-DYNVIEW.EXE (C, OpenWatcom large model, read-only viewer; the Python reference is tools/m4/dynview.py) never writes a
-file in interactive mode. `/review` opens the season review; ESC from REVIEW goes to the menu, ESC from the menu
+DYNVIEW.EXE (C, OpenWatcom large model; the Python reference is tools/m4/dynview.py) writes no file in interactive
+mode except the two C10 writes: DYNASTY SETTINGS (HISTORY.DAT bytes 10 and 12..15) and, with /MENU, CONTROL byte 1. `/review` opens the season review; ESC from REVIEW goes to the menu, ESC from the menu
 exits 0 and the BAT falls through to control. A missing DYNVIEW or ROSTERS prints the DOS error and the BAT goes on.
 The install copies DYNASTY.EXE, HISTWR.EXE, ROSTERS.EXE and DYNVIEW.EXE into the game dir.
 DOS limit: DYNVIEW reads at most the first 7000 MILESTON.DAT records (one far allocation under 64 KB); later
@@ -432,3 +432,60 @@ DYNVIEW saves the caller's video state (BIOS mode, the 768 DAC bytes and, in mod
 0Dh, 14h and 17h, GC 5 and 6) and restores it on exit with a cleared screen. MAIN after BACK never sets the video
 mode itself; the old exit to text mode 3 left MAIN drawing into a text screen (black, stuck). Rig check 2026-10-08: a
 mode 13h caller, then DYNVIEW, then MAIN matches the same run without DYNVIEW.
+
+## C10. The DYNASTY menu on MAIN's menu bar (added 2026-10-08)
+Every mod is reachable from the game's own menu bar. tools/m4/menu_patch.py patches MAIN.EXE and CONTROL.EXE in an
+install (idempotent, asserts stock bytes, `--revert` restores them byte for byte, refuses the pristine tree):
+- MAIN's bar gains a sixth entry, DYNASTY (between UTILITIES and the home plate), with four items. Picking item k
+  makes MAIN store CONTROL[1] = 8 + k and leave through its normal shutdown path (it saves as for any program switch).
+- CONTROL.EXE accepts states 1..11 and exits with errorlevel = CONTROL[1] (stock: 1..6 through a table whose every
+  handler did the same).
+- UTILITIES loses IMPORT ONLINE SERVICE STATS (a dead 1993 online-service import; its string id 0x2d is reused).
+- Bytes, caves and the string-table move: notes/RE_NOTES.md "Menu bar" and FORMATS.md "MAIN menu data".
+
+| item | CONTROL[1] | errorlevel | BAT route | program |
+|---|---|---|---|---|
+| DYNASTY MODE | 8 | 8 | `:dynmenu` | `dynview /menu`: the hub (history, HOF, leaders, milestones, review, offseason, settings, about) |
+| CREATE A PLAYER | 9 | 9 | `:create` | `create` (CREATE.EXE) |
+| DYNASTY SETTINGS | 10 | 10 | `:dynmenu` | `dynview /menu`: SETTINGS |
+| ABOUT THE MODS | 11 | 11 | `:dynmenu` | `dynview /menu`: ABOUT |
+
+C8 amendment, the BAT (bat_patch.py): ahead of the stock `if errorlevel 7 goto end`:
+```
+if errorlevel 10 goto dynmenu
+if errorlevel 9 goto create
+if errorlevel 8 goto dynmenu
+```
+and after the stock `goto frontend`:
+```
+:dynmenu
+dynview /menu
+goto start
+
+:create
+create
+goto start
+```
+Both programs set CONTROL[1] = CONTROL[0] before they exit (DYNVIEW only with /MENU), so `:start` runs `control`
+with the caller's state and MAIN comes back where it was. The route passes `:start`, so DYNASTY runs first: on a day
+other than 0xf3 it is a no-op; at 0xf3 (season over) the roll runs exactly as it would on any other return to MAIN.
+The labels `dynmenu` and `create` are free in the shipped BAT. The routes and labels go in together or not at all.
+
+DYNVIEW `/MENU` (Python `--menu N` / `--control PATH`): reads CONTROL in the cwd; d[1] in 8..11 gives item d[1] - 8,
+else 0. Item 2 opens SETTINGS, 3 ABOUT, anything else the hub. Precedence /OFFSEASON, /REVIEW, /TITLE, /MENU. The hub
+has eight rows (7 DYNASTY SETTINGS, 8 ABOUT THE MODS) with or without a recorded season.
+
+DYNASTY SETTINGS edits the C2 header fields that had no UI: byte 10 era mode (ENTER cycles REAL CALENDAR (0) ->
+RESERVE CLAUSE (1) -> FREE AGENCY (2) -> REAL CALENDAR; any other value shows RESERVE CLAUSE and goes to FREE AGENCY)
+and the u32 managed-team mask at 12..15 (one row per team of the league's MAJ, YOU MANAGE / AI MANAGES). Each ENTER
+writes only those bytes; a missing HISTORY.DAT is created as 32 zero bytes first, a shorter one zero-extended to 32.
+The next roll reads them (C6). ABOUT THE MODS is three fixed pages describing every mod.
+
+CREATE A PLAYER (CREATE.EXE, Python reference tools/m4/create.py): TEAM list (MAJ order, AL then NL), SLOT list (the
+team's 40 roster slots, P1..P16 pitchers, B1..B24 batters), EDIT form (names, position, hands, age, ratings, face with
+the portrait drawn), CONFIRM when the slot is named, DONE. The save writes two 143-byte records into the team V20 in
+place: roster record s and season record s + 40, built like a C4 rookie (stat constants, salary, exper 0 consist 2)
+with the chosen fields and ratings and no random draw; the season half is the record with the season stat offsets
+zeroed. No point budget, salary not shown. The new player takes the replaced player's lineup and staff spots
+unchanged (no repair pass), and the replaced player leaves the league (not added to any pool or history).
+

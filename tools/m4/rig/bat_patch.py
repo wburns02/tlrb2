@@ -20,6 +20,14 @@ and, when the stock `:frontend` / `play` is present, runs the DYNASTY MODE scree
   dynview /title
   play
 
+and routes the DYNASTY menu-bar picks (menu_patch.py, CONTROL errorlevels 8..11) ahead of the stock
+`if errorlevel 7 goto end`:
+  if errorlevel 10 goto dynmenu
+  if errorlevel 9 goto create
+  if errorlevel 8 goto dynmenu
+with `:dynmenu` / `dynview /menu` / `goto start` and `:create` / `create` / `goto start` placed
+after the stock `goto frontend`.
+
 Every earlier patched form (C5 with and without the histwr line, C7 with
 dynview /review, any form without the boot screen) upgrades in place. CRLF line endings, idempotent, asserts stock content, refuses
 live/pristine paths. Also writes ARCHIVE.BAT next to TONY2.BAT: it copies the finished season (the
@@ -53,6 +61,19 @@ PATCHED_START = (
 
 STOCK_FRONTEND = ':frontend\r\nplay\r\n'
 PATCHED_FRONTEND = ':frontend\r\ndynview /title\r\nplay\r\n'
+
+# the DYNASTY menu (menu_patch.py): CONTROL exits 8 + item; 8, 10 and 11 run DYNVIEW (it reads
+# CONTROL[1] for the screen), 9 runs CREATE; both hand CONTROL[1] back to the caller
+STOCK_ROUTES = 'if errorlevel 7 goto end\r\n'
+PATCHED_ROUTES = ('if errorlevel 10 goto dynmenu\r\n'
+                  'if errorlevel 9 goto create\r\n'
+                  'if errorlevel 8 goto dynmenu\r\n'
+                  'if errorlevel 7 goto end\r\n')
+STOCK_LABELS = 'goto frontend\r\n\r\n:draft\r\n'
+PATCHED_LABELS = ('goto frontend\r\n\r\n'
+                  ':dynmenu\r\ndynview /menu\r\ngoto start\r\n\r\n'
+                  ':create\r\ncreate\r\ngoto start\r\n\r\n'
+                  ':draft\r\n')
 
 # earlier patched forms, newest first: upgraded in place by patch()
 EARLIER_FORMS = (
@@ -131,17 +152,33 @@ def patch(install_root, revert=False):
 
     if revert:
         forms = (PATCHED_START,) + EARLIER_FORMS
-        if not any(f in content for f in forms) and PATCHED_FRONTEND not in content:
+        if not any(f in content for f in forms + (PATCHED_FRONTEND, PATCHED_ROUTES, PATCHED_LABELS)):
             print("Already reverted or never patched", file=sys.stderr)
             return True
         for f in forms:
             content = content.replace(f, STOCK_START)
         content = content.replace(PATCHED_FRONTEND, STOCK_FRONTEND)
+        content = content.replace(PATCHED_ROUTES, STOCK_ROUTES)
+        content = content.replace(PATCHED_LABELS, STOCK_LABELS)
     else:
-        if PATCHED_START in content and STOCK_FRONTEND not in content:
+        # the menu routes and their labels go in together or not at all (a goto to a missing
+        # label ends the batch); a BAT with neither (the synthetic test BATs) skips them
+        has_routes = PATCHED_ROUTES in content or STOCK_ROUTES in content
+        has_labels = PATCHED_LABELS in content or STOCK_LABELS in content
+        if has_routes != has_labels:
+            print(f"ERROR: menu routes and labels not both present in {bat_path}", file=sys.stderr)
+            return False
+        todo = [(st, new) for st, new in ((STOCK_ROUTES, PATCHED_ROUTES), (STOCK_LABELS, PATCHED_LABELS))
+                if has_routes and new not in content]
+        if PATCHED_START in content and STOCK_FRONTEND not in content and not todo:
             print("Already patched", file=sys.stderr)
             return True
         content = content.replace(STOCK_FRONTEND, PATCHED_FRONTEND)
+        for stock, new in todo:
+            if content.count(stock) != 1:
+                print(f"ERROR: stock {stock!r} not found once in {bat_path}", file=sys.stderr)
+                return False
+            content = content.replace(stock, new)
         if PATCHED_START not in content:
             for f in EARLIER_FORMS:
                 if f in content:

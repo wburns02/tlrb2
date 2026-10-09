@@ -114,6 +114,10 @@ the caller's video mode, registers and palette (MAIN after BACK never sets the m
 per-team needs shown during the draft (BBPRO style), the user's own team highlighted, and release reasons.
 
 ## Create a player, create a team (Will, 2026-10-08, deep research TODO)
+Create a player: DONE (contract C10). DYNASTY > CREATE A PLAYER on MAIN's menu bar runs CREATE.EXE: pick a team and
+a roster slot, then name, position, hands, age, ratings and a face (30..96 with the portrait drawn); the save writes
+the slot's roster and season records in place. Open: create a team (below), a live salary, a point budget option,
+eligibility at a second position. The research notes below stay for create-a-team.
 Stock: only UTIL Edit Player Stats (age, salary, names; ratings recomputed from stats unless the user-set flag at
 record byte 140 is on), Edit Team Names, Assign Stadiums, Team Colors. No generator, no face picker (faces are
 random at import), no create-team flow. Building blocks we own: V20 record and team header decode, ratings.py

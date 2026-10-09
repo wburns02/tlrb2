@@ -95,3 +95,29 @@ further by guessing: ftrace a season action (which program opens .SCH, offsets r
   overlay (file offset 368144). The current league is CLASSIC (from SYSTEM).
 - The editor asks "automatically calculate a player's ratings based on his new stats?": UTIL contains the
   stats -> ratings formula. Decoding it is the key to correct historical imports.
+
+## Menu bar (MAIN, decoded 2026-10-08, static plus the :98 rig; patch tools/m4/menu_patch.py, contract C10)
+- Menu data segment 1eba (file pre-relocation seg 0x0eba): dropdown structs of 22 words (count, enable mask, 16
+  string ids, 4 runtime words) at 0x00 ball, 0x2c plate stats, 0x58 SEASON, 0x84 MANAGER, 0xb0 UTILITIES. The bar
+  struct at 0xdc: count (5), mask, then 5-word entries (submenu index, flags 0x8000 top level | 0x2000 right
+  aligned, string id, x, width); x and width are computed at runtime from the string, so a new entry stores 0.
+- DGROUP 0x2208: far pointers to the dropdowns by submenu index; DGROUP 0x221c: far pointers to the menu strings by
+  string id (0x2e entries, then the string pool from 0x22d4 with PLAY BALL! first). Index k of the first table is
+  slot k - 5 of the second (the tables overlap), so submenu 13 is string slot 8.
+- Only the four menu routines read the string table (`shl bx,2; push dword [bx+0x221c]`); no code addresses a pool
+  string directly, so strings can move as long as the slot is repointed.
+- String ids 8, 0xd and 0x20 are in no MAIN menu (8 is the old submenu-13 slot, 0xd PLAY TO RESERVED GAME, 0x20
+  SIMULATED STATS); 0x2d is IMPORT ONLINE SERVICE STATS in UTILITIES (dead online-service import).
+- The menu loop lives in overlay 4ec4 (flat 0x4ec40). A pick returns code = bar << 4 | item; the loop decodes
+  `mov dx,si; shr dx,4; and si,0xf; mov bx,dx; dec bx; cmp bx,3` at 4ec4:01d4 and jumps through a 4-entry table
+  for bars 1..4; anything else falls to the exit test. The loop exits when CONTROL[1] != 1 (CONTROL buffer far
+  pointer at DS:0x9b64), and MAIN then saves and quits as for any program switch.
+- 1eba:0112..017f is zero in the file and in RAM at menu idle (cave scan plus a :98 rig memory dump at the menu).
+- Overlay code cannot far call into the resident image by a relocated pointer from the patch (the overlay has no
+  relocation for new bytes), so the hook computes the 1eba segment as DS - 0x2240 (DGROUP 40fa minus 1eba) and
+  enters by push / push / retf.
+- CONTROL.EXE (seg 1228:00cd): `cmp bx,5; ja; shl bx,1; jmp cs:[bx+0x127]` over states 1..6, every handler
+  `exit(state[1])`. The patch makes it `cmp bx,10; ja; inc ax; jmp exit`.
+- Rig check 2026-10-08 (:98, rt1.py): the bar shows DYNASTY with four items; DYNASTY MODE leaves MAIN with CONTROL
+  `01 08 ...`; MAIN restarts normally with CONTROL[1] = CONTROL[0].
+

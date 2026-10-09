@@ -24,6 +24,19 @@ Tony La Russa Baseball II (v1.3 CD) to use any of it.
 
 Install = DATA1.ARJ extracted to C:\TONY2 (what INSTALL does). The game reads art/sound/stadiums from D: at runtime.
 
+## In-game mods
+
+Everything is reached from the game's own menus (contract C10, notes/M4_CONTRACT.md):
+- DYNASTY on MAIN's menu bar: DYNASTY MODE (season history, Hall of Fame, career leaders, milestones, last season
+  review, offseason), CREATE A PLAYER, DYNASTY SETTINGS (era rules, which teams you manage), ABOUT THE MODS.
+- The offseason runs itself after the World Series (SEASON > START NEW SEASON): aging, retirements, rookie draft,
+  trades, free agency; each finished season is archived to C:\SEASONS\Snn first.
+- 67 new player faces (rookies and created players use them).
+- Modern ballparks: UTILITIES > ASSIGN STADIUMS.
+
+The menu and dynasty pieces install into a copy of the game with `tools/m4/rig/bat_patch.py DIR`, `tools/m4/menu_patch.py DIR`, then copy DYNASTY.EXE,
+HISTWR.EXE, ROSTERS.EXE, DYNVIEW.EXE and CREATE.EXE (built from tools/m4) into DIR.
+
 ## Run
 
 - Play (real desktop, sound): `~/tlrb2/scripts/launch.sh live`

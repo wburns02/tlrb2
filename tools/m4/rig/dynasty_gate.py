@@ -10,7 +10,7 @@ runs roster sanity checks, and relaunches for the next season.
 usage: dynasty_gate.py --seasons N [--first K] [--fresh] [--full-rosters]
   --first K        number of the first season run here (default: one past the highest logs/t6/sN_post)
   --fresh          rebuild the dedicated install from work/c (never touches work/c itself), patch the BAT,
-                   install the repo DYNASTY.EXE, HISTWR.EXE, ROSTERS.EXE and DYNVIEW.EXE, remove HISTORY.DAT and MILESTON.DAT
+                   apply menu_patch (C10), install the repo DYNASTY.EXE, HISTWR.EXE, ROSTERS.EXE, DYNVIEW.EXE and CREATE.EXE, remove HISTORY.DAT and MILESTON.DAT
   --full-rosters   require 40 named roster records per team after the roll (DYNASTY builds with the rookie fill)
   --league DIR     with --fresh: copy a built league (e.g. /mnt/nvme/tlrb2/hist/1985) over TEAMS/CLASSIC; every
                    file in DIR must already exist there under the same name
@@ -38,6 +38,7 @@ import check_roll               # noqa: E402
 import v20                      # noqa: E402
 from m4 import rollover         # noqa: E402
 from m4 import history          # noqa: E402
+from m4 import menu_patch       # noqa: E402
 
 INSTALL = season_sim.INSTALL
 SOURCE = '/mnt/nvme/tlrb2/work/c/TONY2'
@@ -68,10 +69,12 @@ def setup_fresh(install, league_src=None):
     shutil.copytree(SOURCE, install)
     if not bat_patch.patch(install):
         sys.exit('BAT patch failed')
+    menu_patch.patch(install)
     shutil.copy2(os.path.join(TOOLS, 'm4', 'blob', 'DYNASTY.EXE'), os.path.join(install, 'DYNASTY.EXE'))
     shutil.copy2(os.path.join(TOOLS, 'm4', 'histwr', 'HISTWR.EXE'), os.path.join(install, 'HISTWR.EXE'))
     shutil.copy2(os.path.join(TOOLS, 'm4', 'rosters_c', 'ROSTERS.EXE'), os.path.join(install, 'ROSTERS.EXE'))
     shutil.copy2(os.path.join(TOOLS, 'm4', 'dynview_c', 'DYNVIEW.EXE'), os.path.join(install, 'DYNVIEW.EXE'))
+    shutil.copy2(os.path.join(TOOLS, 'm4', 'create_c', 'CREATE.EXE'), os.path.join(install, 'CREATE.EXE'))
     # a stale DYNSNAP (an earlier run's HISTORY/MILESTON/RETIRED) would feed the
     # next roll and the history check; the BAT copy only overwrites, so clear it
     snap = os.path.join(os.path.dirname(install), 'DYNSNAP')

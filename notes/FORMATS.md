@@ -471,3 +471,19 @@ holds each player's best/historical single season (Wills 1962: 165 G), not caree
   flag is used ONLY by the random assignment (UTIL 5000:ea5e matches it against the face-group table
   DS:776e when picking a face for a new/unassigned player), never by the renderer (BB 7000:da0a uses u16@27
   alone). Evidence shots pb3.png vs bb_esc3.png.
+
+### MAIN menu data and the C10 cave use (2026-10-08)
+| where | stock | C10 (menu_patch.py) |
+|---|---|---|
+| 1eba:00dc bar count | 5 | 6 |
+| 1eba:00b0 UTILITIES count | 10 | 9 (drops id 0x2d, the last item) |
+| 1eba:0112 | zero | bar entry 5: submenu 13, flags 0x8000, string id 0x0d |
+| 1eba:011c | zero | DYNASTY dropdown: count 4, mask ffff, ids 20 2d 2e 2f; the strings DYNASTY (0x128) and DYNASTY MODE (0x130) sit in its unused id words |
+| 1eba:0148..017f | zero | trampoline (redo the decode; bar 5 or submenu 13 stores CONTROL[1] = 8 + item) |
+| DGROUP 0x221c + 4 * id | far ptrs | id 0 to PLAY BALL! at 0x254e; 8 to the dropdown; 0x0d and 0x20 to the cave strings |
+| DGROUP 0x22d4 (old PLAY BALL!) | string | slots 0x2e (DYNASTY SETTINGS at 0x2378) and 0x2f (ABOUT THE MODS at 0x2484) |
+| DGROUP 0x2378 / 0x2484 / 0x253e | PLAY TO RESERVED GAME / SIMULATED STATS / IMPORT ONLINE SERVICE STATS | DYNASTY SETTINGS / ABOUT THE MODS / CREATE A PLAYER + PLAY BALL! |
+| MZ header | crlc 1458 | crlc 1460, two relocations appended at 0x1706 for the new slots' segment words |
+| overlay 4ec4:01d4 (14 B) | the decode | push cs; push 01e2; ax = ds - 0x2240; push ax; push 0148; retf |
+| CONTROL.EXE 1228:00cd | `83fb05772cd1e32effa72701` | `83fb0a772c40eb0790909090` |
+

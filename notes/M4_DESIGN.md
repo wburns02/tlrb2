@@ -178,6 +178,15 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
 - Q6 (2026-10-08): yes. All-Star picks need a playing-time floor (C9 qualifier: batters half the league's max
   games, pitchers outs >= that many games), falling back to the old rule when a slot has no qualifier.
 
+- Q7 (Will, 2026-10-08): "add the DYNASTY item to the game menu bar and create a player too", then "in fact all
+  mods need to be clearly in the game menu". Answer (C10): MAIN's bar gets a DYNASTY entry with DYNASTY MODE,
+  CREATE A PLAYER, DYNASTY SETTINGS and ABOUT THE MODS. Settings expose the era rules and managed teams, which had no
+  UI before. ABOUT lists every mod, including the two that live in stock menus (new faces, modern ballparks via
+  UTILITIES > ASSIGN STADIUMS). Create-a-player choices made by the brain, open to revision: no point budget (a
+  sandbox feature, the player decides); the new player replaces the picked slot in place and inherits that slot's
+  lineup and staff spots (no repair pass, so nothing else on the team moves); replacing a named player asks to
+  confirm; salary is not shown (money is ignored, Q5.4). Rejected: a ten-item dropdown (no safe bytes for more menu
+  strings; every DGROUP gap checked was in use) and a separate launcher program (in-game only).
 - Q2: season leaders and career leaders are two separate screens. P1 stays as built (Will, 2026-10-07: do not
   redo it). Career totals are already recorded by the P1 merge into half 0; the second screen is a P3 display task
   in DYNASTY, which also reads HISTORY.DAT u32 totals where half 0 saturates (u8 HR/RBI).

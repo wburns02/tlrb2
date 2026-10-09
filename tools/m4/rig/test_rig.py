@@ -127,6 +127,46 @@ class TestBatPatch:
                 assert bat_patch.patch(str(install), revert=True)
                 assert (install / 'TONY2.BAT').read_bytes() == orig
 
+    def test_dynasty_menu_routes(self):
+        """C10: CONTROL errorlevels 8..11 route to dynview /menu (8, 10, 11) and create (9) ahead of the
+        stock errorlevel 7 test; both labels go back to :start; idempotent; revert restores stock; a BAT
+        with routes but no label anchor is refused."""
+        stock = ('echo off\r\n' + bat_patch.STOCK_START + 'if errorlevel 8 goto x\r\n'
+                 + bat_patch.STOCK_ROUTES + 'goto frontend\r\n\r\n:draft\r\ndraft\r\n')
+        with tempfile.TemporaryDirectory() as tmpdir:
+            install = Path(tmpdir) / 'TONY2'
+            install.mkdir()
+            bat = install / 'TONY2.BAT'
+            bat.write_bytes(stock.encode('cp437'))
+            assert bat_patch.patch(str(install), revert=False)
+            text = bat.read_bytes().decode('cp437')
+            lines = text.split('\r\n')
+            at = lines.index('if errorlevel 10 goto dynmenu')
+            assert lines[at:at + 4] == ['if errorlevel 10 goto dynmenu', 'if errorlevel 9 goto create',
+                                        'if errorlevel 8 goto dynmenu', 'if errorlevel 7 goto end']
+            d = lines.index(':dynmenu')
+            assert lines[d:d + 3] == [':dynmenu', 'dynview /menu', 'goto start']
+            c = lines.index(':create')
+            assert lines[c:c + 3] == [':create', 'create', 'goto start']
+            assert d > lines.index('goto frontend') and c < lines.index(':draft')
+            assert bat_patch.patch(str(install), revert=False)
+            assert bat.read_bytes().decode('cp437') == text
+            assert bat_patch.patch(str(install), revert=True)
+            assert bat.read_bytes().decode('cp437') == stock
+            bat.write_bytes(stock.replace('goto frontend\r\n\r\n:draft', ':draft').encode('cp437'))
+            assert not bat_patch.patch(str(install), revert=False)
+        real = Path('/mnt/nvme/tlrb2/pristine/TONY2/TONY2.BAT')
+        if real.exists():
+            with tempfile.TemporaryDirectory() as tmpdir:
+                install = Path(tmpdir) / 'TONY2'
+                install.mkdir()
+                (install / 'TONY2.BAT').write_bytes(real.read_bytes())
+                assert bat_patch.patch(str(install), revert=False)
+                text = (install / 'TONY2.BAT').read_bytes().decode('cp437')
+                assert bat_patch.PATCHED_ROUTES in text and bat_patch.PATCHED_LABELS in text
+                assert bat_patch.patch(str(install), revert=True)
+                assert (install / 'TONY2.BAT').read_bytes() == real.read_bytes()
+
     def test_archive_bat_written_and_reverted(self):
         """patch() writes ARCHIVE.BAT (first free C:\\SEASONS\\Snn gets the DYNSNAP copy); revert removes it."""
         with tempfile.TemporaryDirectory() as tmpdir:
