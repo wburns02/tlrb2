@@ -12,9 +12,12 @@ Display primitives (decor per notes/M4_CONTRACT.md integer rules):
   bytes, MSB first; glyph k = char 32 + k, anything else draws '?'
 - palette DEFAULT.PAL raw 6-bit bytes; PNG output scales (c & 63) * 255 // 63
 
-usage: python3 tools/m4/dynview.py [--review | --offseason | --title] [--keys K,K,...]
-       [--png OUT.png] [--raw OUT.RAW] LEAGUE_DIR FONT_DIR
-(precedence --offseason, --review, --title)
+usage: python3 tools/m4/dynview.py [--review | --offseason | --title | --menu N]
+       [--control CONTROL] [--keys K,K,...] [--png OUT.png] [--raw OUT.RAW]
+       LEAGUE_DIR FONT_DIR
+(precedence --offseason, --review, --title, --menu; --menu 2 opens DYNASTY SETTINGS,
+--menu 3 ABOUT THE MODS; --control reads the menu item from CONTROL and writes
+CONTROL[1] = CONTROL[0] when the session ends)
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -47,7 +50,23 @@ KEY_UP, KEY_DOWN = 0x4800, 0x5000
 SCREEN_MENU, SCREEN_HISTORY, SCREEN_HOF = 0, 1, 2
 SCREEN_LEADERS, SCREEN_MILESTONES, SCREEN_REVIEW = 3, 4, 5
 SCREEN_OFFSEASON = 6
+SCREEN_SETTINGS, SCREEN_ABOUT = 7, 8
 N_CATS = 12
+
+# the hub (SCREEN_MENU) rows: key 1..8 opens screen key - 48
+MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  CAREER LEADERS',
+             '4  MILESTONES', '5  LAST SEASON REVIEW', '6  OFFSEASON',
+             '7  DYNASTY SETTINGS', '8  ABOUT THE MODS']
+
+# HISTORY.DAT header fields used by DYNASTY SETTINGS: byte 10 era, bytes 12..15 mask
+HDR_SIZE = 32
+# MAJ team stems: AL slot s (lg s) at 0x21d, NL slot s (lg s + 16) at 0x758c
+MAJ_S_AL, MAJ_S_NL = 0x21d, 0x758c
+MAJ_O_STEM = 0x1d7
+MAJ_MIN = MAJ_S_NL + MAJ_O_STEM + 128
+# CONTROL file of /MENU (TONY2.BAT): byte 1 is 8 + item, the request; when DYNVIEW exits
+# it copies byte 0 (the program TONY2.BAT restarts) over byte 1
+CONTROL_FILE = 'CONTROL'
 
 # offseason phases: cat & 15 is the phase, cat >> 4 the launched flag
 OFF_REVIEW, OFF_RETIRE, OFF_DRAFT, OFF_TRADES, OFF_FA, OFF_READY = range(6)
@@ -67,8 +86,46 @@ TITLE_ROWS = ['YOUR LEAGUE NOW PLAYS SEASON AFTER SEASON.',
               'AND FREE AGENTS. EVERY SEASON IS ARCHIVED',
               'FIRST, SO NOTHING IS LOST.',
               '',
-              'HISTORY, HALL OF FAME, CAREER LEADERS AND',
-              'MILESTONES COLLECT HERE AS SEASONS PASS.']
+              'THE DYNASTY MENU ON THE MENU BAR HOLDS',
+              'HISTORY, CREATE A PLAYER, SETTINGS AND',
+              'A GUIDE TO EVERY MOD.']
+
+# ABOUT THE MODS (key 8, /MENU item 3): read-only pages of 12 rows
+ABOUT_ROWS = ['DYNASTY MODE',
+              'YOUR LEAGUE PLAYS SEASON AFTER SEASON.',
+              'AFTER THE WORLD SERIES PICK SEASON >',
+              'START NEW SEASON. THE OFFSEASON AGES',
+              'EVERY PLAYER A YEAR. RATINGS RISE OR FALL,',
+              'VETERANS RETIRE, ROOKIES ARE DRAFTED, AND',
+              'TRADES AND FREE AGENCY RUN. EACH SEASON IS',
+              'ARCHIVED FIRST TO C:\\SEASONS.',
+              '',
+              'DYNASTY > DYNASTY MODE ON THE MENU BAR',
+              'SHOWS HISTORY, HALL OF FAME, LEADERS,',
+              'MILESTONES AND THE LAST OFFSEASON.',
+              'CREATE A PLAYER',
+              'DYNASTY > CREATE A PLAYER PUTS A NEW',
+              'PLAYER ON ANY TEAM: NAME, POSITION,',
+              'HANDS, AGE, RATINGS AND FACE. THE NEW',
+              'PLAYER TAKES THE ROSTER SLOT YOU PICK.',
+              '',
+              'DYNASTY SETTINGS',
+              'ERA RULES: REAL CALENDAR GIVES THE',
+              'RESERVE CLAUSE UNTIL 1975 AND FREE',
+              'AGENCY FROM 1976, OR FIX EITHER ONE.',
+              'TEAMS YOU MANAGE KEEP THEIR ROSTERS:',
+              'NO AI RELEASES, TRADES OR DEPARTURES.',
+              'A HOLE ON YOUR TEAM TAKES THE BEST',
+              'ROOKIE LEFT IN THE DRAFT CLASS, AND YOUR',
+              'LINEUP IS REPAIRED, NOT REBUILT.',
+              '',
+              'NEW FACES',
+              '67 NEW PORTRAITS JOIN THE 30 STOCK ONES.',
+              'ROOKIES AND CREATED PLAYERS USE THEM.',
+              '',
+              'MODERN BALLPARKS',
+              'UTILITIES > ASSIGN STADIUMS LETS ANY TEAM',
+              'PLAY IN A NEW PARK.']
 
 # career leader categories: (title label, kind, TOTALS index)
 # kind: 'count' | 'avg' | 'era' | 'war' | 'aw0' (MVP awards) | 'aw3' (GG awards)
@@ -127,8 +184,10 @@ def load_data(league_dir, font_dir=None):
     hist = history.History.load(hp)
     ms = history.milestone_entries(hp)
     fonts = load_fonts(font_dir) if font_dir else None
+    era, mask = load_settings(league_dir)
     return {'hist': hist, 'ms': ms, 'fonts': fonts, 'league_dir': league_dir,
-            'events': parse_rosters(league_dir)}
+            'events': parse_rosters(league_dir), 'era': era, 'mask': mask,
+            'teams': settings_teams(league_dir)}
 
 
 def find_upper(league_dir, want):
@@ -215,6 +274,115 @@ def parse_rosters(league_dir):
         elif kind == 'REL' and n >= 3:
             out.append(('REL',))
     return out
+
+
+# ---------------------------------------------------------------- settings / control
+def load_settings(league_dir):
+    """(era, mask) from the first 32 bytes of HISTORY.DAT, zero padded: era is byte 10,
+    mask the u32 LE of bytes 12..15. A missing or unreadable file is all zero."""
+    try:
+        with open(os.path.join(league_dir, 'HISTORY.DAT'), 'rb') as fh:
+            d = fh.read(HDR_SIZE)
+    except OSError:
+        d = b''
+    d = d.ljust(HDR_SIZE, b'\0')
+    return d[10], int.from_bytes(d[12:16], 'little')
+
+
+def settings_teams(league_dir):
+    """[(lg, display)] for the MAJ team slots in ascending lg (AL slot s is lg s, NL slot
+    s is lg s + 16). Empty with no MAJ, on a read error or a MAJ shorter than MAJ_MIN; a
+    slot whose stem is empty or has no team file is skipped."""
+    mp = history.maj_or_none(league_dir)
+    if mp is None:
+        return []
+    try:
+        with open(mp, 'rb') as fh:
+            d = fh.read(MAJ_MIN)
+    except OSError:
+        return []
+    if len(d) < MAJ_MIN:
+        return []
+    out = []
+    for lg in range(32):
+        s = MAJ_S_AL if lg < 16 else MAJ_S_NL
+        o = s + MAJ_O_STEM + 8 * (lg & 15)
+        stem = d[o:o + 8].split(b'\0')[0]
+        if not stem or v20_path(league_dir, stem) is None:
+            continue
+        out.append((lg, team_disp(league_dir, stem.decode('latin-1'))))
+    return out
+
+
+def era_label(era):
+    if era == 0:
+        return 'REAL CALENDAR'
+    if era == 2:
+        return 'FREE AGENCY'
+    return 'RESERVE CLAUSE'
+
+
+def era_next(era):
+    if era == 0:
+        return 1
+    if era == 2:
+        return 0
+    return 2
+
+
+def settings_rows(data):
+    """ERA RULES, then one row per team of data['teams'] (YOU MANAGE / AI MANAGES)."""
+    mask = data['mask']
+    return [('ERA RULES', era_label(data['era']))] + \
+        [(disp, 'YOU MANAGE' if (mask >> lg) & 1 else 'AI MANAGES')
+         for lg, disp in data['teams']]
+
+
+def save_settings(league_dir, era, mask):
+    """Write byte 10 (era) and bytes 12..15 (mask, u32 LE) of HISTORY.DAT. A missing file
+    is created and a short one zero-extended to 32 bytes; no other byte changes.
+    OSError is ignored."""
+    path = os.path.join(league_dir, 'HISTORY.DAT')
+    try:
+        try:
+            with open(path, 'rb') as fh:
+                d = bytearray(fh.read())
+        except FileNotFoundError:
+            d = bytearray()
+        d += bytes(max(0, HDR_SIZE - len(d)))
+        d[10] = era & 255
+        d[12:16] = (mask & 0xffffffff).to_bytes(4, 'little')
+        with open(path, 'wb') as fh:
+            fh.write(d)
+    except OSError:
+        pass
+
+
+def control_item(path):
+    """The /MENU item N in CONTROL[1] = 8 + N (N in 0..3); 0 when the file is missing,
+    shorter than 2 bytes or holds any other value."""
+    try:
+        with open(path, 'rb') as fh:
+            d = fh.read(2)
+    except OSError:
+        return 0
+    if len(d) >= 2 and 8 <= d[1] <= 11:
+        return d[1] - 8
+    return 0
+
+
+def control_return(path):
+    """CONTROL[1] = CONTROL[0] in place so TONY2.BAT restarts MAIN. A file under 2 bytes
+    is left alone; a missing file is not created; OSError is ignored."""
+    try:
+        with open(path, 'r+b') as fh:
+            d = fh.read(2)
+            if len(d) < 2:
+                return
+            fh.seek(1)
+            fh.write(d[:1])
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------- primitives
@@ -665,8 +833,12 @@ def total_rows(state, data):
         n = review_rows(hist, data['ms']) or []
     elif screen == SCREEN_OFFSEASON:
         n = offseason_body(state, data)[1]
+    elif screen == SCREEN_SETTINGS:
+        n = settings_rows(data)
+    elif screen == SCREEN_ABOUT:
+        n = ABOUT_ROWS
     else:
-        return 6
+        n = MENU_ROWS
     return len(n)
 
 
@@ -674,13 +846,16 @@ def rows(state, data):
     """Model rows of the current page as cell tuples (no fonts needed)."""
     hist = data['hist']
     screen, page, cat = state
-    if hist is None or hist.seasons_recorded == 0:
-        if screen == SCREEN_MENU and cat >> 4:
-            return [(t,) for t in TITLE_ROWS]
-        return [('NO DYNASTY HISTORY YET',)]
+    if screen == SCREEN_SETTINGS:
+        return settings_rows(data)[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
+    if screen == SCREEN_ABOUT:
+        return [(t,) for t in ABOUT_ROWS[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]]
     if screen == SCREEN_MENU:
-        return [('1  SEASON HISTORY',), ('2  HALL OF FAME',), ('3  CAREER LEADERS',),
-                ('4  MILESTONES',), ('5  LAST SEASON REVIEW',), ('6  OFFSEASON',)]
+        if (hist is None or hist.seasons_recorded == 0) and cat >> 4:
+            return [(t,) for t in TITLE_ROWS]
+        return [(t,) for t in MENU_ROWS]
+    if hist is None or hist.seasons_recorded == 0:
+        return [('NO DYNASTY HISTORY YET',)]
     if screen == SCREEN_LEADERS:
         return leaders_rows(hist, cat, page)
     if screen == SCREEN_OFFSEASON:
@@ -711,7 +886,7 @@ def step(state, key, data):
             return (SCREEN_MENU, 0, 0), 1
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_MENU:
-        if 49 <= key <= 54:
+        if 49 <= key <= 56:
             return (key - 48, 0, 0), 0
         if key == KEY_ENTER and cat >> 4:
             return state, 1
@@ -724,6 +899,27 @@ def step(state, key, data):
         if cat >> 4:
             return state, 1
         return (SCREEN_MENU, 0, 0), 0
+    if screen == SCREEN_SETTINGS:
+        # cat is the cursor: 0 the ERA RULES row, c >= 1 the team teams[c - 1]
+        n = len(settings_rows(data))
+        if key == KEY_ENTER:
+            if cat == 0:
+                data['era'] = era_next(data['era'])
+            else:
+                data['mask'] ^= 1 << data['teams'][cat - 1][0]
+            save_settings(data['league_dir'], data['era'], data['mask'])
+            return state, 0
+        if key == KEY_UP and cat > 0:
+            cat -= 1
+        elif key == KEY_DOWN and cat < n - 1:
+            cat += 1
+        elif key == KEY_PGDN:
+            cat = min(cat + ROWS_PER_PAGE, n - 1)
+        elif key == KEY_PGUP:
+            cat = max(cat - ROWS_PER_PAGE, 0)
+        else:
+            return state, 0
+        return (SCREEN_SETTINGS, cat // ROWS_PER_PAGE, cat), 0
     if key == KEY_PGDN:
         n = total_rows(state, data)
         if page * ROWS_PER_PAGE + ROWS_PER_PAGE < n:
@@ -764,17 +960,20 @@ COLS_RETIRE = [('NAME', _cx(0), 18, 'L'), ('AGE', _cx(18), 5, 'R'), ('YRS', _cx(
                ('WAR', _cx(28), 7, 'R'), ('HOF', _cx(36), 6, 'R')]
 COLS_DRAFT = [('#', _cx(0), 4, 'L'), ('TEAM', _cx(4), 15, 'L'), ('PLAYER', _cx(19), 23, 'L')]
 COLS_MOVE = [('TEAM', _cx(0), 13, 'L'), ('PLAYER', _cx(14), 15, 'L'), ('FROM', _cx(30), 12, 'L')]
+COLS_SETTINGS = [('SETTING', _cx(0), 24, 'L'), ('VALUE', _cx(26), 16, 'L')]
 OFF_COLS = [COLS_SINGLE, COLS_RETIRE, COLS_DRAFT, COLS_MOVE, COLS_MOVE, COLS_SINGLE]
 
-FOOTERS = {SCREEN_MENU: '1-6 SELECT   ESC EXIT',
+FOOTERS = {SCREEN_MENU: '1-8 SELECT   ESC EXIT',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT CATEGORY   ESC MENU',
            SCREEN_MILESTONES: 'PGUP PGDN   ESC MENU',
-           SCREEN_REVIEW: 'ENTER MENU   ESC MENU'}
+           SCREEN_REVIEW: 'ENTER MENU   ESC MENU',
+           SCREEN_SETTINGS: 'UP DOWN MOVE   ENTER CHANGE   ESC MENU',
+           SCREEN_ABOUT: 'PGUP PGDN   ESC MENU'}
 
 
-TITLE_FOOTER = '1-6 SELECT   ENTER PLAY BALL'
+TITLE_FOOTER = '1-8 SELECT   ENTER PLAY BALL'
 TITLE_FOOTER_NEW = 'ENTER PLAY BALL'
 
 
@@ -795,7 +994,7 @@ def footer_text(state, data=None):
 
 
 def screen_title(state, data):
-    screen, _page, cat = state
+    screen, page, cat = state
     if screen == SCREEN_MENU:
         if cat >> 4:
             return 'DYNASTY MODE: SEASON %d' % (data['hist'].seasons_recorded + 1)
@@ -816,6 +1015,11 @@ def screen_title(state, data):
         if phase == OFF_READY:
             return OFF_TITLES[OFF_READY] % (n + 1)
         return OFF_TITLES[phase]
+    if screen == SCREEN_SETTINGS:
+        return 'DYNASTY SETTINGS'
+    if screen == SCREEN_ABOUT:
+        return 'ABOUT THE MODS %d/%d' % (page + 1, (len(ABOUT_ROWS) + ROWS_PER_PAGE - 1)
+                                         // ROWS_PER_PAGE)
     return 'SEASON %d IN REVIEW' % data['hist'].seasons_recorded
 
 
@@ -831,9 +1035,12 @@ def draw_panel(fb):
 
 def body_cols(state, data):
     """Column table of the current screen; the one-cell 'NO DYNASTY HISTORY YET' row
-    always uses COLS_SINGLE so it is never cut to a narrow first column."""
+    always uses COLS_SINGLE so it is never cut to a narrow first column. SETTINGS and
+    ABOUT show their rows with no history too."""
+    if state[0] == SCREEN_SETTINGS:
+        return COLS_SETTINGS
     hist = data['hist']
-    if hist is None or hist.seasons_recorded == 0:
+    if state[0] == SCREEN_ABOUT or hist is None or hist.seasons_recorded == 0:
         return COLS_SINGLE
     if state[0] == SCREEN_OFFSEASON:
         return offseason_body(state, data)[0]
@@ -851,8 +1058,10 @@ def render(state, data):
     tx = 8 + (304 - text_width(bold_ft, title)) // 2
     draw_text(fb, bold_ft, tx + 1, 11, title, C_BLACK)
     draw_text(fb, bold_ft, tx, 10, title, C_WHITE)
-    _screen, _page, _cat = state
+    screen, page, cat = state
     cols = body_cols(state, data)
+    # SETTINGS: the cursor (cat) row of the page is highlighted
+    hot = cat - page * ROWS_PER_PAGE if screen == SCREEN_SETTINGS else -1
     rect(fb, 8, 24, 311, 33, C_HEADER_GOLD)
     for header, x, w, align in cols:
         h = header[:w]
@@ -862,15 +1071,17 @@ def render(state, data):
             draw_text(fb, main_ft, x, 26, h, C_BLACK)
     for r, cells in enumerate(rows(state, data)):
         y0 = 35 + r * ROW_H
-        rect(fb, 8, y0, 311, y0 + 9, C_ROW_TAN)
+        on = r == hot
+        rect(fb, 8, y0, 311, y0 + 9, C_TITLE_RED if on else C_ROW_TAN)
+        color = C_WHITE if on else C_BLACK
         for ci, cell in enumerate(cells):
             _h, x, w, align = cols[ci]
             s = cell[:w]
             if align == 'R':
                 draw_text(fb, main_ft, x + w * CHAR_W - text_width(main_ft, s),
-                          y0 + 2, s, C_BLACK)
+                          y0 + 2, s, color)
             else:
-                draw_text(fb, main_ft, x, y0 + 2, s, C_BLACK)
+                draw_text(fb, main_ft, x, y0 + 2, s, color)
         rect(fb, 8, y0 + 10, 311, y0 + 10, C_GRID_GRAY)
     draw_text(fb, main_ft, 10, 185, footer_text(state, data), C_WHITE)
     return fb
@@ -887,12 +1098,17 @@ def main(argv):
     ap.add_argument('--review', action='store_true')
     ap.add_argument('--offseason', action='store_true')
     ap.add_argument('--title', action='store_true')
+    ap.add_argument('--menu', type=int, default=None)
+    ap.add_argument('--control', default=None)
     ap.add_argument('--keys', default='')
     ap.add_argument('--png', default=None)
     ap.add_argument('--raw', default=None)
     ap.add_argument('league_dir')
     ap.add_argument('font_dir')
     a = ap.parse_args(argv)
+    menu = a.menu
+    if a.control is not None and menu is None:
+        menu = control_item(a.control)
     data = load_data(a.league_dir, a.font_dir)
     if a.offseason:
         state = (SCREEN_OFFSEASON, 0, 16)
@@ -900,6 +1116,10 @@ def main(argv):
         state = (SCREEN_REVIEW, 0, 0)
     elif a.title:
         state = (SCREEN_MENU, 0, TITLE_FLAG)
+    elif menu == 2:
+        state = (SCREEN_SETTINGS, 0, 0)
+    elif menu == 3:
+        state = (SCREEN_ABOUT, 0, 0)
     else:
         state = (SCREEN_MENU, 0, 0)
     for k in parse_keys(a.keys):
@@ -910,6 +1130,8 @@ def main(argv):
         write_png(a.png, fb, pal)
     if a.raw:
         open(a.raw, 'wb').write(bytes(fb))
+    if a.control is not None:
+        control_return(a.control)
 
 
 if __name__ == '__main__':

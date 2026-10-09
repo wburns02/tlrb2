@@ -12,6 +12,7 @@ import struct
 import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -21,7 +22,8 @@ import dynview
 import history
 import pytest
 from m4.test_dynview import (make_data, write_player, write_season,
-                             write_mileston, st, make_offseason, ROSTER_BODY)
+                             write_mileston, st, make_offseason, ROSTER_BODY,
+                             big_league)
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_C = os.path.join(HERE, 'dynview_c')
@@ -182,12 +184,28 @@ def milestones_total(ldir):
     return len(dynview.milestone_rows(data['hist'], data['ms']))
 
 
+def twin_league(ldir, tmp_path, tag):
+    """two copies of the league, one for the host binary and one for Python: a settings
+    ENTER writes HISTORY.DAT, so the two runs must not share it"""
+    base = tempfile.mkdtemp(prefix=tag + '_', dir=str(tmp_path))
+    h, p = os.path.join(base, 'h'), os.path.join(base, 'p')
+    shutil.copytree(str(ldir), h)
+    shutil.copytree(str(ldir), p)
+    return h, p
+
+
+def history_bytes(d):
+    path = os.path.join(d, 'HISTORY.DAT')
+    return open(path, 'rb').read() if os.path.exists(path) else None
+
+
 def check_parity(ldir, tmp_path, tag, keys=None, review=False, font_dir=FILES,
                  offseason=False, title=False):
+    h, p = twin_league(ldir, tmp_path, tag)
     raw = str(tmp_path / (tag + '.RAW'))
-    a = run_host(str(ldir), raw, keys=keys, review=review, font_dir=font_dir,
+    a = run_host(h, raw, keys=keys, review=review, font_dir=font_dir,
                  offseason=offseason, title=title)
-    b = fb_python(ldir, keys=keys, review=review, font_dir=font_dir,
+    b = fb_python(p, keys=keys, review=review, font_dir=font_dir,
                   offseason=offseason, title=title)
     if a != b:
         i = next((k for k in range(min(len(a), len(b))) if a[k] != b[k]),
@@ -196,6 +214,8 @@ def check_parity(ldir, tmp_path, tag, keys=None, review=False, font_dir=FILES,
         pytest.fail(f'{tag}: first diff at pixel ({x}, {y}): '
                     f'python {b[i] if i < len(b) else "?"} '
                     f'c {a[i] if i < len(a) else "?"}')
+    if history_bytes(h) != history_bytes(p):
+        pytest.fail(f'{tag}: HISTORY.DAT after the keys differs from Python')
     return a
 
 
@@ -567,6 +587,177 @@ def test_offseason_big_rosters(tmp_path):
     check_offseason(ldir, tmp_path, 'big_ready_nl', 5, launched=False)
 
 
+# ---------------- test 5c: hub, DYNASTY SETTINGS, ABOUT, /MENU ----------------
+
+SET_SCREEN = dynview.SCREEN_SETTINGS
+ABOUT_SCREEN = dynview.SCREEN_ABOUT
+HUB_STATE = (dynview.SCREEN_MENU, 0, 0)
+DOWN, UP = dynview.KEY_DOWN, dynview.KEY_UP
+PGDN, PGUP = dynview.KEY_PGDN, dynview.KEY_PGUP
+ESC, ENTER = dynview.KEY_ESC, dynview.KEY_ENTER
+
+
+def settings_league(d, n_teams=20):
+    """league dir d (made) with HISTORY.DAT, MILESTON.DAT, a MAJ of n_teams teams and
+    their V20 files (t00 .. t19: lg 0..15 AL, 16..19 NL)"""
+    d.mkdir()
+    ldir, _ = make_data(d)
+    big_league(ldir, n_teams)
+    return ldir
+
+
+SETTINGS_SEQS = [
+    ('open', [55]),
+    ('era1', [55, ENTER]),
+    ('era_cycle', [55, ENTER, ENTER, ENTER, ENTER]),
+    ('team0', [55, DOWN, ENTER]),
+    ('team_nl', [55] + [DOWN] * 16 + [ENTER]),        # lg 16, the first NL team
+    ('last_clamped', [55] + [DOWN] * 25 + [ENTER]),   # cursor stops on the last row
+    ('pages', [55, PGDN, ENTER, PGDN, ENTER, PGUP, ENTER, PGUP, PGUP, ENTER]),
+    ('toggle_twice', [55, DOWN, ENTER, ENTER, DOWN, ENTER, UP, UP, ENTER]),
+    ('esc_back_in', [55, DOWN, ENTER, ESC, 55, ENTER]),
+    ('esc_hub', [55, ESC]),
+    ('hub_then_settings', [ord('7'), DOWN, DOWN, ENTER]),
+    ('bad_keys', [55, ord('9'), ord('x'), 0x4b00, 0x4d00, ENTER]),
+]
+
+
+def test_settings_key_sequences_parity(tmp_path):
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = settings_league(tmp_path / 'lg')
+    for tag, keys in SETTINGS_SEQS:
+        check_parity(ldir, tmp_path, 'set_' + tag, keys=keys)
+
+
+def test_settings_and_about_no_history_file(tmp_path):
+    """no HISTORY.DAT: the settings rows still show; ENTER creates the file (32 B)"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = tmp_path / 'nohist'
+    ldir.mkdir()
+    big_league(ldir, 20)
+    check_parity(ldir, tmp_path, 'nh_open', keys=[55])
+    check_parity(ldir, tmp_path, 'nh_toggle', keys=[55, ENTER, DOWN, ENTER, PGDN, ENTER])
+    check_parity(ldir, tmp_path, 'nh_about', keys=[56, PGDN, PGDN])
+    check_parity(ldir, tmp_path, 'nh_hub')
+    # no MAJ at all: the ERA RULES row only
+    bare = tmp_path / 'bare'
+    bare.mkdir()
+    check_parity(bare, tmp_path, 'bare_set', keys=[55, DOWN, ENTER, ENTER])
+
+
+ABOUT_SEQS = [[56], [56, PGDN], [56, PGDN, PGDN], [56, PGDN, PGDN, PGDN],
+              [56, PGDN, PGUP, PGUP, PGUP], [56, ENTER, DOWN, UP]]
+
+
+def test_about_pages_parity(tmp_path):
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'hist').mkdir()
+    ldir, _ = make_data(tmp_path / 'hist')
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    for n, keys in enumerate(ABOUT_SEQS):
+        check_parity(ldir, tmp_path, 'about_h%d' % n, keys=keys)
+        check_parity(empty, tmp_path, 'about_e%d' % n, keys=keys)
+
+
+def test_hub_and_title_new_rows_parity(tmp_path):
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    ldir = settings_league(tmp_path / 'lg')
+    check_parity(empty, tmp_path, 'hub_e')
+    check_parity(ldir, tmp_path, 'hub_h')
+    check_parity(ldir, tmp_path, 'hub_h8', keys=[56])
+    check_parity(empty, tmp_path, 'title_e_set', title=True, keys=[55])
+    check_parity(empty, tmp_path, 'title_e_about', title=True, keys=[56])
+    check_parity(ldir, tmp_path, 'title_h_set', title=True, keys=[55, DOWN, ENTER])
+    check_parity(ldir, tmp_path, 'title_h_about', title=True, keys=[56, PGDN])
+
+
+def test_random_settings_keys(tmp_path):
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = settings_league(tmp_path / 'lg')
+    rng = random.Random(0x5e77)
+    keys = [55, 56, ENTER, ENTER, UP, DOWN, PGUP, PGDN, ESC, ord('1'), ord('5'),
+            ord('7'), ord('8'), ord('9')]
+    for n in range(150):
+        seq = [rng.choice(keys) for _ in range(rng.randrange(1, 30))]
+        check_parity(ldir, tmp_path, 'rset%03d' % n, keys=seq)
+
+
+def menu_host(ldir, raw, cwd, extra=()):
+    """host /MENU run from cwd (the directory that holds CONTROL); returns the frame"""
+    r = subprocess.run([HOST, *extra, '/MENU', '/RAW:' + raw, str(ldir), FILES],
+                       capture_output=True, text=True, timeout=300, cwd=str(cwd))
+    assert r.returncode == 0, f'host rc {r.returncode}: {r.stderr[:400]}'
+    return open(raw, 'rb').read()
+
+
+CONTROL_IN = {0: b'\x01\x08\x00\x00\x00\x00\x00\xff\xff',
+              1: b'\x01\x09\x00\x00\x00\x00\x00\xff\xff',
+              2: b'\x01\x0a\x00\x00\x00\x00\x00\xff\xff',
+              3: b'\x01\x0b\x00\x00\x00\x00\x00\xff\xff'}
+CONTROL_OUT = b'\x01\x01\x00\x00\x00\x00\x00\xff\xff'
+MENU_STATE = {0: HUB_STATE, 1: HUB_STATE, 2: (SET_SCREEN, 0, 0), 3: (ABOUT_SCREEN, 0, 0)}
+
+
+def test_menu_control_items(tmp_path):
+    """/MENU: the frame equals Python --control for every CONTROL item; CONTROL[1] is
+    CONTROL[0] afterwards"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = settings_league(tmp_path / 'lg')
+    data = dynview.load_data(str(ldir), FILES)
+    for item in (0, 1, 2, 3):
+        tag = 'ctl%d' % item
+        hcwd, pcwd = tmp_path / (tag + '_hc'), tmp_path / (tag + '_pc')
+        hcwd.mkdir()
+        pcwd.mkdir()
+        (hcwd / 'CONTROL').write_bytes(CONTROL_IN[item])
+        (pcwd / 'CONTROL').write_bytes(CONTROL_IN[item])
+        h, p = twin_league(ldir, tmp_path, tag)
+        a = menu_host(h, str(tmp_path / (tag + '_h.RAW')), hcwd)
+        raw_p = str(tmp_path / (tag + '_p.RAW'))
+        dynview.main(['--control', str(pcwd / 'CONTROL'), '--raw', raw_p, p, FILES])
+        b = open(raw_p, 'rb').read()
+        assert a == b, tag
+        assert a == bytes(dynview.render(MENU_STATE[item], data)), tag
+        assert (hcwd / 'CONTROL').read_bytes() == CONTROL_OUT, tag
+        assert (pcwd / 'CONTROL').read_bytes() == CONTROL_OUT, tag
+
+
+def test_menu_flag_precedence_and_no_control(tmp_path):
+    """/MENU with no CONTROL file: the hub, and no CONTROL is created; /REVIEW and /TITLE
+    win over the item, and CONTROL is still returned"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = settings_league(tmp_path / 'lg')
+    data = dynview.load_data(str(ldir), FILES)
+    nocwd = tmp_path / 'nocwd'
+    nocwd.mkdir()
+    h, _ = twin_league(ldir, tmp_path, 'noctl')
+    a = menu_host(h, str(tmp_path / 'noctl.RAW'), nocwd)
+    assert a == bytes(dynview.render(HUB_STATE, data))
+    assert not (nocwd / 'CONTROL').exists()
+    cwd = tmp_path / 'cwd'
+    cwd.mkdir()
+    (cwd / 'CONTROL').write_bytes(CONTROL_IN[2])
+    h, _ = twin_league(ldir, tmp_path, 'prec_rev')
+    a = menu_host(h, str(tmp_path / 'prec_rev.RAW'), cwd, extra=['/REVIEW'])
+    assert a == bytes(dynview.render((dynview.SCREEN_REVIEW, 0, 0), data))
+    assert (cwd / 'CONTROL').read_bytes() == CONTROL_OUT
+    (cwd / 'CONTROL').write_bytes(CONTROL_IN[3])
+    h, _ = twin_league(ldir, tmp_path, 'prec_title')
+    a = menu_host(h, str(tmp_path / 'prec_title.RAW'), cwd, extra=['/TITLE'])
+    assert a == bytes(dynview.render((dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG), data))
+    assert (cwd / 'CONTROL').read_bytes() == CONTROL_OUT
+
+
 # ---------------- test 6: errors ----------------
 
 def test_errors_no_fonts(tmp_path):
@@ -807,3 +998,33 @@ def test_dos_offseason_parity(tmp_path):
                      if dos_raw[k] != py[k])
             pytest.fail(f'dos offseason {tag}: first diff at pixel '
                         f'({i % 320}, {i // 320}): python {py[i]} c {dos_raw[i]}')
+
+
+def test_dos_settings_parity(tmp_path):
+    """Headless DOSBox-X: DYNVIEW.EXE /RAW:OUT.RAW /KEYS:55,0x5000,13 LEAGUE FONTS (open
+    DYNASTY SETTINGS, move to the first team, toggle it); the frame and the HISTORY.DAT
+    bytes are compared with Python on the same league"""
+    if not _dos_ready():
+        pytest.skip('DYNVIEW.EXE or dosbox-x missing')
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = settings_league(tmp_path / 'lg')
+    d = str(tmp_path / 'dosset')
+    os.makedirs(os.path.join(d, 'LEAGUE'))
+    os.makedirs(os.path.join(d, 'FONTS'))
+    for f in os.listdir(str(ldir)):
+        shutil.copy2(os.path.join(str(ldir), f), os.path.join(d, 'LEAGUE', f))
+    for f in ('MAIN.FNT', 'BOLD.FNT', 'DEFAULT.PAL'):
+        shutil.copy2(os.path.join(FILES, f), os.path.join(d, 'FONTS', f))
+    rc = run_dos(d, ['DYNVIEW.EXE /RAW:OUT.RAW /KEYS:55,0x5000,13 LEAGUE FONTS'])
+    assert rc == 0, f'dos rc {rc}'
+    dos_raw = open(os.path.join(d, 'OUT.RAW'), 'rb').read()
+    h, p = twin_league(ldir, tmp_path, 'dosset_py')
+    py = fb_python(p, keys=[55, dynview.KEY_DOWN, 13], font_dir=FILES)
+    if dos_raw != py:
+        i = next(k for k in range(min(len(dos_raw), len(py)))
+                 if dos_raw[k] != py[k])
+        pytest.fail(f'dos settings: first diff at pixel ({i % 320}, {i // 320}): '
+                    f'python {py[i]} c {dos_raw[i]}')
+    assert open(os.path.join(d, 'LEAGUE', 'HISTORY.DAT'), 'rb').read() == history_bytes(p), \
+        'dos HISTORY.DAT differs from Python'
