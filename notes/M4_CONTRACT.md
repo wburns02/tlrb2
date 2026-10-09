@@ -483,7 +483,8 @@ The next roll reads them (C6). ABOUT THE MODS is three fixed pages describing ev
 
 CREATE A PLAYER (CREATE.EXE, Python reference tools/m4/create.py): TEAM list (MAJ order, AL then NL), SLOT list (the
 team's 40 roster slots, P1..P16 pitchers, B1..B24 batters), EDIT form (names, position, hands, age, ratings, face with
-the portrait drawn), CONFIRM when the slot is named, DONE. The save writes two 143-byte records into the team V20 in
+the portrait drawn; typed letters are stored upper case like every stock name, since the LARGE font has no lower
+case glyphs), CONFIRM when the slot is named, DONE. The save writes two 143-byte records into the team V20 in
 place: roster record s and season record s + 40, built like a C4 rookie (stat constants, salary, exper 0 consist 2)
 with the chosen fields and ratings and no random draw; the season half is the record with the season stat offsets
 zeroed. No point budget, salary not shown. The new player takes the replaced player's lineup and staff spots

@@ -283,17 +283,17 @@ def test_name_typing_rules(tmp_path):
     st, _ = walk(ctx, [32], st)                    # space first: refused
     assert st['form']['last'] == ''
     st, _ = walk(ctx, typed("aB1 .'-"), st)        # digit refused, others allowed
-    assert st['form']['last'] == "aB .'-"
+    assert st['form']['last'] == "AB .'-"
     st, _ = walk(ctx, [BACK, BACK], st)
-    assert st['form']['last'] == 'aB .'
+    assert st['form']['last'] == 'AB .'
     st, _ = walk(ctx, typed('abcdefghijklmnop'), st)
-    assert st['form']['last'] == 'aB .abcdefg'     # max 11
+    assert st['form']['last'] == 'AB .ABCDEFG'     # max 11
     st, _ = walk(ctx, [DOWN] + typed('Jo') + [32], st)
-    assert st['form']['first'] == 'Jo '
+    assert st['form']['first'] == 'JO '
     st, _ = walk(ctx, typed('xxxxxxxxx'), st)
-    assert st['form']['first'] == 'Jo xxxx'        # max 7
+    assert st['form']['first'] == 'JO XXXX'        # max 7
     st, _ = walk(ctx, [UP, BACK, LEFT, RIGHT], st)
-    assert st['form']['last'] == 'aB .abcdef'      # name rows ignore LEFT and RIGHT
+    assert st['form']['last'] == 'AB .ABCDEF'      # name rows ignore LEFT and RIGHT
 
 
 def test_first_name_space_rule(tmp_path):
@@ -309,7 +309,7 @@ def test_backspace_only_on_name_rows(tmp_path):
     ctx = ctx_for(make_league(str(tmp_path / 'L')))
     st = to_edit(ctx, 0, 0)
     st, _ = walk(ctx, typed('Ab') + [DOWN, DOWN, BACK], st)  # cursor 2: POSITION
-    assert st['form']['last'] == 'Ab'
+    assert st['form']['last'] == 'AB'
 
 
 # ---------------------------------------------------------------- field keys
@@ -410,7 +410,7 @@ def test_confirm_esc_then_enter_saves(tmp_path):
     assert st['screen'] == cr.S_CONFIRM
     st2, ex = walk(ctx, [ESC], st)
     assert (st2['screen'], st2['cursor'], ex) == (cr.S_EDIT, 9, False)
-    assert (st2['form']['last'], st2['form']['first']) == ('Smith', 'Al')
+    assert (st2['form']['last'], st2['form']['first']) == ('SMITH', 'AL')
     before = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
     st3, _ = walk(ctx, [ENTER], st)
     assert st3['screen'] == cr.S_DONE
@@ -424,7 +424,7 @@ def test_done_screen_and_keys(tmp_path):
     st, _ = walk(ctx, typed('Oak') + [DOWN] * 12 + [ENTER], st)
     assert st['screen'] == cr.S_DONE
     title, cols, rows, footer, hl = cr._list_view(st, ctx)
-    assert (title, rows, hl) == ('PLAYER SAVED', [('SAVED: Oak',), ('TEAM: BOSTON',),
+    assert (title, rows, hl) == ('PLAYER SAVED', [('SAVED: OAK',), ('TEAM: BOSTON',),
                                                   ('SLOT: B2',)], False)
     st2, ex = walk(ctx, [DOWN, ENTER], st)
     assert (st2['screen'], st2['cursor'], ex) == (cr.S_TEAM, 0, False)
@@ -435,7 +435,7 @@ def test_done_first_name_in_saved_line(tmp_path):
     ctx = ctx_for(make_league(str(tmp_path / 'L')))
     st = to_edit(ctx, 0, 17)
     st, _ = walk(ctx, typed('Oak') + [DOWN] + typed('Ray') + [DOWN] * 11 + [ENTER], st)
-    assert cr._list_view(st, ctx)[2][0] == ('SAVED: Ray Oak',)
+    assert cr._list_view(st, ctx)[2][0] == ('SAVED: RAY OAK',)
 
 
 def test_save_writes_only_two_records(tmp_path):

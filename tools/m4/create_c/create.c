@@ -998,7 +998,7 @@ static int step_edit(State *st, int32_t key)
             if (len)
                 name[len - 1] = 0;
         } else if (name_ok(name, mx, key)) {
-            name[len] = (char)key;
+            name[len] = (char)ascii_up((uint8_t)key);   /* stock names are upper case */
             name[len + 1] = 0;
         }
         return 0;

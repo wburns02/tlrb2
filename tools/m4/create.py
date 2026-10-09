@@ -403,7 +403,7 @@ def _step_edit(st, key, ctx):
         if key == KEY_BACK:
             form[fld] = form[fld][:-1]
         elif _name_ok(form[fld], mx, key):
-            form[fld] += chr(key)
+            form[fld] += chr(key).upper()      # stock names are all upper case
     elif key in (KEY_LEFT, KEY_RIGHT) and fld != 'save':
         _adjust(st, fld, -1 if key == KEY_LEFT else 1, ctx)
     return st, False
