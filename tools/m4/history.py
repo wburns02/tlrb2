@@ -260,15 +260,22 @@ def maj_or_none(league_dir):
 
 
 def decode_champion(m):
-    """C2 champion decode from the AL/NL playoff blocks:
-    WS winner = AL S+0x3da; al_pennant = AL S+0x3d9; nl_pennant = NL S+0x3d9;
-    runner-up = the pennant winner that is not the WS winner. 0xff anywhere unknown."""
+    """C2 champion decode from the AL/NL playoff blocks (amended 2026-10-08, two samples):
+    the AL block holds both series as (team0, team1) with each side's wins:
+    LCS teams S+0x3d7/0x3d8, wins S+0x3df/0x3e0; WS teams S+0x3d9 (AL pennant) and
+    S+0x3da (NL pennant), wins S+0x3e1/0x3e2. WS winner = the side with more wins
+    (tie: 0xff). al_pennant = AL S+0x3d9; nl_pennant = NL S+0x3d9; runner-up = the
+    pennant winner that is not the WS winner. 0xff anywhere unknown."""
     s_al, s_nl = 0x21d, 0x758c
-    ws = m.d[s_al + 0x3da]
+    t0 = m.d[s_al + 0x3d9]
+    t1 = m.d[s_al + 0x3da]
+    w0 = m.d[s_al + 0x3e1]
+    w1 = m.d[s_al + 0x3e2]
     al_p = m.d[s_al + 0x3d9]
     nl_p = m.d[s_nl + 0x3d9]
     # ids past the 32 league-global ids are unknown, like 0xff (C2 amendment)
-    ws, al_p, nl_p = (v if v < 32 else 0xff for v in (ws, al_p, nl_p))
+    t0, t1, al_p, nl_p = (v if v < 32 else 0xff for v in (t0, t1, al_p, nl_p))
+    ws = t0 if w0 > w1 else t1 if w1 > w0 else 0xff
     runner = 0xff
     if ws != 0xff:
         if al_p == ws:

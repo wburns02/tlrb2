@@ -438,7 +438,8 @@ def test_column_layout_fits_and_never_overlaps():
     never share a pixel column, and every row builder's cells fit their width."""
     assert dynview.CHAR_W == 7
     for cols in (dynview.COLS_SINGLE, dynview.COLS_HISTORY, dynview.COLS_HOF,
-                 dynview.COLS_LEADERS, dynview.COLS_MILESTONES):
+                 dynview.COLS_LEADERS, dynview.COLS_MILESTONES, dynview.COLS_RETIRE,
+                 dynview.COLS_DRAFT, dynview.COLS_MOVE):
         prev_end = 0
         for header, x, w, _a in cols:
             assert len(header) <= w
@@ -552,3 +553,318 @@ def test_no_award_reads_none(tmp_path):
     data = dynview.load_data(str(ldir))
     rev = [r[0] for r in dynview.rows(st(dynview.SCREEN_REVIEW, 0, 3), data)]
     assert 'AL ROOKIE NONE' in rev and 'NL ROOKIE NONE' in rev
+
+
+# ---------------------------------------------------------------- offseason
+SO = dynview.SCREEN_OFFSEASON
+ENTER, ESC = dynview.KEY_ENTER, dynview.KEY_ESC
+
+
+def oc(phase, launched=1):
+    """cat of an offseason phase: phase + 16 * launched"""
+    return phase + 16 * launched
+
+
+def write_team(ldir, stem, name):
+    """LEAGUE_DIR/<STEM>.V20 whose header name is name (only bytes 0..13 are read)"""
+    (ldir / (stem + '.V20')).write_bytes(name.encode('latin-1').ljust(14, b'\0') + bytes(66))
+
+
+ROSTER_BODY = (
+    b'DRAFT CLASALE1 Bobby Holmes\r\n'
+    b'DRAFT CLASALW2 Bobby Holmes\r\n'            # same name on a second team
+    b'DRAFT CLASNLE3 Lou Green\r\n'
+    b'SIGN CLASALW7 Bobby Holmes CLASALE1\r\n'    # pick 1: first Bobby Holmes
+    b'SIGN CLASNLE4 Bobby Holmes CLASALE1\r\n'    # no unconsumed CLASALE1 draft: FA
+    b'SIGN CLASNLE4 Bobby Holmes CLASALW2\r\n'    # pick 2
+    b'SIGN CLASALW7 Lou Green pool\r\n'           # FA from the pool
+    b'SIGN CLASALE1 Lou Green CLASNLE3\r\n'       # pick 3
+    b'TRADE CLASALE1 Duke Snider CLASNLW4 TONY BERNAZARD\r\n'
+    b'REL CLASALE1 Some Guy\r\n'
+    b'REL CLASALW2 Other Guy Jr\r\n'
+    b'REL CLASALE1\r\n'                           # two tokens: not a release
+    b'TRADE CLASNLE3 Lou CLASALW2 Lou Green\n'    # LF only; B is the first team token
+    b'TRADE CLASALE1 Nobody Here NOTATEAM Foo\n'  # no team token: ignored
+    b'SIGN CLASALE1 ' + b'Q' * 120 + b' FROM\r\n'  # over 127 bytes: ignored
+    b'SIGN CLASNLW5 Tom Free pool\n'
+    b'SIGN CLASNLW5 Tom Free CLASALE2\n'          # team to team (no draft): FA
+    b'RET CLASALE1 Old Guy\r\n')                  # RET is not an offseason event
+
+
+def make_offseason(tmp_path, rosters=ROSTER_BODY):
+    """Three recorded seasons and seven entries. Four retire in season 3 (OLDMAN, a
+    HoF inductee, WAR10 90; RIVERA and TIE, WAR10 50 each; NEGWAR, WAR10 -5). An early
+    retiree, an active player and an old HoF inductee must not show. Team files:
+    CLASALW7 (SEATTLE), CLASALW2 (BOSTON), CLASNLW4 (NEW YORK N). rosters=None writes
+    no ROSTERS.TXT."""
+    ldir = tmp_path / 'off'
+    ldir.mkdir()
+    d = bytearray(32 + 64 * 128 + 7 * 160)
+    d[3] = 1
+    d[4], d[5] = 3, 0
+    d[6], d[7] = 7, 0
+    write_season(d, 1, b'ALA01', b'NL01')
+    write_season(d, 2, b'ALA02', b'NL02')
+    write_season(d, 3, b'ALA03', b'NL03', awards=(0, 1, 0xffff, 3, 4, 0xffff))
+    # last, first, status, last_season, hof_season, war10, age, seasons_played
+    specs = [(b'RIVERA', b'JOSE', 2, 3, 0, 50, 36, 12),
+             (b'OLDMAN', b'AL', 3, 3, 3, 90, 40, 20),
+             (b'TIE', b'ONE', 2, 3, 0, 50, 33, 9),
+             (b'EARLY', b'X', 2, 2, 0, 999, 30, 5),
+             (b'ACTIVE', b'Y', 1, 3, 0, 70, 25, 6),
+             (b'HOFOLD', b'Z', 3, 2, 2, 300, 39, 15),
+             (b'NEGWAR', b'Q', 2, 3, 0, -5, 38, 3)]
+    for i, (last, first, status, last_season, hof, war10, age, played) in enumerate(specs):
+        write_player(d, i, last, first, status=status, last_season=last_season,
+                     seasons_played=played, hof_season=hof, war10=war10)
+        d[8224 + 160 * i + 23] = age
+    (ldir / 'HISTORY.DAT').write_bytes(bytes(d))
+    write_mileston(str(ldir / 'MILESTON.DAT'), [(3, 0, 2, 3000)])
+    write_team(ldir, 'CLASALW7', 'SEATTLE')
+    write_team(ldir, 'CLASALW2', 'BOSTON')
+    write_team(ldir, 'CLASNLW4', 'NEW YORK N')
+    if rosters is not None:
+        (ldir / 'ROSTERS.TXT').write_bytes(rosters)
+    return ldir
+
+
+def test_roster_events_parse(tmp_path):
+    ldir = make_offseason(tmp_path)
+    assert dynview.parse_rosters(str(ldir)) == [
+        ('DRAFT', 'CLASALE1', 'Bobby Holmes'), ('DRAFT', 'CLASALW2', 'Bobby Holmes'),
+        ('DRAFT', 'CLASNLE3', 'Lou Green'),
+        ('SIGN', 'CLASALW7', 'Bobby Holmes', 'CLASALE1'),
+        ('SIGN', 'CLASNLE4', 'Bobby Holmes', 'CLASALE1'),
+        ('SIGN', 'CLASNLE4', 'Bobby Holmes', 'CLASALW2'),
+        ('SIGN', 'CLASALW7', 'Lou Green', 'pool'),
+        ('SIGN', 'CLASALE1', 'Lou Green', 'CLASNLE3'),
+        ('TRADE', 'CLASALE1', 'Duke Snider', 'CLASNLW4', 'TONY BERNAZARD'),
+        ('REL',), ('REL',),
+        ('TRADE', 'CLASNLE3', 'Lou', 'CLASALW2', 'Lou Green'),
+        ('SIGN', 'CLASNLW5', 'Tom Free', 'pool'),
+        ('SIGN', 'CLASNLW5', 'Tom Free', 'CLASALE2')]
+
+
+def test_roster_crlf_and_lf_agree(tmp_path):
+    ldir = make_offseason(tmp_path)
+    crlf = dynview.parse_rosters(str(ldir))
+    (ldir / 'ROSTERS.TXT').write_bytes(ROSTER_BODY.replace(b'\r\n', b'\n'))
+    assert dynview.parse_rosters(str(ldir)) == crlf
+
+
+def test_roster_line_length_boundary(tmp_path):
+    """127 content bytes are kept (also with a CR, which is stripped); 128 are not"""
+    ldir = make_offseason(tmp_path, rosters=None)
+    head = b'REL CLASALE1 '                              # 13 bytes
+    body = (head + b'R' * 114 + b'\n'                      # 127: kept
+            + head + b'R' * 115 + b'\n'                    # 128: ignored
+            + head + b'R' * 114 + b'\r\n'                  # 128 raw, 127 content: kept
+            + head + b'R' * 115 + b'\r\n')                 # 129 raw, 128 content: ignored
+    (ldir / 'ROSTERS.TXT').write_bytes(body)
+    assert dynview.parse_rosters(str(ldir)) == [('REL',), ('REL',)]
+
+
+def test_roster_missing_file(tmp_path):
+    ldir = make_offseason(tmp_path, rosters=None)
+    assert dynview.parse_rosters(str(ldir)) == []
+    assert dynview.load_data(str(ldir))['events'] == []
+
+
+def test_draft_matching_consumes_first(tmp_path):
+    ldir = make_offseason(tmp_path)
+    picks, fa = dynview.sign_split(dynview.load_data(str(ldir))['events'])
+    assert picks == [('CLASALW7', 'Bobby Holmes'), ('CLASNLE4', 'Bobby Holmes'),
+                     ('CLASALE1', 'Lou Green')]
+    assert fa == [('CLASNLE4', 'Bobby Holmes', 'CLASALE1'),
+                  ('CLASALW7', 'Lou Green', 'pool'),
+                  ('CLASNLW5', 'Tom Free', 'pool'),
+                  ('CLASNLW5', 'Tom Free', 'CLASALE2')]
+
+
+def test_offseason_phase_rows(tmp_path):
+    ldir = make_offseason(tmp_path)
+    data = dynview.load_data(str(ldir))
+
+    def body(phase):
+        return dynview.rows((SO, 0, oc(phase)), data)
+    review = body(0)
+    assert review[0] == ('CHAMPION ALA03',) and review[1] == ('RUNNER-UP NL03',)
+    assert ('NEW HALL OF FAME: OLDMAN, AL',) in review
+    assert review[-1] == ('RIVERA, JOSE 3000 HITS',) and len(review) == 10
+    # retirees: WAR10 descending (ties by entry index), HoF flag, no early retiree
+    assert body(1) == [('OLDMAN, AL', '40', '20', '9.0', 'HOF'),
+                       ('RIVERA, JOSE', '36', '12', '5.0', ''),
+                       ('TIE, ONE', '33', '9', '5.0', ''),
+                       ('NEGWAR, Q', '38', '3', '-0.5', '')]
+    assert dynview.body_cols((SO, 0, oc(1)), data) == dynview.COLS_RETIRE
+    assert body(2) == [('#1', 'SEATTLE', 'Bobby Holmes'), ('#2', 'CLASNLE4', 'Bobby Holmes'),
+                       ('#3', 'CLASALE1', 'Lou Green')]
+    assert dynview.body_cols((SO, 0, oc(2)), data) == dynview.COLS_DRAFT
+    assert body(3) == [('CLASALE1', 'Duke Snider', 'NEW YORK N'),
+                       ('NEW YORK N', 'TONY BERNAZARD', 'CLASALE1'),
+                       ('CLASNLE3', 'Lou', 'BOSTON'), ('BOSTON', 'Lou Green', 'CLASNLE3')]
+    assert dynview.body_cols((SO, 0, oc(3)), data) == dynview.COLS_MOVE
+    assert body(4) == [('CLASNLE4', 'Bobby Holmes', 'CLASALE1'),
+                       ('SEATTLE', 'Lou Green', 'FREE AGENT'),
+                       ('CLASNLW5', 'Tom Free', 'FREE AGENT'),
+                       ('CLASNLW5', 'Tom Free', 'CLASALE2')]
+    assert dynview.body_cols((SO, 0, oc(4)), data) == dynview.COLS_MOVE
+    ready = ['RETIRED: 4   NEW HALL OF FAME: 1', 'ROOKIES DRAFTED: 3', 'TRADES: 2',
+             'FREE AGENT SIGNINGS: 4', 'PLAYERS RELEASED: 2',
+             'EVERY PLAYER AGED A YEAR AND DEVELOPED']
+    assert body(5) == [(t,) for t in ready + ['ENTER: ON TO SEASON 4']]
+    assert dynview.rows((SO, 0, oc(5, 0)), data)[-1] == ('ENTER: BACK TO THE MENU',)
+    assert dynview.body_cols((SO, 0, oc(5)), data) == dynview.COLS_SINGLE
+
+
+def test_offseason_empty_phases(tmp_path):
+    ldir = make_offseason(tmp_path, rosters=None)
+    data = dynview.load_data(str(ldir))
+    for phase, msg in ((2, 'NO DRAFT PICKS'), (3, 'NO TRADES'), (4, 'NO FREE AGENT SIGNINGS')):
+        s = (SO, 0, oc(phase))
+        assert dynview.rows(s, data) == [(msg,)]
+        assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
+    assert dynview.rows((SO, 0, oc(5)), data)[1:5] == [
+        ('ROOKIES DRAFTED: 0',), ('TRADES: 0',), ('FREE AGENT SIGNINGS: 0',),
+        ('PLAYERS RELEASED: 0',)]
+    # the phase-1 retirees need no ROSTERS.TXT
+    assert len(dynview.rows((SO, 0, oc(1)), data)) == 4
+
+
+def test_offseason_titles_footers_and_menu(tmp_path):
+    ldir = make_offseason(tmp_path)
+    data = dynview.load_data(str(ldir))
+    titles = ['1/6 SEASON 3 IN REVIEW', '2/6 RETIREMENTS', '3/6 ROOKIE DRAFT',
+              '4/6 TRADES', '5/6 FREE AGENT SIGNINGS', '6/6 SEASON 4 IS READY']
+    for phase, title in enumerate(titles):
+        assert dynview.screen_title((SO, 0, oc(phase)), data) == title
+        assert dynview.screen_title((SO, 0, oc(phase, 0)), data) == title
+        if phase < 5:
+            assert dynview.footer_text((SO, 0, oc(phase))) == \
+                'ENTER NEXT   PGUP PGDN   ESC MENU'
+            assert dynview.footer_text((SO, 0, oc(phase, 0))) == \
+                'ENTER NEXT   PGUP PGDN   ESC MENU'
+    assert dynview.footer_text((SO, 0, oc(5))) == 'ENTER CONTINUE   ESC MENU'
+    assert dynview.footer_text((SO, 0, oc(5, 0))) == 'ENTER MENU   ESC MENU'
+    assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '1-6 SELECT   ESC EXIT'
+    assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == 'PGUP PGDN   ESC MENU'
+    assert dynview.footer_text((dynview.SCREEN_REVIEW, 0, 0)) == 'ENTER MENU   ESC MENU'
+    # the menu's sixth row and key 6
+    assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data)[-1] == ('6  OFFSEASON',)
+    assert dynview.total_rows((dynview.SCREEN_MENU, 0, 0), data) == 6
+    s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('6'), data)
+    assert s == (SO, 0, 0) and ex == 0
+    s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('7'), data)
+    assert s == (dynview.SCREEN_MENU, 0, 0) and ex == 0
+
+
+def test_offseason_enter_walk(tmp_path):
+    ldir = make_offseason(tmp_path)
+    data = dynview.load_data(str(ldir))
+    s = (SO, 0, oc(0))
+    for phase in range(1, 6):
+        s, ex = dynview.step(s, ENTER, data)
+        assert ex == 0 and s == (SO, 0, oc(phase))
+    # past the last phase: launched exits (state unchanged), not launched goes to MENU
+    s2, ex = dynview.step(s, ENTER, data)
+    assert ex == 1 and s2 == s
+    s2, ex = dynview.step((SO, 0, oc(5, 0)), ENTER, data)
+    assert ex == 0 and s2 == (dynview.SCREEN_MENU, 0, 0)
+    # ENTER resets the page and keeps the launched flag
+    s2, _ex = dynview.step((SO, 3, oc(1)), ENTER, data)
+    assert s2 == (SO, 0, oc(2))
+    s2, _ex = dynview.step((SO, 2, oc(0, 0)), ENTER, data)
+    assert s2 == (SO, 0, 1)
+    # ESC always goes to MENU without exiting from the offseason
+    s2, ex = dynview.step((SO, 0, oc(5)), ESC, data)
+    assert s2 == (dynview.SCREEN_MENU, 0, 0) and ex == 0
+
+
+def test_offseason_no_history(tmp_path):
+    ldir = tmp_path / 'empty'
+    ldir.mkdir()
+    data = dynview.load_data(str(ldir))
+    for phase in range(6):
+        s = (SO, 0, oc(phase))
+        assert dynview.rows(s, data) == [('NO DYNASTY HISTORY YET',)]
+        assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
+        assert dynview.total_rows(s, data) == 0
+    assert dynview.screen_title((SO, 0, oc(0)), data) == '1/6 SEASON 0 IN REVIEW'
+    assert dynview.screen_title((SO, 0, oc(5)), data) == '6/6 SEASON 1 IS READY'
+    assert dynview.step((SO, 0, oc(0)), ENTER, data) == ((SO, 0, oc(0)), 1)
+    assert dynview.step((SO, 0, oc(0, 0)), ENTER, data) == ((dynview.SCREEN_MENU, 0, 0), 0)
+
+
+def test_offseason_paging(tmp_path):
+    rosters = b''.join(b'SIGN CLASALW7 Player%02d pool\r\n' % k for k in range(30))
+    ldir = make_offseason(tmp_path, rosters)
+    data = dynview.load_data(str(ldir))
+    s = (SO, 0, oc(4))
+    assert len(dynview.rows(s, data)) == 12
+    s, _ex = dynview.step(s, dynview.KEY_PGDN, data)
+    assert s[1] == 1 and dynview.rows(s, data)[0] == ('SEATTLE', 'Player12', 'FREE AGENT')
+    s, _ex = dynview.step(s, dynview.KEY_PGDN, data)
+    assert s[1] == 2 and len(dynview.rows(s, data)) == 6
+    s, _ex = dynview.step(s, dynview.KEY_PGDN, data)
+    assert s[1] == 2
+    s, _ex = dynview.step(s, dynview.KEY_PGUP, data)
+    s, _ex = dynview.step(s, dynview.KEY_PGUP, data)
+    s, _ex = dynview.step(s, dynview.KEY_PGUP, data)
+    assert s[1] == 0
+
+
+def test_offseason_list_max_caps_rows(tmp_path, monkeypatch):
+    rosters = b''.join(b'SIGN CLASALW7 Player%02d pool\r\n' % k for k in range(30))
+    ldir = make_offseason(tmp_path, rosters)
+    monkeypatch.setattr(dynview, 'LIST_MAX', 14)
+    data = dynview.load_data(str(ldir))
+    s, _ex = dynview.step((SO, 0, oc(4)), dynview.KEY_PGDN, data)
+    assert len(dynview.rows(s, data)) == 2
+    s2, _ex = dynview.step(s, dynview.KEY_PGDN, data)
+    assert s2[1] == 1
+    # the counts on the ready phase stay uncapped
+    assert dynview.rows((SO, 0, oc(5)), data)[3] == ('FREE AGENT SIGNINGS: 30',)
+
+
+def test_draft_keep_drops_later_drafts(tmp_path, monkeypatch):
+    ldir = make_offseason(tmp_path)
+    monkeypatch.setattr(dynview, 'DRAFT_KEEP', 2)
+    picks, fa = dynview.sign_split(dynview.load_data(str(ldir))['events'])
+    # only the first two DRAFT lines exist for the matcher: Lou Green is a free agent
+    assert [p[1] for p in picks] == ['Bobby Holmes', 'Bobby Holmes']
+    assert len(fa) == 5
+
+
+def test_offseason_render_each_phase(tmp_path):
+    if not os.path.exists(os.path.join(FILES, 'MAIN.FNT')):
+        import pytest
+        pytest.skip('/mnt/nvme/tlrb2/files missing')
+    ldir = make_offseason(tmp_path)
+    data = dynview.load_data(str(ldir), FILES)
+    seen = set()
+    for phase in range(6):
+        for launched in (0, 1):
+            fb = dynview.render((SO, 0, oc(phase, launched)), data)
+            assert len(fb) == 64000
+            seen.add(bytes(fb))
+    # phases 0..4 look the same either way; phase 5 differs by its launch text
+    assert len(seen) == 7
+
+
+def test_offseason_cells_fit_columns(tmp_path):
+    ldir = make_offseason(tmp_path)
+    data = dynview.load_data(str(ldir))
+    for phase in range(6):
+        cols = dynview.body_cols((SO, 0, oc(phase)), data)
+        for row in dynview.rows((SO, 0, oc(phase)), data):
+            for cell, (_h, _x, w, _a) in zip(row, cols):
+                assert len(cell) <= w, (phase, cell)
+
+
+def test_offseason_no_history_ignores_dangling_rosters(tmp_path):
+    """ROSTERS.TXT without HISTORY.DAT shows the empty-history screens"""
+    ldir = tmp_path / 'norec'
+    ldir.mkdir()
+    (ldir / 'ROSTERS.TXT').write_bytes(ROSTER_BODY)
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows((SO, 0, oc(4)), data) == [('NO DYNASTY HISTORY YET',)]

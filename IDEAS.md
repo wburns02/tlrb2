@@ -103,7 +103,15 @@ Stock Start New Season wipes the simulated season and box scores. Dynasty now ar
 by bat_patch) copies the finished pre-roll league (all V20s, MAJ, PLAYOFFS, HISTORY, MILESTON, RETIRED) to the first
 free C:\SEASONS\Snn before the roll, verified byte-exact in the browser. Career stats, history, awards and the Hall
 of Fame already carry forward. Open: browse an archived season in game (DYNVIEW "past seasons": standings, leaders,
-playoff box scores from SEASONS\Snn), and a pre-roll guard if Start New Season is chosen without QUIT first.
+playoff box scores from SEASONS\Snn). No pre-roll guard is needed (probe 2026-10-08): SEASON > START NEW SEASON
+on BACK's post World Series menu saves the season and exits through the BAT, which archives and rolls it like QUIT.
+
+## Next season sequence like BBPRO / ClaudeBall (Will, 2026-10-08)
+DONE (contract C8a). The roll ends in `dynview /offseason`, six screens walked with ENTER: season in review,
+retirements (with new Hall of Famers), rookie draft, trades, free agent signings, then SEASON N+1 IS READY with the
+counts; ENTER hands on to MAIN's new season flow. Also on the DYNVIEW menu as `6  OFFSEASON`. DYNVIEW now restores
+the caller's video mode, registers and palette (MAIN after BACK never sets the mode). Open: a draft order and
+per-team needs shown during the draft (BBPRO style), the user's own team highlighted, and release reasons.
 
 ## Create a player, create a team (Will, 2026-10-08, deep research TODO)
 Stock: only UTIL Edit Player Stats (age, salary, names; ratings recomputed from stats unless the user-set flag at

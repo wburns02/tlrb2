@@ -74,12 +74,12 @@ class TestBatPatch:
             assert bat.read_bytes().decode('cp437') == content
 
     def test_c7_form_upgrades_every_earlier_form(self):
-        """C7: rolled seasons run histwr, rosters and dynview /review; every
+        """C7: rolled seasons run histwr, rosters and dynview /offseason; every
         earlier patched form upgrades in place and reverts to stock."""
         body = bat_patch.PATCHED_START.replace('\r\n', '\n')
         assert body == (':start\ncopy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\ndynasty\n'
                         'if errorlevel 1 goto rolled\ngoto ctl\n:rolled\ncall archive\nhistwr\nrosters\n'
-                        'dynview /review\n:ctl\ncontrol\n')
+                        'dynview /offseason\n:ctl\ncontrol\n')
         for old in bat_patch.EARLIER_FORMS:
             with tempfile.TemporaryDirectory() as tmpdir:
                 install = Path(tmpdir) / 'TONY2'

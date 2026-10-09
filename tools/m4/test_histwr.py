@@ -716,6 +716,34 @@ def test_champion_over_31_unknown(tmp_path):
     assert off < 0, f'champion>=32 off {off} (entry {ent})'
 
 
+def test_champion_ws_wins_decide(tmp_path):
+    """WS winner comes from the series wins (AL S+0x3e1 vs S+0x3e2), not from the
+    S+0x3da slot: AL pennant team 0 wins 4-2 -> champion 0, runner-up the NL team;
+    host and Python byte-identical."""
+    _build()
+    ldir = synth_league(str(tmp_path), [
+        (b'CLASALE1', 21, 'VETER', 'VIC', 30, 6, {'games': 120, 'ab_l': 300, 'h_l': 90}),
+    ])
+    d = bytearray(open(os.path.join(ldir, 'CLASSIC.MAJ'), 'rb').read())
+    d[S_AL + 0x3d9] = 0
+    d[S_AL + 0x3da] = 16
+    d[S_NL + 0x3d9] = 16
+    d[S_AL + 0x3e1] = 4
+    d[S_AL + 0x3e2] = 2
+    open(os.path.join(ldir, 'CLASSIC.MAJ'), 'wb').write(bytes(d))
+    hp = os.path.join(str(tmp_path), 'H.DAT')
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    rc = HISTWR(ldir, hp, ret)
+    assert rc.returncode == 0, rc.stderr
+    s = history.History.load(hp).read_season_entry(1)
+    assert s['champion'] == 0 and s['runner_up'] == 16
+    hp2 = os.path.join(str(tmp_path), 'H2.DAT')
+    history.record_season(ldir, hp2, 1, None)
+    off, ent = first_diff(open(hp, 'rb').read(), open(hp2, 'rb').read())
+    assert off < 0, f'ws wins off {off} (entry {ent})'
+
+
 def test_fail_rename_keeps_hist(tmp_path):
     """Second-rename failure: rc 2, HIST byte-identical, no BAK/TMP left (a host
     build with -DTEST_FAIL_RENAME forces the swap's second rename to fail)."""

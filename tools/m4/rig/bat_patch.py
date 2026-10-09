@@ -11,12 +11,12 @@ Replaces the stock `:start` / `control` with:
   call archive
   histwr
   rosters
-  dynview /review
+  dynview /offseason
   :ctl
   control
 
-Every earlier patched form (C5 with and without the histwr line) upgrades in
-place. CRLF line endings, idempotent, asserts stock content, refuses
+Every earlier patched form (C5 with and without the histwr line, C7 with
+dynview /review) upgrades in place. CRLF line endings, idempotent, asserts stock content, refuses
 live/pristine paths. Also writes ARCHIVE.BAT next to TONY2.BAT: it copies the finished season (the
 pre-roll snapshot in C:\DYNSNAP) to the first free C:\SEASONS\Snn, so a new season never destroys the old one.
 Usage:
@@ -41,13 +41,25 @@ PATCHED_START = (
     'call archive\r\n'
     'histwr\r\n'
     'rosters\r\n'
-    'dynview /review\r\n'
+    'dynview /offseason\r\n'
     ':ctl\r\n'
     'control\r\n'
 )
 
 # earlier patched forms, newest first: upgraded in place by patch()
 EARLIER_FORMS = (
+    (':start\r\n'
+     'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
+     'dynasty\r\n'
+     'if errorlevel 1 goto rolled\r\n'
+     'goto ctl\r\n'
+     ':rolled\r\n'
+     'call archive\r\n'
+     'histwr\r\n'
+     'rosters\r\n'
+     'dynview /review\r\n'
+     ':ctl\r\n'
+     'control\r\n'),
     (':start\r\n'
      'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
      'dynasty\r\n'

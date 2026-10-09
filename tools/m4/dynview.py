@@ -12,12 +12,14 @@ Display primitives (decor per notes/M4_CONTRACT.md integer rules):
   bytes, MSB first; glyph k = char 32 + k, anything else draws '?'
 - palette DEFAULT.PAL raw 6-bit bytes; PNG output scales (c & 63) * 255 // 63
 
-usage: python3 tools/m4/dynview.py [--review] [--keys K,K,...] [--png OUT.png]
-       [--raw OUT.RAW] LEAGUE_DIR FONT_DIR
+usage: python3 tools/m4/dynview.py [--review | --offseason] [--keys K,K,...]
+       [--png OUT.png] [--raw OUT.RAW] LEAGUE_DIR FONT_DIR
+(--offseason wins when both are given)
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from collections import Counter
 import history
 from assets import parse_fnt
 
@@ -31,6 +33,10 @@ ROWS_PER_PAGE = 12
 # list screens keep at most LIST_MAX rows after sorting (100 pages) so the DOS port can
 # hold them in a fixed top-K buffer
 LIST_MAX = 1200
+# ROSTERS.TXT (offseason): lines over ROSTER_LINE_MAX bytes are ignored whole; DRAFT
+# lines past DRAFT_KEEP are dropped
+ROSTER_LINE_MAX = 127
+DRAFT_KEEP = 400
 
 # BIOS int 16h codes; ASCII keys are their char code
 KEY_ESC, KEY_ENTER = 27, 13
@@ -40,7 +46,15 @@ KEY_UP, KEY_DOWN = 0x4800, 0x5000
 
 SCREEN_MENU, SCREEN_HISTORY, SCREEN_HOF = 0, 1, 2
 SCREEN_LEADERS, SCREEN_MILESTONES, SCREEN_REVIEW = 3, 4, 5
+SCREEN_OFFSEASON = 6
 N_CATS = 12
+
+# offseason phases: cat & 15 is the phase, cat >> 4 the launched flag
+OFF_REVIEW, OFF_RETIRE, OFF_DRAFT, OFF_TRADES, OFF_FA, OFF_READY = range(6)
+OFF_TITLES = ['1/6 SEASON %d IN REVIEW', '2/6 RETIREMENTS', '3/6 ROOKIE DRAFT',
+              '4/6 TRADES', '5/6 FREE AGENT SIGNINGS', '6/6 SEASON %d IS READY']
+OFF_LAUNCH_TEXT = 'ENTER: ON TO SEASON %d'
+OFF_STAY_TEXT = 'ENTER: BACK TO THE MENU'
 
 # career leader categories: (title label, kind, TOTALS index)
 # kind: 'count' | 'avg' | 'era' | 'war' | 'aw0' (MVP awards) | 'aw3' (GG awards)
@@ -99,28 +113,94 @@ def load_data(league_dir, font_dir=None):
     hist = history.History.load(hp)
     ms = history.milestone_entries(hp)
     fonts = load_fonts(font_dir) if font_dir else None
-    return {'hist': hist, 'ms': ms, 'fonts': fonts, 'league_dir': league_dir}
+    return {'hist': hist, 'ms': ms, 'fonts': fonts, 'league_dir': league_dir,
+            'events': parse_rosters(league_dir)}
+
+
+def find_upper(league_dir, want):
+    """Path of the LEAGUE_DIR entry whose ASCII upper case is want; None when there is
+    none or the directory cannot be listed."""
+    if not league_dir:
+        return None
+    try:
+        names = os.listdir(league_dir)
+    except OSError:
+        return None
+    for f in names:
+        if ascii_upper(f) == want:
+            return os.path.join(league_dir, f)
+    return None
+
+
+def v20_path(league_dir, stem):
+    """LEAGUE_DIR/<STEM>.V20 for a stem (bytes) of 1..8 bytes without NUL, a slash, a
+    backslash or a colon; None when the stem is unusable or the file is missing."""
+    if not 1 <= len(stem) <= 8 or any(c in b'\0/\\:' for c in stem):
+        return None
+    return find_upper(league_dir, ascii_upper(stem.decode('latin-1')) + '.V20')
 
 
 def team_name(league_dir, stem):
     """V20 header name (bytes 0..13, NUL ended) of LEAGUE_DIR/<STEM>.V20, '' when
     the file is missing or the name is blank. Stems are stored lower case."""
-    if not league_dir or not stem:
+    path = v20_path(league_dir, stem)
+    if path is None:
         return ''
-    want = stem.decode('latin-1').upper() + '.V20'
     try:
-        names = os.listdir(league_dir)
+        with open(path, 'rb') as fh:
+            raw = fh.read(14)
     except OSError:
         return ''
-    for f in names:
-        if f.upper() == want:
-            try:
-                with open(os.path.join(league_dir, f), 'rb') as fh:
-                    raw = fh.read(14)
-            except OSError:
-                return ''
-            return one_field(raw)
-    return ''
+    return one_field(raw)
+
+
+def team_disp(league_dir, stem):
+    """Team column for a latin-1 team token: the V20 header name, else the token
+    upper-cased."""
+    return team_name(league_dir, stem.encode('latin-1')) or ascii_upper(stem)
+
+
+def parse_rosters(league_dir):
+    """ROSTERS.TXT as offseason events, in file order: ('DRAFT', stem, name) for the
+    first DRAFT_KEEP valid DRAFT lines; ('SIGN', team, name, frm); ('TRADE', a, x, b,
+    y) where b is the first token from index 3 that names a team file; ('REL',).
+    LF lines with one trailing CR stripped; a line over ROSTER_LINE_MAX bytes is
+    ignored whole. A missing or unreadable file gives []."""
+    path = find_upper(league_dir, 'ROSTERS.TXT')
+    if path is None:
+        return []
+    try:
+        with open(path, 'rb') as fh:
+            raw = fh.read()
+    except OSError:
+        return []
+    out = []
+    drafts = 0
+    for line in raw.split(b'\n'):
+        if line.endswith(b'\r'):
+            line = line[:-1]
+        if len(line) > ROSTER_LINE_MAX:
+            continue
+        tok = [t for t in line.decode('latin-1').split(' ') if t]
+        n = len(tok)
+        if n == 0:
+            continue
+        kind = tok[0]
+        if kind == 'DRAFT' and n >= 3:
+            if drafts < DRAFT_KEEP:
+                drafts += 1
+                out.append(('DRAFT', tok[1], ' '.join(tok[2:])))
+        elif kind == 'SIGN' and n >= 4:
+            out.append(('SIGN', tok[1], ' '.join(tok[2:-1]), tok[-1]))
+        elif kind == 'TRADE' and n >= 5:
+            for j in range(3, n - 1):
+                if v20_path(league_dir, tok[j].encode('latin-1')) is not None:
+                    out.append(('TRADE', tok[1], ' '.join(tok[2:j]), tok[j],
+                                ' '.join(tok[j + 1:])))
+                    break
+        elif kind == 'REL' and n >= 3:
+            out.append(('REL',))
+    return out
 
 
 # ---------------------------------------------------------------- primitives
@@ -427,6 +507,124 @@ def review_rows(hist, ms, league_dir=None):
     return lines[:ROWS_PER_PAGE]
 
 
+# ---------------------------------------------------------------- offseason
+def retire_entries(hist):
+    """(index, entry) of the players who retired with the season just recorded (status
+    2 or 3 with last_season == N), WAR10 descending then index ascending."""
+    last = hist.seasons_recorded
+    items = []
+    for i in range(n_entries(hist)):
+        e = hist.read_entry(i)
+        if e['status'] in (history.STATUS_RETIRED, history.STATUS_HOF) \
+                and e['last_season'] == last:
+            items.append((-e['WAR10'], i, e))
+    items.sort(key=lambda t: (t[0], t[1]))
+    return [(i, e) for _w, i, e in items]
+
+
+def new_hof_count(hist):
+    """Entries inducted with the season just recorded (status 3, hof_season == N)."""
+    last = hist.seasons_recorded
+    n = 0
+    for i in range(n_entries(hist)):
+        e = hist.read_entry(i)
+        if e['status'] == history.STATUS_HOF and e['hof_season'] == last:
+            n += 1
+    return n
+
+
+def sign_split(events):
+    """SIGN events in file order, split into draft picks [(team, name)] and free agent
+    signings [(team, name, frm)]. A SIGN is a pick when an unconsumed DRAFT event has
+    the same stem (ASCII upper case) as frm and the same name; it consumes the first
+    such DRAFT in file order."""
+    # unconsumed DRAFTs per (stem upper, name); equal keys are interchangeable, so a
+    # count gives the same picks as taking the first one in file order
+    open_drafts = Counter((ascii_upper(ev[1]), ev[2]) for ev in events if ev[0] == 'DRAFT')
+    picks, fa = [], []
+    for ev in events:
+        if ev[0] != 'SIGN':
+            continue
+        _k, team, name, frm = ev
+        key = (ascii_upper(frm), name)
+        if open_drafts[key] > 0:
+            open_drafts[key] -= 1
+            picks.append((team, name))
+        else:
+            fa.append((team, name, frm))
+    return picks, fa
+
+
+def ready_lines(data, launched):
+    """The six counts and the closing line of phase 5 (uncapped totals)."""
+    hist = data['hist']
+    ev = data['events']
+    picks, fa = sign_split(ev)
+    return ['RETIRED: %d   NEW HALL OF FAME: %d' % (len(retire_entries(hist)),
+                                                    new_hof_count(hist)),
+            'ROOKIES DRAFTED: %d' % len(picks),
+            'TRADES: %d' % sum(1 for e in ev if e[0] == 'TRADE'),
+            'FREE AGENT SIGNINGS: %d' % len(fa),
+            'PLAYERS RELEASED: %d' % sum(1 for e in ev if e[0] == 'REL'),
+            'EVERY PLAYER AGED A YEAR AND DEVELOPED',
+            (OFF_LAUNCH_TEXT % (hist.seasons_recorded + 1)) if launched
+            else OFF_STAY_TEXT]
+
+
+def offseason_body(state, data):
+    """(cols, rows) of the offseason phase in state: every row, capped at LIST_MAX. A
+    phase with nothing to show is one message row with COLS_SINGLE. With no history
+    the body is empty (rows() then shows the NO DYNASTY row)."""
+    hist = data['hist']
+    if hist.seasons_recorded == 0:
+        return COLS_SINGLE, []
+    _screen, _page, cat = state
+    phase = cat & 15
+    ld = data.get('league_dir')
+    ev = data['events']
+    last = hist.seasons_recorded
+    shown = {}                                # team token -> display, once per call
+
+    def disp(stem):
+        if stem not in shown:
+            shown[stem] = team_disp(ld, stem)
+        return shown[stem]
+
+    if phase == OFF_REVIEW:
+        return COLS_SINGLE, review_rows(hist, data['ms'], ld) or []
+    if phase == OFF_READY:
+        return COLS_SINGLE, [(s,) for s in ready_lines(data, cat >> 4)]
+    if phase == OFF_RETIRE:
+        cols, msg = COLS_RETIRE, 'NO RETIREMENTS'
+        rows = [(name_display(e['name'], 18), '%d' % e['age'],
+                 '%d' % e['seasons_played'], fmt_war10(e['WAR10']),
+                 'HOF' if e['status'] == history.STATUS_HOF and e['hof_season'] == last
+                 else '')
+                for _i, e in retire_entries(hist)][:LIST_MAX]
+    elif phase == OFF_DRAFT:
+        cols, msg = COLS_DRAFT, 'NO DRAFT PICKS'
+        picks, _fa = sign_split(ev)
+        rows = [('#%d' % k, disp(team), name)
+                for k, (team, name) in enumerate(picks[:LIST_MAX], 1)]
+    elif phase == OFF_TRADES:
+        cols, msg = COLS_MOVE, 'NO TRADES'
+        rows = []
+        for e in ev:
+            if e[0] == 'TRADE':
+                _k, a, x, b, y = e
+                rows.append((disp(a), x, disp(b)))
+                rows.append((disp(b), y, disp(a)))
+        rows = rows[:LIST_MAX]
+    else:
+        cols, msg = COLS_MOVE, 'NO FREE AGENT SIGNINGS'
+        _picks, fa = sign_split(ev)
+        rows = [(disp(team), name, 'FREE AGENT' if ascii_upper(frm) == 'POOL' else disp(frm))
+                for team, name, frm in fa[:LIST_MAX]]
+    if not rows:
+        return COLS_SINGLE, [(msg,)]
+    return cols, rows
+
+
 # ---------------------------------------------------------------- state machine
 def leaders_count(hist, cat_index):
     """Number of qualifying candidates (paging bound), not the on-screen 12."""
@@ -451,8 +649,10 @@ def total_rows(state, data):
         n = milestone_rows(hist, data['ms']) if hist.seasons_recorded else []
     elif screen == SCREEN_REVIEW:
         n = review_rows(hist, data['ms']) or []
+    elif screen == SCREEN_OFFSEASON:
+        n = offseason_body(state, data)[1]
     else:
-        return 5
+        return 6
     return len(n)
 
 
@@ -464,9 +664,12 @@ def rows(state, data):
     screen, page, cat = state
     if screen == SCREEN_MENU:
         return [('1  SEASON HISTORY',), ('2  HALL OF FAME',), ('3  CAREER LEADERS',),
-                ('4  MILESTONES',), ('5  LAST SEASON REVIEW',)]
+                ('4  MILESTONES',), ('5  LAST SEASON REVIEW',), ('6  OFFSEASON',)]
     if screen == SCREEN_LEADERS:
         return leaders_rows(hist, cat, page)
+    if screen == SCREEN_OFFSEASON:
+        body = offseason_body(state, data)[1]
+        return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_HISTORY:
         all_rows = history_rows(hist, data.get('league_dir'))
     elif screen == SCREEN_HOF:
@@ -482,17 +685,25 @@ def rows(state, data):
 
 def step(state, key, data):
     """(state, exit_flag). ESC exits from MENU; from any other screen it goes back
-    to MENU. PGUP/PGDN page by 12; LEFT/RIGHT cycle the LEADERS category."""
+    to MENU. PGUP/PGDN page by 12; LEFT/RIGHT cycle the LEADERS category. ENTER on
+    REVIEW goes to MENU. ENTER walks the offseason phases; past the last one it exits
+    when the offseason was launched (cat >> 4) and goes to MENU otherwise."""
     screen, page, cat = state
     if key == KEY_ESC:
         if screen == SCREEN_MENU:
             return (SCREEN_MENU, 0, 0), 1
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_MENU:
-        if 49 <= key <= 53:
+        if 49 <= key <= 54:
             return (key - 48, 0, 0), 0
         return state, 0
     if screen == SCREEN_REVIEW and key == KEY_ENTER:
+        return (SCREEN_MENU, 0, 0), 0
+    if screen == SCREEN_OFFSEASON and key == KEY_ENTER:
+        if (cat & 15) < OFF_READY and data['hist'].seasons_recorded > 0:
+            return (SCREEN_OFFSEASON, 0, cat + 1), 0
+        if cat >> 4:
+            return state, 1
         return (SCREEN_MENU, 0, 0), 0
     if key == KEY_PGDN:
         n = total_rows(state, data)
@@ -530,13 +741,28 @@ COLS_LEADERS = [('#', _cx(0), 5, 'L'), ('NAME', _cx(5), 16, 'L'), (' ', _cx(22),
                 ('YRS', _cx(23), 5, 'R'), ('VALUE', _cx(28), 14, 'R')]
 COLS_MILESTONES = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
                    ('EVENT', _cx(22), 20, 'L')]
+COLS_RETIRE = [('NAME', _cx(0), 18, 'L'), ('AGE', _cx(18), 5, 'R'), ('YRS', _cx(23), 5, 'R'),
+               ('WAR', _cx(28), 7, 'R'), ('HOF', _cx(36), 6, 'R')]
+COLS_DRAFT = [('#', _cx(0), 4, 'L'), ('TEAM', _cx(4), 15, 'L'), ('PLAYER', _cx(19), 23, 'L')]
+COLS_MOVE = [('TEAM', _cx(0), 13, 'L'), ('PLAYER', _cx(14), 15, 'L'), ('FROM', _cx(30), 12, 'L')]
+OFF_COLS = [COLS_SINGLE, COLS_RETIRE, COLS_DRAFT, COLS_MOVE, COLS_MOVE, COLS_SINGLE]
 
-FOOTERS = {SCREEN_MENU: '1-5 SELECT   ESC EXIT',
+FOOTERS = {SCREEN_MENU: '1-6 SELECT   ESC EXIT',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT CATEGORY   ESC MENU',
            SCREEN_MILESTONES: 'PGUP PGDN   ESC MENU',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU'}
+
+
+def footer_text(state):
+    """Footer line of state; the offseason's ENTER label follows its phase."""
+    screen, _page, cat = state
+    if screen == SCREEN_OFFSEASON:
+        if (cat & 15) < OFF_READY:
+            return 'ENTER NEXT   PGUP PGDN   ESC MENU'
+        return 'ENTER CONTINUE   ESC MENU' if cat >> 4 else 'ENTER MENU   ESC MENU'
+    return FOOTERS[screen]
 
 
 def screen_title(state, data):
@@ -551,6 +777,14 @@ def screen_title(state, data):
         return 'CAREER LEADERS: ' + CATS[cat][0]
     if screen == SCREEN_MILESTONES:
         return 'MILESTONES'
+    if screen == SCREEN_OFFSEASON:
+        n = data['hist'].seasons_recorded
+        phase = cat & 15
+        if phase == OFF_REVIEW:
+            return OFF_TITLES[OFF_REVIEW] % n
+        if phase == OFF_READY:
+            return OFF_TITLES[OFF_READY] % (n + 1)
+        return OFF_TITLES[phase]
     return 'SEASON %d IN REVIEW' % data['hist'].seasons_recorded
 
 
@@ -570,6 +804,8 @@ def body_cols(state, data):
     hist = data['hist']
     if hist is None or hist.seasons_recorded == 0:
         return COLS_SINGLE
+    if state[0] == SCREEN_OFFSEASON:
+        return offseason_body(state, data)[0]
     return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
             SCREEN_HOF: COLS_HOF, SCREEN_LEADERS: COLS_LEADERS,
             SCREEN_MILESTONES: COLS_MILESTONES, SCREEN_REVIEW: COLS_SINGLE}[state[0]]
@@ -605,7 +841,7 @@ def render(state, data):
             else:
                 draw_text(fb, main_ft, x, y0 + 2, s, C_BLACK)
         rect(fb, 8, y0 + 10, 311, y0 + 10, C_GRID_GRAY)
-    draw_text(fb, main_ft, 10, 185, FOOTERS[_screen], C_WHITE)
+    draw_text(fb, main_ft, 10, 185, footer_text(state), C_WHITE)
     return fb
 
 
@@ -618,6 +854,7 @@ def main(argv):
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument('--review', action='store_true')
+    ap.add_argument('--offseason', action='store_true')
     ap.add_argument('--keys', default='')
     ap.add_argument('--png', default=None)
     ap.add_argument('--raw', default=None)
@@ -625,7 +862,9 @@ def main(argv):
     ap.add_argument('font_dir')
     a = ap.parse_args(argv)
     data = load_data(a.league_dir, a.font_dir)
-    if a.review:
+    if a.offseason:
+        state = (SCREEN_OFFSEASON, 0, 16)
+    elif a.review:
         state = (SCREEN_REVIEW, 0, 0)
     else:
         state = (SCREEN_MENU, 0, 0)

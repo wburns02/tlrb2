@@ -21,7 +21,7 @@ import dynview
 import history
 import pytest
 from m4.test_dynview import (make_data, write_player, write_season,
-                             write_mileston, st)
+                             write_mileston, st, make_offseason, ROSTER_BODY)
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_C = os.path.join(HERE, 'dynview_c')
@@ -59,10 +59,12 @@ def toks(seq):
 
 
 def run_host(league_dir, raw_path, keys=None, review=False, font_dir=None,
-             extra=None):
+             extra=None, offseason=False):
     """Host binary with /RAW; returns the 64000 B framebuffer."""
     argv = [HOST]
-    if review:
+    if offseason:
+        argv.append('/OFFSEASON')
+    elif review:
         argv.append('/REVIEW')
     if keys:
         argv.append('/KEYS:' + toks(keys))
@@ -77,10 +79,15 @@ def run_host(league_dir, raw_path, keys=None, review=False, font_dir=None,
     return open(raw_path, 'rb').read()
 
 
-def fb_python(ldir, keys=None, review=False, font_dir=FILES):
+def fb_python(ldir, keys=None, review=False, font_dir=FILES, offseason=False):
     """Python reference with the same state after the same keys."""
     data = dynview.load_data(str(ldir), font_dir)
-    s = (dynview.SCREEN_REVIEW, 0, 0) if review else (dynview.SCREEN_MENU, 0, 0)
+    if offseason:
+        s = (dynview.SCREEN_OFFSEASON, 0, 16)
+    elif review:
+        s = (dynview.SCREEN_REVIEW, 0, 0)
+    else:
+        s = (dynview.SCREEN_MENU, 0, 0)
     for k in (keys or []):
         s, _ex = dynview.step(s, k, data)
     return bytes(dynview.render(s, data))
@@ -170,10 +177,13 @@ def milestones_total(ldir):
     return len(dynview.milestone_rows(data['hist'], data['ms']))
 
 
-def check_parity(ldir, tmp_path, tag, keys=None, review=False, font_dir=FILES):
+def check_parity(ldir, tmp_path, tag, keys=None, review=False, font_dir=FILES,
+                 offseason=False):
     raw = str(tmp_path / (tag + '.RAW'))
-    a = run_host(str(ldir), raw, keys=keys, review=review, font_dir=font_dir)
-    b = fb_python(ldir, keys=keys, review=review, font_dir=font_dir)
+    a = run_host(str(ldir), raw, keys=keys, review=review, font_dir=font_dir,
+                 offseason=offseason)
+    b = fb_python(ldir, keys=keys, review=review, font_dir=font_dir,
+                  offseason=offseason)
     if a != b:
         i = next((k for k in range(min(len(a), len(b))) if a[k] != b[k]),
                  min(len(a), len(b)))
@@ -424,6 +434,108 @@ def test_real_data(tmp_path):
     for cat in range(dynview.N_CATS):
         check_parity(ldir, tmp_path, 'real_lead%d' % cat,
                      keys=[ord('3')] + [dynview.KEY_RIGHT] * cat)
+    # the offseason walk: every phase, page 0; retirees and free agents page 1
+    for phase in range(6):
+        check_offseason(ldir, tmp_path, 'real_off%d' % phase, phase)
+    check_offseason(ldir, tmp_path, 'real_off_retire_p1', 1, page=1)
+    check_offseason(ldir, tmp_path, 'real_off_fa_p1', 4, page=1)
+    check_offseason(ldir, tmp_path, 'real_off_nl5', 5, launched=False)
+
+
+# ---------------- test 5b: offseason ----------------
+
+def off_keys(phase, page=0, launched=True):
+    """keys that reach an offseason phase page: ENTER per phase (from /OFFSEASON, or
+    from MENU with '6' when not launched), then PGDN per page"""
+    keys = [13] * phase + [dynview.KEY_PGDN] * page
+    return keys if launched else [ord('6')] + keys
+
+
+def check_offseason(ldir, tmp_path, tag, phase, page=0, launched=True,
+                    font_dir=FILES):
+    return check_parity(ldir, tmp_path, tag, keys=off_keys(phase, page, launched),
+                        offseason=launched, font_dir=font_dir)
+
+
+def big_rosters():
+    """ROSTERS.TXT past the bounds: 450 DRAFT lines (only the first DRAFT_KEEP
+    count), 450 picks of which 50 find no kept DRAFT, 1500 free agent signings and
+    700 resolving trades (1400 rows, past LIST_MAX)"""
+    out = []
+    for k in range(450):
+        out.append(b'DRAFT CLASALW2 Draft%03d\r\n' % k)
+    for k in range(450):
+        out.append(b'SIGN CLASNLE4 Draft%03d CLASALW2\r\n' % k)
+    for k in range(1500):
+        out.append(b'SIGN CLASALE1 Free%04d pool\n' % k)
+    for k in range(700):
+        out.append(b'TRADE CLASALE1 Pl%03d CLASNLW4 Q%03d\r\n' % (k, k))
+    return b''.join(out)
+
+
+def test_offseason_every_phase(tmp_path):
+    ldir = make_offseason(tmp_path)
+    for launched in (True, False):
+        for phase in range(6):
+            for page in (0, 1):
+                check_offseason(ldir, tmp_path,
+                                'off_%d_%d_%d' % (launched, phase, page),
+                                phase, page, launched)
+
+
+def test_offseason_missing_rosters(tmp_path):
+    ldir = make_offseason(tmp_path, rosters=None)
+    for phase in range(6):
+        check_offseason(ldir, tmp_path, 'off_norost%d' % phase, phase)
+
+
+def test_offseason_no_history(tmp_path):
+    ldir = tmp_path / 'oeh'
+    ldir.mkdir()
+    (ldir / 'ROSTERS.TXT').write_bytes(ROSTER_BODY)
+    for phase in range(6):
+        check_offseason(ldir, tmp_path, 'off_nohist%d' % phase, phase)
+    check_offseason(ldir, tmp_path, 'off_nohist_nl', 0, launched=False)
+
+
+ODD_ROSTERS = (
+    b'DRAFT clasale1 Pat  Doe\r\n'                  # lower-case stem, spaces collapse
+    b'DRAFT CLASNLE3 J\xe9ss\x00e Cl\r\n'               # high byte and NUL in a name
+    b'SIGN  CLASALW7   Pat Doe   CLASALE1\r\n'       # pick: stems match in any case
+    b'SIGN CLASNLE4 J\xe9ss\x00e Cl pool\r\n'          # free agent from the pool
+    b'SIGN CLASNLE4 J\xe9ss\x00e Cl CLASNLE3\r\n'      # pick (same bytes, same name)
+    b'SIGN Cl\xe9 Pat\rDoe pool\r\n'                  # odd team token and a CR inside
+    b'TRADE clasnle3 x\xe9 clasalw2 y\x00z\r\n'        # lower-case team token
+    b'TRADE CLASALE1 Pat Doe LONGSTEM9 Y Z\r\n'        # no team token: ignored
+    b'\tSIGN CLASALW7 Tab Name pool\r\n'               # tab first: not an event
+    b'SIGN CLASALW7 Pat Doe POOL\r\n')                 # POOL in capitals is the pool
+
+
+def test_offseason_odd_bytes(tmp_path):
+    ldir = make_offseason(tmp_path, rosters=ODD_ROSTERS)
+    picks, fa = dynview.sign_split(dynview.load_data(str(ldir), FILES)['events'])
+    assert len(picks) == 2 and len(fa) == 3
+    check_offseason(ldir, tmp_path, 'odd_draft', 2)
+    check_offseason(ldir, tmp_path, 'odd_fa', 4)
+    check_offseason(ldir, tmp_path, 'odd_trades', 3)
+    check_offseason(ldir, tmp_path, 'odd_ready', 5)
+
+
+def test_offseason_big_rosters(tmp_path):
+    ldir = make_offseason(tmp_path, rosters=big_rosters())
+    data = dynview.load_data(str(ldir), FILES)
+    # the caps are exercised: draft picks stop at 400, FA and trade rows at LIST_MAX
+    assert len(dynview.offseason_body((dynview.SCREEN_OFFSEASON, 0, 20), data)[1]) \
+        == dynview.LIST_MAX
+    check_offseason(ldir, tmp_path, 'big_retire1', 1)
+    check_offseason(ldir, tmp_path, 'big_draft0', 2)
+    check_offseason(ldir, tmp_path, 'big_draft_last', 2, page=33)
+    check_offseason(ldir, tmp_path, 'big_trades0', 3)
+    check_offseason(ldir, tmp_path, 'big_trades_last', 3, page=99)
+    check_offseason(ldir, tmp_path, 'big_fa_p1', 4, page=1)
+    check_offseason(ldir, tmp_path, 'big_fa_last', 4, page=99)
+    check_offseason(ldir, tmp_path, 'big_ready', 5)
+    check_offseason(ldir, tmp_path, 'big_ready_nl', 5, launched=False)
 
 
 # ---------------- test 6: errors ----------------
@@ -630,3 +742,39 @@ def test_dos_no_fonts_exit2(tmp_path):
     rc = run_dos(d, ['DYNVIEW.EXE /RAW:OUT.RAW LEAGUE'])
     assert rc == 2, rc
     assert not os.path.exists(os.path.join(d, 'OUT.RAW'))
+
+
+def test_dos_offseason_parity(tmp_path):
+    """Headless DOSBox-X: /OFFSEASON draft and free agent pages, and menu key 6 to the
+    ready phase (not launched), compared with Python on the same league files."""
+    if not _dos_ready():
+        pytest.skip('DYNVIEW.EXE or dosbox-x missing')
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    fa30 = b''.join(b'SIGN CLASALW7 Player%02d pool\r\n' % k for k in range(30))
+    d = str(tmp_path / 'dosoff')
+    os.makedirs(os.path.join(d, 'LEAGUE'))
+    os.makedirs(os.path.join(d, 'FONTS'))
+    for f in ('MAIN.FNT', 'BOLD.FNT', 'DEFAULT.PAL'):
+        shutil.copy2(os.path.join(FILES, f), os.path.join(d, 'FONTS', f))
+    cases = (('draft', 'DYNVIEW.EXE /RAW:D1.RAW /OFFSEASON /KEYS:13,13 LEAGUE FONTS',
+              ROSTER_BODY, [13, 13]),
+             ('fa_p1', 'DYNVIEW.EXE /RAW:D2.RAW /OFFSEASON /KEYS:13,13,13,13,20736 '
+              'LEAGUE FONTS', fa30, [13, 13, 13, 13, dynview.KEY_PGDN]),
+             ('ready', 'DYNVIEW.EXE /RAW:D3.RAW /KEYS:54,13,13,13,13,13 LEAGUE FONTS',
+              ROSTER_BODY, [ord('6'), 13, 13, 13, 13, 13]))
+    for tag, line, rosters, keys in cases:
+        os.makedirs(str(tmp_path / ('py_' + tag)))
+        ldir = make_offseason(tmp_path / ('py_' + tag), rosters=rosters)
+        for f in os.listdir(str(ldir)):
+            shutil.copy2(os.path.join(str(ldir), f), os.path.join(d, 'LEAGUE', f))
+        rawname = line.split('/RAW:')[1].split(' ')[0]
+        rc = run_dos(d, [line])
+        assert rc == 0, f'{tag}: dos rc {rc}'
+        dos_raw = open(os.path.join(d, rawname), 'rb').read()
+        py = fb_python(ldir, keys=keys, offseason=(tag != 'ready'))
+        if dos_raw != py:
+            i = next(k for k in range(min(len(dos_raw), len(py)))
+                     if dos_raw[k] != py[k])
+            pytest.fail(f'dos offseason {tag}: first diff at pixel '
+                        f'({i % 320}, {i // 320}): python {py[i]} c {dos_raw[i]}')

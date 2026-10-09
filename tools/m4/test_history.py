@@ -258,13 +258,14 @@ def test_jaws_and_top7_mixed(tmp_path):
 
 
 def test_champion_decode_sample_bytes(tmp_path):
-    """The season2 sample bytes: AL block +0x3d3..: ff ff ff ff 02 09 02 13;
-    NL block: ff ff ff ff 1b 13 13 ff -> champion 0x13, runner-up 2,
-    al_pennant 2, nl_pennant 0x13."""
+    """The season2 sample bytes: AL block +0x3d3..: ff ff ff ff 02 09 02 13, wins
+    +0x3df..: 04 00 02 04; NL block: ff ff ff ff 1b 13 13 ff -> champion 0x13,
+    runner-up 2, al_pennant 2, nl_pennant 0x13."""
     m = make_maj()
     d = bytearray(m.d)
     d[S_AL + 0x3d3:S_AL + 0x3db] = bytes([0xff, 0xff, 0xff, 0xff, 0x02, 0x09, 0x02, 0x13])
     d[S_NL + 0x3d3:S_NL + 0x3db] = bytes([0xff, 0xff, 0xff, 0xff, 0x1b, 0x13, 0x13, 0xff])
+    d[S_AL + 0x3df:S_AL + 0x3e3] = bytes([4, 0, 2, 4])
     m2 = maj.Maj(bytes(d))
     ws, runner, al_p, nl_p = history.decode_champion(m2)
     assert ws == 0x13
@@ -281,6 +282,23 @@ def test_champion_decode_sample_bytes(tmp_path):
     assert ws2 == 0xff and runner2 == 0xff
 
 
+def test_champion_decode_al_winner_sample(tmp_path):
+    """Second sample (e2e 2026-10-08, ring screen BOSTON): AL block +0x3d7..: 0a 01 01 1b,
+    wins +0x3df..: 01 04 04 02; NL block +0x3d7..: 15 1b 1b ff. WS (BOS 1, LA 27) 4-2:
+    champion 1, runner-up 27. The old rule (champion = AL S+0x3da) read 27 here."""
+    m = make_maj()
+    d = bytearray(m.d)
+    d[S_AL + 0x3d3:S_AL + 0x3db] = bytes([0xff, 0xff, 0xff, 0xff, 0x0a, 0x01, 0x01, 0x1b])
+    d[S_NL + 0x3d3:S_NL + 0x3db] = bytes([0xff, 0xff, 0xff, 0xff, 0x15, 0x1b, 0x1b, 0xff])
+    d[S_AL + 0x3df:S_AL + 0x3e3] = bytes([1, 4, 4, 2])
+    ws, runner, al_p, nl_p = history.decode_champion(maj.Maj(bytes(d)))
+    assert (ws, runner, al_p, nl_p) == (1, 0x1b, 1, 0x1b)
+    # tied (unfinished) series: unknown
+    d[S_AL + 0x3e1:S_AL + 0x3e3] = bytes([3, 3])
+    ws, runner, _, _ = history.decode_champion(maj.Maj(bytes(d)))
+    assert ws == 0xff and runner == 0xff
+
+
 def test_record_season_champion_and_wl(tmp_path):
     """record_season writes the season entry from the MAJ: champion, pennants, W-L."""
     ldir = tmp_path / 'lg'
@@ -293,6 +311,7 @@ def test_record_season_champion_and_wl(tmp_path):
     d = bytearray(m.d)
     d[S_AL + 0x3d3:S_AL + 0x3db] = bytes([0xff, 0xff, 0xff, 0xff, 0x02, 0x09, 0x02, 0x13])
     d[S_NL + 0x3d3:S_NL + 0x3db] = bytes([0xff, 0xff, 0xff, 0xff, 0x1b, 0x13, 0x13, 0xff])
+    d[S_AL + 0x3df:S_AL + 0x3e3] = bytes([4, 0, 2, 4])
     maj.Maj(bytes(d)).save(str(ldir / 'CLASSIC.MAJ'))
     hp = tmp_path / 'HISTORY.DAT'
     history.record_season(str(ldir), str(hp), 2, {})

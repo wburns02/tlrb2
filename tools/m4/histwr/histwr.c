@@ -450,6 +450,7 @@ static int read_maj(const char *dir, Maj *m)
     FILE *f;
     size_t n;
     int lg, slot;
+    uint8_t t0, t1;
     if (scan_dir(dir, ".MAJ", names) < 1)
         return 0;
     path_join(path, 600, dir, names[0]);
@@ -486,12 +487,23 @@ static int read_maj(const char *dir, Maj *m)
             to_upper((uint8_t *)m->stem_up[lg * 16 + slot]);
         }
     }
-    m->ws = buf[MAJ_S_AL + 0x3da];
+    /* C2 amended 2026-10-08: WS teams AL S+0x3d9 / S+0x3da, their wins S+0x3e1 / S+0x3e2;
+     * the winner is the side with more wins, a tie is unknown */
+    t0 = buf[MAJ_S_AL + 0x3d9];
+    t1 = buf[MAJ_S_AL + 0x3da];
     m->al_p = buf[MAJ_S_AL + 0x3d9];
     m->nl_p = buf[MAJ_S_NL + 0x3d9];
     /* C2 amended: any index >= 32 is unknown (0xff) BEFORE the runner-up rule, so no
      * MAJ byte can index the stem tables out of bounds */
-    if (m->ws >= 32)
+    if (t0 >= 32)
+        t0 = 0xff;
+    if (t1 >= 32)
+        t1 = 0xff;
+    if (buf[MAJ_S_AL + 0x3e1] > buf[MAJ_S_AL + 0x3e2])
+        m->ws = t0;
+    else if (buf[MAJ_S_AL + 0x3e2] > buf[MAJ_S_AL + 0x3e1])
+        m->ws = t1;
+    else
         m->ws = 0xff;
     if (m->al_p >= 32)
         m->al_p = 0xff;

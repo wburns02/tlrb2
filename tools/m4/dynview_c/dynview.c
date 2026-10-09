@@ -3,7 +3,8 @@
  * Streams HISTORY.DAT (one 160 B player entry at a time) and keeps sorted
  * top-LIST_MAX list buffers; screen output matches the Python reference pixel
  * for pixel.
- * usage: DYNVIEW [/REVIEW] [/KEYS:k,k,...] [/RAW:FILE] [LEAGUE_DIR [FONT_DIR]]
+ * usage: DYNVIEW [/REVIEW] [/OFFSEASON] [/KEYS:k,k,...] [/RAW:FILE] [LEAGUE_DIR [FONT_DIR]]
+ * (/OFFSEASON wins when both are given)
  * exit 0 ok, 2 on bad usage, font failure or /RAW write failure.
  */
 #include <stdio.h>
@@ -53,7 +54,22 @@
 #define SCREEN_LEADERS 3
 #define SCREEN_MILESTONES 4
 #define SCREEN_REVIEW 5
+#define SCREEN_OFFSEASON 6
 #define N_CATS 12
+
+/* offseason phases: cat & 15 is the phase, cat >> 4 the launched flag */
+#define OFF_REVIEW 0
+#define OFF_RETIRE 1
+#define OFF_DRAFT 2
+#define OFF_TRADES 3
+#define OFF_FA 4
+#define OFF_READY 5
+
+/* ROSTERS.TXT: lines over ROSTER_LINE_MAX bytes are ignored whole, DRAFT lines past
+ * DRAFT_KEEP are dropped; TOK_MAX bounds the tokens of one line (127 B holds 64) */
+#define ROSTER_LINE_MAX 127
+#define DRAFT_KEEP 400
+#define TOK_MAX 64
 
 #define HDR_SIZE 32
 #define SEASON_TABLE 32
@@ -101,7 +117,9 @@ typedef struct {
     uint8_t name[20];
     uint8_t status;
     uint8_t pitcher;
+    uint8_t age;
     uint16_t seasons_played;
+    uint16_t last_season;
     uint32_t tot[NUM_TOT];
     int16_t war10;
     uint16_t hof_season;
@@ -140,6 +158,12 @@ typedef struct {
     int ncells;
 } Row;
 
+/* column of a table: header, x, width in chars, right-aligned */
+typedef struct {
+    const char *header;
+    int x, w, ralign;
+} ColDef;
+
 static Font *g_main, *g_bold;
 static uint8_t FARDATA g_fb[FB_SIZE];
 static uint8_t FARDATA g_pal[768];
@@ -152,14 +176,28 @@ static MsRec *g_ms;
 static int32_t g_nms;
 
 /* the top-K buffers and the row cells are far too (DOS DGROUP cap) */
-static List FARDATA g_list_buf[4];
+static List FARDATA g_list_buf[5];
 #define g_histl  (g_list_buf[0])
 #define g_hofl   (g_list_buf[1])
 #define g_leadl  (g_list_buf[2])
 #define g_msl    (g_list_buf[3])
+#define g_retl   (g_list_buf[4])
 
 static Row FARDATA g_rows[MAX_ROWS];
 static int g_nrows;
+
+/* ROSTERS.TXT draft table (loaded once): the first DRAFT_KEEP valid DRAFT lines.
+ * Slot: [0] stem length, [1] name length, then the upper-case stem and the joined
+ * name. g_used marks the DRAFT lines consumed by SIGN picks in one pass. */
+static uint8_t FARDATA g_drafts[DRAFT_KEEP][128];
+static int g_ndrafts;
+static uint8_t g_used[DRAFT_KEEP];
+
+/* uncapped counts of one ROSTERS.TXT pass */
+typedef struct {
+    uint32_t picks, fa, trades, rel;
+} RosterCounts;
+static RosterCounts g_rc;
 
 static State g_state;
 static int g_exit;
@@ -174,6 +212,8 @@ static const uint8_t CAT_IDX[N_CATS] = { 2, 5, 7, 10, 0, 0, 13, 15, 23, 0, 0, 0 
 int main(int argc, char **argv);
 static void render(State st);
 static void build_no_hist_rows(void);
+static const ColDef *body_cols(State st);
+static int offseason_body(State st, int page, const ColDef **cols);
 /* ---- helpers ---- */
 
 /* signed division truncating toward zero == C99 / (x86 idiv) */
@@ -334,6 +374,38 @@ static void rect_fb(int x0, int y0, int x1, int y1, int color)
 
 /* ---------------- strings / formatting ---------------- */
 
+/* ASCII upper case of one byte (a-z only, like DOS) */
+static uint8_t ascii_up(uint8_t c)
+{
+    return (uint8_t)((c >= 'a' && c <= 'z') ? c - 32 : c);
+}
+
+/* n bytes into a cell (SLEN - 1 max); NUL shows as '?', the glyph of any byte
+ * outside 32..126 */
+static void put_cell(char *dst, const uint8_t *s, int n)
+{
+    int i;
+    if (n > SLEN - 1)
+        n = SLEN - 1;
+    for (i = 0; i < n; i++)
+        dst[i] = s[i] ? (char)s[i] : '?';
+    dst[n] = 0;
+}
+
+/* the token (n bytes at s) equals the upper-case literal t; ci folds a-z first */
+static int tok_eq(const uint8_t *s, int n, const char *t, int ci)
+{
+    int i;
+    if (n != (int)strlen(t))
+        return 0;
+    for (i = 0; i < n; i++) {
+        uint8_t c = ci ? ascii_up(s[i]) : s[i];
+        if (c != (uint8_t)t[i])
+            return 0;
+    }
+    return 1;
+}
+
 /* NUL-or-space terminated field, trailing spaces stripped */
 static void field_of(const uint8_t *b, int n, char *dst)
 {
@@ -376,29 +448,63 @@ static void name_display(const uint8_t *name20, int cap, char *dst)
 
 static char g_lgdir[260];       /* LEAGUE_DIR, for the team V20 names */
 
-/* team_name: V20 header name (bytes 0..13, NUL ended, trailing spaces cut)
- * of LEAGUE_DIR\<STEM>.V20; "" when the file is missing or the name blank */
-static void team_name(const char *stem, char *dst)
+/* LEAGUE_DIR\<STEM>.V20 (STEM: n bytes, upper-cased) opened for reading: NULL when
+ * the stem is not a 1..8 byte leaf (no NUL, slash, backslash or colon), the path is
+ * too long or the file is missing */
+static FILE *open_v20(const uint8_t *s, int n)
 {
     char path[300], leaf[16];
+    int i;
+    if (n < 1 || n > 8)
+        return NULL;
+    for (i = 0; i < n; i++) {
+        if (s[i] == 0 || s[i] == '/' || s[i] == '\\' || s[i] == ':')
+            return NULL;
+        leaf[i] = (char)ascii_up(s[i]);
+    }
+    strcpy(leaf + n, ".V20");
+    if (strlen(g_lgdir) + 2 + (size_t)n + 4 >= sizeof path)
+        return NULL;
+    path_join(path, g_lgdir, leaf);
+    return fopen(path, "rb");
+}
+
+/* 1 when the token names a team file (see open_v20) */
+static int team_file(const uint8_t *s, int n)
+{
+    FILE *f = open_v20(s, n);
+    if (!f)
+        return 0;
+    fclose(f);
+    return 1;
+}
+
+/* team_name: V20 header name (bytes 0..13, NUL ended, trailing spaces cut) of the
+ * team file for the stem s (n bytes); "" when there is no file or the name blank */
+static void team_name(const uint8_t *s, int n, char *dst)
+{
     uint8_t raw[14];
-    size_t i, n;
     FILE *f;
     dst[0] = 0;
-    n = strlen(stem);
-    if (n == 0 || n > 8 || strlen(g_lgdir) + 2 + n + 4 >= sizeof path)
-        return;
-    for (i = 0; i < n; i++)
-        leaf[i] = (char)(stem[i] >= 'a' && stem[i] <= 'z' ? stem[i] - 32 : stem[i]);
-    strcpy(leaf + n, ".V20");
-    path_join(path, g_lgdir, leaf);
-    f = fopen(path, "rb");
+    f = open_v20(s, n);
     if (!f)
         return;
     memset(raw, 0, sizeof raw);
     (void)fread(raw, 1, sizeof raw, f);
     fclose(f);
     field_of(raw, 14, dst);
+}
+
+/* team column of a team token: the V20 header name, else the token upper-cased */
+static void team_disp(const uint8_t *s, int n, char *dst)
+{
+    int i;
+    team_name(s, n, dst);
+    if (dst[0])
+        return;
+    put_cell(dst, s, n);
+    for (i = 0; dst[i]; i++)
+        dst[i] = (char)ascii_up((uint8_t)dst[i]);
 }
 
 static void stem_display(const uint8_t *stem8, char *dst)
@@ -414,7 +520,7 @@ static void stem_display(const uint8_t *stem8, char *dst)
         return;
     }
     field_of(stem8, 8, stem);
-    team_name(stem, dst);
+    team_name((const uint8_t *)stem, (int)strlen(stem), dst);
     if (dst[0])
         return;
     strcpy(dst, stem);
@@ -585,8 +691,10 @@ static int read_entry(Entry *e, uint32_t idx)
     }
     memcpy(e->name, eb, 20);
     e->status = eb[22];
+    e->age = eb[23];
     e->pitcher = eb[31];
     e->seasons_played = (uint16_t)(eb[28] | ((uint16_t)eb[29] << 8));
+    e->last_season = (uint16_t)(eb[26] | ((uint16_t)eb[27] << 8));
     for (k = 0; k < NUM_TOT; k++)
         e->tot[k] = (uint32_t)eb[32 + 4 * k]
                   | ((uint32_t)eb[33 + 4 * k] << 8)
@@ -702,6 +810,207 @@ static void entry_name(uint16_t idx, int cap, char *dst)
         dst[0] = '?';
         dst[1] = 0;
     }
+}
+
+/* ---------------- ROSTERS.TXT (offseason) ---------------- */
+
+/* next usable line into buf (*len bytes): LF split, one trailing CR stripped, a
+ * line over ROSTER_LINE_MAX bytes skipped whole. 0 at end of file. */
+static int roster_line(FILE *f, uint8_t *buf, int *len)
+{
+    for (;;) {
+        long total = 0;
+        int c, n = 0;
+        while ((c = fgetc(f)) != EOF && c != '\n') {
+            if (n < 128)
+                buf[n++] = (uint8_t)c;
+            total++;
+        }
+        if (c == EOF && total == 0)
+            return 0;
+        if (total <= 128) {
+            int content = (int)total;
+            if (content > 0 && buf[content - 1] == '\r')
+                content--;
+            if (content <= ROSTER_LINE_MAX) {
+                *len = content;
+                return 1;
+            }
+        }
+    }
+}
+
+/* tokens of buf[0..len): split on spaces, empty ones dropped; returns the count */
+static int tokenize(const uint8_t *buf, int len, int *toff, int *tlen)
+{
+    int i = 0, n = 0;
+    while (i < len) {
+        while (i < len && buf[i] == ' ')
+            i++;
+        if (i >= len)
+            break;
+        toff[n] = i;
+        while (i < len && buf[i] != ' ')
+            i++;
+        tlen[n] = i - toff[n];
+        n++;
+    }
+    return n;
+}
+
+/* tokens from..to-1 joined with single spaces into dst (NUL ended); returns the length */
+static int join_toks(const uint8_t *buf, const int *toff, const int *tlen,
+                     int from, int to, uint8_t *dst)
+{
+    int k, n = 0;
+    for (k = from; k < to; k++) {
+        if (k > from)
+            dst[n++] = ' ';
+        memcpy(dst + n, buf + toff[k], (size_t)tlen[k]);
+        n += tlen[k];
+    }
+    dst[n] = 0;
+    return n;
+}
+
+/* the DRAFT table: the first DRAFT_KEEP DRAFT lines with 3 or more tokens */
+static void load_drafts(void)
+{
+    char path[600];
+    uint8_t buf[128], joined[128];
+    int toff[TOK_MAX], tlen[TOK_MAX], len, n, k;
+    FILE *f;
+    g_ndrafts = 0;
+    path_join(path, g_lgdir, "ROSTERS.TXT");
+    f = fopen(path, "rb");
+    if (!f)
+        return;
+    while (roster_line(f, buf, &len)) {
+        n = tokenize(buf, len, toff, tlen);
+        if (n >= 3 && g_ndrafts < DRAFT_KEEP
+            && tok_eq(buf + toff[0], tlen[0], "DRAFT", 0)) {
+            uint8_t *rec = g_drafts[g_ndrafts];
+            int nl = join_toks(buf, toff, tlen, 2, n, joined);
+            rec[0] = (uint8_t)tlen[1];
+            rec[1] = (uint8_t)nl;
+            for (k = 0; k < tlen[1]; k++)
+                rec[2 + k] = ascii_up(buf[toff[1] + k]);
+            memcpy(rec + 2 + tlen[1], joined, (size_t)nl);
+            g_ndrafts++;
+        }
+    }
+    fclose(f);
+}
+
+/* a SIGN pick: the first unconsumed DRAFT whose upper-case stem and name match
+ * consumes it and returns 1; 0 when none does */
+static int draft_take(const uint8_t *from_up, int nfrom, const uint8_t *name, int nname)
+{
+    int i;
+    for (i = 0; i < g_ndrafts; i++) {
+        const uint8_t *rec = g_drafts[i];
+        if (g_used[i] || rec[0] != nfrom || rec[1] != nname)
+            continue;
+        if (memcmp(rec + 2, from_up, (size_t)nfrom) == 0
+            && memcmp(rec + 2 + nfrom, name, (size_t)nname) == 0) {
+            g_used[i] = 1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* g_rows slot of row ord when page shows it, else -1 (page < 0 shows nothing) */
+static int row_slot(uint32_t ord, int page)
+{
+    uint32_t lo;
+    if (page < 0 || ord >= LIST_MAX)
+        return -1;
+    lo = (uint32_t)page * ROWS_PER_PAGE;
+    if (ord < lo || ord >= lo + ROWS_PER_PAGE)
+        return -1;
+    return (int)(ord - lo);
+}
+
+/* one ROSTERS.TXT pass: every SIGN, TRADE and REL line is counted in g_rc (uncapped).
+ * The rows of phase (OFF_DRAFT, OFF_TRADES or OFF_FA) that page shows go to g_rows;
+ * any other phase or page < 0 only counts. */
+static void roster_pass(int phase, int page)
+{
+    char path[600];
+    uint8_t buf[128], nm[128], from_up[128];
+    int toff[TOK_MAX], tlen[TOK_MAX], len, n;
+    FILE *f;
+    memset(g_used, 0, sizeof g_used);
+    memset(&g_rc, 0, sizeof g_rc);
+    path_join(path, g_lgdir, "ROSTERS.TXT");
+    f = fopen(path, "rb");
+    if (!f)
+        return;
+    while (roster_line(f, buf, &len)) {
+        n = tokenize(buf, len, toff, tlen);
+        if (n >= 4 && tok_eq(buf + toff[0], tlen[0], "SIGN", 0)) {
+            int nname = join_toks(buf, toff, tlen, 2, n - 1, nm);
+            int nfrom = tlen[n - 1], k;
+            for (k = 0; k < nfrom; k++)
+                from_up[k] = ascii_up(buf[toff[n - 1] + k]);
+            if (draft_take(from_up, nfrom, nm, nname)) {
+                uint32_t ord = g_rc.picks++;
+                int s = phase == OFF_DRAFT ? row_slot(ord, page) : -1;
+                if (s >= 0) {
+                    Row *r = &g_rows[s];
+                    sprintf(r->cells[0], "#%lu", (unsigned long)(ord + 1));
+                    team_disp(buf + toff[1], tlen[1], r->cells[1]);
+                    put_cell(r->cells[2], nm, nname);
+                    r->ncells = 3;
+                }
+            } else {
+                uint32_t ord = g_rc.fa++;
+                int s = phase == OFF_FA ? row_slot(ord, page) : -1;
+                if (s >= 0) {
+                    Row *r = &g_rows[s];
+                    team_disp(buf + toff[1], tlen[1], r->cells[0]);
+                    put_cell(r->cells[1], nm, nname);
+                    if (tok_eq(buf + toff[n - 1], nfrom, "POOL", 1))
+                        strcpy(r->cells[2], "FREE AGENT");
+                    else
+                        team_disp(buf + toff[n - 1], nfrom, r->cells[2]);
+                    r->ncells = 3;
+                }
+            }
+        } else if (n >= 5 && tok_eq(buf + toff[0], tlen[0], "TRADE", 0)) {
+            int j;
+            /* B: the first team token from index 3 that names a team file */
+            for (j = 3; j <= n - 2; j++)
+                if (team_file(buf + toff[j], tlen[j]))
+                    break;
+            if (j <= n - 2) {
+                uint32_t ord = 2u * g_rc.trades;
+                int sa = phase == OFF_TRADES ? row_slot(ord, page) : -1;
+                int sb = phase == OFF_TRADES ? row_slot(ord + 1u, page) : -1;
+                g_rc.trades++;
+                if (sa >= 0) {
+                    Row *r = &g_rows[sa];
+                    int xl = join_toks(buf, toff, tlen, 2, j, nm);
+                    team_disp(buf + toff[1], tlen[1], r->cells[0]);
+                    put_cell(r->cells[1], nm, xl);
+                    team_disp(buf + toff[j], tlen[j], r->cells[2]);
+                    r->ncells = 3;
+                }
+                if (sb >= 0) {
+                    Row *r = &g_rows[sb];
+                    int yl = join_toks(buf, toff, tlen, j + 1, n, nm);
+                    team_disp(buf + toff[j], tlen[j], r->cells[0]);
+                    put_cell(r->cells[1], nm, yl);
+                    team_disp(buf + toff[1], tlen[1], r->cells[2]);
+                    r->ncells = 3;
+                }
+            }
+        } else if (n >= 3 && tok_eq(buf + toff[0], tlen[0], "REL", 0)) {
+            g_rc.rel++;
+        }
+    }
+    fclose(f);
 }
 
 /* ---------------- categories ---------------- */
@@ -966,11 +1275,11 @@ done:
 
 static void build_menu_rows(void)
 {
-    static const char *items[5] = {
+    static const char *items[6] = {
         "1  SEASON HISTORY", "2  HALL OF FAME", "3  CAREER LEADERS",
-        "4  MILESTONES", "5  LAST SEASON REVIEW" };
+        "4  MILESTONES", "5  LAST SEASON REVIEW", "6  OFFSEASON" };
     int k;
-    for (k = 0; k < 5; k++) {
+    for (k = 0; k < 6; k++) {
         strcpy(g_rows[k].cells[0], items[k]);
         g_rows[k].ncells = 1;
     }
@@ -985,11 +1294,103 @@ static void build_no_hist_rows(void)
     g_nrows = 1;
 }
 
+/* retirees of the season just recorded (status 2 or 3, last_season == N) into g_retl:
+ * WAR10 descending, index ascending, capped. *count gets the uncapped retirees and
+ * *new_hof the status 3 entries with hof_season == N. */
+static void retire_scan(uint32_t *count, uint32_t *new_hof)
+{
+    uint32_t i;
+    Entry e;
+    g_retl.n = 0;
+    *count = 0;
+    *new_hof = 0;
+    for (i = 0; i < n_entries(); i++) {
+        read_entry(&e, i);
+        if (e.status == STATUS_HOF && e.hof_season == g_hdr_seasons)
+            (*new_hof)++;
+        if ((e.status == STATUS_RETIRED || e.status == STATUS_HOF)
+            && e.last_season == g_hdr_seasons) {
+            (*count)++;
+            list_add_desc(&g_retl, (int32_t)e.war10, i);
+        }
+    }
+}
+
+/* retirement rows of page (g_retl holds the sorted list): NAME, AGE, YRS, WAR, HOF */
+static void build_ret_rows(int page)
+{
+    int r;
+    for (r = page * ROWS_PER_PAGE;
+         r < g_retl.n && r < (page + 1) * ROWS_PER_PAGE; r++) {
+        Entry e;
+        Row *row = &g_rows[r - page * ROWS_PER_PAGE];
+        char nm[NAME_CAP_MAX], w[24];
+        read_entry(&e, g_retl.idx[r]);
+        name_display(e.name, 18, nm);
+        put_cell(row->cells[0], (const uint8_t *)nm, (int)strlen(nm));
+        sprintf(row->cells[1], "%u", (unsigned)e.age);
+        sprintf(row->cells[2], "%u", (unsigned)e.seasons_played);
+        fmt_war10(e.war10, w);
+        strcpy(row->cells[3], w);
+        strcpy(row->cells[4], (e.status == STATUS_HOF && e.hof_season == g_hdr_seasons)
+                              ? "HOF" : "");
+        row->ncells = 5;
+    }
+}
+
+/* the seven phase 5 lines (the counts are uncapped totals) */
+static void build_ready_rows(uint32_t nret, uint32_t nhof, int launched)
+{
+    unsigned long n = (unsigned long)g_hdr_seasons;
+    int k;
+    sprintf(g_rows[0].cells[0], "RETIRED: %lu   NEW HALL OF FAME: %lu",
+            (unsigned long)nret, (unsigned long)nhof);
+    sprintf(g_rows[1].cells[0], "ROOKIES DRAFTED: %lu", (unsigned long)g_rc.picks);
+    sprintf(g_rows[2].cells[0], "TRADES: %lu", (unsigned long)g_rc.trades);
+    sprintf(g_rows[3].cells[0], "FREE AGENT SIGNINGS: %lu", (unsigned long)g_rc.fa);
+    sprintf(g_rows[4].cells[0], "PLAYERS RELEASED: %lu", (unsigned long)g_rc.rel);
+    strcpy(g_rows[5].cells[0], "EVERY PLAYER AGED A YEAR AND DEVELOPED");
+    if (launched)
+        sprintf(g_rows[6].cells[0], "ENTER: ON TO SEASON %lu", n + 1);
+    else
+        strcpy(g_rows[6].cells[0], "ENTER: BACK TO THE MENU");
+    for (k = 0; k < 7; k++)
+        g_rows[k].ncells = 1;
+}
+
+/* the one message row of an empty phase: page 0 holds it, any page counts 1 */
+static int msg_row(int page, const char *text)
+{
+    if (page == 0) {
+        strcpy(g_rows[0].cells[0], text);
+        g_rows[0].ncells = 1;
+    }
+    return 1;
+}
+
+/* a row count capped at LIST_MAX */
+static uint32_t capped(uint32_t n)
+{
+    return n < LIST_MAX ? n : LIST_MAX;
+}
+
+/* rows on page of a phase with total rows */
+static int page_rows(int total, int page)
+{
+    int n = total - page * ROWS_PER_PAGE;
+    if (n < 0)
+        n = 0;
+    if (n > ROWS_PER_PAGE)
+        n = ROWS_PER_PAGE;
+    return n;
+}
+
 /* ---------------- state machine ---------------- */
 
 /* number of model rows of the current state (paging bound) */
 static int total_rows(State st)
 {
+    const ColDef *cols;
     switch (st.screen) {
     case SCREEN_HISTORY:
         hist_scan(&g_histl);
@@ -1006,15 +1407,18 @@ static int total_rows(State st)
     }
     case SCREEN_REVIEW:
         return build_review_rows();
+    case SCREEN_OFFSEASON:
+        return offseason_body(st, -1, &cols);
     default:
-        return 5;
+        return 6;
     }
 }
 
 /* rows of the current page into g_rows (matches dynview.rows; every screen
- * shows 'NO DYNASTY HISTORY YET' on a new file) */
-static int refresh_rows(State st)
+ * shows 'NO DYNASTY HISTORY YET' on a new file) and their columns into *cols */
+static int refresh_rows(State st, const ColDef **cols)
 {
+    *cols = body_cols(st);
     if (g_hdr_seasons == 0) {
         build_no_hist_rows();
         return g_nrows;
@@ -1022,7 +1426,7 @@ static int refresh_rows(State st)
     switch (st.screen) {
     case SCREEN_MENU:
         build_menu_rows();
-        return 5;
+        return 6;
     case SCREEN_LEADERS:
         leaders_scan(&g_leadl, st.cat);
         return build_lead_rows(st.cat, st.page);
@@ -1035,6 +1439,8 @@ static int refresh_rows(State st)
     case SCREEN_MILESTONES:
         ms_scan(&g_msl);
         return build_ms_rows(st.page);
+    case SCREEN_OFFSEASON:
+        return page_rows(offseason_body(st, st.page, cols), st.page);
     default:
         return build_review_rows();
     }
@@ -1054,7 +1460,7 @@ static State step(State in, int32_t key)
         return s;
     }
     if (s.screen == SCREEN_MENU) {
-        if (49 <= key && key <= 53) {
+        if (49 <= key && key <= 54) {
             s.screen = (int16_t)(key - 48);
             s.page = 0;
             s.cat = 0;
@@ -1062,6 +1468,22 @@ static State step(State in, int32_t key)
         return s;
     }
     if (s.screen == SCREEN_REVIEW && key == KEY_ENTER) {
+        s.screen = SCREEN_MENU;
+        s.page = 0;
+        s.cat = 0;
+        return s;
+    }
+    /* offseason ENTER: next phase; past the last one exit when launched, else MENU */
+    if (s.screen == SCREEN_OFFSEASON && key == KEY_ENTER) {
+        if ((s.cat & 15) < OFF_READY && g_hdr_seasons > 0) {
+            s.cat = (int16_t)(s.cat + 1);
+            s.page = 0;
+            return s;
+        }
+        if (s.cat >> 4) {
+            g_exit = 1;
+            return s;
+        }
         s.screen = SCREEN_MENU;
         s.page = 0;
         s.cat = 0;
@@ -1092,11 +1514,6 @@ static State step(State in, int32_t key)
 /* columns: (header, x, width_chars, right-aligned). Every MAIN.FNT glyph
  * advances CHAR_W, so a row holds 42 chars from x 10; right-aligned widths
  * include one leading separator char */
-typedef struct {
-    const char *header;
-    int x, w, ralign;
-} ColDef;
-
 #define CX(pos) (10 + CHAR_W * (pos))
 
 static const ColDef COLS_SINGLE[] = {
@@ -1119,6 +1536,16 @@ static const ColDef COLS_MILESTONES[] = {
     { "YEAR", CX(0), 4, 0 }, { "NAME", CX(5), 16, 0 },
     { "EVENT", CX(22), 20, 0 } };
 
+static const ColDef COLS_RETIRE[] = {
+    { "NAME", CX(0), 18, 0 }, { "AGE", CX(18), 5, 1 }, { "YRS", CX(23), 5, 1 },
+    { "WAR", CX(28), 7, 1 }, { "HOF", CX(36), 6, 1 } };
+
+static const ColDef COLS_DRAFT[] = {
+    { "#", CX(0), 4, 0 }, { "TEAM", CX(4), 15, 0 }, { "PLAYER", CX(19), 23, 0 } };
+
+static const ColDef COLS_MOVE[] = {
+    { "TEAM", CX(0), 13, 0 }, { "PLAYER", CX(14), 15, 0 }, { "FROM", CX(30), 12, 0 } };
+
 #define NCOLS(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 static int n_cols(const ColDef *cols)
@@ -1131,13 +1558,20 @@ static int n_cols(const ColDef *cols)
         return NCOLS(COLS_HOF);
     if (cols == COLS_LEADERS)
         return NCOLS(COLS_LEADERS);
+    if (cols == COLS_RETIRE)
+        return NCOLS(COLS_RETIRE);
+    if (cols == COLS_DRAFT)
+        return NCOLS(COLS_DRAFT);
+    if (cols == COLS_MOVE)
+        return NCOLS(COLS_MOVE);
     return NCOLS(COLS_MILESTONES);
 }
 
 static const ColDef *body_cols(State st)
 {
     /* the one-cell 'NO DYNASTY HISTORY YET' row always uses COLS_SINGLE so it
-     * is never cut to a narrow first column */
+     * is never cut to a narrow first column. The offseason's per-phase columns
+     * come from offseason_body, which refresh_rows calls after this. */
     if (g_hdr_seasons == 0)
         return COLS_SINGLE;
     switch (st.screen) {
@@ -1156,6 +1590,76 @@ static const ColDef *body_cols(State st)
     }
 }
 
+/* offseason phase of st: its rows for page into g_rows (page < 0 counts only).
+ * Returns the body row count (capped at LIST_MAX; one message row when the phase
+ * is empty; 0 with no history) and sets *cols. */
+static int offseason_body(State st, int page, const ColDef **cols)
+{
+    int phase = st.cat & 15, launched = st.cat >> 4;
+    uint32_t nret, nhof, total;
+    *cols = COLS_SINGLE;
+    if (g_hdr_seasons == 0)
+        return 0;
+    switch (phase) {
+    case OFF_REVIEW:
+        return build_review_rows();
+    case OFF_RETIRE:
+        retire_scan(&nret, &nhof);
+        total = capped(nret);
+        if (total == 0)
+            return msg_row(page, "NO RETIREMENTS");
+        if (page >= 0)
+            build_ret_rows(page);
+        *cols = COLS_RETIRE;
+        return (int)total;
+    case OFF_DRAFT:
+        roster_pass(OFF_DRAFT, page);
+        total = capped(g_rc.picks);
+        if (total == 0)
+            return msg_row(page, "NO DRAFT PICKS");
+        *cols = COLS_DRAFT;
+        return (int)total;
+    case OFF_TRADES:
+        roster_pass(OFF_TRADES, page);
+        total = capped(2u * g_rc.trades);
+        if (total == 0)
+            return msg_row(page, "NO TRADES");
+        *cols = COLS_MOVE;
+        return (int)total;
+    case OFF_FA:
+        roster_pass(OFF_FA, page);
+        total = capped(g_rc.fa);
+        if (total == 0)
+            return msg_row(page, "NO FREE AGENT SIGNINGS");
+        *cols = COLS_MOVE;
+        return (int)total;
+    default:
+        retire_scan(&nret, &nhof);
+        roster_pass(-1, -1);
+        if (page == 0)
+            build_ready_rows(nret, nhof, launched);
+        return 7;
+    }
+}
+
+/* footer line: the offseason's ENTER label follows its phase */
+static const char *footer_of(State st)
+{
+    static const char *footers[6] = {
+        "1-6 SELECT   ESC EXIT",
+        "PGUP PGDN   ESC MENU",
+        "PGUP PGDN   ESC MENU",
+        "LEFT RIGHT CATEGORY   ESC MENU",
+        "PGUP PGDN   ESC MENU",
+        "ENTER MENU   ESC MENU" };
+    if (st.screen == SCREEN_OFFSEASON) {
+        if ((st.cat & 15) < OFF_READY)
+            return "ENTER NEXT   PGUP PGDN   ESC MENU";
+        return (st.cat >> 4) ? "ENTER CONTINUE   ESC MENU" : "ENTER MENU   ESC MENU";
+    }
+    return footers[st.screen];
+}
+
 static void screen_title(State st, char *dst)
 {
     if (st.screen == SCREEN_MENU)
@@ -1169,7 +1673,22 @@ static void screen_title(State st, char *dst)
         strcat(dst, CAT_LABEL[st.cat]);
     } else if (st.screen == SCREEN_MILESTONES)
         strcpy(dst, "MILESTONES");
-    else
+    else if (st.screen == SCREEN_OFFSEASON) {
+        int phase = st.cat & 15;
+        unsigned long n = (unsigned long)g_hdr_seasons;
+        if (phase == OFF_REVIEW)
+            sprintf(dst, "1/6 SEASON %lu IN REVIEW", n);
+        else if (phase == OFF_RETIRE)
+            strcpy(dst, "2/6 RETIREMENTS");
+        else if (phase == OFF_DRAFT)
+            strcpy(dst, "3/6 ROOKIE DRAFT");
+        else if (phase == OFF_TRADES)
+            strcpy(dst, "4/6 TRADES");
+        else if (phase == OFF_FA)
+            strcpy(dst, "5/6 FREE AGENT SIGNINGS");
+        else
+            sprintf(dst, "6/6 SEASON %lu IS READY", n + 1);
+    } else
         sprintf(dst, "SEASON %u IN REVIEW", (unsigned)g_hdr_seasons);
 }
 
@@ -1188,13 +1707,6 @@ static void draw_panel(void)
  * tan rows with a gray underline, footer. Matches dynview.render exactly. */
 static void render(State st)
 {
-    static const char *footers[6] = {
-        "1-5 SELECT   ESC EXIT",
-        "PGUP PGDN   ESC MENU",
-        "PGUP PGDN   ESC MENU",
-        "LEFT RIGHT CATEGORY   ESC MENU",
-        "PGUP PGDN   ESC MENU",
-        "ENTER MENU   ESC MENU" };
     const ColDef *cols;
     uint8_t up[64];
     int tx, r, ci;
@@ -1208,7 +1720,7 @@ static void render(State st)
     tx = 8 + (304 - text_width(g_bold, up)) / 2;
     draw_text(g_fb, g_bold, tx + 1, 11, up, C_BLACK);
     draw_text(g_fb, g_bold, tx, 10, up, C_WHITE);
-    cols = body_cols(st);
+    g_nrows = refresh_rows(st, &cols);
     rect_fb(8, 24, 311, 33, C_HEADER_GOLD);
     for (ci = 0; ci < n_cols(cols); ci++) {
         const ColDef *cd = &cols[ci];
@@ -1224,7 +1736,6 @@ static void render(State st)
         else
             draw_text(g_fb, g_main, cd->x, 26, h, C_BLACK);
     }
-    g_nrows = refresh_rows(st);
     for (r = 0; r < g_nrows; r++) {
         const Row *row = &g_rows[r];
         int y0 = 35 + r * ROW_H;
@@ -1252,8 +1763,7 @@ static void render(State st)
         }
         rect_fb(8, y0 + 10, 311, y0 + 10, C_GRID_GRAY);
     }
-    draw_text(g_fb, g_main, 10, 185, (const uint8_t *)footers[st.screen],
-              C_WHITE);
+    draw_text(g_fb, g_main, 10, 185, (const uint8_t *)footer_of(st), C_WHITE);
 }
 
 /* ---------------- fonts / palette ---------------- */
@@ -1511,8 +2021,8 @@ static const uint8_t *arg_switch(const uint8_t *a, const char *name)
 
 static int usage(void)
 {
-    fprintf(stderr, "usage: DYNVIEW [/REVIEW] [/KEYS:k,k,...] [/RAW:FILE] "
-            "[LEAGUE_DIR [FONT_DIR]]\n");
+    fprintf(stderr, "usage: DYNVIEW [/REVIEW] [/OFFSEASON] [/KEYS:k,k,...] "
+            "[/RAW:FILE] [LEAGUE_DIR [FONT_DIR]]\n");
     return 2;
 }
 
@@ -1525,11 +2035,74 @@ static void init_vga_mode13(void)
     int86(0x10, &rg, &rg);
 }
 
-static void exit_vga_text(void)
+/* the caller's video state, put back on exit so the next program in TONY2.BAT
+ * finds the screen as it left it (MAIN after BACK expects mode 13h with BACK's
+ * registers and palette and never sets the mode itself) */
+static uint8_t g_vmode;
+static uint8_t g_vdac[768];
+static uint8_t g_vregs[8];      /* mode 13h only: seq 2, 4; CRTC 0Ch, 0Dh, 14h, 17h; GC 5, 6 */
+
+static uint8_t reg_in(unsigned port, unsigned idx)
+{
+    outp(port, idx);
+    return (uint8_t)inp(port + 1);
+}
+
+static void reg_out(unsigned port, unsigned idx, uint8_t v)
+{
+    outp(port, idx);
+    outp(port + 1, v);
+}
+
+/* BIOS mode (int 10h AH=0Fh), the 768 DAC bytes (3C7h/3C9h) and, in mode 13h,
+ * the registers that unchained (mode X) setups change */
+static void save_video(void)
 {
     union REGS rg;
-    rg.w.ax = 0x0003;
+    int i;
+    rg.h.ah = 0x0f;
     int86(0x10, &rg, &rg);
+    g_vmode = (uint8_t)(rg.h.al & 0x7f);
+    outp(0x3c7, 0);
+    for (i = 0; i < 768; i++)
+        g_vdac[i] = (uint8_t)(inp(0x3c9) & 0x3f);
+    if (g_vmode == 0x13) {
+        g_vregs[0] = reg_in(0x3c4, 2);
+        g_vregs[1] = reg_in(0x3c4, 4);
+        g_vregs[2] = reg_in(0x3d4, 0x0c);
+        g_vregs[3] = reg_in(0x3d4, 0x0d);
+        g_vregs[4] = reg_in(0x3d4, 0x14);
+        g_vregs[5] = reg_in(0x3d4, 0x17);
+        g_vregs[6] = reg_in(0x3ce, 5);
+        g_vregs[7] = reg_in(0x3ce, 6);
+    }
+}
+
+/* back to the saved mode with a cleared screen, then the saved registers and DAC */
+static void restore_video(void)
+{
+    union REGS rg;
+    int i;
+    rg.h.ah = 0;
+    rg.h.al = g_vmode;
+    int86(0x10, &rg, &rg);
+    if (g_vmode == 0x13) {
+        reg_out(0x3c4, 4, g_vregs[1]);
+        reg_out(0x3d4, 0x14, g_vregs[4]);
+        reg_out(0x3d4, 0x17, g_vregs[5]);
+        reg_out(0x3ce, 5, g_vregs[6]);
+        reg_out(0x3ce, 6, g_vregs[7]);
+        reg_out(0x3d4, 0x0c, g_vregs[2]);
+        reg_out(0x3d4, 0x0d, g_vregs[3]);
+        /* all four planes, so an unchained caller gets a clear 256 KB too */
+        reg_out(0x3c4, 2, 0x0f);
+        memset((void _far *)MK_FP(0xa000, 0), 0, 0xffffu);
+        *(uint8_t _far *)MK_FP(0xa000, 0xffff) = 0;
+        reg_out(0x3c4, 2, g_vregs[0]);
+    }
+    outp(0x3c8, 0);
+    for (i = 0; i < 768; i++)
+        outp(0x3c9, g_vdac[i]);
 }
 
 /* the 256 DEFAULT.PAL triples to the DAC: port 3C8h index 0, then 768 bytes
@@ -1565,7 +2138,7 @@ int main(int argc, char **argv)
     const char *league = (DIR_SEP == '\\') ? DEF_LEAGUE : DEF_LEAGUE_HOST;
     const char *font_dir = NULL;
     const uint8_t *keys = NULL, *raw_path = NULL;
-    int have_fonts, raw_mode = 0, review = 0, i, npos = 0;
+    int have_fonts, raw_mode = 0, review = 0, offseason = 0, i, npos = 0;
     State st;
 
 #ifdef __WATCOMC__
@@ -1577,6 +2150,8 @@ int main(int argc, char **argv)
         const uint8_t *v;
         if (arg_flag((const uint8_t *)argv[i], "review")) {
             review = 1;
+        } else if (arg_flag((const uint8_t *)argv[i], "offseason")) {
+            offseason = 1;
         } else if ((v = arg_switch((const uint8_t *)argv[i], "keys")) != NULL) {
             keys = v;
         } else if ((v = arg_switch((const uint8_t *)argv[i], "raw")) != NULL) {
@@ -1629,14 +2204,19 @@ int main(int argc, char **argv)
         return 2;
     if (!load_ms(league))
         return 2;
+    load_drafts();
 
-    st.screen = review ? SCREEN_REVIEW : SCREEN_MENU;
+    /* /OFFSEASON starts at phase 0 with the launched flag (cat 16) */
+    st.screen = offseason ? SCREEN_OFFSEASON : (review ? SCREEN_REVIEW : SCREEN_MENU);
     st.page = 0;
-    st.cat = 0;
+    st.cat = offseason ? 16 : 0;
     g_state = st;
     if (keys != NULL)
         parse_keys(keys);
     st = g_state;
+    /* an exit flag set by a /KEYS step (ESC on MENU, ENTER past the last offseason
+     * phase) must not end the interactive session */
+    g_exit = 0;
 
     if (raw_mode) {
         /* /RAW: after the keys, render once and write the 64000 B framebuffer;
@@ -1658,6 +2238,7 @@ int main(int argc, char **argv)
 #ifdef __WATCOMC__
     {
         int quit = 0;
+        save_video();
         init_vga_mode13();
         load_dac();
         render(st);
@@ -1667,7 +2248,7 @@ int main(int argc, char **argv)
             State prev = st;
             st = step(st, (int32_t)k);
             if (g_exit) {
-                exit_vga_text();
+                restore_video();
                 quit = 1;
             } else if (st.screen != prev.screen || st.page != prev.page
                        || st.cat != prev.cat) {

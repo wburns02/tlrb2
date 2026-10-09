@@ -68,9 +68,13 @@ Season table at offset 32: 64 entries x 128 B (8192 B). Entry for season n (1-ba
 - 24 32 x (u8 W, u8 L) indexed by league-global id 0..31 (NL = slot + 16); unused ids 0,0
   (amended 2026-10-07: CLASSIC NL uses slots 8..13 = ids 24..29, so 28 entries were too few)
 - 88..127 zero (reserved for awards, P4)
-Champion decode (one sample, season2_end: "PHILADELPHIA over CLE 4-2"): AL block S=0x21d, NL block S=0x758c;
-WS winner = byte at AL S+0x3da; al_pennant = AL S+0x3d9; nl_pennant = NL S+0x3d9; runner-up = the pennant winner
-that is not the WS winner. 0xff anywhere means unknown; any id byte >= 32 is read as 0xff (amended 2026-10-07).
+Champion decode (amended 2026-10-08, two samples: season2_end "PHILADELPHIA over CLE 4-2" and the offseason e2e
+"BOSTON over LA 4-2", ring screen): AL block S=0x21d, NL block S=0x758c. The AL block holds both series as
+(team0, team1) plus each side's wins: LCS teams S+0x3d7/0x3d8, wins S+0x3df/0x3e0; WS teams S+0x3d9 (AL pennant) and
+S+0x3da (NL pennant), wins S+0x3e1/0x3e2. WS winner = the WS team with more wins, a tie is unknown. al_pennant = AL
+S+0x3d9; nl_pennant = NL S+0x3d9; runner-up = the pennant winner that is not the WS winner. 0xff anywhere means
+unknown; any id byte >= 32 is read as 0xff (amended 2026-10-07). The pre-2026-10-08 rule (WS winner = AL S+0x3da)
+always named the NL pennant winner: entries written before the fix show the NL team as champion in seasons the AL won.
 Player table at offset 8224: entries x 160 B. Entry:
 - 0 20 B name = raw V20 record bytes 0..19 (last 12, first 8)
 - 20 u16 birth = 1000 + season_no - age (age = roster age BEFORE aging, season_no of first sighting)
@@ -382,14 +386,17 @@ dynasty
 if errorlevel 1 goto rolled
 goto ctl
 :rolled
+call archive
 histwr
 rosters
-dynview /review
+dynview /offseason
 :ctl
 control
 ```
 The labels `rolled` and `ctl` are free in the shipped BAT (DOS matches 8 chars, case-insensitive). Every earlier
-patched form (C5 with and without the histwr line) upgrades in place; --revert restores the stock pair from any form.
+patched form (C5 with and without the histwr line, C8 with `dynview /review` and without `call archive`) upgrades in
+place; --revert restores the stock pair from any form. ARCHIVE.BAT copies the pre-roll C:\DYNSNAP to the first free
+C:\SEASONS\Snn.
 DYNVIEW.EXE (C, OpenWatcom large model, read-only viewer; the Python reference is tools/m4/dynview.py) never writes a
 file in interactive mode. `/review` opens the season review; ESC from REVIEW goes to the menu, ESC from the menu
 exits 0 and the BAT falls through to control. A missing DYNVIEW or ROSTERS prints the DOS error and the BAT goes on.
@@ -397,3 +404,26 @@ The install copies DYNASTY.EXE, HISTWR.EXE, ROSTERS.EXE and DYNVIEW.EXE into the
 DOS limit: DYNVIEW reads at most the first 7000 MILESTON.DAT records (one far allocation under 64 KB); later
 records are not listed (about 200 seasons at the observed 20 to 35 records a season). HISTORY.DAT has no cap (entries are read one
 at a time).
+
+### C8a. The offseason sequence (added 2026-10-08)
+The roll runs when BACK's post World Series menu takes SEASON > START NEW SEASON (BACK saves, exits with CONTROL
+`02 01 07 f3 01 00 00 24 00`, and the BAT reaches `:rolled`) or when the player QUITs after the World Series. It ends in
+`dynview /offseason`, a walk through six screens, ENTER for the next one:
+1. `1/6 SEASON N IN REVIEW` (the /review rows)
+2. `2/6 RETIREMENTS`: status 2 or 3 with last_season == N, WAR10 descending then index ascending; NAME, AGE, YRS,
+   WAR, HOF (HOF when inducted this season)
+3. `3/6 ROOKIE DRAFT`: ROSTERS.TXT SIGN lines that match an unconsumed DRAFT line (same stem, ASCII upper case, and
+   same name; the first such DRAFT in file order is consumed; at most 400 DRAFT lines kept)
+4. `4/6 TRADES`: two rows per TRADE line (A gets X from B, B gets Y from A; B is the first token from index 3 that
+   names a team file)
+5. `5/6 FREE AGENT SIGNINGS`: every other SIGN line, FROM `FREE AGENT` for the pool
+6. `6/6 SEASON N+1 IS READY`: the counts, then `ENTER: ON TO SEASON N+1`; ENTER exits 0 and control hands on to the
+   next program (MAIN's new season flow after BACK, the DOS prompt after QUIT)
+ROSTERS.TXT lines over 127 bytes are ignored whole; an empty phase shows one message row. `6  OFFSEASON` on the
+menu opens the same walk without the launched flag, so its last ENTER goes back to the menu. ESC still goes to the
+menu and ESC there exits.
+
+DYNVIEW saves the caller's video state (BIOS mode, the 768 DAC bytes and, in mode 13h, sequencer 2 and 4, CRTC 0Ch,
+0Dh, 14h and 17h, GC 5 and 6) and restores it on exit with a cleared screen. MAIN after BACK never sets the video
+mode itself; the old exit to text mode 3 left MAIN drawing into a text screen (black, stuck). Rig check 2026-10-08: a
+mode 13h caller, then DYNVIEW, then MAIN matches the same run without DYNVIEW.
