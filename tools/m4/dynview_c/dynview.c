@@ -3,8 +3,10 @@
  * Streams HISTORY.DAT (one 160 B player entry at a time) and keeps sorted
  * top-LIST_MAX list buffers; screen output matches the Python reference pixel
  * for pixel.
- * usage: DYNVIEW [/REVIEW] [/OFFSEASON] [/KEYS:k,k,...] [/RAW:FILE] [LEAGUE_DIR [FONT_DIR]]
- * (/OFFSEASON wins when both are given)
+ * usage: DYNVIEW [/REVIEW] [/OFFSEASON] [/TITLE] [/MENU] [/KEYS:k,k,...] [/RAW:FILE]
+ *                [LEAGUE_DIR [FONT_DIR]]
+ * (precedence /OFFSEASON, /REVIEW, /TITLE, /MENU; /MENU opens the item CONTROL holds
+ * in the current directory and then sets CONTROL[1] = CONTROL[0])
  * exit 0 ok, 2 on bad usage, font failure or /RAW write failure.
  */
 #include <stdio.h>
@@ -18,6 +20,7 @@
 #include <conio.h>
 #define DIR_SEP '\\'
 #else
+#include <dirent.h>
 #define DIR_SEP '/'
 #endif
 
@@ -55,7 +58,14 @@
 #define SCREEN_MILESTONES 4
 #define SCREEN_REVIEW 5
 #define SCREEN_OFFSEASON 6
+#define SCREEN_SETTINGS 7
+#define SCREEN_ABOUT 8
 #define N_CATS 12
+
+/* the hub rows (SCREEN_MENU) and the ABOUT THE MODS rows */
+#define N_MENU_ROWS 8
+#define N_ABOUT_ROWS 35
+#define N_TITLE_ROWS 11
 
 /* offseason phases: cat & 15 is the phase, cat >> 4 the launched flag */
 #define OFF_REVIEW 0
@@ -72,6 +82,17 @@
 #define TOK_MAX 64
 
 #define HDR_SIZE 32
+/* DYNASTY SETTINGS: byte 10 the era, bytes 12..15 the managed-team mask; MAJ team stems
+ * AL slot s (lg s) at MAJ_S_AL, NL slot s (lg s + 16) at MAJ_S_NL, 8 bytes each from
+ * MAJ_O_STEM. MAJ_MIN is the smallest MAJ that holds them all. */
+#define MAJ_S_AL 0x21d
+#define MAJ_S_NL 0x758c
+#define MAJ_O_STEM 0x1d7
+#define MAJ_MIN (MAJ_S_NL + MAJ_O_STEM + 128L)
+#define N_TEAM_MAX 32
+#define MAJ_NAME_MAX 64
+/* /MENU reads and rewrites CONTROL in the current directory (TONY2.BAT) */
+#define CONTROL_FILE "CONTROL"
 #define SEASON_TABLE 32
 #define SEASON_ENTRY 128
 #define SEASON_COUNT 64
@@ -201,6 +222,53 @@ static RosterCounts g_rc;
 
 static State g_state;
 static int g_exit;
+
+/* DYNASTY SETTINGS: era and managed-team mask (HISTORY.DAT bytes 10, 12..15), the
+ * MAJ teams in lg order (g_tlg, display g_tdisp) and the redraw flag of an ENTER */
+static uint8_t g_era;
+static uint32_t g_mask;
+static int g_nteams;
+static uint8_t g_tlg[N_TEAM_MAX];
+static char g_tdisp[N_TEAM_MAX][16];
+static int g_dirty;
+
+/* ABOUT THE MODS rows (dynview.ABOUT_ROWS) */
+static const char *ABOUT_LINES[N_ABOUT_ROWS] = {
+    "DYNASTY MODE",
+    "YOUR LEAGUE PLAYS SEASON AFTER SEASON.",
+    "AFTER THE WORLD SERIES PICK SEASON >",
+    "START NEW SEASON. THE OFFSEASON AGES",
+    "EVERY PLAYER A YEAR. RATINGS RISE OR FALL,",
+    "VETERANS RETIRE, ROOKIES ARE DRAFTED, AND",
+    "TRADES AND FREE AGENCY RUN. EACH SEASON IS",
+    "ARCHIVED FIRST TO C:\\SEASONS.",
+    "",
+    "DYNASTY > DYNASTY MODE ON THE MENU BAR",
+    "SHOWS HISTORY, HALL OF FAME, LEADERS,",
+    "MILESTONES AND THE LAST OFFSEASON.",
+    "CREATE A PLAYER",
+    "DYNASTY > CREATE A PLAYER PUTS A NEW",
+    "PLAYER ON ANY TEAM: NAME, POSITION,",
+    "HANDS, AGE, RATINGS AND FACE. THE NEW",
+    "PLAYER TAKES THE ROSTER SLOT YOU PICK.",
+    "",
+    "DYNASTY SETTINGS",
+    "ERA RULES: REAL CALENDAR GIVES THE",
+    "RESERVE CLAUSE UNTIL 1975 AND FREE",
+    "AGENCY FROM 1976, OR FIX EITHER ONE.",
+    "TEAMS YOU MANAGE KEEP THEIR ROSTERS:",
+    "NO AI RELEASES, TRADES OR DEPARTURES.",
+    "A HOLE ON YOUR TEAM TAKES THE BEST",
+    "ROOKIE LEFT IN THE DRAFT CLASS, AND YOUR",
+    "LINEUP IS REPAIRED, NOT REBUILT.",
+    "",
+    "NEW FACES",
+    "67 NEW PORTRAITS JOIN THE 30 STOCK ONES.",
+    "ROOKIES AND CREATED PLAYERS USE THEM.",
+    "",
+    "MODERN BALLPARKS",
+    "UTILITIES > ASSIGN STADIUMS LETS ANY TEAM",
+    "PLAY IN A NEW PARK." };
 
 static const char *CAT_LABEL[N_CATS] = {
     "H", "HR", "RBI", "SB", "AVG", "WAR", "W", "SV", "PSO", "ERA",
@@ -784,6 +852,188 @@ static int load_ms(const char *league_dir)
     return 1;
 }
 
+/* ---------------- DYNASTY SETTINGS: HISTORY.DAT header, MAJ teams ---------------- */
+
+/* the first 32 bytes of HISTORY.DAT: era = byte 10, mask = u32 LE of bytes 12..15; a
+ * missing or unreadable file is all zero */
+static void load_settings(void)
+{
+    char path[600];
+    uint8_t d[HDR_SIZE];
+    FILE *f;
+    memset(d, 0, sizeof d);
+    path_join(path, g_lgdir, "HISTORY.DAT");
+    f = fopen(path, "rb");
+    if (f) {
+        (void)fread(d, 1, HDR_SIZE, f);
+        fclose(f);
+    }
+    g_era = d[10];
+    g_mask = (uint32_t)d[12] | ((uint32_t)d[13] << 8)
+           | ((uint32_t)d[14] << 16) | ((uint32_t)d[15] << 24);
+}
+
+/* keep the smallest name ending in .MAJ (strcmp order: the first of the sorted list) */
+static void maj_consider(char *best, int *have, const char *name)
+{
+    size_t l = strlen(name);
+    if (l <= 4 || l >= MAJ_NAME_MAX || strcmp(name + l - 4, ".MAJ") != 0)
+        return;
+    if (!*have || strcmp(name, best) < 0) {
+        strcpy(best, name);
+        *have = 1;
+    }
+}
+
+/* the first *.MAJ of the league directory into best (1 found). The DOS listing is
+ * upper case already; the host match is case-sensitive, like history.maj_or_none */
+static int find_maj(char *best)
+{
+    int have = 0;
+#ifdef __WATCOMC__
+    char pat[300];
+    struct find_t ft;
+    path_join(pat, g_lgdir, "*.MAJ");
+    if (_dos_findfirst(pat, _A_NORMAL, &ft) == 0) {
+        do
+            maj_consider(best, &have, ft.name);
+        while (_dos_findnext(&ft) == 0);
+    }
+#else
+    DIR *dirp = opendir(g_lgdir);
+    struct dirent *de;
+    if (!dirp)
+        return 0;
+    while ((de = readdir(dirp)) != NULL)
+        maj_consider(best, &have, de->d_name);
+    closedir(dirp);
+#endif
+    return have;
+}
+
+/* the MAJ teams in lg order: slot s of the AL block is lg s, of the NL block lg s + 16.
+ * A slot with an empty stem or no team file is skipped. No MAJ, a read error or a file
+ * shorter than MAJ_MIN gives no teams. */
+static void load_teams(void)
+{
+    char best[MAJ_NAME_MAX], path[600];
+    uint8_t blk[2][128];
+    FILE *f;
+    long sz;
+    int lg;
+    g_nteams = 0;
+    if (!find_maj(best))
+        return;
+    path_join(path, g_lgdir, best);
+    f = fopen(path, "rb");
+    if (!f)
+        return;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return;
+    }
+    sz = ftell(f);
+    if (sz < MAJ_MIN) {
+        fclose(f);
+        return;
+    }
+    if (fseek(f, MAJ_S_AL + MAJ_O_STEM, SEEK_SET) != 0
+        || fread(blk[0], 1, 128, f) != 128
+        || fseek(f, MAJ_S_NL + MAJ_O_STEM, SEEK_SET) != 0
+        || fread(blk[1], 1, 128, f) != 128) {
+        fclose(f);
+        return;
+    }
+    fclose(f);
+    for (lg = 0; lg < N_TEAM_MAX; lg++) {
+        const uint8_t *stem = blk[lg >> 4] + 8 * (lg & 15);
+        int n = 0;
+        while (n < 8 && stem[n])
+            n++;
+        if (n == 0 || !team_file(stem, n))
+            continue;
+        g_tlg[g_nteams] = (uint8_t)lg;
+        team_disp(stem, n, g_tdisp[g_nteams]);
+        g_nteams++;
+    }
+}
+
+/* HISTORY.DAT: byte 10 = g_era, bytes 12..15 = g_mask (u32 LE); nothing else changes.
+ * A missing file is created (32 zero bytes first), a shorter one zero-extended to 32
+ * bytes. Open and write failures are ignored, like the Python OSError rule. */
+static void save_settings(void)
+{
+    char path[600];
+    uint8_t zero[HDR_SIZE], mb[4], era = g_era;
+    FILE *f;
+    long sz;
+    path_join(path, g_lgdir, "HISTORY.DAT");
+    f = fopen(path, "r+b");
+    if (!f) {
+        memset(zero, 0, sizeof zero);
+        f = fopen(path, "wb");
+        if (!f)
+            return;
+        (void)fwrite(zero, 1, HDR_SIZE, f);
+        fclose(f);
+        f = fopen(path, "r+b");
+        if (!f)
+            return;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return;
+    }
+    sz = ftell(f);
+    if (sz < 0) {
+        fclose(f);
+        return;
+    }
+    if (sz < HDR_SIZE) {
+        memset(zero, 0, sizeof zero);
+        (void)fwrite(zero, 1, (size_t)(HDR_SIZE - sz), f);
+    }
+    mb[0] = (uint8_t)(g_mask & 0xffu);
+    mb[1] = (uint8_t)((g_mask >> 8) & 0xffu);
+    mb[2] = (uint8_t)((g_mask >> 16) & 0xffu);
+    mb[3] = (uint8_t)((g_mask >> 24) & 0xffu);
+    if (fseek(f, 10, SEEK_SET) == 0)
+        (void)fwrite(&era, 1, 1, f);
+    if (fseek(f, 12, SEEK_SET) == 0)
+        (void)fwrite(mb, 1, 4, f);
+    fclose(f);
+}
+
+/* /MENU item: CONTROL[1] = 8 + item (item 0..3) in the current directory; 0 when the file
+ * is missing, shorter than 2 bytes or holds any other value */
+static int control_item(void)
+{
+    uint8_t d[2];
+    FILE *f = fopen(CONTROL_FILE, "rb");
+    int item = 0;
+    if (!f)
+        return 0;
+    if (fread(d, 1, 2, f) == 2 && d[1] >= 8 && d[1] <= 11)
+        item = d[1] - 8;
+    fclose(f);
+    return item;
+}
+
+/* CONTROL[1] = CONTROL[0] in place, so TONY2.BAT restarts MAIN; a missing file or one
+ * under 2 bytes is left alone */
+static void control_return(void)
+{
+    uint8_t d[2];
+    FILE *f = fopen(CONTROL_FILE, "r+b");
+    if (!f)
+        return;
+    if (fread(d, 1, 2, f) == 2) {
+        (void)fseek(f, 1, SEEK_SET);
+        (void)fwrite(&d[0], 1, 1, f);
+    }
+    fclose(f);
+}
+
 /* entry_name: NONE for NO_AWARD; '?' for out of range / an empty display name */
 static void entry_name(uint16_t idx, int cap, char *dst)
 {
@@ -1273,13 +1523,15 @@ done:
     return n;
 }
 
+/* the hub rows (dynview.MENU_ROWS) */
 static void build_menu_rows(void)
 {
-    static const char *items[6] = {
+    static const char *items[N_MENU_ROWS] = {
         "1  SEASON HISTORY", "2  HALL OF FAME", "3  CAREER LEADERS",
-        "4  MILESTONES", "5  LAST SEASON REVIEW", "6  OFFSEASON" };
+        "4  MILESTONES", "5  LAST SEASON REVIEW", "6  OFFSEASON",
+        "7  DYNASTY SETTINGS", "8  ABOUT THE MODS" };
     int k;
-    for (k = 0; k < 6; k++) {
+    for (k = 0; k < N_MENU_ROWS; k++) {
         strcpy(g_rows[k].cells[0], items[k]);
         g_rows[k].ncells = 1;
     }
@@ -1295,7 +1547,6 @@ static void build_no_hist_rows(void)
 }
 
 /* /TITLE menu of a league with no recorded season (dynview.TITLE_ROWS) */
-#define N_TITLE_ROWS 10
 static void build_title_rows(void)
 {
     static const char *lines[N_TITLE_ROWS] = {
@@ -1307,14 +1558,55 @@ static void build_title_rows(void)
         "AND FREE AGENTS. EVERY SEASON IS ARCHIVED",
         "FIRST, SO NOTHING IS LOST.",
         "",
-        "HISTORY, HALL OF FAME, CAREER LEADERS AND",
-        "MILESTONES COLLECT HERE AS SEASONS PASS." };
+        "THE DYNASTY MENU ON THE MENU BAR HOLDS",
+        "HISTORY, CREATE A PLAYER, SETTINGS AND",
+        "A GUIDE TO EVERY MOD." };
     int k;
     for (k = 0; k < N_TITLE_ROWS; k++) {
         strcpy(g_rows[k].cells[0], lines[k]);
         g_rows[k].ncells = 1;
     }
     g_nrows = N_TITLE_ROWS;
+}
+
+/* the ERA RULES value of g_era (dynview.era_label) */
+static const char *era_label(void)
+{
+    if (g_era == 0)
+        return "REAL CALENDAR";
+    if (g_era == 2)
+        return "FREE AGENCY";
+    return "RESERVE CLAUSE";
+}
+
+/* DYNASTY SETTINGS page: row 0 ERA RULES, row c the team lg of g_tlg[c - 1] (cursor c) */
+static void build_settings_rows(int page)
+{
+    int i, k = 0;
+    for (i = page * ROWS_PER_PAGE; i <= g_nteams && k < ROWS_PER_PAGE; i++, k++) {
+        Row *row = &g_rows[k];
+        if (i == 0) {
+            strcpy(row->cells[0], "ERA RULES");
+            strcpy(row->cells[1], era_label());
+        } else {
+            strcpy(row->cells[0], g_tdisp[i - 1]);
+            strcpy(row->cells[1], ((g_mask >> g_tlg[i - 1]) & 1u)
+                                  ? "YOU MANAGE" : "AI MANAGES");
+        }
+        row->ncells = 2;
+    }
+    g_nrows = k;
+}
+
+/* ABOUT THE MODS page: ROWS_PER_PAGE lines of dynview.ABOUT_ROWS */
+static void build_about_rows(int page)
+{
+    int r, k = 0;
+    for (r = page * ROWS_PER_PAGE; r < N_ABOUT_ROWS && k < ROWS_PER_PAGE; r++, k++) {
+        strcpy(g_rows[k].cells[0], ABOUT_LINES[r]);
+        g_rows[k].ncells = 1;
+    }
+    g_nrows = k;
 }
 
 /* retirees of the season just recorded (status 2 or 3, last_season == N) into g_retl:
@@ -1432,8 +1724,12 @@ static int total_rows(State st)
         return build_review_rows();
     case SCREEN_OFFSEASON:
         return offseason_body(st, -1, &cols);
+    case SCREEN_SETTINGS:
+        return 1 + g_nteams;
+    case SCREEN_ABOUT:
+        return N_ABOUT_ROWS;
     default:
-        return 6;
+        return N_MENU_ROWS;
     }
 }
 
@@ -1442,18 +1738,27 @@ static int total_rows(State st)
 static int refresh_rows(State st, const ColDef **cols)
 {
     *cols = body_cols(st);
-    if (g_hdr_seasons == 0 && st.screen == SCREEN_MENU && (st.cat >> 4)) {
-        build_title_rows();
+    if (st.screen == SCREEN_SETTINGS) {
+        build_settings_rows(st.page);
         return g_nrows;
+    }
+    if (st.screen == SCREEN_ABOUT) {
+        build_about_rows(st.page);
+        return g_nrows;
+    }
+    if (st.screen == SCREEN_MENU) {
+        if (g_hdr_seasons == 0 && (st.cat >> 4)) {
+            build_title_rows();
+            return g_nrows;
+        }
+        build_menu_rows();
+        return N_MENU_ROWS;
     }
     if (g_hdr_seasons == 0) {
         build_no_hist_rows();
         return g_nrows;
     }
     switch (st.screen) {
-    case SCREEN_MENU:
-        build_menu_rows();
-        return 6;
     case SCREEN_LEADERS:
         leaders_scan(&g_leadl, st.cat);
         return build_lead_rows(st.cat, st.page);
@@ -1487,7 +1792,7 @@ static State step(State in, int32_t key)
         return s;
     }
     if (s.screen == SCREEN_MENU) {
-        if (49 <= key && key <= 54) {
+        if (49 <= key && key <= 56) {
             s.screen = (int16_t)(key - 48);
             s.page = 0;
             s.cat = 0;
@@ -1517,6 +1822,34 @@ static State step(State in, int32_t key)
         s.screen = SCREEN_MENU;
         s.page = 0;
         s.cat = 0;
+        return s;
+    }
+    /* DYNASTY SETTINGS: cat is the cursor (0 ERA RULES, c >= 1 team c - 1); ENTER flips
+     * the row and saves HISTORY.DAT, the rest moves the cursor and its page */
+    if (s.screen == SCREEN_SETTINGS) {
+        int n = 1 + g_nteams;
+        if (key == KEY_ENTER) {
+            if (s.cat == 0)
+                g_era = (uint8_t)(g_era == 0 ? 1 : (g_era == 2 ? 0 : 2));
+            else
+                g_mask ^= (uint32_t)1 << g_tlg[s.cat - 1];
+            save_settings();
+            g_dirty = 1;
+            return s;
+        }
+        if (key == KEY_UP && s.cat > 0)
+            s.cat = (int16_t)(s.cat - 1);
+        else if (key == KEY_DOWN && s.cat < n - 1)
+            s.cat = (int16_t)(s.cat + 1);
+        else if (key == KEY_PGDN) {
+            int c = s.cat + ROWS_PER_PAGE;
+            s.cat = (int16_t)(c < n - 1 ? c : n - 1);
+        } else if (key == KEY_PGUP) {
+            int c = s.cat - ROWS_PER_PAGE;
+            s.cat = (int16_t)(c > 0 ? c : 0);
+        } else
+            return s;
+        s.page = (int16_t)(s.cat / ROWS_PER_PAGE);
         return s;
     }
     if (key == KEY_PGDN) {
@@ -1570,6 +1903,9 @@ static const ColDef COLS_RETIRE[] = {
     { "NAME", CX(0), 18, 0 }, { "AGE", CX(18), 5, 1 }, { "YRS", CX(23), 5, 1 },
     { "WAR", CX(28), 7, 1 }, { "HOF", CX(36), 6, 1 } };
 
+static const ColDef COLS_SETTINGS[] = {
+    { "SETTING", CX(0), 24, 0 }, { "VALUE", CX(26), 16, 0 } };
+
 static const ColDef COLS_DRAFT[] = {
     { "#", CX(0), 4, 0 }, { "TEAM", CX(4), 15, 0 }, { "PLAYER", CX(19), 23, 0 } };
 
@@ -1594,6 +1930,8 @@ static int n_cols(const ColDef *cols)
         return NCOLS(COLS_DRAFT);
     if (cols == COLS_MOVE)
         return NCOLS(COLS_MOVE);
+    if (cols == COLS_SETTINGS)
+        return NCOLS(COLS_SETTINGS);
     return NCOLS(COLS_MILESTONES);
 }
 
@@ -1601,8 +1939,11 @@ static const ColDef *body_cols(State st)
 {
     /* the one-cell 'NO DYNASTY HISTORY YET' row always uses COLS_SINGLE so it
      * is never cut to a narrow first column. The offseason's per-phase columns
-     * come from offseason_body, which refresh_rows calls after this. */
-    if (g_hdr_seasons == 0)
+     * come from offseason_body, which refresh_rows calls after this. SETTINGS
+     * shows its columns and ABOUT its rows with no history too. */
+    if (st.screen == SCREEN_SETTINGS)
+        return COLS_SETTINGS;
+    if (g_hdr_seasons == 0 || st.screen == SCREEN_ABOUT)
         return COLS_SINGLE;
     switch (st.screen) {
     case SCREEN_MENU:
@@ -1676,14 +2017,18 @@ static int offseason_body(State st, int page, const ColDef **cols)
 static const char *footer_of(State st)
 {
     static const char *footers[6] = {
-        "1-6 SELECT   ESC EXIT",
+        "1-8 SELECT   ESC EXIT",
         "PGUP PGDN   ESC MENU",
         "PGUP PGDN   ESC MENU",
         "LEFT RIGHT CATEGORY   ESC MENU",
         "PGUP PGDN   ESC MENU",
         "ENTER MENU   ESC MENU" };
     if (st.screen == SCREEN_MENU && (st.cat >> 4))
-        return g_hdr_seasons == 0 ? "ENTER PLAY BALL" : "1-6 SELECT   ENTER PLAY BALL";
+        return g_hdr_seasons == 0 ? "ENTER PLAY BALL" : "1-8 SELECT   ENTER PLAY BALL";
+    if (st.screen == SCREEN_SETTINGS)
+        return "UP DOWN MOVE   ENTER CHANGE   ESC MENU";
+    if (st.screen == SCREEN_ABOUT)
+        return "PGUP PGDN   ESC MENU";
     if (st.screen == SCREEN_OFFSEASON) {
         if ((st.cat & 15) < OFF_READY)
             return "ENTER NEXT   PGUP PGDN   ESC MENU";
@@ -1707,6 +2052,11 @@ static void screen_title(State st, char *dst)
         strcat(dst, CAT_LABEL[st.cat]);
     } else if (st.screen == SCREEN_MILESTONES)
         strcpy(dst, "MILESTONES");
+    else if (st.screen == SCREEN_SETTINGS)
+        strcpy(dst, "DYNASTY SETTINGS");
+    else if (st.screen == SCREEN_ABOUT)
+        sprintf(dst, "ABOUT THE MODS %d/%d", st.page + 1,
+                (N_ABOUT_ROWS + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE);
     else if (st.screen == SCREEN_OFFSEASON) {
         int phase = st.cat & 15;
         unsigned long n = (unsigned long)g_hdr_seasons;
@@ -1743,7 +2093,7 @@ static void render(State st)
 {
     const ColDef *cols;
     uint8_t up[64];
-    int tx, r, ci;
+    int tx, r, ci, hot;
     draw_panel();
     /* screen_title then the centered bold title with its shadow */
     {
@@ -1754,6 +2104,8 @@ static void render(State st)
     tx = 8 + (304 - text_width(g_bold, up)) / 2;
     draw_text(g_fb, g_bold, tx + 1, 11, up, C_BLACK);
     draw_text(g_fb, g_bold, tx, 10, up, C_WHITE);
+    /* SETTINGS: the cursor (st.cat) row of the page is highlighted */
+    hot = (st.screen == SCREEN_SETTINGS) ? st.cat - st.page * ROWS_PER_PAGE : -1;
     g_nrows = refresh_rows(st, &cols);
     rect_fb(8, 24, 311, 33, C_HEADER_GOLD);
     for (ci = 0; ci < n_cols(cols); ci++) {
@@ -1773,7 +2125,8 @@ static void render(State st)
     for (r = 0; r < g_nrows; r++) {
         const Row *row = &g_rows[r];
         int y0 = 35 + r * ROW_H;
-        rect_fb(8, y0, 311, y0 + 9, C_ROW_TAN);
+        int tc = (r == hot) ? C_WHITE : C_BLACK;
+        rect_fb(8, y0, 311, y0 + 9, (r == hot) ? C_TITLE_RED : C_ROW_TAN);
         for (ci = 0; ci < row->ncells && ci < n_cols(cols); ci++) {
             const ColDef *cd = &cols[ci];
             const uint8_t *cell = (const uint8_t *)row->cells[ci];
@@ -1790,9 +2143,9 @@ static void render(State st)
                 if (cd->ralign)
                     draw_text(g_fb, g_main,
                               cd->x + cd->w * CHAR_W - text_width(g_main, shown),
-                              y0 + 2, shown, C_BLACK);
+                              y0 + 2, shown, tc);
                 else
-                    draw_text(g_fb, g_main, cd->x, y0 + 2, shown, C_BLACK);
+                    draw_text(g_fb, g_main, cd->x, y0 + 2, shown, tc);
             }
         }
         rect_fb(8, y0 + 10, 311, y0 + 10, C_GRID_GRAY);
@@ -2055,8 +2408,8 @@ static const uint8_t *arg_switch(const uint8_t *a, const char *name)
 
 static int usage(void)
 {
-    fprintf(stderr, "usage: DYNVIEW [/REVIEW] [/OFFSEASON] [/TITLE] [/KEYS:k,k,...] "
-            "[/RAW:FILE] [LEAGUE_DIR [FONT_DIR]]\n");
+    fprintf(stderr, "usage: DYNVIEW [/REVIEW] [/OFFSEASON] [/TITLE] [/MENU] "
+            "[/KEYS:k,k,...] [/RAW:FILE] [LEAGUE_DIR [FONT_DIR]]\n");
     return 2;
 }
 
@@ -2172,7 +2525,8 @@ int main(int argc, char **argv)
     const char *league = (DIR_SEP == '\\') ? DEF_LEAGUE : DEF_LEAGUE_HOST;
     const char *font_dir = NULL;
     const uint8_t *keys = NULL, *raw_path = NULL;
-    int have_fonts, raw_mode = 0, review = 0, offseason = 0, title = 0, i, npos = 0;
+    int have_fonts, raw_mode = 0, review = 0, offseason = 0, title = 0, menu = 0;
+    int i, npos = 0;
     State st;
 
 #ifdef __WATCOMC__
@@ -2188,6 +2542,8 @@ int main(int argc, char **argv)
             offseason = 1;
         } else if (arg_flag((const uint8_t *)argv[i], "title")) {
             title = 1;
+        } else if (arg_flag((const uint8_t *)argv[i], "menu")) {
+            menu = 1;
         } else if ((v = arg_switch((const uint8_t *)argv[i], "keys")) != NULL) {
             keys = v;
         } else if ((v = arg_switch((const uint8_t *)argv[i], "raw")) != NULL) {
@@ -2241,12 +2597,29 @@ int main(int argc, char **argv)
     if (!load_ms(league))
         return 2;
     load_drafts();
+    load_settings();
+    load_teams();
 
     /* /OFFSEASON starts at phase 0 with the launched flag (cat 16); /TITLE is the
-     * MENU with cat 16 (precedence /OFFSEASON, /REVIEW, /TITLE) */
-    st.screen = offseason ? SCREEN_OFFSEASON : (review ? SCREEN_REVIEW : SCREEN_MENU);
+     * MENU with cat 16; /MENU opens the item CONTROL holds: 2 DYNASTY SETTINGS,
+     * 3 ABOUT THE MODS, else the hub (precedence /OFFSEASON, /REVIEW, /TITLE, /MENU) */
+    st.screen = SCREEN_MENU;
     st.page = 0;
-    st.cat = (offseason || (title && !review)) ? 16 : 0;
+    st.cat = 0;
+    if (offseason) {
+        st.screen = SCREEN_OFFSEASON;
+        st.cat = 16;
+    } else if (review) {
+        st.screen = SCREEN_REVIEW;
+    } else if (title) {
+        st.cat = 16;
+    } else if (menu) {
+        int item = control_item();
+        if (item == 2)
+            st.screen = SCREEN_SETTINGS;
+        else if (item == 3)
+            st.screen = SCREEN_ABOUT;
+    }
     g_state = st;
     if (keys != NULL)
         parse_keys(keys);
@@ -2270,6 +2643,8 @@ int main(int argc, char **argv)
         }
         if (fclose(f) != 0)
             return 2;
+        if (menu)
+            control_return();
         return 0;
     }
 #ifdef __WATCOMC__
@@ -2280,6 +2655,7 @@ int main(int argc, char **argv)
         load_dac();
         render(st);
         fb_to_vram();
+        g_dirty = 0;
         while (!quit) {
             unsigned k = read_key();
             State prev = st;
@@ -2288,12 +2664,16 @@ int main(int argc, char **argv)
                 restore_video();
                 quit = 1;
             } else if (st.screen != prev.screen || st.page != prev.page
-                       || st.cat != prev.cat) {
-                /* render only after a key changed the state */
+                       || st.cat != prev.cat || g_dirty) {
+                /* render after a key changed the state or an ENTER changed the
+                 * settings (the state itself is the same then) */
                 render(st);
                 fb_to_vram();
+                g_dirty = 0;
             }
         }
+        if (menu)
+            control_return();
         return 0;
     }
 #endif

@@ -400,7 +400,7 @@ def test_no_history_every_screen(tmp_path):
 def test_title_mode(tmp_path):
     """/TITLE: MENU with cat 16. No season: welcome rows, 'ENTER PLAY BALL', title
     names season 1. With history: the menu items, season N+1. ENTER and ESC exit;
-    1-6 open a screen whose ESC returns to the plain menu."""
+    1-8 open a screen whose ESC returns to the plain menu."""
     T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
     ldir = tmp_path / 'empty'
     ldir.mkdir()
@@ -416,11 +416,11 @@ def test_title_mode(tmp_path):
     # the plain menu ignores ENTER
     assert dynview.step((dynview.SCREEN_MENU, 0, 0), dynview.KEY_ENTER, data) == \
         ((dynview.SCREEN_MENU, 0, 0), 0)
-    assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data) == [('NO DYNASTY HISTORY YET',)]
+    assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data) == [(t,) for t in dynview.MENU_ROWS]
     hdir, _ = make_data(tmp_path)
     data = dynview.load_data(str(hdir))
     assert dynview.rows(T, data)[0] == ('1  SEASON HISTORY',)
-    assert dynview.footer_text(T, data) == '1-6 SELECT   ENTER PLAY BALL'
+    assert dynview.footer_text(T, data) == '1-8 SELECT   ENTER PLAY BALL'
     assert dynview.screen_title(T, data) == 'DYNASTY MODE: SEASON 4'
     s, ex = dynview.step(T, ord('2'), data)
     assert s == (dynview.SCREEN_HOF, 0, 0) and ex == 0
@@ -571,7 +571,7 @@ def test_team_names_from_v20(tmp_path):
     ldir, _ = make_data(tmp_path)
     (ldir / 'ALA03.V20').write_bytes(b'PHILADELPHIA\0\0clPHI' + bytes(60))
     (ldir / 'NL03.V20').write_bytes(bytes(80))                  # blank name
-    (ldir / 'ALA02.V20').write_bytes(b'Chicago A\0junk!' + bytes(60))
+    (ldir / 'ALA02.V20').write_bytes(b'Chicago A\0junk.' + bytes(60))
     data = dynview.load_data(str(ldir))
     rows = dynview.rows(st(dynview.SCREEN_HISTORY), data)
     assert rows[0][1] == 'PHILADELPHIA'
@@ -782,15 +782,15 @@ def test_offseason_titles_footers_and_menu(tmp_path):
                 'ENTER NEXT   PGUP PGDN   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5))) == 'ENTER CONTINUE   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5, 0))) == 'ENTER MENU   ESC MENU'
-    assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '1-6 SELECT   ESC EXIT'
+    assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '1-8 SELECT   ESC EXIT'
     assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == 'PGUP PGDN   ESC MENU'
     assert dynview.footer_text((dynview.SCREEN_REVIEW, 0, 0)) == 'ENTER MENU   ESC MENU'
-    # the menu's sixth row and key 6
-    assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data)[-1] == ('6  OFFSEASON',)
-    assert dynview.total_rows((dynview.SCREEN_MENU, 0, 0), data) == 6
+    # the menu's sixth row and key 6; key 7 now opens DYNASTY SETTINGS, 9 is unused
+    assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data)[5] == ('6  OFFSEASON',)
+    assert dynview.total_rows((dynview.SCREEN_MENU, 0, 0), data) == 8
     s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('6'), data)
     assert s == (SO, 0, 0) and ex == 0
-    s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('7'), data)
+    s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('9'), data)
     assert s == (dynview.SCREEN_MENU, 0, 0) and ex == 0
 
 
@@ -904,3 +904,367 @@ def test_offseason_no_history_ignores_dangling_rosters(tmp_path):
     (ldir / 'ROSTERS.TXT').write_bytes(ROSTER_BODY)
     data = dynview.load_data(str(ldir))
     assert dynview.rows((SO, 0, oc(4)), data) == [('NO DYNASTY HISTORY YET',)]
+
+
+# ---------------------------------------------------------------- hub / settings / about
+SET = dynview.SCREEN_SETTINGS
+ABOUT = dynview.SCREEN_ABOUT
+HUB = (dynview.SCREEN_MENU, 0, 0)
+
+
+def press(s, key, data):
+    return dynview.step(s, key, data)[0]
+
+
+def write_maj(ldir, stems, size=59771):
+    """TEST.MAJ of size bytes with team stems {lg: stem}: lg 0..15 is the AL slot, 16..31
+    the NL slot (stem at S + 0x1d7 + 8 * slot)."""
+    d = bytearray(size)
+    for lg, stem in stems.items():
+        s = dynview.MAJ_S_AL if lg < 16 else dynview.MAJ_S_NL
+        o = s + dynview.MAJ_O_STEM + 8 * (lg & 15)
+        d[o:o + 8] = stem.ljust(8, b'\0')[:8]
+    (ldir / 'TEST.MAJ').write_bytes(bytes(d))
+
+
+def big_league(ldir, n=20):
+    """MAJ with n teams (lg 0..n-1, lower-case stems like the game), each with an upper
+    case V20 named 'TEAM nn' (the DOS name form the C port opens)"""
+    stems = {}
+    for lg in range(n):
+        stem = 't%02d' % lg
+        stems[lg] = stem.encode()
+        write_team(ldir, stem.upper(), 'TEAM %02d' % lg)
+    write_maj(ldir, stems)
+
+
+def test_hub_rows_with_and_without_history(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows(HUB, data) == [(t,) for t in dynview.MENU_ROWS]
+    assert dynview.MENU_ROWS[6:] == ['7  DYNASTY SETTINGS', '8  ABOUT THE MODS']
+    assert dynview.total_rows(HUB, data) == 8
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    data = dynview.load_data(str(empty))
+    assert dynview.rows(HUB, data) == [(t,) for t in dynview.MENU_ROWS]
+    assert dynview.footer_text(HUB, data) == '1-8 SELECT   ESC EXIT'
+    # screens 1..6 with no history keep the one NO DYNASTY row
+    for scr in range(1, 7):
+        assert dynview.rows(st(scr), data) == [('NO DYNASTY HISTORY YET',)]
+    # /TITLE with no season keeps TITLE_ROWS; with a season the hub rows
+    T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
+    assert dynview.rows(T, data) == [(t,) for t in dynview.TITLE_ROWS]
+    (tmp_path / 'hist').mkdir()
+    hdir, _ = make_data(tmp_path / 'hist')
+    assert dynview.rows(T, dynview.load_data(str(hdir))) == [(t,) for t in dynview.MENU_ROWS]
+
+
+def test_hub_keys_open_settings_and_about(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.step(HUB, ord('7'), data) == ((SET, 0, 0), 0)
+    assert dynview.step(HUB, ord('8'), data) == ((ABOUT, 0, 0), 0)
+    assert dynview.step(HUB, ord('9'), data) == (HUB, 0)
+    # the title menu's keys 7 and 8 open the screens too (cat cleared)
+    T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
+    assert dynview.step(T, ord('7'), data) == ((SET, 0, 0), 0)
+    assert dynview.step((SET, 0, 0), dynview.KEY_ESC, data) == (HUB, 0)
+    assert dynview.step((ABOUT, 0, 0), dynview.KEY_ESC, data) == (HUB, 0)
+    assert dynview.screen_title((SET, 0, 0), data) == 'DYNASTY SETTINGS'
+    assert dynview.screen_title((ABOUT, 0, 0), data) == 'ABOUT THE MODS 1/3'
+    assert dynview.footer_text((SET, 0, 0)) == 'UP DOWN MOVE   ENTER CHANGE   ESC MENU'
+    assert dynview.footer_text((ABOUT, 0, 0)) == 'PGUP PGDN   ESC MENU'
+
+
+def test_load_settings_header_fields(tmp_path):
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    assert dynview.load_settings(str(ldir)) == (0, 0)          # missing file
+    (ldir / 'HISTORY.DAT').write_bytes(bytes([0] * 10 + [5, 0]) + b'\x01\x00\x00\x80')
+    assert dynview.load_settings(str(ldir)) == (5, 0x80000001)
+    (ldir / 'HISTORY.DAT').write_bytes(bytes(range(4)))        # 4 byte file, padded
+    assert dynview.load_settings(str(ldir)) == (0, 0)
+
+
+def test_settings_rows_from_maj_and_team_names(tmp_path):
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    write_maj(ldir, {0: b'ala01', 3: b'ala04', 16: b'nl01', 20: b'nl05'})
+    write_team(ldir, 'ala01', 'PHILADELPHIA')
+    write_team(ldir, 'nl01', 'SAN DIEGO')           # ala04 and nl05 have no V20: skipped
+    data = dynview.load_data(str(ldir))
+    assert data['teams'] == [(0, 'PHILADELPHIA'), (16, 'SAN DIEGO')]
+    assert dynview.settings_rows(data) == [('ERA RULES', 'REAL CALENDAR'),
+                                           ('PHILADELPHIA', 'AI MANAGES'),
+                                           ('SAN DIEGO', 'AI MANAGES')]
+    # HISTORY.DAT: era 1, mask bits 0 and 16 (the two teams) managed by the user
+    (ldir / 'HISTORY.DAT').write_bytes(bytes(10) + b'\x01\x00\x01\x00\x01\x00' + bytes(16))
+    data = dynview.load_data(str(ldir))
+    assert dynview.settings_rows(data) == [('ERA RULES', 'RESERVE CLAUSE'),
+                                           ('PHILADELPHIA', 'YOU MANAGE'),
+                                           ('SAN DIEGO', 'YOU MANAGE')]
+    # the lg id of a team is its bit, AL slot s is bit s and NL slot s is bit s + 16
+    data['mask'] = 1 << 16
+    assert dynview.settings_rows(data)[1:] == [('PHILADELPHIA', 'AI MANAGES'),
+                                               ('SAN DIEGO', 'YOU MANAGE')]
+
+
+def test_settings_no_maj_and_short_maj(tmp_path):
+    ldir = tmp_path / 'nomaj'
+    ldir.mkdir()
+    write_team(ldir, 'ala01', 'PHILADELPHIA')
+    data = dynview.load_data(str(ldir))
+    assert data['teams'] == []
+    assert dynview.settings_rows(data) == [('ERA RULES', 'REAL CALENDAR')]
+    # a MAJ one byte short of MAJ_MIN gives no teams, even with its stems present
+    short = tmp_path / 'short'
+    short.mkdir()
+    write_team(short, 'ala01', 'PHILADELPHIA')
+    write_team(short, 'nl01', 'SAN DIEGO')
+    write_maj(short, {0: b'ala01', 16: b'nl01'}, size=dynview.MAJ_MIN - 1)
+    assert dynview.settings_rows(dynview.load_data(str(short))) == \
+        [('ERA RULES', 'REAL CALENDAR')]
+    write_maj(short, {0: b'ala01', 16: b'nl01'}, size=dynview.MAJ_MIN)
+    assert len(dynview.settings_rows(dynview.load_data(str(short)))) == 3
+
+
+def test_settings_cursor_moves_and_clamps(tmp_path):
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    big_league(ldir, 20)
+    data = dynview.load_data(str(ldir))
+    assert len(dynview.settings_rows(data)) == 21            # ERA + 20 teams: 2 pages
+    s = (SET, 0, 0)
+    assert press(s, dynview.KEY_UP, data) == (SET, 0, 0)
+    assert press(s, dynview.KEY_PGUP, data) == (SET, 0, 0)
+    for _ in range(12):
+        s = press(s, dynview.KEY_DOWN, data)
+    assert s == (SET, 1, 12)                                 # page == cursor // 12
+    for _ in range(12):
+        s = press(s, dynview.KEY_DOWN, data)
+    assert s == (SET, 1, 20)
+    assert press(s, dynview.KEY_DOWN, data) == (SET, 1, 20)  # stops at the last row
+    s = press(s, dynview.KEY_PGUP, data)
+    assert s == (SET, 0, 8)
+    s = press(s, dynview.KEY_PGUP, data)
+    assert s == (SET, 0, 0)
+    assert press(s, dynview.KEY_PGUP, data) == (SET, 0, 0)
+    s = press(s, dynview.KEY_PGDN, data)
+    assert s == (SET, 1, 12)
+    assert press(s, dynview.KEY_PGDN, data) == (SET, 1, 20)  # min(cursor + 12, n - 1)
+    # the page slices of settings_rows
+    s = (SET, 1, 20)
+    assert len(dynview.rows(s, data)) == 9
+    assert dynview.rows(s, data)[0] == ('TEAM 11', 'AI MANAGES')   # settings row 12
+    assert dynview.step(s, dynview.KEY_ESC, data) == (HUB, 0)
+    assert press(s, ord('x'), data) == s
+
+
+def test_settings_enter_toggles_and_era_cycle(tmp_path):
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    write_maj(ldir, {0: b'ala01', 16: b'nl01'})
+    write_team(ldir, 'ala01', 'PHILADELPHIA')
+    write_team(ldir, 'nl01', 'SAN DIEGO')
+    (ldir / 'HISTORY.DAT').write_bytes(bytes(10) + b'\x05' + b'\x00\x00' + bytes(16))
+    data = dynview.load_data(str(ldir))
+    hp = ldir / 'HISTORY.DAT'
+    s = (SET, 0, 0)
+    s = press(s, 13, data)                        # era 5 -> 2
+    assert data['era'] == 2 and s == (SET, 0, 0) and hp.read_bytes()[10] == 2
+    s = press(s, 13, data)                        # 2 -> 0
+    assert data['era'] == 0 and hp.read_bytes()[10] == 0
+    s = press(s, 13, data)                        # 0 -> 1
+    assert data['era'] == 1 and hp.read_bytes()[10] == 1
+    s = press(s, 13, data)                        # 1 -> 2
+    assert data['era'] == 2
+    s = press(s, dynview.KEY_DOWN, data)          # onto PHILADELPHIA (lg 0)
+    s = press(s, 13, data)
+    assert data['mask'] == 1 and s == (SET, 0, 1)
+    assert int.from_bytes(hp.read_bytes()[12:16], 'little') == 1
+    s = press(s, dynview.KEY_DOWN, data)          # SAN DIEGO (lg 16)
+    s = press(s, 13, data)
+    assert data['mask'] == 0x10001
+    assert int.from_bytes(hp.read_bytes()[12:16], 'little') == 0x10001
+    s = press(s, 13, data)                        # toggles back off
+    assert data['mask'] == 1 and int.from_bytes(hp.read_bytes()[12:16], 'little') == 1
+    assert hp.read_bytes()[10] == 2 and len(hp.read_bytes()) == 32
+
+
+def test_save_settings_cases(tmp_path):
+    def expect(era, mask, base=b''):
+        d = bytearray(base + bytes(max(0, 32 - len(base))))
+        d[10] = era
+        d[12:16] = mask.to_bytes(4, 'little')
+        return bytes(d)
+
+    ldir = tmp_path / 'missing'
+    ldir.mkdir()
+    dynview.save_settings(str(ldir), 2, 0x80000001)
+    assert (ldir / 'HISTORY.DAT').read_bytes() == expect(2, 0x80000001)
+    assert len((ldir / 'HISTORY.DAT').read_bytes()) == 32
+    # a 4 byte file is zero extended; bytes 0..3 are kept
+    short = tmp_path / 'short4'
+    short.mkdir()
+    (short / 'HISTORY.DAT').write_bytes(b'\x01\x02\x03\x04')
+    dynview.save_settings(str(short), 1, 5)
+    assert (short / 'HISTORY.DAT').read_bytes() == expect(1, 5, b'\x01\x02\x03\x04')
+    # a full history file: only bytes 10 and 12..15 change
+    (tmp_path / 'full').mkdir()
+    hdir, _ = make_data(tmp_path / 'full')
+    before = (hdir / 'HISTORY.DAT').read_bytes()
+    dynview.save_settings(str(hdir), 1, 0x12345678)
+    after = (hdir / 'HISTORY.DAT').read_bytes()
+    assert len(after) == len(before)
+    assert {i for i in range(len(after)) if after[i] != before[i]} <= {10, 12, 13, 14, 15}
+    assert after[10] == 1 and int.from_bytes(after[12:16], 'little') == 0x12345678
+    # no history file and no league dir: nothing is created, no exception
+    dynview.save_settings(str(tmp_path / 'nodir'), 1, 1)
+    assert not (tmp_path / 'nodir').exists()
+
+
+def test_settings_on_league_without_history(tmp_path):
+    ldir = tmp_path / 'nohist'
+    ldir.mkdir()
+    big_league(ldir, 3)
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows((SET, 0, 0), data)[0] == ('ERA RULES', 'REAL CALENDAR')
+    assert dynview.rows(HUB, data) == [(t,) for t in dynview.MENU_ROWS]
+    s = press((SET, 0, 0), 13, data)              # creates HISTORY.DAT (era 1)
+    assert (ldir / 'HISTORY.DAT').read_bytes()[10] == 1
+    assert len((ldir / 'HISTORY.DAT').read_bytes()) == 32
+    s = press(s, dynview.KEY_DOWN, data)
+    press(s, 13, data)
+    assert (ldir / 'HISTORY.DAT').read_bytes()[12] == 1
+
+
+def test_about_paging(tmp_path):
+    ldir = tmp_path / 'empty'
+    ldir.mkdir()
+    data = dynview.load_data(str(ldir))
+    assert len(dynview.ABOUT_ROWS) == 35
+    s = (ABOUT, 0, 0)
+    assert dynview.rows(s, data)[0] == ('DYNASTY MODE',)
+    assert len(dynview.rows(s, data)) == 12
+    assert dynview.total_rows(s, data) == 35
+    assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
+    s = press(s, dynview.KEY_PGDN, data)
+    assert s == (ABOUT, 1, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 2/3'
+    assert dynview.rows(s, data)[0] == (dynview.ABOUT_ROWS[12],)
+    s = press(s, dynview.KEY_PGDN, data)
+    assert s == (ABOUT, 2, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 3/3'
+    assert len(dynview.rows(s, data)) == 11
+    assert press(s, dynview.KEY_PGDN, data) == (ABOUT, 2, 0)   # last page stays
+    s = press(s, dynview.KEY_PGUP, data)
+    assert s == (ABOUT, 1, 0)
+    assert press(press(s, dynview.KEY_PGUP, data), dynview.KEY_PGUP, data) == (ABOUT, 0, 0)
+    # ABOUT shows its rows with a season recorded too; ENTER does nothing there
+    (tmp_path / 'hist').mkdir()
+    hdir, _ = make_data(tmp_path / 'hist')
+    data = dynview.load_data(str(hdir))
+    assert dynview.rows((ABOUT, 0, 0), data) == [(t,) for t in dynview.ABOUT_ROWS[:12]]
+    assert dynview.step((ABOUT, 0, 0), dynview.KEY_ENTER, data) == ((ABOUT, 0, 0), 0)
+
+
+def test_about_and_settings_rows_have_no_overflow():
+    for t in dynview.ABOUT_ROWS + dynview.TITLE_ROWS:
+        assert len(t) <= 42, t
+    assert dynview.COLS_SETTINGS[0][2] >= len('ERA RULES')
+    assert all(len(v) <= 16 for v in ('REAL CALENDAR', 'FREE AGENCY', 'RESERVE CLAUSE',
+                                      'YOU MANAGE', 'AI MANAGES'))
+
+
+def test_control_item_and_return(tmp_path):
+    p = tmp_path / 'CONTROL'
+    assert dynview.control_item(str(p)) == 0
+    dynview.control_return(str(p))
+    assert not p.exists()                                    # missing: not created
+    p.write_bytes(b'\x01')
+    assert dynview.control_item(str(p)) == 0
+    dynview.control_return(str(p))
+    assert p.read_bytes() == b'\x01'                         # under 2 bytes: unchanged
+    p.write_bytes(b'\x01\x0a\x00\x00\x00\x00\x00\xff\xff')
+    assert dynview.control_item(str(p)) == 2
+    dynview.control_return(str(p))
+    assert p.read_bytes() == b'\x01\x01\x00\x00\x00\x00\x00\xff\xff'
+    for v, item in ((8, 0), (9, 1), (11, 3), (7, 0), (12, 0), (0, 0), (255, 0)):
+        p.write_bytes(bytes([1, v, 9]))
+        assert dynview.control_item(str(p)) == item, v
+    p.write_bytes(bytes([1, 0x0b, 9]))
+    dynview.control_return(str(p))
+    assert p.read_bytes() == bytes([1, 1, 9])                # only byte 1 changes
+    p.write_bytes(b'')
+    dynview.control_return(str(p))
+    assert p.read_bytes() == b''
+
+
+def test_menu_cli_state_and_control(tmp_path):
+    if not os.path.exists(os.path.join(FILES, 'MAIN.FNT')):
+        import pytest
+        pytest.skip('/mnt/nvme/tlrb2/files missing')
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir), FILES)
+    cases = (([], HUB), (['--menu', '1'], HUB), (['--menu', '2'], (SET, 0, 0)),
+             (['--menu', '3'], (ABOUT, 0, 0)), (['--menu', '9'], HUB),
+             (['--title'], (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)),
+             (['--title', '--menu', '2'], (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)))
+    for n, (extra, state) in enumerate(cases):
+        raw = tmp_path / ('menu%d.RAW' % n)
+        dynview.main(extra + ['--raw', str(raw), str(ldir), FILES])
+        assert raw.read_bytes() == bytes(dynview.render(state, data)), extra
+    # --control: the item in CONTROL[1]; CONTROL[1] = CONTROL[0] afterwards
+    ctl = tmp_path / 'CONTROL'
+    ctl.write_bytes(b'\x01\x0a\x00\x00\x00\x00\x00\xff\xff')
+    raw = tmp_path / 'ctl.RAW'
+    dynview.main(['--control', str(ctl), '--raw', str(raw), str(ldir), FILES])
+    assert raw.read_bytes() == bytes(dynview.render((SET, 0, 0), data))
+    assert ctl.read_bytes() == b'\x01\x01\x00\x00\x00\x00\x00\xff\xff'
+    # an explicit --menu wins over the item in CONTROL, which is still returned
+    ctl.write_bytes(b'\x01\x0b')
+    dynview.main(['--control', str(ctl), '--menu', '2', '--raw', str(raw),
+                  str(ldir), FILES])
+    assert raw.read_bytes() == bytes(dynview.render((SET, 0, 0), data))
+    assert ctl.read_bytes() == b'\x01\x01'
+    # no --control: no file is touched
+    dynview.main(['--menu', '3', '--raw', str(raw), str(ldir), FILES])
+    assert raw.read_bytes() == bytes(dynview.render((ABOUT, 0, 0), data))
+    assert not (tmp_path / 'CONTROL.x').exists()
+
+
+def test_settings_cursor_row_highlight(tmp_path):
+    if not os.path.exists(os.path.join(FILES, 'MAIN.FNT')):
+        import pytest
+        pytest.skip('/mnt/nvme/tlrb2/files missing')
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    big_league(ldir, 20)
+    data = dynview.load_data(str(ldir), FILES)
+    fb = dynview.render((SET, 1, 14), data)                  # page 1, cursor row index 2
+    y0 = 35 + 2 * dynview.ROW_H
+    assert fb[(y0 + 1) * 320 + 9] == dynview.C_TITLE_RED
+    assert fb[(y0 + 1) * 320 + 300] == dynview.C_TITLE_RED
+    y1 = 35 + 1 * dynview.ROW_H
+    assert fb[(y1 + 1) * 320 + 9] == dynview.C_ROW_TAN
+    assert fb[(y0 + 10) * 320 + 9] == dynview.C_GRID_GRAY
+    band = [fb[y * 320 + x] for y in range(y0 + 2, y0 + 9) for x in range(10, 300)]
+    assert dynview.C_WHITE in band and dynview.C_BLACK not in band
+    band1 = [fb[y * 320 + x] for y in range(y1 + 2, y1 + 9) for x in range(10, 300)]
+    assert dynview.C_BLACK in band1 and dynview.C_WHITE not in band1
+    # ABOUT and the hub have no highlighted row
+    for state in ((ABOUT, 0, 0), HUB):
+        fb = dynview.render(state, data)
+        assert fb[(35 + 1) * 320 + 9] == dynview.C_ROW_TAN
+
+
+def test_settings_and_about_render_without_history(tmp_path):
+    if not os.path.exists(os.path.join(FILES, 'MAIN.FNT')):
+        import pytest
+        pytest.skip('/mnt/nvme/tlrb2/files missing')
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    data = dynview.load_data(str(empty), FILES)
+    for state in ((SET, 0, 0), (ABOUT, 0, 0), HUB):
+        fb = dynview.render(state, data)
+        assert len(fb) == 64000
+    assert dynview.render((SET, 0, 0), data) != dynview.render(HUB, data)
