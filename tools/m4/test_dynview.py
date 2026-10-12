@@ -1532,42 +1532,131 @@ WL_1 = {0: (10, 5), 1: (20, 10), 2: (8, 2), 3: (6, 4), 4: (4, 6), 5: (11, 3), 6:
         22: (2, 6), 23: (1, 7), 24: (4, 2), 25: (2, 4), 26: (4, 4), 27: (1, 1)}
 # season 2 (cat 1): AL only, champion and pennants unknown (0xff)
 WL_2 = {0: (5, 5), 1: (5, 5), 2: (6, 4), 3: (4, 6)}
-# season 3 (cat 0): no games in either league
+# season 1 (cat 2): AL EAST 0..7 and WEST 8..13, NL EAST 16..23 and WEST 24..27. Each
+# division is its own block with its own leader (GB from it). DETROIT (20-10) is ahead of
+# the EAST leader CLEVELAND (8-2): (8 - 20) + (10 - 2) = -4 half games, so GB is -2.0
 STAND_1_ROWS = [
-    ('AMERICAN LEAGUE', '', '', '', '', ''),
+    ('AL WEST', '', '', '', '', ''),
+    ('MILWAUKEE', '10', '3', '.769', '-', ''),
+    ('TEXAS', '7', '5', '.583', '2.5', ''),
+    ('MINNESOTA', '5', '5', '.500', '3.5', ''),
+    ('KANSAS CITY', '3', '7', '.300', '5.5', ''),
+    ('SEATTLE', '2', '8', '.200', '6.5', ''),
+    ('OAKLAND', '0', '10', '.000', '8.5', ''),
+    ('AL EAST', '', '', '', '', ''),
     ('CLEVELAND', '8', '2', '.800', '-', 'WS'),
-    ('TEAM 5', '11', '3', '.785', '-1', ''),
-    ('MILWAUKEE', '10', '3', '.769', '-0.5', ''),
-    ('DETROIT', '20', '10', '.666', '-2', ''),
+    ('TEAM 5', '11', '3', '.785', '-1.0', ''),
+    ('DETROIT', '20', '10', '.666', '-2.0', ''),
     ('BOSTON', '10', '5', '.666', '0.5', ''),
     ('BALTIMORE', '7', '4', '.636', '1.5', ''),
-    ('NEW YORK', '6', '4', '.600', '2', ''),
-    ('TORONTO', '6', '4', '.600', '2', ''),
-    ('TEXAS', '7', '5', '.583', '2', ''),
-    ('MINNESOTA', '5', '5', '.500', '3', ''),
-    ('CHICAGO', '4', '6', '.400', '4', ''),
-    ('KANSAS CITY', '3', '7', '.300', '5', ''),
-    ('SEATTLE', '2', '8', '.200', '6', ''),
-    ('OAKLAND', '0', '10', '.000', '8', ''),
-    ('NATIONAL LEAGUE', '', '', '', '', ''),
+    ('NEW YORK', '6', '4', '.600', '2.0', ''),
+    ('TORONTO', '6', '4', '.600', '2.0', ''),
+    ('CHICAGO', '4', '6', '.400', '4.0', ''),
+    ('NL WEST', '', '', '', '', ''),
+    ('COLORADO', '4', '2', '.666', '-', ''),
+    ('LOS ANGELES', '4', '4', '.500', '1.0', ''),
+    ('SAN FRANCISCO', '1', '1', '.500', '1.0', ''),
+    ('FLORIDA', '2', '4', '.333', '2.0', ''),
+    ('NL EAST', '', '', '', '', ''),
     ('ATLANTA', '6', '2', '.750', '-', ''),
     ('SAN DIEGO', '6', '2', '.750', '-', ''),
-    ('PHILADELPHIA', '12', '6', '.666', '-1', 'P'),
-    ('COLORADO', '4', '2', '.666', '1', ''),
-    ('CINCINNATI', '5', '3', '.625', '1', ''),
-    ('HOUSTON', '4', '4', '.500', '2', ''),
-    ('LOS ANGELES', '4', '4', '.500', '2', ''),
-    ('SAN FRANCISCO', '1', '1', '.500', '2', ''),
-    ('ST LOUIS', '3', '5', '.375', '3', ''),
-    ('FLORIDA', '2', '4', '.333', '3', ''),
-    ('PITTSBURGH', '2', '6', '.250', '4', ''),
-    ('MONTREAL', '1', '7', '.125', '5', '')]
+    ('PHILADELPHIA', '12', '6', '.666', '-1.0', 'P'),
+    ('CINCINNATI', '5', '3', '.625', '1.0', ''),
+    ('HOUSTON', '4', '4', '.500', '2.0', ''),
+    ('ST LOUIS', '3', '5', '.375', '3.0', ''),
+    ('PITTSBURGH', '2', '6', '.250', '4.0', ''),
+    ('MONTREAL', '1', '7', '.125', '5.0', '')]
+# season 2 (cat 1): AL EAST only, so one block under the league name
 STAND_2_ROWS = [
     ('AMERICAN LEAGUE', '', '', '', '', ''),
     ('CLEVELAND', '6', '4', '.600', '-', ''),
-    ('BOSTON', '5', '5', '.500', '1', ''),
-    ('DETROIT', '5', '5', '.500', '1', ''),
-    ('NEW YORK', '4', '6', '.400', '2', '')]
+    ('BOSTON', '5', '5', '.500', '1.0', ''),
+    ('DETROIT', '5', '5', '.500', '1.0', ''),
+    ('NEW YORK', '4', '6', '.400', '2.0', '')]
+# CLASSIC shape (the newest season): 7 + 7 AL teams, 6 + 6 NL. MILWAUKEE (10-4) is the
+# league's second best record and leads AL WEST ('-' there). BOSTON is WS; MILWAUKEE (AL
+# pennant) and LOS ANGELES (NL pennant) are P, all inside their division blocks
+WL_CLASSIC = {0: (12, 2), 1: (9, 5), 2: (8, 6), 3: (7, 7), 4: (6, 8), 5: (5, 9), 6: (4, 10),
+              8: (10, 4), 9: (7, 7), 10: (6, 8), 11: (5, 9), 12: (6, 8), 13: (3, 11),
+              14: (2, 12),
+              16: (9, 3), 17: (8, 4), 18: (7, 5), 19: (6, 6), 20: (4, 8), 21: (2, 10),
+              24: (6, 6), 25: (5, 7), 26: (7, 5), 27: (4, 8), 28: (3, 9), 29: (6, 6)}
+CLASSIC_ROWS = [
+    ('AL WEST', '', '', '', '', ''),
+    ('MILWAUKEE', '10', '4', '.714', '-', 'P'),
+    ('KANSAS CITY', '7', '7', '.500', '3.0', ''),
+    ('OAKLAND', '6', '8', '.428', '4.0', ''),
+    ('TEXAS', '6', '8', '.428', '4.0', ''),
+    ('MINNESOTA', '5', '9', '.357', '5.0', ''),
+    ('SEATTLE', '3', '11', '.214', '7.0', ''),
+    ('TEAM 14', '2', '12', '.142', '8.0', ''),
+    ('AL EAST', '', '', '', '', ''),
+    ('BOSTON', '12', '2', '.857', '-', 'WS'),
+    ('DETROIT', '9', '5', '.642', '3.0', ''),
+    ('CLEVELAND', '8', '6', '.571', '4.0', ''),
+    ('NEW YORK', '7', '7', '.500', '5.0', ''),
+    ('CHICAGO', '6', '8', '.428', '6.0', ''),
+    ('TEAM 5', '5', '9', '.357', '7.0', ''),
+    ('TORONTO', '4', '10', '.285', '8.0', ''),
+    ('NL WEST', '', '', '', '', ''),
+    ('LOS ANGELES', '7', '5', '.583', '-', 'P'),
+    ('COLORADO', '6', '6', '.500', '1.0', ''),
+    ('TEAM 29', '6', '6', '.500', '1.0', ''),
+    ('FLORIDA', '5', '7', '.416', '2.0', ''),
+    ('SAN FRANCISCO', '4', '8', '.333', '3.0', ''),
+    ('TEAM 28', '3', '9', '.250', '4.0', ''),
+    ('NL EAST', '', '', '', '', ''),
+    ('ATLANTA', '9', '3', '.750', '-', ''),
+    ('SAN DIEGO', '8', '4', '.666', '1.0', ''),
+    ('PHILADELPHIA', '7', '5', '.583', '2.0', ''),
+    ('HOUSTON', '6', '6', '.500', '3.0', ''),
+    ('ST LOUIS', '4', '8', '.333', '5.0', ''),
+    ('CINCINNATI', '2', '10', '.166', '7.0', '')]
+# one division with games per league: season A has AL EAST only next to a split NL (the
+# AL block takes the long name), season B has AL WEST only
+WL_HALF_EAST = {0: (5, 5), 1: (6, 4), 2: (4, 6), 3: (3, 7), 16: (4, 2), 17: (2, 4),
+                24: (3, 3), 25: (1, 5)}
+WL_HALF_WEST = {8: (4, 2), 9: (2, 4), 16: (4, 2), 17: (2, 4), 24: (3, 3), 25: (1, 5)}
+HALF_EAST_ROWS = [
+    ('AMERICAN LEAGUE', '', '', '', '', ''),
+    ('DETROIT', '6', '4', '.600', '-', ''),
+    ('BOSTON', '5', '5', '.500', '1.0', ''),
+    ('CLEVELAND', '4', '6', '.400', '2.0', ''),
+    ('NEW YORK', '3', '7', '.300', '3.0', ''),
+    ('NL WEST', '', '', '', '', ''),
+    ('COLORADO', '3', '3', '.500', '-', ''),
+    ('FLORIDA', '1', '5', '.166', '2.0', ''),
+    ('NL EAST', '', '', '', '', ''),
+    ('ATLANTA', '4', '2', '.666', '-', ''),
+    ('SAN DIEGO', '2', '4', '.333', '2.0', '')]
+HALF_WEST_ROWS = [
+    ('AMERICAN LEAGUE', '', '', '', '', ''),
+    ('MILWAUKEE', '4', '2', '.666', '-', ''),
+    ('KANSAS CITY', '2', '4', '.333', '2.0', ''),
+    ('NL WEST', '', '', '', '', ''),
+    ('COLORADO', '3', '3', '.500', '-', ''),
+    ('FLORIDA', '1', '5', '.166', '2.0', ''),
+    ('NL EAST', '', '', '', '', ''),
+    ('ATLANTA', '4', '2', '.666', '-', ''),
+    ('SAN DIEGO', '2', '4', '.333', '2.0', '')]
+# all 32 ids played (W = (5 t + 3) % 13, L = 12 + t % 4 - W): 36 rows, 3 pages
+FULL_WL = {t: ((5 * t + 3) % 13, 12 + t % 4 - (5 * t + 3) % 13) for t in range(32)}
+FULL_AL_WEST_ROWS = [
+    ('AL WEST', '', '', '', '', ''),
+    ('TEXAS', '11', '1', '.916', '-', ''),
+    ('KANSAS CITY', '9', '4', '.692', '2.5', ''),
+    ('TEAM 14', '8', '6', '.571', '4.0', ''),
+    ('MINNESOTA', '6', '9', '.400', '6.5', ''),
+    ('MILWAUKEE', '4', '8', '.333', '7.0', ''),
+    ('SEATTLE', '3', '10', '.230', '8.5', ''),
+    ('OAKLAND', '1', '13', '.071', '11.0', ''),
+    ('TEAM 15', '0', '15', '.000', '12.5', '')]
+# (w_l, champion, AL pennant, NL pennant) of seasons 1, 2, 3 (make_standings' default)
+STAND_SEASONS = [(WL_1, 2, 2, 18), (WL_2, 0xff, 0xff, 0xff), ({}, 0xff, 0xff, 0xff)]
+CLASSIC_SEASON = (WL_CLASSIC, 0, 8, 26)
+HALF_EAST = (WL_HALF_EAST, 0xff, 0xff, 0xff)
+HALF_WEST = (WL_HALF_WEST, 0xff, 0xff, 0xff)
+FULL_SEASON = (FULL_WL, 17, 3, 26)
 
 
 def write_standings(d, season_no, wl, champ=0xff, al_p=0xff, nl_p=0xff):
@@ -1583,9 +1672,10 @@ def write_standings(d, season_no, wl, champ=0xff, al_p=0xff, nl_p=0xff):
         d[o + 25 + 2 * t] = l
 
 
-def make_standings(tmp_path):
-    """make_data league (3 seasons) with a MAJ of 25 teams (no stem for AL id 5), a V20
-    per stem, and the games of WL_1 (season 1), WL_2 (season 2) and none (season 3)"""
+def make_standings(tmp_path, seasons=STAND_SEASONS):
+    """make_data league with a MAJ of 25 teams (no stem for AL id 5), a V20 per stem, and
+    the seasons given: seasons[n - 1] = (w_l, champion, AL pennant, NL pennant) of season
+    n, the newest last. Default: the games of WL_1, WL_2 and none (3 seasons)."""
     ldir = make_data(tmp_path)[0]
     stems = {}
     for lg, name in list(AL_NAMES.items()) + list(NL_NAMES.items()):
@@ -1595,9 +1685,9 @@ def make_standings(tmp_path):
     write_maj(ldir, stems)
     p = ldir / 'HISTORY.DAT'
     d = bytearray(p.read_bytes())
-    write_standings(d, 1, WL_1, champ=2, al_p=2, nl_p=18)
-    write_standings(d, 2, WL_2)
-    write_standings(d, 3, {})
+    d[4], d[5] = len(seasons), 0
+    for n, (wl, champ, al_p, nl_p) in enumerate(seasons, 1):
+        write_standings(d, n, wl, champ, al_p, nl_p)
     p.write_bytes(bytes(d))
     return ldir
 
@@ -1625,11 +1715,12 @@ def test_standings_hub_key_and_footers(tmp_path):
 def test_standings_season1_rows_exact(tmp_path):
     ldir = make_standings(tmp_path)
     data = dynview.load_data(str(ldir))
-    assert dynview.total_rows((SS, 0, 2), data) == 28 == len(STAND_1_ROWS)
+    assert dynview.total_rows((SS, 0, 2), data) == 30 == len(STAND_1_ROWS)
     assert dynview.body_cols((SS, 0, 2), data) == dynview.COLS_STANDINGS
     got = [r for p in range(3) for r in dynview.rows((SS, p, 2), data)]
     assert got == STAND_1_ROWS
-    assert [len(dynview.rows((SS, p, 2), data)) for p in range(3)] == [12, 12, 4]
+    assert ('DETROIT', '20', '10', '.666', '-2.0', '') in got
+    assert [len(dynview.rows((SS, p, 2), data)) for p in range(3)] == [12, 12, 6]
     # every row has six cells, each within its column
     for row in got:
         assert len(row) == len(dynview.COLS_STANDINGS), row
@@ -1714,9 +1805,55 @@ def test_standings_no_history(tmp_path):
 
 
 def test_standings_gb_text():
-    """games behind from the doubled difference: halves, negatives, zero as a dash"""
+    """games behind from the doubled difference: halves, whole games as .0, negatives,
+    zero as a dash"""
     assert [dynview.gb_text(d) for d in (0, 1, 2, 3, 4, -1, -2, -3)] == \
-        ['-', '0.5', '1', '1.5', '2', '-0.5', '-1', '-1.5']
+        ['-', '0.5', '1.0', '1.5', '2.0', '-0.5', '-1.0', '-1.5']
+    assert [dynview.gb_text(d) for d in (18, -4, 19, 36)] == ['9.0', '-2.0', '9.5', '18.0']
+
+
+def test_standings_classic_divisions(tmp_path):
+    """CLASSIC shape, the newest season: four blocks in the order AL WEST, AL EAST, NL WEST,
+    NL EAST, 30 rows on 3 pages; each block's GB from its own leader, so MILWAUKEE (the
+    league's second best record) shows '-' in AL WEST; WS and P marks in the blocks"""
+    ldir = make_standings(tmp_path, seasons=STAND_SEASONS[:2] + [CLASSIC_SEASON])
+    data = dynview.load_data(str(ldir))
+    assert dynview.screen_title((SS, 0, 0), data) == 'SEASON 3 STANDINGS'
+    assert dynview.total_rows((SS, 0, 0), data) == 30 == len(CLASSIC_ROWS)
+    got = [r for p in range(3) for r in dynview.rows((SS, p, 0), data)]
+    assert got == CLASSIC_ROWS
+    assert [len(dynview.rows((SS, p, 0), data)) for p in range(3)] == [12, 12, 6]
+    heads = [r[0] for r in got if r[1:] == ('', '', '', '', '')]
+    assert heads == ['AL WEST', 'AL EAST', 'NL WEST', 'NL EAST']
+    assert ('MILWAUKEE', '10', '4', '.714', '-', 'P') in got
+    assert ('BOSTON', '12', '2', '.857', '-', 'WS') in got
+    assert ('LOS ANGELES', '7', '5', '.583', '-', 'P') in got
+
+
+def test_standings_one_division_per_league(tmp_path):
+    """a league with games in one division only is one block under its long name, next to
+    a split NL; no division header for the lone one"""
+    ldir = make_standings(tmp_path, seasons=[HALF_EAST, HALF_WEST])
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows((SS, 0, 0), data) == HALF_WEST_ROWS
+    assert dynview.rows((SS, 0, 1), data) == HALF_EAST_ROWS
+    assert dynview.total_rows((SS, 0, 0), data) == 9
+    assert dynview.total_rows((SS, 0, 1), data) == 11
+
+
+def test_standings_full_36_rows(tmp_path):
+    """all 32 ids played: 4 headers and 32 teams, 36 rows on 3 full pages; the AL WEST
+    block is spelled out (the leader TEXAS 11-1, GB 12.5 for the last one)"""
+    ldir = make_standings(tmp_path, seasons=[FULL_SEASON])
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((SS, 0, 0), data) == 36
+    got = [r for p in range(3) for r in dynview.rows((SS, p, 0), data)]
+    assert len(got) == 36
+    assert [len(dynview.rows((SS, p, 0), data)) for p in range(3)] == [12, 12, 12]
+    heads = [i for i, r in enumerate(got) if r[1:] == ('', '', '', '', '')]
+    assert heads == [0, 9, 18, 27]
+    assert got[0:9] == FULL_AL_WEST_ROWS
+    assert all(len(r) == len(dynview.COLS_STANDINGS) for r in got)
 
 
 def test_standings_about_rows_and_columns_fit():

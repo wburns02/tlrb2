@@ -70,11 +70,11 @@
 #define N_TITLE_ROWS 11
 
 /* MILESTON.DAT kinds from AWARD_KIND_MIN up are award records (C7), not milestones;
- * SEASON AWARDS keeps at most AWARD_MAX rows; SEASON STANDINGS at most STAND_MAX (two
- * header rows and 32 teams) */
+ * SEASON AWARDS keeps at most AWARD_MAX rows; SEASON STANDINGS at most STAND_MAX (four
+ * header rows, one per division, and 32 teams) */
 #define AWARD_KIND_MIN 64
 #define AWARD_MAX 48
-#define STAND_MAX 34
+#define STAND_MAX 36
 
 /* offseason phases: cat & 15 is the phase, cat >> 4 the launched flag */
 #define OFF_REVIEW 0
@@ -1516,7 +1516,10 @@ static int build_awards(long season)
 
 /* ---------------- SEASON STANDINGS (C2 season entry w_l) ---------------- */
 
+/* the header rows: the league name for one division with games, else the division
+ * names (STAND_DIV[league][0] WEST, [1] EAST) */
 static const char *STAND_HEAD[2] = { "AMERICAN LEAGUE", "NATIONAL LEAGUE" };
+static const char *STAND_DIV[2][2] = { { "AL WEST", "AL EAST" }, { "NL WEST", "NL EAST" } };
 
 /* the team column of league-global id t: its MAJ display name, else 'TEAM t' */
 static void stand_name(int t, char *dst)
@@ -1544,7 +1547,7 @@ static int stand_before(const SeasonEntry *se, int a, int b)
     return a < b;
 }
 
-/* games behind from d = (leader W - W) + (L - leader L): '-', '4', '4.5', '-1.5' */
+/* games behind from d = (leader W - W) + (L - leader L): '-', '4.0', '4.5', '-2.0' */
 static void gb_text(int d, char *dst)
 {
     int a = d < 0 ? -d : d;
@@ -1552,7 +1555,7 @@ static void gb_text(int d, char *dst)
         strcpy(dst, "-");
         return;
     }
-    sprintf(dst, "%s%d%s", d < 0 ? "-" : "", a / 2, a % 2 ? ".5" : "");
+    sprintf(dst, "%s%d%s", d < 0 ? "-" : "", a / 2, a % 2 ? ".5" : ".0");
 }
 
 /* the one message row of SEASON STANDINGS */
@@ -1563,60 +1566,83 @@ static int stand_message(void)
     return 1;
 }
 
+/* the played teams (W + L > 0) of the division at slots first..first + 7 into ids, in
+ * id order; returns the count */
+static int stand_division(const SeasonEntry *se, int first, int *ids)
+{
+    int i, m = 0;
+    for (i = first; i < first + 8; i++) {
+        if (se->wl[i][0] + se->wl[i][1] > 0)
+            ids[m++] = i;
+    }
+    return m;
+}
+
+/* one block of g_stnd from row n: the header row head, then the m teams ids (all
+ * played) in stand_before order with GB from the first; returns the next row index */
+static int stand_block(const SeasonEntry *se, int n, const char *head, int *ids, int m)
+{
+    Row *row;
+    int i, j, t, w, l, lw, ll;
+    /* insertion sort: stand_before is a total order, so the result is exact */
+    for (i = 1; i < m; i++) {
+        t = ids[i];
+        for (j = i; j > 0 && stand_before(se, t, ids[j - 1]); j--)
+            ids[j] = ids[j - 1];
+        ids[j] = t;
+    }
+    lw = se->wl[ids[0]][0];
+    ll = se->wl[ids[0]][1];
+    row = &g_stnd[n++];
+    strcpy(row->cells[0], head);
+    for (i = 1; i < 6; i++)
+        row->cells[i][0] = 0;
+    row->ncells = 6;
+    for (i = 0; i < m; i++) {
+        long pct;
+        t = ids[i];
+        w = se->wl[t][0];
+        l = se->wl[t][1];
+        pct = (long)w * 1000 / (w + l);
+        row = &g_stnd[n++];
+        stand_name(t, row->cells[0]);
+        sprintf(row->cells[1], "%d", w);
+        sprintf(row->cells[2], "%d", l);
+        fmt_avg((int32_t)pct, row->cells[3]);
+        gb_text((lw - w) + (l - ll), row->cells[4]);
+        if (t == se->champion)
+            strcpy(row->cells[5], "WS");
+        else if (t == se->al_pennant || t == se->nl_pennant)
+            strcpy(row->cells[5], "P");
+        else
+            row->cells[5][0] = 0;
+        row->ncells = 6;
+    }
+    return n;
+}
+
 /* SEASON STANDINGS rows of season into g_stnd (dynview.standings_rows); returns the
- * count. Per league with games a header row, then its teams that played; past the
- * history table or with no games in either league, one message row. */
+ * count. Per league: WEST then EAST blocks when both divisions have games, one block
+ * under the league name when one division has; past the history table or with no games
+ * in either league, one message row. */
 static int build_standings(long season)
 {
     SeasonEntry se;
-    Row *row;
-    int blk, i, j, t, m, n = 0, lw, ll, w, l, ids[16];
+    int lg, n = 0, nw, ne, west[8], east[8];
     if (season > SEASON_COUNT)
         return stand_message();
     memset(&se, 0, sizeof se);
     read_season(&se, (int)season);
-    for (blk = 0; blk < 2; blk++) {
-        m = 0;
-        for (i = 0; i < 16; i++) {
-            t = blk * 16 + i;
-            if (se.wl[t][0] + se.wl[t][1] > 0)
-                ids[m++] = t;
-        }
-        if (m == 0)
-            continue;
-        /* insertion sort: stand_before is a total order, so the result is exact */
-        for (i = 1; i < m; i++) {
-            t = ids[i];
-            for (j = i; j > 0 && stand_before(&se, t, ids[j - 1]); j--)
-                ids[j] = ids[j - 1];
-            ids[j] = t;
-        }
-        lw = se.wl[ids[0]][0];
-        ll = se.wl[ids[0]][1];
-        row = &g_stnd[n++];
-        strcpy(row->cells[0], STAND_HEAD[blk]);
-        for (i = 1; i < 6; i++)
-            row->cells[i][0] = 0;
-        row->ncells = 6;
-        for (i = 0; i < m; i++) {
-            long pct;
-            t = ids[i];
-            w = se.wl[t][0];
-            l = se.wl[t][1];
-            pct = (long)w * 1000 / (w + l);
-            row = &g_stnd[n++];
-            stand_name(t, row->cells[0]);
-            sprintf(row->cells[1], "%d", w);
-            sprintf(row->cells[2], "%d", l);
-            fmt_avg((int32_t)pct, row->cells[3]);
-            gb_text((lw - w) + (l - ll), row->cells[4]);
-            if (t == se.champion)
-                strcpy(row->cells[5], "WS");
-            else if (t == se.al_pennant || t == se.nl_pennant)
-                strcpy(row->cells[5], "P");
-            else
-                row->cells[5][0] = 0;
-            row->ncells = 6;
+    for (lg = 0; lg < 2; lg++) {
+        nw = stand_division(&se, lg * 16 + 8, west);
+        ne = stand_division(&se, lg * 16, east);
+        if (nw && ne) {
+            n = stand_block(&se, n, STAND_DIV[lg][0], west, nw);
+            n = stand_block(&se, n, STAND_DIV[lg][1], east, ne);
+        } else if (nw) {
+            n = stand_block(&se, n, STAND_HEAD[lg], west, nw);
+        } else if (ne) {
+            n = stand_block(&se, n, STAND_HEAD[lg], east, ne);
         }
     }
     if (n == 0)
