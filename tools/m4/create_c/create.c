@@ -99,6 +99,8 @@
 #define RATING_CAP 12
 #define PIT_ENDURANCE_CAP 10
 #define FACE_DEFAULT_N 30
+#define FACE_CUSTOM_BASE 400
+#define FACE_PAGE 10
 #define FACE_TABLE_MAX 981
 #define FACE_READ_MAX 982
 #define PORTRAIT_W 48
@@ -175,6 +177,7 @@ static int g_nteams;
 static char g_lgdir[260];        /* LEAGUE_DIR, for the team V20 files */
 static char g_anms[260];         /* ANMS_DIR, for PORTRAIT.ANM and FACEGRP.DAT */
 static int g_face_n;             /* face table size (faces.py load_faces) */
+static int g_face_c;             /* PORTRAIT.ANM count c, capped at FACE_TABLE_MAX (create.py portrait_count) */
 static uint8_t g_face_grp[FACE_TABLE_MAX];
 static uint8_t g_px[PORTRAIT_W * PORTRAIT_H];
 static State g_state;
@@ -630,6 +633,7 @@ static void load_faces(const char *anms)
     uint8_t data[FACE_READ_MAX];
     size_t length, c, n, i;
     g_face_n = FACE_DEFAULT_N;
+    g_face_c = 0;
     memcpy(g_face_grp, STOCK_GRP, sizeof STOCK_GRP);
     path_join(path, anms, "PORTRAIT.ANM");
     f = fopen(path, "rb");
@@ -640,13 +644,14 @@ static void load_faces(const char *anms)
         return;
     }
     fclose(f);
+    c = (size_t)head[0] | ((size_t)head[1] << 8);
+    g_face_c = c > FACE_TABLE_MAX ? FACE_TABLE_MAX : (int)c;
     path_join(path, anms, "FACEGRP.DAT");
     f = fopen(path, "rb");
     if (!f)
         return;
     length = fread(data, 1, FACE_READ_MAX, f);
     fclose(f);
-    c = (size_t)head[0] | ((size_t)head[1] << 8);
     if (length < FACE_DEFAULT_N || length > FACE_TABLE_MAX)
         return;
     n = length < c ? length : c;
@@ -655,6 +660,38 @@ static void load_faces(const char *anms)
     g_face_n = (int)n;
     for (i = 0; i < n; i++)
         g_face_grp[i] = (uint8_t)(data[i] & 1);
+}
+
+/* C14.1 FACE list (create.py face_walk_len, face_pos, face_at, face_text): generic ids
+ * 0..g_face_n-1, then custom ids 400..c-1 when c > 400 */
+static int face_walk_len(void)
+{
+    return g_face_c > FACE_CUSTOM_BASE ? g_face_n + g_face_c - FACE_CUSTOM_BASE : g_face_n;
+}
+
+static int face_pos(int face)
+{
+    return face < g_face_n ? face : g_face_n + face - FACE_CUSTOM_BASE;
+}
+
+static int face_at(int pos)
+{
+    return pos < g_face_n ? pos : FACE_CUSTOM_BASE + pos - g_face_n;
+}
+
+/* the FACE step: d (-10, -1, 1 or 10) on the list, wrapping modulo its length */
+static int face_step(int face, int d)
+{
+    int size = face_walk_len();
+    return face_at((face_pos(face) + d + size) % size);
+}
+
+static void face_text(int face, char *dst)
+{
+    if (face < g_face_n)
+        sprintf(dst, "%d OF %d", face + 1, g_face_n);
+    else
+        sprintf(dst, "CUSTOM %d", face - FACE_CUSTOM_BASE + 1);
 }
 
 /* portrait(anms_dir, k) into g_px: 1 when frame k is usable (stored, 48 x 56, fits
@@ -774,7 +811,7 @@ static void build_record(const Form *f, int pitcher, uint8_t year, uint8_t *rec)
     rec[21] = year;
     bats_code = bats == 'R' ? 1 : (bats == 'S' ? 2 : 0);
     rec[29] = (uint8_t)((throws == 'R' ? 8 : 0) | (bats_code << 1)
-                        | (g_face_grp[face] & 1));
+                        | (face < FACE_CUSTOM_BASE ? (g_face_grp[face] & 1) : 0));
     rec[31] = (uint8_t)(pitcher ? 0 : (f->pos & 15));
     rec[27] = (uint8_t)(face & 0xff);
     rec[28] = (uint8_t)((face >> 8) & 0xff);
@@ -975,7 +1012,7 @@ static void adjust(State *st, int fld, int d)
         v = f->age + d;
         f->age = (int16_t)(v < AGE_MIN ? AGE_MIN : (v > AGE_MAX ? AGE_MAX : v));
     } else if (fld == FLD_FACE) {
-        f->face = (int16_t)((f->face + d + g_face_n) % g_face_n);
+        f->face = (int16_t)face_step(f->face, d);
     } else if (fld >= FLD_R0 && fld <= FLD_R5) {
         i = fld - FLD_R0;
         cap = (pitcher && i == 2) ? PIT_ENDURANCE_CAP : RATING_CAP;
@@ -1060,6 +1097,8 @@ static int step_edit(State *st, int32_t key)
     }
     if ((key == KEY_LEFT || key == KEY_RIGHT) && fld != FLD_SAVE)
         adjust(st, fld, key == KEY_LEFT ? -1 : 1);
+    else if ((key == KEY_PGUP || key == KEY_PGDN) && fld == FLD_FACE)
+        adjust(st, fld, key == KEY_PGUP ? -FACE_PAGE : FACE_PAGE);
     return 0;
 }
 
@@ -1300,7 +1339,7 @@ static void edit_value(const State *st, int fld, int cur, char *dst)
     } else if (fld == FLD_AGE) {
         sprintf(dst, "%d", f->age);
     } else if (fld == FLD_FACE) {
-        sprintf(dst, "%d OF %d", f->face + 1, g_face_n);
+        face_text(f->face, dst);
     } else if (fld == FLD_SAVE) {
         dst[0] = 0;
     } else {

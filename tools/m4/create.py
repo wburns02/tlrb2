@@ -56,6 +56,8 @@ DEFAULT_RATING = 6
 PIT_ENDURANCE_CAP = 10
 RATING_CAP = 12
 FACE_DEFAULT_N = 30
+FACE_CUSTOM_BASE = 400                    # custom (Portrait Studio) faces are ids 400..c-1 (C14.1)
+FACE_PAGE = 10                            # PGUP / PGDN step on the FACE field
 FACE_X, FACE_Y = 244, 43                  # portrait pixels (48 x 56)
 PORTRAIT_W, PORTRAIT_H = 48, 56
 
@@ -187,10 +189,45 @@ def portrait(anms_dir, k):
     return None
 
 
+def portrait_count(anms_dir):
+    """c, PORTRAIT.ANM's frame count (first u16); 0 when the file is missing or shorter than 2 bytes."""
+    try:
+        with open(os.path.join(anms_dir, 'PORTRAIT.ANM'), 'rb') as fh:
+            head = fh.read(2)
+    except OSError:
+        return 0
+    return struct.unpack('<H', head)[0] if len(head) == 2 else 0
+
+
+def face_walk_len(n, c):
+    """Entries in the FACE list (C14.1): generic ids 0..n-1, then custom ids 400..c-1 when c > 400.
+    c is capped at rookies.FACE_TABLE_MAX (BB reads PORTRAIT.ANM only below 981)."""
+    if c <= FACE_CUSTOM_BASE:
+        return n
+    return n + min(c, rookies.FACE_TABLE_MAX) - FACE_CUSTOM_BASE
+
+
+def face_pos(face, n):
+    """Position of face id in the FACE list."""
+    return face if face < n else n + face - FACE_CUSTOM_BASE
+
+
+def face_at(pos, n):
+    """Face id at position pos of the FACE list."""
+    return pos if pos < n else FACE_CUSTOM_BASE + pos - n
+
+
+def face_text(face, n):
+    """FACE value text: '<id + 1> OF <n>' for a generic face, 'CUSTOM <id - 399>' for a custom one."""
+    if face < n:
+        return '%d OF %d' % (face + 1, n)
+    return 'CUSTOM %d' % (face - FACE_CUSTOM_BASE + 1)
+
+
 def load_ctx(league_dir, font_dir, anms_dir='ANMS'):
     return {'league_dir': league_dir, 'anms_dir': anms_dir,
             'teams': teams(league_dir), 'faces': rookies.load_faces(anms_dir),
-            'fonts': load_fonts(font_dir)}
+            'anm_count': portrait_count(anms_dir), 'fonts': load_fonts(font_dir)}
 
 
 # ---------------------------------------------------------------- record build
@@ -207,8 +244,9 @@ def build_record(form, pitcher, year, grp):
     rec[rookies.OFF_YEAR] = year
     bats, throws = HANDS[form['hands']]
     face = form['face']
+    flag = grp[face] & 1 if face < FACE_CUSTOM_BASE else 0      # a custom face has group 0 (C14.1)
     rec[rookies.OFF_HAND] = ((8 if throws == 'R' else 0)
-                             | (BATS_CODE[bats] << 1) | (grp[face] & 1))
+                             | (BATS_CODE[bats] << 1) | flag)
     rec[rookies.OFF_POS] = 0 if pitcher else form['pos'] & 0x0F
     struct.pack_into('<H', rec, rookies.OFF_PORTRAIT, face)
     rec[rookies.OFF_EXP_CONSIST] = 0x02          # exper 0, consist 2
@@ -357,7 +395,9 @@ def _adjust(st, fld, d, ctx):
     elif fld == 'age':
         form['age'] = min(AGE_MAX, max(AGE_MIN, form['age'] + d))
     elif fld == 'face':
-        form['face'] = (form['face'] + d) % ctx['faces'][0]
+        n = ctx['faces'][0]
+        size = face_walk_len(n, ctx['anm_count'])
+        form['face'] = face_at((face_pos(form['face'], n) + d) % size, n)
     else:
         i = int(fld[1])
         cap = PIT_ENDURANCE_CAP if (pitcher and i == 2) else RATING_CAP
@@ -421,6 +461,8 @@ def _step_edit(st, key, ctx):
             form[fld] += chr(key).upper()      # stock names are all upper case
     elif key in (KEY_LEFT, KEY_RIGHT) and fld != 'save':
         _adjust(st, fld, -1 if key == KEY_LEFT else 1, ctx)
+    elif key in (KEY_PGUP, KEY_PGDN) and fld == 'face':
+        _adjust(st, fld, -FACE_PAGE if key == KEY_PGUP else FACE_PAGE, ctx)
     return st, False
 
 
@@ -545,7 +587,7 @@ def _edit_value(st, fld, ctx, cur):
     if fld == 'age':
         return '%d' % form['age']
     if fld == 'face':
-        return '%d OF %d' % (form['face'] + 1, ctx['faces'][0])
+        return face_text(form['face'], ctx['faces'][0])
     if fld == 'save':
         return ''
     return '%d' % form['r'][int(fld[1])]

@@ -8,7 +8,7 @@ BB 2000:b6df remaps 48..63 per team (0x10: 64..79 -> 48..63, 0x20: 48..63 -> 64.
 team ramp, 56..63 the secondary. Only cap and collar pixels may land on 48..55; 56..63 is never used.
 
 usage:
-  faces.py gen OUTDIR [N] [SET] [SALT]   render N (default all) prompts of SET (pilot, set1) on the local
+  faces.py gen OUTDIR [N] [SET] [SALT]   render N (default all) prompts of SET (pilot, set1, set2) on the local
                                     ComfyUI (GPU courtesy check first), skipping existing raw pngs; SALT > 0 shifts
                                     the seeds for re-rolls; OUTDIR/groups.json gets each face's group flag
   faces.py build OUTDIR             crop + quantize OUTDIR/raw/*.png to OUTDIR/frames/*.bin, preview sheets;
@@ -24,6 +24,7 @@ import colorsys
 import glob
 import json
 import os
+import random
 import re
 import struct
 import subprocess
@@ -86,7 +87,30 @@ def _set1():
     return [who[k] for k in order], [grp[k] for k in order]
 
 
-SETS = {'pilot': (PILOT, PILOT_GROUP, 7100), 'set1': _set1() + (7300,)}
+def _set2():
+    """300 faces from one fixed grid: heritage x age x facial hair x build x expression (1120 cells). The mix is
+    60% white, 20% Black, 15% Latino, 5% Asian American. Each heritage takes distinct cells (fixed seed), so no
+    two prompts repeat."""
+    kinds = [('white', 0, 180), ('Black', 1, 60), ('Latino', 0, 45), ('Asian American', 0, 15)]
+    ages = ['young rookie', 'player in his mid twenties', 'veteran in his early thirties',
+            'veteran in his late thirties with a weathered face']
+    hair = ['clean shaven', 'with a thick mustache', 'with light stubble', 'with a short beard',
+            'with a thin mustache', 'clean shaven with sideburns', 'with a goatee', 'with a full beard']
+    build = ['', 'heavyset ', 'lean ', 'tall ', 'stocky ']
+    looks = ['slight smile', 'serious expression', 'broad smile', 'intense stare', 'calm expression',
+             'squinting', 'determined expression']
+    grid = [(a, h, b, e) for a in range(4) for h in range(8) for b in range(5) for e in range(7)]
+    rng = random.Random(300)
+    who, grp = [], []
+    for kind, g, count in kinds:
+        for a, h, b, e in rng.sample(grid, count):
+            who.append('%s%s %s, %s, %s' % (build[b], kind, ages[a], hair[h], looks[e]))
+            grp.append(g)
+    order = sorted(range(len(who)), key=lambda k: (k * 37) % len(who))   # interleave kinds
+    return [who[k] for k in order], [grp[k] for k in order]
+
+
+SETS = {'pilot': (PILOT, PILOT_GROUP, 7100), 'set1': _set1() + (7300,), 'set2': _set2() + (7600,)}
 
 
 def owner_busy(window_s=180):
