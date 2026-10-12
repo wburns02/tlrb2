@@ -5,6 +5,7 @@
  * for pixel.
  * usage: DYNVIEW [/REVIEW] [/OFFSEASON] [/TITLE] [/MENU] [/KEYS:k,k,...] [/RAW:FILE]
  *                [/ANMS:DIR] [/GAME:DIR] [LEAGUE_DIR [FONT_DIR]]
+ * LEAGUE_DIR defaults to the current league's dir (league.h, C16.1; TEAMS\CLASSIC without SYSTEM).
  * /KEYS tokens: a key code, Lx.y a left click at (x, y), R a right click (ESC)
  * (precedence /OFFSEASON, /REVIEW, /TITLE, /MENU; /MENU opens the item CONTROL holds
  * in the current directory and then sets CONTROL[1] = CONTROL[0])
@@ -23,6 +24,7 @@
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 #include "../realign.h"
+#include "../league.h"
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
 #endif
@@ -224,8 +226,6 @@
 #define FARDATA
 #endif
 
-#define DEF_LEAGUE "TEAMS\\CLASSIC"
-#define DEF_LEAGUE_HOST "TEAMS/CLASSIC"
 
 /* font glyph: assets.parse_fnt layout (MSB first, rows * ceil(bits/8) bytes) */
 typedef struct {
@@ -478,7 +478,7 @@ static const char *ABOUT_LINES[N_ABOUT_ROWS] = {
     "START YEAR: DYNASTY SETTINGS, LEFT RIGHT.",
     "",
     "NEW FACES",
-    "67 NEW PORTRAITS JOIN THE 30 STOCK ONES.",
+    "323 NEW FACES JOIN THE 30 STOCK ONES.",
     "ROOKIES AND CREATED PLAYERS USE THEM.",
     "",
     "MODERN BALLPARKS",
@@ -4897,7 +4897,8 @@ static int next_input(int32_t *key, int *x, int *y)
 
 int main(int argc, char **argv)
 {
-    const char *league = (DIR_SEP == '\\') ? DEF_LEAGUE : DEF_LEAGUE_HOST;
+    const char *league = NULL;
+    char deflg[24];                 /* TEAMS<sep><L>: 15 B at most */
     const char *font_dir = NULL;
     const uint8_t *keys = NULL, *raw_path = NULL;
     int have_fonts, raw_mode = 0, review = 0, offseason = 0, title = 0, menu = 0;
@@ -4956,6 +4957,15 @@ int main(int argc, char **argv)
         } else {
             return usage();
         }
+    }
+
+    if (league == NULL) {
+        /* no LEAGUE_DIR: the current league's dir (C16.3) */
+        char lg[LG_NAME_MAX + 1];
+        lg_current(".", lg);
+        if (!lg_path(deflg, (int)sizeof deflg, LG_DIR, lg, DIR_SEP))
+            return usage();
+        league = deflg;
     }
 
 #ifndef __WATCOMC__

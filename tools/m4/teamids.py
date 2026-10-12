@@ -47,7 +47,8 @@ def engine_to_slot(e, nd):
 
 def maj_teams(d):
     """[(L, slot, stem8)] for L 0 then 1, slot ascending, every slot the division count uses (slot < 16 with 1
-    or 2 divisions, slot % 8 < 5 with 3) whose stem starts with a non-NUL byte."""
+    or 2 divisions, slot % 8 < 5 with 3) whose stem starts with a non-NUL byte. The stem is cut at its first NUL and
+    NUL padded: UTIL's NEW LEAGUE leaves the old name's tail after the NUL (b'TEST0\0e1'), and the game reads a C string."""
     d = raw(d)
     if len(d) < S[1] + O_STEM + 8 * SLOTS:
         return []
@@ -60,7 +61,7 @@ def maj_teams(d):
             a = S[L] + O_STEM + 8 * slot
             st = bytes(d[a:a + 8])
             if st[0] != 0:
-                out.append((L, slot, st))
+                out.append((L, slot, st.split(b'\0', 1)[0].ljust(8, b'\0')))
     return out
 
 

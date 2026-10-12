@@ -5,6 +5,7 @@ Run:  python3 -m pytest -q tools/m4/test_div3.py
 Fixtures: the synthetic CLASSIC league of test_teamids.build_maj, realigned to 3 divisions by realign.realign.
 """
 import os
+import types
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -327,16 +328,19 @@ def test_standings_legacy_entry_keeps_four_blocks():
 
 
 def test_settings_rows_labels():
-    """PLAYOFF FORMAT is the second row, with the wanted label and NEXT YEAR when it differs from now."""
+    """PLAYOFF FORMAT is the second row, with the wanted label and NEXT YEAR when it differs from now; START YEAR
+    (C13.1) is the third, before the team rows."""
     teams = [(0, 'BAL'), (2, 'CLE')]
-    base = {'mask': 0, 'era': 0, 'teams': teams}
+    hist = types.SimpleNamespace(d=bytearray(32))
+    base = {'mask': 0, 'era': 0, 'teams': teams, 'hist': hist}
     cases = {(2, 2): '2 DIVISIONS', (3, 3): '3 DIV + WILDCARD',
              (3, 2): '3 DIV NEXT YEAR', (2, 3): '2 DIV NEXT YEAR'}
     for fmt, label in cases.items():
         rows = dynview.settings_rows(dict(base, fmt=fmt))
         assert rows[0] == ('ERA RULES', 'REAL CALENDAR')
         assert rows[1] == ('PLAYOFF FORMAT', label)
-        assert rows[2:] == [('BAL', 'AI MANAGES'), ('CLE', 'AI MANAGES')]
+        assert rows[2] == ('START YEAR', '%d' % dynview.START_DEFAULT)
+        assert rows[3:] == [('BAL', 'AI MANAGES'), ('CLE', 'AI MANAGES')]
 
 
 def hist_file(root, byte0=0, byte11=0):
@@ -421,14 +425,16 @@ def test_enter_playoff_format_toggles_back_to_two(tmp_path):
 
 
 def test_cursor_rows_map_to_era_playoff_and_teams(tmp_path):
-    """Cursor 0 is ERA RULES, cursor 1 PLAYOFF FORMAT, cursor 2 the first team (its mask bit toggles)."""
+    """Cursor 0 is ERA RULES, cursor 1 PLAYOFF FORMAT, cursor 2 START YEAR (C13.1), cursor 3 the first team (its
+    mask bit toggles)."""
     root = tmp_path / 'lg'
     ldir = league(root, with_day(D2, 0x40))
     data = dynview.load_data(ldir)
     tid = data['teams'][0][0]
     assert dynview.step((SET, 0, 0), dynview.KEY_DOWN, data) == ((SET, 0, 1), 0)
     assert dynview.step((SET, 0, 1), dynview.KEY_DOWN, data) == ((SET, 0, 2), 0)
-    dynview.step((SET, 0, 2), dynview.KEY_ENTER, data)
+    assert dynview.step((SET, 0, 2), dynview.KEY_DOWN, data) == ((SET, 0, 3), 0)
+    dynview.step((SET, 0, 3), dynview.KEY_ENTER, data)
     assert data['mask'] == 1 << tid
     assert _rd(root / 'HISTORY.DAT')[11] == 0           # the team row does not touch byte 11
 

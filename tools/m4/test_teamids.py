@@ -100,6 +100,21 @@ def test_maj_teams_order_skips_nul_stems_and_short_maj():
     assert ti.maj_teams(bytes(S[1] + ti.O_STEM + 8 * 24)) == []     # all NUL stems, no teams
 
 
+def test_maj_teams_cuts_new_league_residue_after_the_first_nul():
+    """UTIL NEW LEAGUE writes TEST0 over CLASALE1 and leaves the tail: the stem is the C string, NUL padded."""
+    d = bytearray(build_maj({0: [(0, 'BOS')], 1: [(5, 'ATL')]}))
+    a = S[0] + ti.O_STEM
+    d[a:a + 8] = b'TEST0\0e1'
+    got = ti.maj_teams(bytes(d))
+    assert got[0] == (0, 0, b'TEST0\0\0\0')
+    assert got[1][2] == b'NATL\0\0\0\0'
+    assert ti.make_table(bytes(d))[0:8] == b'TEST0\0\0\0'
+    assert ti.stem_of_id(bytes(d), None, 0) == b'TEST0'
+    tab = bytearray(ti.TABLE_SIZE)
+    tab[8 * 3:8 * 3 + 8] = b'test0\0\0\0'
+    assert ti.id_of_slot(bytes(d), bytes(tab), 0, 0) == 3
+
+
 def test_load_table_missing_wrong_size_and_any_case(tmp_path):
     assert ti.load_table(str(tmp_path)) is None
     (tmp_path / 'TEAMID.DAT').write_bytes(bytes(255))

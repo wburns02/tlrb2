@@ -74,11 +74,11 @@ class TestBatPatch:
             assert bat.read_bytes().decode('cp437') == content
 
     def test_c7_form_upgrades_every_earlier_form(self):
-        """C7: rolled seasons run histwr, rosters and dynview /offseason; every
+        """C7 and C16.4: rolled seasons run histwr /archive, histwr, rosters and dynview /offseason; every
         earlier patched form upgrades in place and reverts to stock."""
         body = bat_patch.PATCHED_START.replace('\r\n', '\n')
-        assert body == (':start\ncopy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\ndynasty\n'
-                        'if errorlevel 1 goto rolled\ngoto ctl\n:rolled\ncall archive\nhistwr\nrosters\n'
+        assert body == (':start\nhistwr /snap\ndynasty\n'
+                        'if errorlevel 1 goto rolled\ngoto ctl\n:rolled\nhistwr /archive\nhistwr\nrosters\n'
                         'dynview /offseason\n:ctl\ncontrol\n')
         for old in bat_patch.EARLIER_FORMS:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -92,6 +92,27 @@ class TestBatPatch:
                 assert bat_patch.patch(str(install), revert=True)
                 assert bat.read_bytes().decode('cp437') == (
                     'echo off\r\n' + bat_patch.STOCK_START + 'goto x\r\n')
+
+    def test_c16_upgrades_the_c7_form(self):
+        """C16.4: an install patched with the C7 form (copy line, `call archive`) upgrades to the C16 form
+        in place; idempotent; revert restores stock."""
+        c7 = ('REM START MAIN LOOP\r\n:start\r\ncopy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\ndynasty\r\n'
+              'if errorlevel 1 goto rolled\r\ngoto ctl\r\n:rolled\r\ncall archive\r\nhistwr\r\nrosters\r\n'
+              'dynview /offseason\r\n:ctl\r\ncontrol\r\n')
+        with tempfile.TemporaryDirectory() as tmpdir:
+            install = Path(tmpdir) / 'TONY2'
+            install.mkdir()
+            bat = install / 'TONY2.BAT'
+            bat.write_bytes(c7.encode('cp437'))
+            assert bat_patch.patch(str(install), revert=False)
+            content = bat.read_bytes().decode('cp437')
+            assert content == 'REM START MAIN LOOP\r\n' + bat_patch.PATCHED_START
+            assert 'histwr /snap' in content and 'histwr /archive' in content
+            assert 'call archive' not in content and 'copy TEAMS' not in content
+            assert bat_patch.patch(str(install), revert=False)
+            assert bat.read_bytes().decode('cp437') == content
+            assert bat_patch.patch(str(install), revert=True)
+            assert bat.read_bytes().decode('cp437') == 'REM START MAIN LOOP\r\n' + bat_patch.STOCK_START
 
     def test_boot_title_screen(self):
         """The stock :frontend gets dynview /title before play; an install patched before

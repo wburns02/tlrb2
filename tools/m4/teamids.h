@@ -61,7 +61,8 @@ static void ti_engine_to_slot(int e, int nd, int *L, int *slot)
         *slot = i < 5 ? i : (i < 10 ? i + 3 : i + 6);
 }
 
-/* teamids.maj_teams: the teams in order L 0 then 1, slot ascending (id left 0). Returns the count. */
+/* teamids.maj_teams: the teams in order L 0 then 1, slot ascending (id left 0), stems cut at the first NUL and
+ * NUL padded. Returns the count. */
 static int ti_maj_teams(const uint8_t *d, long len, TiTeam *out)
 {
     int nd, L, slot, j, n = 0;
@@ -79,8 +80,10 @@ static int ti_maj_teams(const uint8_t *d, long len, TiTeam *out)
             out[n].id = 0;
             out[n].L = (uint8_t)L;
             out[n].slot = (uint8_t)slot;
-            for (j = 0; j < 8; j++)
+            for (j = 0; j < 8 && d[a + j]; j++)
                 out[n].stem[j] = d[a + j];
+            for (; j < 8; j++)
+                out[n].stem[j] = 0;         /* cut at the first NUL: NEW LEAGUE leaves residue after it */
             n++;
         }
     }

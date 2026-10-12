@@ -5,9 +5,14 @@
  * entry bytes 88..99, player entry award counts 152..156) and MILESTON.DAT
  * beside HISTORY.DAT. C13.2: SEASLINE.DAT beside HISTORY.DAT (one 80 B line per active record
  * per season); HISTWR /LINES backfills it from the season archives.
+ * C16.2: HISTWR /SNAP copies the current league's dir into its snap dir; HISTWR /ARCHIVE copies the snap
+ * into the first free season slot. The no-argument paths are the current league's (league.h, C16.1).
  * usage: HISTWR [PRE_DIR HIST_PATH RETIRED_PATH]
  *        HISTWR /LINES [HIST_PATH SEASONS_DIR]
- * exit 0 on success, 2 after any error (HIST_PATH left unchanged).
+ *        HISTWR /SNAP [LEAGUE_DIR SNAP_DIR]
+ *        HISTWR /ARCHIVE [SNAP_DIR SEASONS_DIR]
+ * exit 0 on success, 2 after any error (HIST_PATH left unchanged). /SNAP and /ARCHIVE exit 1 when a
+ * directory cannot be made or listed or a copy fails.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,10 +21,14 @@
 
 #ifdef __WATCOMC__
 #include <dos.h>
+#include <direct.h>
 #define DIR_SEP '\\'
+#define MK_DIR(p) mkdir(p)
 #else
 #include <dirent.h>
+#include <sys/stat.h>
 #define DIR_SEP '/'
+#define MK_DIR(p) mkdir((p), 0777)
 #endif
 
 /* teamids.h has helpers this file does not call; gcc -Werror would stop on them */
@@ -31,6 +40,8 @@
 #if defined(__GNUC__) && !defined(__WATCOMC__)
 #pragma GCC diagnostic pop
 #endif
+
+#include "../league.h"
 
 #define HDR_SIZE       32
 #define SEASON_TABLE   32
@@ -150,11 +161,10 @@
 #define TOT_ER 20
 #define TOT_PSO 23
 
-#define DEF_PRE  "C:\\DYNSNAP"
-#define DEF_HIST "TEAMS\\CLASSIC\\HISTORY.DAT"
-#define DEF_RET  "C:\\DYNSNAP\\RETIRED.DAT"
-#define DEF_SEASONS "C:\\SEASONS"
 #define ARCH_MAX 99
+#define PATH_BUF 128                   /* the /SNAP and /ARCHIVE paths: every path buffer of them */
+#define CP_MAX   256                   /* regular files one /SNAP or /ARCHIVE copy handles */
+#define CP_NAME  16                    /* 8.3 names on DOS; host names up to 15 bytes */
 #ifdef __WATCOMC__
 #define FARDATA __far
 #else
@@ -2227,12 +2237,11 @@ fail:
     return 2;
 }
 
-/* the /LINES form, case-insensitive */
-static int is_lines_arg(const char *s)
+/* a switch (/LINES, /SNAP, /ARCHIVE), case-insensitive; want is upper case */
+static int arg_is(const char *s, const char *want)
 {
-    static const char want[] = "/LINES";
     size_t i;
-    if (strlen(s) != sizeof want - 1)
+    if (strlen(s) != strlen(want))
         return 0;
     for (i = 0; want[i]; i++) {
         char c = s[i];
@@ -2654,16 +2663,272 @@ static const char *bak_of(const char *hpath, char *dst, size_t cap)
     return dst;
 }
 
+/* ---------------- C16.2: /SNAP and /ARCHIVE ---------------- */
+
+static char FARDATA g_p_scan[PATH_BUF];    /* list and stat scratch */
+static char FARDATA g_p_from[PATH_BUF];
+static char FARDATA g_p_to[PATH_BUF];
+static char FARDATA g_p_mk[PATH_BUF];      /* make_dirs scratch */
+static char FARDATA g_p_arch[PATH_BUF];    /* the Snn dir of /ARCHIVE */
+static char FARDATA g_p_fa[PATH_BUF];      /* same_file scratch */
+static char FARDATA g_p_fb[PATH_BUF];
+static char FARDATA g_cpnames[CP_MAX][CP_NAME];
+static uint8_t FARDATA g_cpbuf[2048];
+static char FARDATA g_d_dir[PATH_BUF];     /* the current league's paths (lg_default) */
+static char FARDATA g_d_snap[PATH_BUF];
+static char FARDATA g_d_hist[PATH_BUF];
+static char FARDATA g_d_ret[PATH_BUF];
+static char FARDATA g_d_seas[PATH_BUF];
+
+/* 1 when path is a directory */
+static int is_dir(const char *path)
+{
+#ifdef __WATCOMC__
+    unsigned attr = 0;
+    return _dos_getfileattr(path, &attr) == 0 && (attr & _A_SUBDIR) != 0;
+#else
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+/* makes path and each missing parent. DOS skips the drive ("C:"); the host makes it, a relative directory.
+ * An existing directory is not an error. 1 when path is a directory afterwards */
+static int make_dirs(const char *path)
+{
+    size_t i, l = strlen(path);
+    if (l == 0 || l >= PATH_BUF)
+        return 0;
+    memcpy(g_p_mk, path, l + 1);
+    for (i = 1; i <= l; i++) {
+        char keep;
+        if (i < l && g_p_mk[i] != '/' && g_p_mk[i] != '\\')
+            continue;
+#ifdef __WATCOMC__
+        if (i == 2 && g_p_mk[1] == ':')
+            continue;
+#endif
+        keep = g_p_mk[i];
+        g_p_mk[i] = 0;
+        (void)MK_DIR(g_p_mk);
+        g_p_mk[i] = keep;
+    }
+    return is_dir(path);
+}
+
+/* the regular files directly in dir (no subdirectories) into g_cpnames, as named on disk. Returns their count,
+ * -1 when dir cannot be listed, a name does not fit CP_NAME or there are more than CP_MAX */
+#ifdef __WATCOMC__
+
+static int list_files(const char *dir)
+{
+    struct find_t ft;
+    int n = 0;
+    if (!is_dir(dir) || !path_join(g_p_scan, PATH_BUF, dir, "*.*"))
+        return -1;
+    if (_dos_findfirst(g_p_scan, _A_NORMAL | _A_RDONLY | _A_HIDDEN | _A_SYSTEM | _A_ARCH, &ft) != 0)
+        return 0;
+    do {
+        if (ft.attrib & (_A_SUBDIR | _A_VOLID))
+            continue;
+        if (n >= CP_MAX || strlen(ft.name) >= CP_NAME)
+            return -1;
+        strcpy(g_cpnames[n], ft.name);
+        n++;
+    } while (_dos_findnext(&ft) == 0);
+    return n;
+}
+
+#else
+
+static int list_files(const char *dir)
+{
+    DIR *dirp = opendir(dir);
+    struct dirent *de;
+    int n = 0;
+    if (!dirp)
+        return -1;
+    while ((de = readdir(dirp)) != NULL) {
+        struct stat st;
+        size_t l = strlen(de->d_name);
+        if (!path_join(g_p_scan, PATH_BUF, dir, de->d_name)) {
+            closedir(dirp);
+            return -1;
+        }
+        if (stat(g_p_scan, &st) != 0 || !S_ISREG(st.st_mode))
+            continue;
+        if (n >= CP_MAX || l >= CP_NAME) {
+            closedir(dirp);
+            return -1;
+        }
+        memcpy(g_cpnames[n], de->d_name, l + 1);
+        n++;
+    }
+    closedir(dirp);
+    return n;
+}
+
+#endif
+
+#ifdef __WATCOMC__
+/* INT 21h AH=60h (TRUENAME): path canonicalized by DOS into out (128 B: drive, upper case, no . or ..
+ * segments, single separators). 0 on failure */
+static int truename(const char *path, char *out)
+{
+    union REGS r;
+    struct SREGS sr;
+    segread(&sr);
+    r.h.ah = 0x60;
+    sr.ds = FP_SEG(path);
+    r.x.si = FP_OFF(path);
+    sr.es = FP_SEG(out);
+    r.x.di = FP_OFF(out);
+    intdosx(&r, &r, &sr);
+    return !r.x.cflag;
+}
+#endif
+
+/* 1 when a and b name the same existing file under any spelling (a trailing separator, . and .. segments,
+ * case on DOS, a symlink on the host): opening the destination "wb" would empty the source before the read */
+static int same_file(const char *a, const char *b)
+{
+#ifdef __WATCOMC__
+    return truename(a, g_p_fa) && truename(b, g_p_fb) && strcmp(g_p_fa, g_p_fb) == 0;
+#else
+    struct stat sa, sb;
+    (void)g_p_fa;
+    (void)g_p_fb;
+    return stat(a, &sa) == 0 && stat(b, &sb) == 0 && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+#endif
+}
+
+/* src copied byte for byte over dst (dst is overwritten): 0 on any failure */
+static int copy_file(const char *src, const char *dst)
+{
+    FILE *in = fopen(src, "rb"), *out;
+    size_t n;
+    int ok = 1;
+    if (!in)
+        return 0;
+    out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
+        return 0;
+    }
+    while ((n = fread(g_cpbuf, 1, sizeof g_cpbuf, in)) > 0) {
+        if (fwrite(g_cpbuf, 1, n, out) != n) {
+            ok = 0;
+            break;
+        }
+    }
+    if (ferror(in))
+        ok = 0;
+    if (fclose(out) != 0)
+        ok = 0;
+    fclose(in);
+    return ok;
+}
+
+/* every regular file directly in src copied into dst, overwriting: 0 on success, 1 when src cannot be listed
+ * or a copy fails. A file that already is its destination (the same directory under any spelling) is left as
+ * it is */
+static int copy_files(const char *src, const char *dst)
+{
+    int i, n = list_files(src);
+    if (n < 0)
+        return 1;
+    for (i = 0; i < n; i++) {
+        if (!path_join(g_p_from, PATH_BUF, src, g_cpnames[i])
+            || !path_join(g_p_to, PATH_BUF, dst, g_cpnames[i]))
+            return 1;
+        if (same_file(g_p_from, g_p_to))
+            continue;
+        if (!copy_file(g_p_from, g_p_to))
+            return 1;
+    }
+    return 0;
+}
+
+/* the Snn dir of seasons for nn (S01..S99, as ARCHIVE.BAT names them) into out */
+static int snn_path(const char *seasons, int nn, char *out)
+{
+    char sn[4];
+    sn[0] = 'S';
+    sn[1] = (char)('0' + nn / 10);
+    sn[2] = (char)('0' + nn % 10);
+    sn[3] = 0;
+    return path_join(out, PATH_BUF, seasons, sn);
+}
+
+/* HISTWR /SNAP (C16.2): SNAP_DIR and its missing parents, then every regular file of LEAGUE_DIR copied in.
+ * 0 on success, 1 when SNAP_DIR cannot be made, LEAGUE_DIR cannot be listed or a copy fails */
+static int run_snap(const char *ldir, const char *sdir)
+{
+    if (!make_dirs(sdir))
+        return 1;
+    return copy_files(ldir, sdir);
+}
+
+/* HISTWR /ARCHIVE (C16.2): the first Snn of SEASONS_DIR with no *.MAJ (a missing one counts as free) gets every
+ * regular file of SNAP_DIR. All 99 full: nothing copied, 0. 1 when SNAP_DIR is not a directory, a directory
+ * cannot be made or a copy fails */
+static int run_archive(const char *sdir, const char *seasons)
+{
+    int nn;
+    if (!is_dir(sdir) || !make_dirs(seasons))
+        return 1;
+    for (nn = 1; nn <= ARCH_MAX; nn++) {
+        if (!snn_path(seasons, nn, g_p_arch))
+            return 1;
+        if (scan_dir(g_p_arch, ".MAJ", g_mnames) < 1)
+            break;
+    }
+    if (nn > ARCH_MAX)
+        return 0;
+    if (!make_dirs(g_p_arch))
+        return 1;
+    return copy_files(sdir, g_p_arch);
+}
+
+/* a path of the current league (C16.1) into out; 0 when it does not fit */
+static int lg_default(int which, char *out)
+{
+    char lg[9];
+    lg_current(".", lg);
+    return lg_path(out, PATH_BUF, which, lg, DIR_SEP);
+}
+
 int main(int argc, char **argv)
 {
     const char *pre, *hpath, *rpath;
     int k, rc;
-    if (argc >= 2 && is_lines_arg(argv[1])) {
-        const char *lh = DEF_HIST, *ls = DEF_SEASONS;
+    if (argc >= 2 && arg_is(argv[1], "/SNAP")) {
+        if (argc == 2) {
+            if (!lg_default(LG_DIR, g_d_dir) || !lg_default(LG_SNAP, g_d_snap))
+                return 2;
+            return run_snap(g_d_dir, g_d_snap);
+        }
+        return argc == 4 ? run_snap(argv[2], argv[3]) : 2;
+    }
+    if (argc >= 2 && arg_is(argv[1], "/ARCHIVE")) {
+        if (argc == 2) {
+            if (!lg_default(LG_SNAP, g_d_snap) || !lg_default(LG_SEASONS, g_d_seas))
+                return 2;
+            return run_archive(g_d_snap, g_d_seas);
+        }
+        return argc == 4 ? run_archive(argv[2], argv[3]) : 2;
+    }
+    if (argc >= 2 && arg_is(argv[1], "/LINES")) {
+        const char *lh, *ls;
         if (argc == 4) {
             lh = argv[2];
             ls = argv[3];
-        } else if (argc != 2) {
+        } else if (argc == 2) {
+            if (!lg_default(LG_HIST, g_d_hist) || !lg_default(LG_SEASONS, g_d_seas))
+                return 2;
+            lh = g_d_hist;
+            ls = g_d_seas;
+        } else {
             return 2;
         }
         if (strlen(lh) >= 600 || strlen(ls) >= 600)
@@ -2675,9 +2940,12 @@ int main(int argc, char **argv)
         hpath = argv[2];
         rpath = argv[3];
     } else {
-        pre = DEF_PRE;
-        hpath = DEF_HIST;
-        rpath = DEF_RET;
+        if (!lg_default(LG_SNAP, g_d_snap) || !lg_default(LG_HIST, g_d_hist)
+            || !lg_default(LG_RET, g_d_ret))
+            return 2;
+        pre = g_d_snap;
+        hpath = g_d_hist;
+        rpath = g_d_ret;
     }
     if (!fit_copy(g_retpath, sizeof g_retpath, rpath))
         return 2;                     /* RETIRED path too long */

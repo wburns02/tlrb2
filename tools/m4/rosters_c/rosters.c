@@ -8,7 +8,8 @@
  * Outputs all land in <path>.TMP files first and are renamed over the
  * originals only after every TMP write succeeded.
  * usage: ROSTERS [LEAGUE_DIR SNAP_DIR HIST_PATH RETIRED_PATH]
- * exit 0 ok, 2 on any error with every file untouched.
+ * with no paths the current league's are used (league.h, C16.1). exit 0 ok, 2 on any error with every
+ * file untouched.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +29,8 @@
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
 #endif
+
+#include "../league.h"
 
 #ifdef __WATCOMC__
 #include <dos.h>
@@ -98,11 +101,6 @@ static const uint8_t T_REL[4][4] = {
     { 192, 255, 102, 16 }, { 255, 255, 154, 36 } };
 
 #define POOL_FILES 4
-
-#define DEF_LEAGUE "TEAMS\\CLASSIC"
-#define DEF_SNAP   "C:\\DYNSNAP"
-#define DEF_HIST   "TEAMS\\CLASSIC\\HISTORY.DAT"
-#define DEF_RET    "C:\\DYNSNAP\\RETIRED.DAT"
 
 #define MAXT 64
 #define HIST_HDR_SIZE 32
@@ -2806,10 +2804,13 @@ int main(int argc, char **argv)
             || !fit_copy(g_retpath, sizeof g_retpath, argv[4]))
             return 2;
     } else {
-        if (!fit_copy(g_lgdir, sizeof g_lgdir, DEF_LEAGUE)
-            || !fit_copy(g_snapdir, sizeof g_snapdir, DEF_SNAP)
-            || !fit_copy(g_histpath, sizeof g_histpath, DEF_HIST)
-            || !fit_copy(g_retpath, sizeof g_retpath, DEF_RET))
+        /* the current league's paths (C16.1) */
+        char lg[9];
+        lg_current(".", lg);
+        if (!lg_path(g_lgdir, sizeof g_lgdir, LG_DIR, lg, DIR_SEP)
+            || !lg_path(g_snapdir, sizeof g_snapdir, LG_SNAP, lg, DIR_SEP)
+            || !lg_path(g_histpath, sizeof g_histpath, LG_HIST, lg, DIR_SEP)
+            || !lg_path(g_retpath, sizeof g_retpath, LG_RET, lg, DIR_SEP))
             return 2;
     }
     return do_run();

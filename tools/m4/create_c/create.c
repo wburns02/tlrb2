@@ -5,6 +5,7 @@
  * in place, then sets CONTROL[1] = CONTROL[0] so TONY2.BAT restarts MAIN. Screen
  * output matches the Python reference pixel for pixel.
  * usage: CREATE [/KEYS:k,k,...] [/RAW:FILE] [LEAGUE_DIR [FONT_DIR [ANMS_DIR]]]
+ * LEAGUE_DIR defaults to the current league's dir (league.h, C16.1).
  * exit 0 ok, 2 on bad usage, font failure or /RAW write failure.
  */
 #include <stdio.h>
@@ -33,6 +34,8 @@
 #if defined(__GNUC__) && !defined(__WATCOMC__)
 #pragma GCC diagnostic pop
 #endif
+
+#include "../league.h"
 
 #define FB_W   320
 #define FB_H   200
@@ -114,8 +117,6 @@
 #define FARDATA
 #endif
 
-#define DEF_LEAGUE "TEAMS\\CLASSIC"
-#define DEF_LEAGUE_HOST "TEAMS/CLASSIC"
 #define DEF_ANMS "ANMS"
 
 /* font glyph: assets.parse_fnt layout (MSB first, rows * ceil(bits/8) bytes) */
@@ -1768,7 +1769,8 @@ static void start_state(void)
 
 int main(int argc, char **argv)
 {
-    const char *league = (DIR_SEP == '\\') ? DEF_LEAGUE : DEF_LEAGUE_HOST;
+    char deflg[LG_PATH_MAX], lg[9];
+    const char *league = NULL;
     const char *anms = DEF_ANMS;
     const char *font_dir = NULL;
     const uint8_t *keys = NULL, *raw_path = NULL;
@@ -1800,6 +1802,13 @@ int main(int argc, char **argv)
         } else {
             return usage();
         }
+    }
+    if (league == NULL) {
+        /* no LEAGUE_DIR: the current league's dir (C16.3) */
+        lg_current(".", lg);
+        if (!lg_path(deflg, LG_PATH_MAX, LG_DIR, lg, DIR_SEP))
+            return 2;
+        league = deflg;
     }
 
 #ifndef __WATCOMC__
