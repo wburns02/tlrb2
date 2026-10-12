@@ -2091,11 +2091,11 @@ COLS_SEASON_LEADERS = [('#', _cx(0), 4, 'L'), ('NAME', _cx(4), 16, 'L'),
                        ('YEAR', _cx(20), 5, 'R'), ('TEAM', _cx(25), 4, 'R'),
                        ('VALUE', _cx(29), 12, 'R')]
 # PLAYER CARD season table (C13.5): batters and pitchers; the widths run on from x 10
-COLS_CARD_BAT = [('YEAR', _cx(0), 4, 'L'), ('TEAM', _cx(4), 4, 'L'), ('G', _cx(8), 4, 'R'),
+COLS_CARD_BAT = [('YEAR', _cx(0), 4, 'L'), ('TM', _cx(4), 4, 'R'), ('G', _cx(8), 4, 'R'),
                  ('AB', _cx(12), 5, 'R'), ('H', _cx(17), 4, 'R'), ('HR', _cx(21), 4, 'R'),
                  ('RBI', _cx(25), 4, 'R'), ('SB', _cx(29), 4, 'R'), ('AVG', _cx(33), 5, 'R'),
                  ('WAR', _cx(38), 5, 'R')]
-COLS_CARD_PIT = [('YEAR', _cx(0), 4, 'L'), ('TEAM', _cx(4), 4, 'L'), ('G', _cx(8), 4, 'R'),
+COLS_CARD_PIT = [('YEAR', _cx(0), 4, 'L'), ('TM', _cx(4), 4, 'R'), ('G', _cx(8), 4, 'R'),
                  ('W', _cx(12), 3, 'R'), ('L', _cx(15), 3, 'R'), ('SV', _cx(18), 4, 'R'),
                  ('IP', _cx(22), 6, 'R'), ('SO', _cx(28), 4, 'R'), ('ERA', _cx(32), 5, 'R'),
                  ('WAR', _cx(37), 5, 'R')]
