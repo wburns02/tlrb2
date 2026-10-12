@@ -16,6 +16,9 @@ import zipfile
 
 CONF = """[sdl]
 autolock=false
+[mouse]
+int33 max x=320
+int33 max y=200
 [dosbox]
 machine=svga_s3
 memsize=16
