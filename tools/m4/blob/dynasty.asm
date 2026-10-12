@@ -1,20 +1,23 @@
 ; DYNASTY.EXE - M4 season rollover, standalone DOS program (contract C2/C5).
 ; Invoked from the patched TONY2.BAT before `control`. Exit code 1 when it
 ; rolled (including the no-V20 case that only writes the header), else 0.
-;   - reads TEAMS\CLASSIC\CLASSIC.MAJ byte 0x20a; acts only when it is 0xf3
+;   - the league is the current one (C16.1, pick_league): SYSTEM in the cwd
+;     names it; no SYSTEM, a bad name or no TEAMS\<L>\<L>.MAJ: CLASSIC
+;   - reads TEAMS\<L>\<L>.MAJ byte 0x20a; acts only when it is 0xf3
 ;     (season over). No MAJ: exit 0, nothing written.
-;   - TEAMS\CLASSIC\HISTORY.DAT header (DYNASTY owns bytes 0..2 and 8..9):
+;   - TEAMS\<L>\HISTORY.DAT header (DYNASTY owns bytes 0..2 and 8..9):
 ;       [0] done flag (1 = rolled this season stop, cleared when day != 0xf3)
 ;       [1..2] rng word, [8..9] start seed of the last roll (little endian)
 ;     seed = bytes 1..2 when the file is >= 3 B and they are nonzero, else the
 ;     BIOS tick count low word (int 1Ah), and 1 when that is 0.
 ;     The file is only ever patched in place: it keeps its length or grows
 ;     (missing -> 32 B of zero, shorter -> zero-extended to 32 B).
-;   - rolls every TEAMS\CLASSIC\*.V20 in sorted name order (matches the Python
+;   - rolls every TEAMS\<L>\*.V20 in sorted name order (matches the Python
 ;     reference `sorted(glob(...))`), 80 records x 143 B, records i / i+40
-;   - C:\DYNSNAP\RETIRED.DAT rewritten after each roll: u8 nteam, then per
+;   - RETIRED.DAT in the league's snap (CLASSIC: C:\DYNSNAP, else
+;     C:\DYNLG\<L>\SNAP) rewritten after each roll: u8 nteam, then per
 ;     team 13 B NUL padded name + 40 B flags (blob AX per roster record).
-;     No C:\DYNSNAP: skipped silently.
+;     No snap dir: skipped silently.
 ;   - core = incbin'd rollover.bin at para offset BLOB_PARA, entry +0x10:
 ;     DS:SI roster rec, ES:DI season rec, FS:BX rng word, CX flags, AX=retire
 ; Build: nasm -f bin -o dynasty.img dynasty.asm && python3 build_dynasty.py
@@ -39,7 +42,9 @@ entry:
         mov es, ax
         mov fs, ax
 
-        ; ---- CLASSIC.MAJ day check --------------------------------------
+        call pick_league                ; C16.1: league name, then its paths
+
+        ; ---- MAJ day check ----------------------------------------------
         mov dx, maj_path
         mov ax, 0x3d00                  ; open, read-only
         int 0x21
@@ -190,7 +195,7 @@ team_loop:
         ; build path: prefix + name
         mov si, prefix
         mov di, work_path
-        mov cx, prefix_len
+        mov cx, [prefix_len]
 cp_pre:
         lodsb
         stosb
@@ -305,6 +310,176 @@ cf_close:
         int 0x21
         jmp x_ok
 
+; ---- C16.1 current league -------------------------------------------------
+; SYSTEM (cwd) names the league: bytes 0..7 up to the first NUL, 1..8 chars,
+; each 0x21..0x7e and not in bad_chars; a..z uppercased. Anything else, or no
+; SYSTEM, is CLASSIC, and so is a name whose TEAMS\<L>\<L>.MAJ will not open.
+; Sets lg_name / lg_len and builds maj_path, hist_path, find_spec, prefix,
+; ret_path. DS = ES = CS here (entry).
+pick_league:
+        call set_classic
+        mov dx, system_path
+        mov ax, 0x3d00                  ; open read-only
+        int 0x21
+        jc pl_paths                     ; no SYSTEM: CLASSIC
+        mov bx, ax
+        mov ah, 0x3f
+        mov cx, 8
+        mov dx, sys_buf
+        int 0x21
+        jnc pl_read_ok
+        xor ax, ax
+pl_read_ok:
+        mov [sys_len], ax
+        mov ah, 0x3e
+        int 0x21                        ; close (BX still the handle)
+        call sys_name
+pl_paths:
+        call build_paths
+        mov dx, maj_path                ; the named league's MAJ must open
+        mov ax, 0x3d00
+        int 0x21
+        jc pl_classic
+        mov bx, ax
+        mov ah, 0x3e
+        int 0x21
+        ret
+pl_classic:
+        call set_classic
+        call build_paths
+        ret
+
+set_classic:
+        mov word [lg_len], 7
+        mov si, s_classic
+        mov di, lg_name
+        mov cx, 8                       ; with the NUL
+        rep movsb
+        ret
+
+; lg_name / lg_len from sys_buf when it is a valid name, else left alone
+sys_name:
+        xor bx, bx                      ; BX = bytes before the first NUL
+sn_len:
+        cmp bx, [sys_len]
+        jae sn_check
+        cmp byte [sys_buf + bx], 0
+        je sn_check
+        inc bx
+        jmp sn_len
+sn_check:
+        mov dx, bx                      ; DX = name length
+        or dx, dx
+        jz sn_ret
+        xor si, si
+sn_chr:
+        cmp si, dx
+        jae sn_store
+        mov al, [sys_buf + si]
+        cmp al, 0x21
+        jb sn_ret
+        cmp al, 0x7e
+        ja sn_ret
+        mov di, bad_chars
+        mov cx, bad_len
+        repne scasb                     ; ZF=1: AL is one of bad_chars
+        je sn_ret
+        inc si
+        jmp sn_chr
+sn_store:
+        xor si, si
+sn_copy:
+        cmp si, dx
+        jae sn_end
+        mov al, [sys_buf + si]
+        cmp al, 'a'
+        jb sn_put
+        cmp al, 'z'
+        ja sn_put
+        sub al, 0x20
+sn_put:
+        mov [lg_name + si], al
+        inc si
+        jmp sn_copy
+sn_end:
+        mov [lg_len], dx
+        mov byte [lg_name + si], 0      ; SI = DX here
+sn_ret:
+        ret
+
+; ZF=1 when lg_name is CLASSIC (its paths are the DYNSNAP ones)
+is_classic:
+        cmp word [lg_len], 7
+        jne ic_ret
+        mov si, s_classic
+        mov di, lg_name
+        mov cx, 7
+        repe cmpsb
+ic_ret:
+        ret
+
+; prefix = TEAMS\<L>\, then maj_path, hist_path, find_spec, ret_path from it
+build_paths:
+        mov di, prefix
+        mov si, s_teams
+        call put_str
+        call put_name
+        mov al, '\'
+        stosb
+        mov ax, di
+        sub ax, prefix
+        mov [prefix_len], ax
+        mov di, maj_path
+        call put_prefix
+        call put_name
+        mov si, s_maj
+        call put_str
+        mov byte [di], 0
+        mov di, hist_path
+        call put_prefix
+        mov si, s_hist
+        call put_str
+        mov byte [di], 0
+        mov di, find_spec
+        call put_prefix
+        mov si, s_find
+        call put_str
+        mov byte [di], 0
+        call is_classic
+        mov di, ret_path
+        jne bp_dynlg
+        mov si, s_ret_classic           ; C:\DYNSNAP\RETIRED.DAT
+        call put_str
+        mov byte [di], 0
+        ret
+bp_dynlg:
+        mov si, s_dynlg                 ; C:\DYNLG\<L>\SNAP\RETIRED.DAT
+        call put_str
+        call put_name
+        mov si, s_ret_snap
+        call put_str
+        mov byte [di], 0
+        ret
+
+put_str:                                ; DS:SI ASCIZ -> ES:DI without NUL
+        lodsb
+        or al, al
+        jz ps_ret
+        stosb
+        jmp put_str
+ps_ret:
+        ret
+put_name:                               ; lg_name (lg_len bytes) -> ES:DI
+        mov si, lg_name
+        mov cx, [lg_len]
+        rep movsb
+        ret
+put_prefix:                             ; prefix (prefix_len bytes) -> ES:DI
+        mov si, prefix
+        mov cx, [prefix_len]
+        rep movsb
+        ret
+
 ; swap names[j-1] and names[j]
 swap_j:
         push cx
@@ -330,7 +505,7 @@ sj:
         pop cx
         ret
 
-; C:\DYNSNAP\RETIRED.DAT from scratch: u8 nteam, then per team (sorted roll
+; the league's RETIRED.DAT from scratch: u8 nteam, then per team (sorted roll
 ; order) 13 B name + 40 B flags
 write_retired:
         mov dx, ret_path
@@ -555,13 +730,29 @@ rt_close:
 
 ; ---------------------------------------------------------------------------
 ; data
-maj_path   db 'TEAMS\CLASSIC\CLASSIC.MAJ', 0
-hist_path  db 'TEAMS\CLASSIC\HISTORY.DAT', 0
-find_spec  db 'TEAMS\CLASSIC\*.V20', 0
-prefix     db 'TEAMS\CLASSIC\'
-prefix_len equ $ - prefix
-ret_path   db 'C:\DYNSNAP\RETIRED.DAT', 0
-day_byte   db 0
+; C16.1 (pick_league): the league name and the paths built from it
+system_path   db 'SYSTEM', 0
+s_classic     db 'CLASSIC', 0
+s_teams       db 'TEAMS\', 0
+s_maj         db '.MAJ', 0
+s_hist        db 'HISTORY.DAT', 0
+s_find        db '*.V20', 0
+s_ret_classic db 'C:\DYNSNAP\RETIRED.DAT', 0
+s_dynlg       db 'C:\DYNLG\', 0
+s_ret_snap    db '\SNAP\RETIRED.DAT', 0
+bad_chars     db '"*+,./:;<=>?[\]|'
+bad_len       equ $ - bad_chars
+lg_name       db 9 dup(0)
+lg_len        dw 7
+sys_buf       db 8 dup(0)
+sys_len       dw 0
+prefix_len    dw 0
+maj_path      db 32 dup(0)
+hist_path     db 32 dup(0)
+find_spec     db 32 dup(0)
+prefix        db 16 dup(0)
+ret_path      db 40 dup(0)
+day_byte      db 0
 portrait_path  db 'ANMS\PORTRAIT.ANM', 0
 facegrp_path   db 'ANMS\FACEGRP.DAT', 0
 face_head  dw 0
