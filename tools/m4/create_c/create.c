@@ -22,6 +22,8 @@
 #define DIR_SEP '/'
 #endif
 
+#include "../statline.h"
+
 #define FB_W   320
 #define FB_H   200
 #define FB_SIZE 64000
@@ -200,17 +202,22 @@ static const char *FOOT_SAVE = "ENTER SAVE   UP DOWN   ESC SLOTS";
 static const char *FOOT_FIELD = "UP DOWN   LEFT RIGHT CHANGE   ESC SLOTS";
 static const char *MSG_NAME = "TYPE A LAST NAME FIRST";
 
-/* season stat bytes zeroed in the season half (team_fill._SEASON_STAT_OFFSETS) */
-static const uint8_t SEASON_OFFS[] = {
-    23, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 49, 50, 51, 52, 53, 54, 55, 56,
-    57, 58, 101, 102, 111, 112, 121, 122, 125, 126 };
+/* team header slot lists of the ROLE column (create.py ROLE_LISTS): byte ranges of the
+ * team image, each byte a slot index or 0xff */
+typedef struct {
+    const char *name;
+    int lo, hi;
+} RoleList;
+static const RoleList ROLE_LISTS[5] = {
+    { "ROT", 111, 115 }, { "PEN", 116, 120 }, { "START", 122, 157 },
+    { "BENCH", 194, 221 }, { "RES", 222, 236 } };
 
 #define CX(pos) (10 + CHAR_W * (pos))
 static const ColDef COLS_TEAM[] = {
     { "TEAM", CX(0), 20, 0 }, { "LEAGUE", CX(30), 12, 0 } };
 static const ColDef COLS_SLOT[] = {
     { "SLOT", CX(0), 4, 0 }, { "PLAYER", CX(5), 20, 0 }, { "POS", CX(26), 4, 0 },
-    { "AGE", CX(31), 4, 1 } };
+    { "AGE", CX(31), 4, 1 }, { "ROLE", CX(36), 5, 0 } };
 static const ColDef COLS_ONE[] = {
     { " ", CX(0), 42, 0 } };
 
@@ -707,6 +714,17 @@ static void set_hi(uint8_t *b, int off, int v)
     b[off] = (uint8_t)((b[off] & 0x0f) | ((v & 0x0f) << 4));
 }
 
+/* slot_role: role of roster slot s in the team header, or "" (create.py slot_role) */
+static const char *slot_role(const uint8_t *img, int s)
+{
+    int i, o;
+    for (i = 0; i < NCOLS(ROLE_LISTS); i++)
+        for (o = ROLE_LISTS[i].lo; o <= ROLE_LISTS[i].hi; o++)
+            if (img[o] == s)
+                return ROLE_LISTS[i].name;
+    return "";
+}
+
 /* build_record: the 143 byte roster record of the new player (create.py
  * build_record with the rookies.RookieGen draws replaced by the form values) */
 static void build_record(const Form *f, int pitcher, uint8_t year, uint8_t *rec)
@@ -775,6 +793,7 @@ static void build_record(const Form *f, int pitcher, uint8_t year, uint8_t *rec)
         set_hi(rec, 94, f->r[4]);
         set_lo(rec, 94, f->r[5]);
     }
+    sl_fill(rec);                               /* the stat line the ratings imply */
     sal = pitcher ? SALARY_PITCHER : SALARY_BATTER;
     rec[25] = (uint8_t)(sal & 0xff);
     rec[26] = (uint8_t)((sal >> 8) & 0xff);
@@ -792,8 +811,8 @@ static void save_form(const State *st)
     FILE *f;
     build_record(&st->form, pitcher, year_of_image(), rec);
     memcpy(srec, rec, RECORD_LEN);
-    for (i = 0; i < (int)sizeof SEASON_OFFS; i++)
-        srec[SEASON_OFFS[i]] = 0;
+    for (i = 0; i < (int)sizeof SL_SEASON_OFFS; i++)
+        srec[SL_SEASON_OFFS[i]] = 0;
     f = v20_fopen((const uint8_t *)stem, (int)strlen(stem), "r+b");
     if (f) {
         (void)fseek(f, off_r, SEEK_SET);
@@ -1081,7 +1100,7 @@ static void list_view(const State *st, ListView *lv)
         lv->cols = COLS_ONE;
         lv->ncols = NCOLS(COLS_ONE);
         lv->footer = FOOT_CONFIRM;
-        lv->nrows = 3;
+        lv->nrows = strcmp(slot_role(g_image, st->slot), "RES") == 0 ? 4 : 3;
         lv->hl = 0;
         break;
     default:
@@ -1096,10 +1115,10 @@ static void list_view(const State *st, ListView *lv)
 }
 
 /* the cells of list row i (create.py _list_view rows) */
-static void list_cells(const State *st, int i, char cells[4][SLEN])
+static void list_cells(const State *st, int i, char cells[5][SLEN])
 {
     int k;
-    for (k = 0; k < 4; k++)
+    for (k = 0; k < 5; k++)
         cells[k][0] = 0;
     switch (st->screen) {
     case S_TEAM:
@@ -1117,6 +1136,7 @@ static void list_cells(const State *st, int i, char cells[4][SLEN])
             name_display(rec, 20, cells[1]);
             strcpy(cells[2], POS_LABELS[rec[31] & 15]);
             sprintf(cells[3], "%d", rec[20]);
+            strcpy(cells[4], slot_role(g_image, i));
         } else {
             strcpy(cells[1], "(EMPTY)");
         }
@@ -1135,8 +1155,10 @@ static void list_cells(const State *st, int i, char cells[4][SLEN])
             strcat(cells[0], lab);
             strcat(cells[0], " OF ");
             strcat(cells[0], g_teams[st->team].disp);
-        } else {
+        } else if (i == 2) {
             strcpy(cells[0], "THE OLD PLAYER LEAVES THE LEAGUE.");
+        } else {
+            strcpy(cells[0], "RESERVE SLOT: ACTIVATE HIM TO PLAY.");
         }
         break;
     default:
@@ -1198,7 +1220,7 @@ static void draw_list(const State *st, const ListView *lv)
     page = st->cursor / ROWS_PER_PAGE;
     for (r = 0; r < ROWS_PER_PAGE; r++) {
         int i = page * ROWS_PER_PAGE + r, y0, cur, color;
-        char cells[4][SLEN];
+        char cells[5][SLEN];
         if (i >= lv->nrows)
             break;
         y0 = 35 + r * ROW_H;

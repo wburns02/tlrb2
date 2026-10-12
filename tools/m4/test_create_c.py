@@ -122,6 +122,11 @@ def parity(tmp_path, keys, base=None, anms=True, control=None, anms_path=None):
 
 SAVE_EMPTY_PITCHER = typed('Ruiz') + [DOWN] + typed('Tom') + [DOWN] * 8 + [ENTER]
 SAVE_NAMED_BATTER = typed('Lowe') + [DOWN] * 12
+# every rating at its cap: batter power, bunt, hit and run, speed, range, arm; pitcher
+# control, velocity, endurance (the cap, 10)
+SAVE_ALL12_BATTER = typed('Lowe') + [DOWN] * 5 + ([RIGHT] * 6 + [DOWN]) * 6 + [DOWN, ENTER]
+SAVE_ALL_MAX_PITCHER = (typed('Ruiz') + [DOWN] + typed('Tom') + [DOWN] * 4
+                        + ([RIGHT] * 6 + [DOWN]) * 2 + [RIGHT] * 6 + [DOWN] * 2 + [ENTER])
 
 
 # ---------------------------------------------------------------- host basics
@@ -245,6 +250,42 @@ def test_parity_save_named_slot_confirm_v20(tmp_path):
 def test_parity_save_batter_confirm_v20(tmp_path):
     st, _ = parity(tmp_path, [ENTER] + [DOWN] * 16 + [ENTER] + SAVE_NAMED_BATTER
                    + [ENTER, ENTER])
+    assert st['screen'] == cr.S_DONE
+
+
+@need_fonts
+def test_parity_save_all12_batter_and_all_max_pitcher_v20(tmp_path):
+    st, _ = parity(tmp_path, [ENTER] + [DOWN] * 16 + [ENTER] + SAVE_ALL12_BATTER
+                   + [ENTER])
+    assert st['screen'] == cr.S_DONE
+    st, _ = parity(tmp_path, [ENTER, DOWN, ENTER] + SAVE_ALL_MAX_PITCHER)
+    assert st['screen'] == cr.S_DONE
+
+
+@need_fonts
+def test_parity_role_column_slot_screen(tmp_path):
+    """The slot list with ROLE text on named slots (BOS: P1 Adams in ROT, B1 Baker in
+    START) and the other lists set on empty slots."""
+    base = make_league(str(tmp_path / 'roles'))
+    with open(os.path.join(base, 'BOS.V20'), 'r+b') as fh:
+        for off, slot in ((111, 0), (116, 2), (122, 16), (194, 17), (222, 18)):
+            fh.seek(off)
+            fh.write(bytes([slot]))
+    st, _ = parity(tmp_path, [ENTER], base=base)
+    assert st['screen'] == cr.S_SLOT
+
+
+@need_fonts
+def test_parity_save_reserve_slot_confirm_v20(tmp_path):
+    base = make_league(str(tmp_path / 'res'))
+    with open(os.path.join(base, 'BOS.V20'), 'r+b') as fh:
+        fh.seek(222)                                 # RES list: slot 16 (B1)
+        fh.write(bytes([16]))
+    st, _ = parity(tmp_path, [ENTER] + [DOWN] * 16 + [ENTER] + SAVE_NAMED_BATTER
+                   + [ENTER], base=base)
+    assert st['screen'] == cr.S_CONFIRM
+    st, _ = parity(tmp_path, [ENTER] + [DOWN] * 16 + [ENTER] + SAVE_NAMED_BATTER
+                   + [ENTER, ENTER], base=base)
     assert st['screen'] == cr.S_DONE
 
 

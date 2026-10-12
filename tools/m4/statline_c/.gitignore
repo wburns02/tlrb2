@@ -1,0 +1,5 @@
+sl_host
+*.o
+*.obj
+*.err
+SLHOST.EXE

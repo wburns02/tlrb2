@@ -180,6 +180,8 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
    the line is not purely cosmetic. Options: (a) keep the rookie prior (matches drafted rookies); (b) a zero stat
    line with the user-set flag on, so the typed ratings are exactly what the sim keeps; (c) a prior scaled from the
    chosen ratings. Recommendation (b): a created player is a sandbox pick. Not built until you answer.
+   ANSWERED 2026-10-12 (c), after Will created an all-12 player who went 0 for 40: the rig proved BACK hits from
+   the roster-half line, so (b) would also hit .000; only a line that implies the ratings works. Contract C11.
 
 ## Answers (Will, 2026-10-07)
 

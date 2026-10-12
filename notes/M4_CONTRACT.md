@@ -145,6 +145,8 @@ The P2 WIP blob gave every rookie identical ratings. Rookies must vary and some 
   other rookie pitches control 1, velocity 3, endurance 1 (134 = 0x31, 135 hi 1). Written with the stat-line
   constants, before the rating draws, which touch other nibbles only.
 - Everything else (stat lines, salary, portrait, season-twin copy) stays as the WIP blob defines it.
+  (amended 2026-10-12, C11) The WIP stat-line constants stay in the blob, but ROSTERS replaces that placeholder
+  line with the C11 ratings-implied line in the same roll, so no rookie starts a season with it.
   (amended 2026-10-08, F1) Portrait: face = d % n, u16@27 = face, byte 29 bit0 = grp[face]. (n, grp) default to
   30 and the stock UTIL DS:776e table (1 at 3, 4, 16, 18, 20, 21, 22, 25, 27: dark skin); the old `face >= 15` flag
   rule was wrong. When ANMS\PORTRAIT.ANM (count c) and ANMS\FACEGRP.DAT (length L, one flag byte per face, written
@@ -293,6 +295,7 @@ Pipeline (each step over teams in sorted file order unless stated):
    (pitchers and batters counted separately: T.POOL_KEEP_P, T.POOL_KEEP_B) are written to POOL1..POOL4 lowest
    vacant slots of their type with byte 141 += 1 (both halves); the rest retire unsigned. Vacant pool slots are
    the next draft class.
+7c. (amended 2026-10-12) After C9 and before step 8: the C11 repair of every team, pool and ALLSTAR image.
 8. HISTORY bytes 16..17 = start word, 1..2 = end word. ROSTERS.TXT (CRLF, rewritten each run): one line per
    event in order: `RET <team stem> <name>` (unsigned retirement), `DRAFT <team> <name>` (team = the file whose
    C4 vacancy produced the rookie), `REL <team> <name>`, `MKT <team> <name>`, `SIGN <team> <name> <from>`,
@@ -579,4 +582,40 @@ place: roster record s and season record s + 40, built like a C4 rookie (stat co
 with the chosen fields and ratings and no random draw; the season half is the record with the season stat offsets
 zeroed. No point budget, salary not shown. The new player takes the replaced player's lineup and staff spots
 unchanged (no repair pass), and the replaced player leaves the league (not added to any pool or history).
+Amendment 2026-10-12 (Q8, C11): the roster record carries the C11 line of its typed ratings (written after the
+rating nibbles), and the season half zeroes every C11 SEASON_STAT_BYTES offset. The SLOT list has a 5th column
+ROLE (CX(36), 5 wide, left): ROT if the slot is in header 111..115, PEN 116..120, START 122..157, BENCH 194..221,
+RES 222..236, else blank (blank for an empty slot). CONFIRM on a RES slot shows a 4th row
+`RESERVE SLOT: ACTIVATE HIM TO PLAY.` (a reserve never plays until moved to the active roster in the stock roster
+screens).
+
+## C11. Ratings-implied stat line (added 2026-10-12, Q8; Python tools/m4/statline.py, C tools/m4/statline.h)
+
+Found 2026-10-12 on the rig: BACK drives a batter's hitting from the roster-half stat line (records 0..39, the
+career line C1 merges into), not from the rating nibbles. The C4 placeholder line (batters G 0, AB 40, nothing
+else; pitchers G 0, IP10 200, nothing else) made every rookie and every created player hit about .000 whatever his
+ratings. fill(rec) replaces it with a line whose tools/ratings.py ratings equal the stored nibbles.
+- Bytes: fill zeroes SEASON_STAT_BYTES = 23, 32..73, 77..93, 95..132 (exactly the bytes the shipped season halves
+  hold at zero) and writes the line there; no other byte changes. Batted-ball words 61..69 = 532 450 200 450 200
+  (every shipped batter). Pitcher iff pos1 (31 lo) == 0. Nibble 0 counts as 1, above 12 as 12, endurance cap 10.
+- Batters: G 140, AB 500, BB and SO per 1000 AB by hit and run, H nudged until hit and run is exact, extra bases
+  aimed inside the power step and nudged until power is exact, SB/CS and 2B-to-3B moves for speed. R and RBI from H,
+  HR and BB. L/R split by bats (L 223, else 332 per mille to the left column). Fielding (pos1 1..8): E from range,
+  A the least that makes arm exact, PO the least that makes range exact; catchers RTO u16@90 = 220 + 26 * arm.
+- Pitchers: starter iff endurance >= 5 (G 33, GS 33, CG min(20, 2(E - 4)), SHO CG / 3), else reliever (G 50, SV
+  10); IP10 rounded to whole innings; BB nudged for control, H for velocity, HR 7 % of H, ER = R from H, BB, HR; W-L
+  from the ERA; the pitcher's own batting line AB 60, H 9 (power 1, hit and run 1, the stock pitcher nibbles).
+- Exactness (whole rating grid): hit and run, arm, control, velocity, endurance always; power except where H makes
+  it impossible (power is between the BA ladder step and the 4 x BA step); range except where A alone already
+  exceeds it; speed never above the target, 1 to 2 below on 375 of 5184 power/hit-run/speed triples. Bunt is not
+  targeted (the stored bunt nibble stays).
+- Placeholder signature (is_placeholder): byte 0 != 0, G == 0, and pitcher IP10 == 200 with H, BB, SO 0, or batter
+  AB == 40 with H, BB, SO 0. Zero matches in the 57 shipped V20s.
+- Where: CREATE writes it on save (C10 amendment); ROSTERS repairs every placeholder roster record of every team,
+  pool and ALLSTAR image after C9 (C6 step 7c), which also fixes players created before this amendment.
+- Integer only; the C port matches the Python byte for byte (host grid, random records, shipped V20s; 16-bit DOS
+  subset in DOSBox-X). The win-percent division rounds toward zero (C semantics).
+- Accepted: the line is a one-season career prior. The game's own career display shows it, and the sim's rates
+  blend it with real seasons as C1 merges them in. HISTORY totals, leaders, awards and WAR read season halves, so
+  they never include it.
 

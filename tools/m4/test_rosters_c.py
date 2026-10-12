@@ -516,6 +516,18 @@ def test_synth_hist_shorter_than_32(tmp_path):
 
 # ---------------- test 4: DOS build + real-DOS parity ----------------
 
+def test_statline_repair_parity(tmp_path):
+    """Placeholder roster lines (a batter and a pitcher rookie in the team, pool and
+    ALLSTAR images, test_rosters.rookie_league) repaired the same way by both runs."""
+    from test_rosters import rookie_league
+    lp = rookie_league(str(tmp_path / 'py'))
+    lc = rookie_league(str(tmp_path / 'c'))
+    assert rosters_py.run(*lp) == 0
+    c = HOST_RUN(*lc)
+    assert c.returncode == 0, f'C rc {c.returncode}: {c.stderr}'
+    parity(collect(lp[0], lp[2]), lc[0], lc[2])
+
+
 def test_dos_build():
     exe2 = os.path.join(HERE, RC, 'ROSTERS2.EXE')
     if not os.path.isdir(WATCOM):

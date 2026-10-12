@@ -17,6 +17,7 @@ for _p in (_TOOLS, _HERE):
         sys.path.insert(0, _p)
 
 import rosters                                    # noqa: E402
+import statline                                   # noqa: E402
 from m4.rollover import Rng                       # noqa: E402
 from m4 import dynasty_ref                        # noqa: E402
 from v20 import HDR, REC, F, _get, _set           # noqa: E402
@@ -1422,3 +1423,142 @@ def test_depth_rebuild_short_bench_keeps_image_size():
     for dh in (0, 1):
         b = H_BENCH + dh * 14
         assert [x for x in img[b:b + 7] if x != 0xff] == [x for x in img[b + 7:b + 14] if x != 0xff]
+
+
+# ---------------------------------------------------------------------------
+# 12. Placeholder roster lines (statline) repaired by run()
+# ---------------------------------------------------------------------------
+
+RATED_BAT = {'power': 7, 'hit_run': 9, 'speed': 10, 'range': 11, 'arm': 12}
+RATED_PIT = {'control': 9, 'velocity': 10, 'endurance': 6}
+
+
+def put_rookie(img, slot, last, pos1, ratings):
+    """A rookie as CREATE and the dynasty rookie path leave him: named, with the placeholder
+    roster line (batter AB 40, pitcher IP 200) and an empty season half."""
+    put_player(img, slot, last, 'R', 22, pos1, ratings, exp=0)
+    base = HDR + REC * slot
+    r = bytearray(img[base:base + REC])
+    if pos1 == 0:
+        _set(r, *F['ip10'], 200)
+    else:
+        _set(r, *F['ab_l'], 20)
+        _set(r, *F['ab_r'], 20)
+    img[base:base + REC] = bytes(r)
+
+
+def put_veteran(img, slot, last):
+    """A veteran whose roster line is a real one (140 G, 500 AB): not a placeholder. His
+    season half has no games, so every ALLSTAR candidate qualifies."""
+    put_player(img, slot, last, 'V', 31, 2, {'power': 6, 'hit_run': 6, 'speed': 6,
+                                             'range': 6, 'arm': 6}, exp=3)
+    base = HDR + REC * slot
+    r = bytearray(img[base:base + REC])
+    _set(r, *F['games'], 140)
+    _set(r, *F['ab_l'], 250)
+    _set(r, *F['ab_r'], 250)
+    img[base:base + REC] = bytes(r)
+
+
+def locate(images, last):
+    """(image, base) of the first roster record whose last name starts with last (the
+    name field loses its first letter to the active flag), or (None, None)."""
+    for img in images:
+        for slot in range(40):
+            base = HDR + REC * slot
+            if img[base] and bytes(img[base:base + 12])[1:].startswith(last):
+                return img, base
+    return None, None
+
+
+POS_TEMPLATE = (1, 5, 3, 4, 2, 7, 6, 8, 9)      # C SS 2B 3B 1B CF LF RF DH at slots 16..24
+
+
+def rookie_league(root):
+    """A league dir: CLASALE1 with a batter rookie (slot 20, a 1B) and a veteran (slot 30,
+    real roster line), POOL1 with a pitcher rookie (slot 2), ALLSTAR1 whose template slot
+    20 holds the same batter rookie. The ALLSTAR refresh picks the team's rookie for
+    that slot (the only good 1B; every candidate qualifies, as no one has season games).
+    Returns (league, snap, hist, retired)."""
+    league = os.path.join(root, 'league')
+    snap = os.path.join(root, 'snap')
+    os.makedirs(league)
+    os.makedirs(snap)
+    make_maj().save(os.path.join(league, 'CLASSIC.MAJ'))
+    team = full_image('clasale1')
+    for slot, pos1 in zip(range(16, 25), POS_TEMPLATE):
+        put_player(team, slot, 'S%02d' % slot, 'B', 25, pos1,
+                   {'power': 1, 'hit_run': 1, 'speed': 1, 'range': 1, 'arm': 1})
+    put_rookie(team, 20, 'RBATTER', 2, RATED_BAT)
+    put_veteran(team, 30, 'VETRAN')
+    team = bytes(team)
+    pool = [bytearray(rosters.pool_blank(bytearray(make_team_v20()))) for _ in range(4)]
+    put_rookie(pool[0], 2, 'RPITCHER', 0, RATED_PIT)
+    star = bytearray(make_team_v20())
+    for slot in range(3):
+        put_player(star, slot, 'T%02d' % slot, 'P', 27, 0,
+                   {'control': 1, 'velocity': 1, 'endurance': 1})
+    for slot, pos1 in zip(range(16, 25), POS_TEMPLATE):
+        put_player(star, slot, 'T%02d' % slot, 'B', 27, pos1,
+                   {'power': 1, 'hit_run': 1, 'speed': 1, 'range': 1, 'arm': 1})
+    put_rookie(star, 20, 'RBATTER', 2, RATED_BAT)
+    open(os.path.join(league, 'CLASALE1.V20'), 'wb').write(team)
+    open(os.path.join(snap, 'CLASALE1.V20'), 'wb').write(team)
+    for i, img in enumerate(pool, 1):
+        open(os.path.join(league, 'POOL%d.V20' % i), 'wb').write(bytes(img))
+    open(os.path.join(league, 'ALLSTAR1.V20'), 'wb').write(bytes(star))
+    hist = os.path.join(root, 'HISTORY.DAT')
+    hh = bytearray(32)
+    hh[10] = 1
+    open(hist, 'wb').write(bytes(hh))
+    retired = os.path.join(root, 'RETIRED.DAT')
+    open(retired, 'wb').write(b'\0')
+    return league, snap, hist, retired
+
+
+def _league_images(league):
+    """Every V20 of the league dir (team, pool and ALLSTAR images), by file name."""
+    out = {}
+    for name in sorted(os.listdir(league)):
+        if name.upper().endswith('.V20'):
+            out[name] = bytearray(open(os.path.join(league, name), 'rb').read())
+    return out
+
+
+def _occurrences(images, last):
+    """Every roster record of the images whose last name starts with last."""
+    out = []
+    for name, img in images.items():
+        for slot in range(40):
+            base = HDR + REC * slot
+            if img[base] and bytes(img[base:base + 12])[1:].startswith(last):
+                out.append((name, slot, bytes(img[base:base + REC])))
+    return out
+
+
+def test_run_repairs_placeholder_rookies(tmp_path):
+    """run() fills every placeholder roster record of a team, pool or ALLSTAR image with
+    statline.fill of its own record and leaves a real roster line alone. Each rookie is
+    found by name in every image he lands in (a team, the ALLSTAR copy, a pool)."""
+    league, snap, hist, retired = rookie_league(str(tmp_path))
+    pre = _league_images(league)
+    rookie_pre = {}
+    for last in (b'BATTER', b'PITCHER'):
+        occ = _occurrences(pre, last)
+        assert occ, last
+        assert all(statline.is_placeholder(rec) for _, _, rec in occ), last
+        rookie_pre[last] = occ[0][2]
+    vet_pre = bytes(pre['CLASALE1.V20'][HDR + REC * 30:HDR + REC * 31])
+    assert rosters.run(league, snap, hist, retired) == 0
+    post = _league_images(league)
+    for last, rec_pre in rookie_pre.items():
+        occ = _occurrences(post, last)
+        assert occ, last
+        for name, slot, rec in occ:
+            assert rec == bytes(statline.fill(bytearray(rec_pre))), (name, slot)
+            assert not statline.is_placeholder(rec), (name, slot)
+    assert bytes(post['CLASALE1.V20'][HDR + REC * 30:HDR + REC * 31]) == vet_pre
+    for name, img in post.items():
+        for slot in range(40):
+            rec = bytes(img[HDR + REC * slot:HDR + REC * (slot + 1)])
+            assert not statline.is_placeholder(rec), (name, slot)

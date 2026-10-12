@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 import rookies  # noqa: E402
-import team_fill  # noqa: E402
+import statline  # noqa: E402
 from dynview import (C_BLACK, C_WHITE, C_DRED, C_TITLE_RED, C_HEADER_GOLD,  # noqa: E402
                      C_ROW_TAN, C_GRID_GRAY, FB_SIZE, FB_W, KEY_ESC, KEY_ENTER,  # noqa: E402
                      KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_PGUP, KEY_PGDN,  # noqa: E402
@@ -75,7 +75,8 @@ PIT_FIELDS = [('last', 'LAST NAME'), ('first', 'FIRST NAME'), ('pos', 'POSITION'
 
 COLS_TEAM = [('TEAM', _cx(0), 20, 'L'), ('LEAGUE', _cx(30), 12, 'L')]
 COLS_SLOT = [('SLOT', _cx(0), 4, 'L'), ('PLAYER', _cx(5), 20, 'L'),
-             ('POS', _cx(26), 4, 'L'), ('AGE', _cx(31), 4, 'R')]
+             ('POS', _cx(26), 4, 'L'), ('AGE', _cx(31), 4, 'R'),
+             ('ROLE', _cx(36), 5, 'L')]
 COLS_ONE = [(' ', _cx(0), 42, 'L')]
 
 FOOT_TEAM = 'UP DOWN   ENTER PICK   ESC EXIT'
@@ -219,15 +220,16 @@ def build_record(form, pitcher, year, grp):
             rookies._set_nibble_hi(rec, off, v)
         else:
             rookies._set_nibble_lo(rec, off, v)
+    statline.fill(rec)                           # the stat line the ratings imply
     gen._write_salary(rec, position)
     return bytes(rec)
 
 
 def season_half(rec):
     """The season record of a new player: the roster record with every season
-    stat byte zeroed."""
+    stat byte (statline.SEASON_STAT_BYTES) zeroed."""
     out = bytearray(rec)
-    for off in team_fill._SEASON_STAT_OFFSETS:
+    for off in statline.SEASON_STAT_BYTES:
         out[off] = 0
     return bytes(out)
 
@@ -257,6 +259,19 @@ def save_slot(st, ctx):
     img[off_r:off_r + RECORD_LEN] = rec
     img[off_s:off_s + RECORD_LEN] = srec
     return bytes(img)
+
+
+# team header slot lists (byte ranges of the team image, each byte a slot index or 0xff)
+ROLE_LISTS = (('ROT', 111, 115), ('PEN', 116, 120), ('START', 122, 157),
+              ('BENCH', 194, 221), ('RES', 222, 236))
+
+
+def slot_role(image, s):
+    """Role of roster slot s in the team header: ROT, PEN, START, BENCH or RES, else ''."""
+    for role, lo, hi in ROLE_LISTS:
+        if s in image[lo:hi + 1]:
+            return role
+    return ''
 
 
 def control_return(path):
@@ -456,9 +471,9 @@ def _list_view(st, ctx):
             if rec[0]:
                 rows.append((slot_label(s), name_display(rec[0:20], 20),
                              POS_LABELS[rec[rookies.OFF_POS] & 15],
-                             '%d' % rec[rookies.OFF_AGE]))
+                             '%d' % rec[rookies.OFF_AGE], slot_role(st['image'], s)))
             else:
-                rows.append((slot_label(s), '(EMPTY)', '', ''))
+                rows.append((slot_label(s), '(EMPTY)', '', '', ''))
         title = 'PICK A SLOT: ' + ctx['teams'][st['team']][2]
         return title, COLS_SLOT, rows, FOOT_SLOT, True
     if scr == S_CONFIRM:
@@ -467,6 +482,8 @@ def _list_view(st, ctx):
                 ('IN SLOT ' + slot_label(st['slot']) + ' OF '
                  + ctx['teams'][st['team']][2],),
                 ('THE OLD PLAYER LEAVES THE LEAGUE.',)]
+        if slot_role(st['image'], st['slot']) == 'RES':
+            rows.append(('RESERVE SLOT: ACTIVATE HIM TO PLAY.',))
         return 'REPLACE PLAYER', COLS_ONE, rows, FOOT_CONFIRM, False
     f = st['form']
     who = (f['first'] + ' ' + f['last']) if f['first'] else f['last']

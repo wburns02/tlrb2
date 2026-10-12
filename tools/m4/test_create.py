@@ -17,7 +17,8 @@ import pytest
 import create as cr
 import dynview
 import rookies
-import team_fill
+import statline
+import ratings as rt
 
 FILES = '/mnt/nvme/tlrb2/files'
 HAVE_FONTS = os.path.exists(os.path.join(FILES, 'MAIN.FNT'))
@@ -51,9 +52,11 @@ def named_rec(last, first, age, pos, year=100):
 
 
 def make_v20(name, recs):
-    """295 byte header (name in bytes 0..13) and 80 records; recs = {index: bytes}."""
+    """295 byte header (name in bytes 0..13, every slot list empty: 0xff) and 80 records;
+    recs = {index: bytes}."""
     img = bytearray(IMAGE)
     img[0:len(name)] = name
+    img[111:237] = b'\xff' * 126
     for r, rec in recs.items():
         off = 295 + 143 * r
         img[off:off + 143] = rec
@@ -235,9 +238,11 @@ def test_slot_rows(tmp_path):
     title, cols, rows, footer, hl = cr._list_view(st, ctx)
     assert title == 'PICK A SLOT: BOSTON' and hl is True
     assert len(rows) == 40
-    assert rows[0] == ('P1', 'Adams, Joe', 'P', '30')
-    assert rows[1] == ('P2', '(EMPTY)', '', '')
-    assert rows[16] == ('B1', 'Baker, Al', 'SS', '25')
+    assert rows[0] == ('P1', 'Adams, Joe', 'P', '30', '')
+    assert rows[1] == ('P2', '(EMPTY)', '', '', '')
+    assert rows[16] == ('B1', 'Baker, Al', 'SS', '25', '')
+    assert len(cols) == 5 and cols[4][0] == 'ROLE'
+
     assert footer == 'UP DOWN   ENTER PICK   ESC TEAMS'
 
 
@@ -480,15 +485,19 @@ def test_build_record_batter():
     assert len(rec) == 143
     assert rec[0:5] == b'Smith' and rec[5:12] == bytes(7)
     assert rec[12:14] == b'Al' and rec[14:20] == bytes(6)
-    assert (rec[20], rec[21], rec[22], rec[23]) == (25, 117, 0, 0)
+    assert (rec[20], rec[21], rec[22], rec[23]) == (25, 117, 0, 140)
     assert rec[29] == 0xAD                          # speed 10 hi; S, R, group 1
     assert rec[31] == 4 and rec[30] == 0x02
     assert struct.unpack('<H', rec[27:29])[0] == 3
     assert (rec[74], rec[75], rec[94]) == (0x87, 0x79, 0xBC)
     assert (rec[76], rec[134], rec[135]) == (0x78, 0x31, 0x10)
-    assert struct.unpack('<H', rec[37:39])[0] == 20
-    assert struct.unpack('<H', rec[39:41])[0] == 20
+    # the stat line: 500 AB split by bats (switch: 332 per mille left)
+    assert struct.unpack('<H', rec[37:39])[0] == 166
+    assert struct.unpack('<H', rec[39:41])[0] == 334
     assert struct.unpack('<H', rec[25:27])[0] == rookies.SALARY_BATTER
+    # the ratings read back from the stat line
+    assert (rt.power(rec), rt.hit_and_run(rec), rt.speed(rec)) == (7, 9, 10)
+    assert rt.arm(rec) == 12
 
 
 def test_build_record_pitcher():
@@ -499,7 +508,9 @@ def test_build_record_pitcher():
     assert rec[134] == 0xA9 and rec[135] == 0x64     # control 9, velocity 10, endurance 6
     assert (rec[74], rec[75], rec[94]) == (0x11, 0x01, 0x77)
     assert rec[136:141] == bytes([0x77, 0x77, 0x77, 0x77, 7])
-    assert struct.unpack('<H', rec[101:103])[0] == 200
+    # IP 185.0 from endurance 6: a starter (33 GS) with 4 complete games
+    assert struct.unpack('<H', rec[101:103])[0] == 1850
+    assert (rt.control(rec), rt.velocity(rec), rt.endurance(rec)) == (9, 10, 6)
     assert struct.unpack('<H', rec[25:27])[0] == rookies.SALARY_PITCHER
     assert rec[30] == 0x02 and rec[21] == 117
 
@@ -526,12 +537,91 @@ def test_season_half_zeroes_only_season_bytes():
             'r': [7, 8, 9, 10, 11, 12], 'face': 0}
     rec = cr.build_record(form, False, 117, rookies.default_faces()[1])
     season = cr.season_half(rec)
-    offs = team_fill._SEASON_STAT_OFFSETS
+    offs = set(statline.SEASON_STAT_BYTES)
+    assert len(offs) == 98
     for i in range(143):
         if i in offs:
             assert season[i] == 0
         else:
             assert season[i] == rec[i]
+
+
+def _header_with(path, offs):
+    """Write the team V20 at path with header bytes offs = {offset: value} set."""
+    with open(path, 'r+b') as fh:
+        for off, v in offs.items():
+            fh.seek(off)
+            fh.write(bytes([v]))
+
+
+def test_saved_max_ratings_read_back_from_roster(tmp_path):
+    """A saved batter with every rating 12 reads back 12 from his roster record and hits
+    .350 or better; a saved pitcher with control 12, velocity 12, endurance 10 reads
+    back exact."""
+    lg = make_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    st = to_edit(ctx, 0, 16)                       # named batter B1, SS: confirm first
+    keys = typed('Lowe') + [DOWN] * 5 + ([RIGHT] * 6 + [DOWN]) * 6 + [DOWN, ENTER, ENTER]
+    st, _ = walk(ctx, keys, st)
+    assert st['screen'] == cr.S_DONE
+    img = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
+    rec = img[295 + 143 * 16:295 + 143 * 17]
+    assert rec[0:4] == b'LOWE'                  # typed names are stored upper case
+    assert (rt.power(rec), rt.hit_and_run(rec), rt.speed(rec)) == (12, 12, 12)
+    assert (rt.rng(rec), rt.arm(rec)) == (12, 12)
+    assert rt.s2(rec, 41) * 1000 >= 350 * rt.s2(rec, 37)
+    st = to_edit(ctx, 0, 1)                        # empty pitcher P2
+    keys = typed('Ruiz') + [DOWN] + typed('Tom') + [DOWN] * 4 + ([RIGHT] * 6 + [DOWN]) * 2
+    keys += [RIGHT] * 6 + [DOWN] * 2 + [ENTER]
+    st, _ = walk(ctx, keys, st)
+    assert st['screen'] == cr.S_DONE
+    img = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
+    rec = img[295 + 143:295 + 143 * 2]
+    assert (rt.control(rec), rt.velocity(rec), rt.endurance(rec)) == (12, 12, 10)
+
+
+def test_slot_role_six_outcomes():
+    """Each header list gives its role, the list edges included; a slot in no list is ''."""
+    img = bytearray(b'\xff' * 295)
+    img[111] = 1          # ROT
+    img[115] = 2          # ROT, last byte of the list
+    img[116] = 3          # PEN
+    img[122] = 4          # START
+    img[157] = 5          # START, last byte
+    img[194] = 6          # BENCH
+    img[221] = 7          # BENCH, last byte
+    img[222] = 8          # RES
+    img[236] = 9          # RES, last byte
+    want = {1: 'ROT', 2: 'ROT', 3: 'PEN', 4: 'START', 5: 'START', 6: 'BENCH', 7: 'BENCH',
+            8: 'RES', 9: 'RES', 10: ''}
+    for s, role in want.items():
+        assert cr.slot_role(bytes(img), s) == role, s
+    img[158] = 11         # just past START: no list
+    img[237] = 11         # just past RES
+    assert cr.slot_role(bytes(img), 11) == ''
+
+
+def test_role_cell_and_reserve_confirm_row(tmp_path):
+    """The ROLE cell shows the slot's role; a RES slot's confirm screen gets the fourth
+    row, any other slot keeps three."""
+    lg = make_league(str(tmp_path / 'L'))
+    _header_with(os.path.join(lg, 'BOS.V20'), {222: 16, 111: 1})   # B1 in RES, P2 in ROT
+    ctx = ctx_for(lg)
+    st = to_slot(ctx, 0)
+    title, cols, rows, footer, hl = cr._list_view(st, ctx)
+    assert rows[16] == ('B1', 'Baker, Al', 'SS', '25', 'RES')
+    assert rows[0] == ('P1', 'Adams, Joe', 'P', '30', '')
+    assert rows[1] == ('P2', '(EMPTY)', '', '', '')
+    st = to_edit(ctx, 0, 16)
+    st, _ = walk(ctx, typed('Lowe') + [DOWN] * 12 + [ENTER], st)
+    assert st['screen'] == cr.S_CONFIRM
+    title, cols, rows, footer, hl = cr._list_view(st, ctx)
+    assert len(rows) == 4
+    assert rows[3] == ('RESERVE SLOT: ACTIVATE HIM TO PLAY.',)
+    st = to_edit(ctx, 0, 0)                        # P1 is not in RES: three rows
+    st, _ = walk(ctx, typed('Lowe') + [DOWN] * 12 + [ENTER], st)
+    assert st['screen'] == cr.S_CONFIRM
+    assert len(cr._list_view(st, ctx)[2]) == 3
 
 
 def test_year_byte_rules():

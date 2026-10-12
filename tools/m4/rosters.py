@@ -35,6 +35,7 @@ from m4.rollover import Rng, GM          # noqa: E402  (xorshift16, dev grade)
 from m4 import history as history_mod    # noqa: E402  (mapped_teams)
 from v20 import HDR, REC, F, _get        # noqa: E402
 import war                               # noqa: E402  (ipiv_outs)
+import statline                          # noqa: E402  (placeholder stat lines)
 
 # header list offsets (v20.py's constants, restated so the pure core stays
 # self-contained)
@@ -1182,6 +1183,13 @@ def run(league_dir, snap_dir, hist_path, retired_path):
                 img = bytearray(open(sp, 'rb').read())
                 allstar_refresh(img, teams, base)
                 stars.append((sp, img))
+        # a placeholder line (created or dynasty rookie) becomes the line its ratings imply
+        for _, _, img in teams:
+            statline.repair_image(img)
+        for pimg in pool:
+            statline.repair_image(pimg)
+        for _, img in stars:
+            statline.repair_image(img)
         # write every output to <path>.TMP first, then os.replace them all only
         # after every TMP write succeeded (the except removes the TMPs), so an
         # IO error leaves every file untouched
