@@ -385,6 +385,15 @@ for an award with no winner. Written every season (also past 64) and dropped wit
 other record. Milestone readers (MILESTONES, REVIEW) skip kinds >= 64. DYNVIEW shows them on SEASON AWARDS (hub key
 9; C8). A season recorded before this amendment has no award records; SEASON AWARDS then falls back to the six
 winners in the season entry.
+Leader records (second amendment 2026-10-11, closes IDEAS "leaders of an archived season"): after the award
+records HISTWR appends, AL block then NL block, k ascending, one record per category that has a leader: kind = 128 + k
+(AL) or 160 + k (NL), idx = the leader's entry index, value = the stat as u16 (saturating 65535). Candidates are the
+same per-league list the awards use. k: 0 BA = h * 1000 / ab, max, over pa >= 502 and ab > 0; 1 HR; 2 RBI; 3 H;
+4 SB; 5 W; 6 ERA = er * 2700 / outs (ERA x100), MIN, over outs >= 486; 7 SO (pso); 8 SV; 1..5, 7, 8 are max and need
+a value > 0. Ties go to the lower entry index. Written every season, dropped on a rerun like the award records.
+Milestone readers skip them (kind >= 64). SEASON AWARDS lists them after the award records in kind order: AWARD
+`AL BA LEADER` .. `NL SV LEADER` (`<lg> <cat> LEADER`, cat BA HR RBI H SB W ERA SO SV), NAME, VALUE `.352 BA`,
+`47 HR`, `131 RBI`, `210 H`, `62 SB`, `24 W`, `1.87 ERA`, `301 SO`, `45 SV`. Seasons recorded before have none.
 
 ## C8. The patched TONY2.BAT and DYNVIEW (added 2026-10-07; supersedes the C5 BAT block)
 
