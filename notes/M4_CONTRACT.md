@@ -902,7 +902,7 @@ Browser endpoints (reads need _allowed(); every POST/DELETE needs _allowed(write
 - POST /studio/jobs, JSON body (Content-Length <= 6 MiB): {"prompt": str, "image": base64 str}; either may be
   absent or empty but not both. prompt: <= 300 chars after strip, printable ASCII only (0x20..0x7e), else 400.
   image: base64 that decodes to <= 4 MiB starting with the PNG (89 50 4E 47 0D 0A 1A 0A) or JPEG (FF D8 FF)
-  magic, else 400. More than 3 jobs queued or running: 429. Creates the job {id, state "queued", prompt,
+  magic, else 400. With 3 jobs already queued or running: 429 (at most 3 active). Creates the job {id, state "queued", prompt,
   has_image, created, claimed: null, error: null, variants: 0, accepted: []}; 200 {"id": id}.
 - GET /studio/jobs/<id>: 200 {"id", "state" (queued|running|done|failed), "error", "variants", "accepted",
   "position" (1-based place among queued jobs by created, or 0)}; 404 unknown.
