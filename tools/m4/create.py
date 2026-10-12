@@ -511,12 +511,16 @@ def _draw_list(fb, main_ft, cols, rows, cursor, hl, footer):
     draw_text(fb, main_ft, 10, 185, footer, C_WHITE)
 
 
+# name-entry cursor: '^' draws a filled ball in MAIN.FNT; '_' draws a down arrow there
+CURSOR = '^'
+
+
 def _edit_value(st, fld, ctx, cur):
     form = st['form']
     if fld in ('last', 'first'):
         s = form[fld]
         mx = LAST_MAX if fld == 'last' else FIRST_MAX
-        return s + '_' if cur and len(s) < mx else s
+        return s + CURSOR if cur and len(s) < mx else s
     if fld == 'pos':
         return POS_LABELS[form['pos']]
     if fld == 'hands':

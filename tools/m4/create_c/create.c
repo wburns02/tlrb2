@@ -62,6 +62,7 @@
  * half of slot s, record s + 40 its season half */
 #define RECORD_LEN 143
 #define HEADER_LEN 295
+#define CURSOR "^"
 #define ROSTER_SLOTS 40
 #define PITCHER_SLOTS 16
 #define IMAGE_LEN (HEADER_LEN + 80 * RECORD_LEN)
@@ -1234,7 +1235,7 @@ static void edit_value(const State *st, int fld, int cur, char *dst)
         int mx = fld == FLD_LAST ? LAST_MAX : FIRST_MAX;
         strcpy(dst, s);
         if (cur && (int)strlen(s) < mx)
-            strcat(dst, "_");
+            strcat(dst, CURSOR);  /* glyph '^' is a filled ball in the game font; '_' is an arrow */
     } else if (fld == FLD_POS) {
         strcpy(dst, POS_LABELS[f->pos]);
     } else if (fld == FLD_HANDS) {
