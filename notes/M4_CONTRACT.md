@@ -874,3 +874,18 @@ MILESTONES' YEAR column, the titles (`1995 AWARDS`, `1995 STANDINGS`, `1995 WORL
 `DYNASTY MODE: 1996`). Text with no season keeps its wording. ABOUT THE MODS gains, after the playoff format block:
 `LEADERS: CAREER, SINGLE SEASON AND BY`, `YEAR. TAB SWITCHES. ENTER OR A CLICK ON A`, `PLAYER OPENS HIS CARD.`,
 `START YEAR: DYNASTY SETTINGS, LEFT RIGHT.`
+
+## C14. Faces: more generic faces, custom faces, Portrait Studio (added 2026-10-12)
+
+### C14.1 Face id layout (ANMS\PORTRAIT.ANM, ANMS\FACEGRP.DAT)
+- Generic faces: ids 0..G-1, G = FACEGRP.DAT length (30 <= G <= 400). Rookies draw only these (load_faces / the
+  DYNASTY blob rule n = min(L, c) is unchanged: L = G).
+- Custom faces (Portrait Studio): ids 400..c-1, c = PORTRAIT.ANM count (<= 981). Frames G..399 are padding (copies of
+  frame 0) whenever c > 400, so a custom face's frame sits at its id.
+- CREATE A PLAYER's FACE field walks the list [0..G-1] then [400..c-1] (the second part only when c > 400):
+  LEFT / RIGHT -1 / +1, PGUP / PGDN -10 / +10, each wrapping around the list modulo its length. Value text
+  `<id + 1> OF <G>` for a generic face, `CUSTOM <id - 399>` for a custom one. Group bit written to the record:
+  FACEGRP byte & 1 for a generic face, 0 for a custom one. default_form's face rule is unchanged.
+- tools/faces.py set2: about 300 prompts from a fixed grid (heritage x age band x facial hair x build x expression),
+  each prompt's group flag from its heritage, fixed seeds; frames that fail the cap QC go to rejects as today. They are
+  appended after the installed generic faces, FACEGRP.DAT grows with them, G stays <= 400.
