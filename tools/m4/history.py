@@ -51,6 +51,8 @@ MILESTONE_SEASON = [(32, 'HR', None, None), (33, 'H', None, None), (34, 'SB', No
                     (35, 'BA', 'pa', 502), (36, 'W', None, None), (37, 'PSO', None, None),
                     (38, 'ERA100', 'outs486', None), (39, 'SV', None, None)]
 MILESTONE_RECORD = 8        # 8 B records in MILESTON.DAT
+# C7 award record kinds: AL block 64 + k, NL block 96 + k (k in award_records)
+AWARD_KIND_AL, AWARD_KIND_NL = 64, 96
 # career-total keys used by the milestone tables, as TOTALS indexes
 MILESTONE_IDX = {'H': 2, 'HR': 5, 'RBI': 7, 'SB': 10, 'W': 13, 'SV': 15, 'PSO': 23}
 # season-half milestone stats, as collected keys (H/HR/SB = L+R; W/SV/PSO as in C2;
@@ -320,7 +322,8 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
        season WAR10, career WAR10 += season, top-7 and JAWS10.
     C7 (after step 3): season awards (6 winners in season bytes 88..99, career award
     counts in player bytes 152..156) and MILESTON.DAT next to HISTORY.DAT
-    (read, drop season_no >= current, append this season in entry index order).
+    (read, drop season_no >= current, append this season in entry index order,
+    then the AL and NL award records of this season: award_records).
     retirees = {v20 basename: [record indexes]} from rollover(); applied later
     by mark_retired() (step 4 runs after the P1 rollover)."""
     hist = History.load(hist_path)
@@ -453,6 +456,8 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     for idx, c, before, after in ordered:
         exps[idx] = {'season': season_no, 'before': before, 'after': after}
     ms_new = season_milestones([c for _, c, _, _ in ordered], exps)
+    ms_new += award_records(season_no, alo, AWARD_KIND_AL)
+    ms_new += award_records(season_no, nlo, AWARD_KIND_NL)
     write_milestones(hist_path, ms_old + ms_new)
     hist.done = 1
     hist.flush()
@@ -530,8 +535,9 @@ def gold_glove_fp1000(po1, a1, e1):
 def pick_awards(recs, bat100_of):
     """C7 award selection over one league's candidate records. recs = the per-record
     collect() dicts of one league in player entry index order (ascending). Returns a
-    dict with keys mvp, cy, roy (entry index or None) and gg, ss (entry index per
-    position 1..9, or None). bat100_of(c) = the record's bat100 (only for batters)."""
+    dict with keys mvp, cy, roy (the winning candidate dict or None) and gg, ss (the
+    winning candidate per position, 1..8 and 1..9, or None). bat100_of(c) = the
+    record's bat100 (only for batters)."""
     out = {}
     # MVP: batters with pa >= 502, max season WAR10
     out['mvp'] = max_by_key([c for c in recs if c['pos1'] != 0 and c['pa'] >= 502],
@@ -566,6 +572,27 @@ def pick_awards(recs, bat100_of):
         ss[q] = max_by_key([c for c in recs if c['pos1'] == q and c['pa'] >= 300],
                            bat100_of)
     out['ss'] = ss
+    return out
+
+
+def award_records(season_no, sel, base):
+    """C7 award records of one league: (season, idx, base + k, value & 0xffff) for every award with a
+    winner, k ascending: 0 MVP, 1 CY, 2 ROY (value = season WAR10), 2 + q Gold Glove q = 1..8 (value =
+    gold_glove_fp1000(po1, a1, e1)), 10 + q Silver Slugger q = 1..9 (value = bat100)."""
+    slots = [(0, sel['mvp']), (1, sel['cy']), (2, sel['roy'])]
+    slots += [(2 + q, sel['gg'].get(q)) for q in range(1, 9)]
+    slots += [(10 + q, sel['ss'].get(q)) for q in range(1, 10)]
+    out = []
+    for k, c in slots:
+        if c is None:
+            continue
+        if k < 3:
+            value = c['w10']
+        elif k < 11:
+            value = gold_glove_fp1000(c['po1'], c['a1'], c['e1'])
+        else:
+            value = c['bat100']
+        out.append((season_no, c['index'], base + k, value & 0xffff))
     return out
 
 

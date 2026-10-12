@@ -892,6 +892,72 @@ def test_milestone_rerun_idempotent(tmp_path):
     assert len(outs[0]) > 0, 'no milestone records written'
 
 
+def full_award_league(ldir):
+    """AL on CLASALE1, NL on NL01. Each league: a pitcher (slot 0, 540 outs, exp 1), a
+    regular at every position 1..8 (slots 1..8: pa 550, games 150, exp 1) and, as the
+    position 6 regular, an exp-0 rookie (slot 6). The AL rookie hits poorly (negative WAR10
+    and bat100, so his ROY and SS(6) values are negative); the AL adds a DH (slot 9). Every
+    award has a winner: AL 20 records, NL 19 (no DH Silver Slugger). The first name carries
+    the league: byte 0 of the name is the active flag, so the last names alone would collide
+    across the two files (one identity, merged entries)."""
+    make_maj().save(os.path.join(ldir, 'CLASSIC.MAJ'))
+    for stem, pre, dh in ((PRE_AL, 'AL', True), (PRE_NL, 'NL', False)):
+        path = os.path.join(ldir, stem)
+        open(path, 'wb').write(make_team_v20())
+        t = Team(open(path, 'rb').read())
+        set_player(t, 0, 'ACE', pre, 27, 0, 30)
+        t.players[0]['exp'] = 1
+        statpit(t, 0, 1800, 40, w=15, pso=200, games=30)
+        for q in range(1, 9):
+            set_player(t, q, 'REG%d' % q, pre, 27, q, 150)
+            t.players[q]['exp'] = 1
+            statbat(t, q, 500, 150, d2=30, hr=20, bb=50, runs=90, games=150)
+            fielding(t, q, 200 + 7 * q, 120 + q, 2 + q)
+        set_player(t, 6, 'ROOK', pre, 22, 6, 130)
+        t.players[6]['exp'] = 0
+        if pre == 'AL':
+            statbat(t, 6, 300, 30, bb=5, games=130, runs=10)
+            fielding(t, 6, 50, 2, 9)
+        else:
+            statbat(t, 6, 500, 150, d2=30, hr=20, bb=50, runs=90, games=150)
+            fielding(t, 6, 200 + 42, 126, 8)
+        if dh:
+            set_player(t, 9, 'DESIG', pre, 29, 9, 150)
+            t.players[9]['exp'] = 1
+            statbat(t, 9, 500, 150, hr=30, bb=50, runs=100, games=150)
+        t.save(path)
+
+
+def test_award_records_host_full_league(tmp_path):
+    """HISTWR on a league with a Gold Glove at every position 1..8 and an AL DH Silver
+    Slugger (no NL DH): MILESTON.DAT equals the Python reference byte for byte; the AL
+    block (kinds 64..83) has 20 records and the NL block (96..115) has 19. Each side runs in
+    its own directory (the MILESTON.DAT path is beside HISTORY.DAT)."""
+    _build()
+    ldir = str(tmp_path / 'lg')
+    os.makedirs(ldir)
+    full_award_league(ldir)
+    host_dir, py_dir = str(tmp_path / 'host'), str(tmp_path / 'py')
+    for d in (host_dir, py_dir):
+        shutil.copytree(ldir, d)
+    hp = os.path.join(host_dir, 'H.DAT')
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    rc = HISTWR(host_dir, hp, ret)
+    assert rc.returncode == 0, rc.stderr
+    hp2 = os.path.join(py_dir, 'H.DAT')
+    history.record_season(py_dir, hp2, 1, None)
+    off, ent = first_diff(open(hp, 'rb').read(), open(hp2, 'rb').read())
+    assert off < 0, f'full league off {off} (entry {ent})'
+    ms_host = open(ms_path_of(hp), 'rb').read()
+    assert ms_host == open(ms_path_of(hp2), 'rb').read(), 'MILESTON.DAT differs'
+    ms = history.milestone_entries(hp2)
+    assert sum(1 for r in ms if 64 <= r[2] < 96) == 20
+    assert sum(1 for r in ms if 96 <= r[2] < 128) == 19
+    # the negative AL ROY value (WAR10 < 0) is stored as u16 by both writers
+    assert any(r[2] == 66 and r[3] >= 0x8000 for r in ms)
+
+
 # ---------------- round 5: second season under DOS (MILESTON.DAT already present) ----------------
 
 def test_dos_second_season_existing_milestones(tmp_path):

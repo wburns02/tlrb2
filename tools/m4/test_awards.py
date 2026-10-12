@@ -56,12 +56,9 @@ def entry_of(h, t, i, season_no):
     return history.find_entry(h, bytes(roster[0:20]), birth)
 
 
-def test_awards_synthetic_league(tmp_path):
-    """One clear winner per award per league, a tie broken by lower entry index,
-    a Cy Young fallback (no pitcher reaches 486 outs), a rookie with exp 1 excluded,
-    a catcher Gold Glove at 95 games, an NL DH slot with no Silver Slugger gap."""
-    ldir = tmp_path / 'lg'
-    ldir.mkdir()
+def award_league(ldir):
+    """The synthetic two-league setup of test_awards_synthetic_league: writes the MAJ and
+    both team files into ldir (an existing Path), returns the saved (AL, NL) Teams."""
     (ldir / PRE_AL).write_bytes(make_team_v20())
     (ldir / PRE_NL).write_bytes(make_team_v20(name=b'NLONE', abbr=b'NL1'))
     make_maj().save(str(ldir / 'CLASSIC.MAJ'))
@@ -103,6 +100,16 @@ def test_awards_synthetic_league(tmp_path):
     tn.players[17]['exp'] = 1
     statbat(tn, 17, 550, 180, hr=30, bb=70, rbi=105, runs=110, games=150)
     tn.save(str(ldir / PRE_NL))
+    return ta, tn
+
+
+def test_awards_synthetic_league(tmp_path):
+    """One clear winner per award per league, a tie broken by lower entry index,
+    a Cy Young fallback (no pitcher reaches 486 outs), a rookie with exp 1 excluded,
+    a catcher Gold Glove at 95 games, an NL DH slot with no Silver Slugger gap."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    ta, tn = award_league(ldir)
     hp = str(tmp_path / 'HISTORY.DAT')
     history.record_season(str(ldir), hp, 1)
     h = history.History.load(hp)
@@ -217,6 +224,7 @@ def test_milestones_kinds_and_idempotent_rerun(tmp_path):
     ms11 = [(s, i, k, v) for s, i, k, v in history.milestone_entries(hp) if s == 11]
     kinds = sorted(k for s, i, k, v in ms11)
     assert 2 in kinds and 5 in kinds
+    assert any(k >= 64 for k in kinds)              # C7 award records present
     assert 1 not in kinds and 3 not in kinds and 4 not in kinds
     vals = {k: v for s, i, k, v in ms11}
     assert vals[2] == 3260 and vals[5] == 501
@@ -479,6 +487,104 @@ def test_awards_count_every_season_past_64(tmp_path):
     assert e['awards'][0] == 2                          # MVP both seasons
     # season 65 wrote no season-table entry: entry 1 still season 1
     assert h.read_season_entry(1)['season_no'] == 1
+
+
+def season1_candidates(h, ldir):
+    """The C7 per-record candidates of season 1, as record_season collects them."""
+    m = maj.Maj.load(history.maj_or_none(ldir))
+    _, lg_totals = war.season_league(history.mapped_teams(ldir, m))
+    pf = war.park_factors(history.maj_or_none(ldir))
+    return sorted(collect_all(h, ldir, 1, lg_totals, pf), key=lambda c: c['index'])
+
+
+def winner_records(season_no, sel, base):
+    """Award records written out from the pick_awards winners (k ascending: MVP, CY, ROY,
+    GG 1..8 at k = 2 + q, SS 1..9 at k = 10 + q; value WAR10, fp1000 or bat100)."""
+    slots = [(0, sel['mvp'], 'w10'), (1, sel['cy'], 'w10'), (2, sel['roy'], 'w10')]
+    slots += [(2 + q, sel['gg'][q], 'fp') for q in range(1, 9)]
+    slots += [(10 + q, sel['ss'][q], 'bat100') for q in range(1, 10)]
+    out = []
+    for k, c, what in slots:
+        if c is None:
+            continue
+        v = history.gold_glove_fp1000(c['po1'], c['a1'], c['e1']) if what == 'fp' else c[what]
+        out.append((season_no, c['index'], base + k, v & 0xffff))
+    return out
+
+
+def test_award_records_match_pick_awards(tmp_path):
+    """Season 1 award records (kinds 64..115) of the synthetic league are the pick_awards
+    winners: AL block then NL block, k ascending, one record per winner. The AL CF Gold
+    Glove (kind 64 + 2 + 7) stores gold_glove_fp1000 of his fielding; the AL DH Silver
+    Slugger (kind 64 + 10 + 9) stores his bat100."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    ta, tn = award_league(ldir)
+    hp = str(tmp_path / 'HISTORY.DAT')
+    history.record_season(str(ldir), hp, 1)
+    h = history.History.load(hp)
+    coll = season1_candidates(h, str(ldir))
+    want = []
+    for lg, base in (('AL', history.AWARD_KIND_AL), ('NL', history.AWARD_KIND_NL)):
+        sel = history.pick_awards([c for c in coll if c['league'] == lg], lambda x: x['bat100'])
+        want += winner_records(1, sel, base)
+    got = [r for r in history.milestone_entries(hp) if r[2] >= 64]
+    assert got == want
+    vals = {(i, k): v for s, i, k, v in got}
+    al_cf = entry_of(h, ta, 16, 1)
+    assert vals[(al_cf, 73)] == history.gold_glove_fp1000(300, 20, 5) == 984
+    al_dh = entry_of(h, ta, 19, 1)
+    dh = next(c for c in coll if c['index'] == al_dh)
+    assert vals[(al_dh, 83)] == dh['bat100'] & 0xffff
+    nl_dh = entry_of(h, tn, 17, 1)
+    dh = next(c for c in coll if c['index'] == nl_dh)
+    assert vals[(nl_dh, 115)] == dh['bat100'] & 0xffff     # NL SS(9) block: 96 + 19
+
+
+def test_award_record_negative_value(tmp_path):
+    """A ROY winner whose season WAR10 is negative: the only exp-0 candidate of the league
+    (a 305-PA rookie) is the AL ROY; his kind 66 record stores WAR10 & 0xffff."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    (ldir / PRE_AL).write_bytes(make_team_v20())
+    make_maj().save(str(ldir / 'CLASSIC.MAJ'))
+    t = Team(open(str(ldir / PRE_AL), 'rb').read())
+    set_player(t, 16, 'ROOKIE', 'BAD', 22, 6, 130)          # LF, poor line, exp 0
+    statbat(t, 16, 300, 30, bb=5, games=130, runs=10)
+    fielding(t, 16, 50, 2, 9)
+    t.save(str(ldir / PRE_AL))
+    hp = str(tmp_path / 'HISTORY.DAT')
+    history.record_season(str(ldir), hp, 1)
+    h = history.History.load(hp)
+    idx = entry_of(h, t, 16, 1)
+    w10 = h.read_entry(idx)['WAR10']
+    assert w10 < 0
+    assert h.read_season_entry(1)['awards'][2] == idx       # AL ROY
+    stored = [v for s, i, k, v in history.milestone_entries(hp) if k == history.AWARD_KIND_AL + 2]
+    assert stored == [w10 & 0xffff] and stored[0] >= 0x8000  # two's complement u16
+
+
+def test_award_records_past_64_no_season_table(tmp_path):
+    """Season 65: the award records are written (season 65) while the season table takes
+    no entry (bytes 32..8223 stay zero). The lone batter wins MVP, ROY, GG(3), SS(3)."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    (ldir / PRE_AL).write_bytes(make_team_v20())
+    make_maj().save(str(ldir / 'CLASSIC.MAJ'))
+    t = Team(open(str(ldir / PRE_AL), 'rb').read())
+    set_player(t, 16, 'ATIEDA', 'FIRST', 27, 3, 150)
+    statbat(t, 16, 460, 160, d2=35, hr=20, bb=50, runs=95, games=150)
+    t.save(str(ldir / PRE_AL))
+    hp = str(tmp_path / 'HISTORY.DAT')
+    history.record_season(str(ldir), hp, 65)
+    raw = open(hp, 'rb').read()
+    assert raw[32:history.PLAYER_TABLE] == bytes(history.PLAYER_TABLE - 32)
+    h = history.History.load(hp)
+    assert h.seasons_recorded == 65
+    ms = history.milestone_entries(hp)
+    assert all(s == 65 for s, i, k, v in ms)
+    awards = [(i, k) for s, i, k, v in ms if k >= 64]
+    assert awards == [(0, 64), (0, 66), (0, 69), (0, 77)]   # AL MVP, ROY, GG(3), SS(3)
 
 
 # -- real data --

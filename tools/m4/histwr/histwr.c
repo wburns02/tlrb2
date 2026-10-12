@@ -1168,21 +1168,27 @@ static int32_t key_fp1000(const Cand *c)
 }
 
 /* history.pick_awards on one league's candidates: fills the 20 winners
- * (MVP, CY, ROY, GG 1..8, SS 1..9) as entry indices, or -1 when none.
+ * (MVP, CY, ROY, GG 1..8, SS 1..9) as entry indices, or -1 when none, and
+ * their award values (history.award_records: WAR10, gg fp1000, bat100), or 0.
  * Filters the merged ascending-entry-index array by league (0 AL, 1 NL). */
-static void pick_league(const Cand *lc, int nlc, int league, int32_t *win)
+static void pick_league(const Cand *lc, int nlc, int league, int32_t *win,
+                        int32_t *val)
 {
     int q, i, n2;
     Cand *sub;
     const Cand *best;
     sub = (Cand *)calloc((size_t)nlc, sizeof(Cand));
     if (!sub) {
-        for (i = 0; i < 20; i++)
+        for (i = 0; i < 20; i++) {
             win[i] = -1;
+            val[i] = 0;
+        }
         return;
     }
-    for (i = 0; i < 20; i++)
+    for (i = 0; i < 20; i++) {
         win[i] = -1;
+        val[i] = 0;
+    }
     /* MVP: batters pa >= 502, max w10 */
     n2 = 0;
     for (i = 0; i < nlc; i++)
@@ -1190,8 +1196,10 @@ static void pick_league(const Cand *lc, int nlc, int league, int32_t *win)
             && lc[i].pa >= 502)
             sub[n2++] = lc[i];
     best = pick_max(sub, n2, key_w10);
-    if (best)
+    if (best) {
         win[0] = best->idx;
+        val[0] = best->w10;
+    }
     /* CY: outs >= 486, fallback any pitcher outs > 0 */
     n2 = 0;
     for (i = 0; i < nlc; i++)
@@ -1207,8 +1215,10 @@ static void pick_league(const Cand *lc, int nlc, int league, int32_t *win)
                 sub[n2++] = lc[i];
         best = pick_max(sub, n2, key_w10);
     }
-    if (best)
+    if (best) {
         win[1] = best->idx;
+        val[1] = best->w10;
+    }
     /* ROY: exp 0 and (pa >= 130 or outs >= 150) */
     n2 = 0;
     for (i = 0; i < nlc; i++)
@@ -1216,8 +1226,10 @@ static void pick_league(const Cand *lc, int nlc, int league, int32_t *win)
             && (lc[i].pa >= 130 || lc[i].outs >= 150))
             sub[n2++] = lc[i];
     best = pick_max(sub, n2, key_w10);
-    if (best)
+    if (best) {
         win[2] = best->idx;
+        val[2] = best->w10;
+    }
     /* GG positions 1..8: games gate, 2*range + arm, then fp1000 on the tie tier */
     for (q = 1; q <= 8; q++) {
         int32_t top;
@@ -1238,8 +1250,10 @@ static void pick_league(const Cand *lc, int nlc, int league, int32_t *win)
                     sub[m++] = sub[i];
             best = pick_max(sub, m, key_fp1000);
         }
-        if (best)
+        if (best) {
             win[2 + q] = best->idx;
+            val[2 + q] = gg_fp1000(best->po1, best->a1, best->e1);
+        }
     }
     /* SS positions 1..9: pa >= 300, max bat100 */
     for (q = 1; q <= 9; q++) {
@@ -1248,8 +1262,10 @@ static void pick_league(const Cand *lc, int nlc, int league, int32_t *win)
             if (lc[i].league == league && lc[i].pos1 == q && lc[i].pa >= 300)
                 sub[n2++] = lc[i];
         best = pick_max(sub, n2, key_bat100);
-        if (best)
+        if (best) {
             win[10 + q] = best->idx;
+            val[10 + q] = best->bat100;
+        }
     }
     free(sub);
 }
@@ -1548,7 +1564,7 @@ static int do_run(const char *pre_dir, const char *hpath)
     if (!ms)
         goto fail;
     if (g_cands != NULL) {
-        static int32_t alwin[20], nlwin[20];
+        static int32_t alwin[20], nlwin[20], alval[20], nlval[20];
         int32_t ci;
         int k, q, i;
         Cand *c;
@@ -1568,8 +1584,8 @@ static int do_run(const char *pre_dir, const char *hpath)
         /* both leagues scan the whole array (pick_league filters by
          * league): sorted by entry index, AL and NL interleave once
          * ROSTERS trades and appended entries mix the index order */
-        pick_league(g_cands, (int)g_ncands, 0, alwin);
-        pick_league(g_cands, (int)g_ncands, 1, nlwin);
+        pick_league(g_cands, (int)g_ncands, 0, alwin, alval);
+        pick_league(g_cands, (int)g_ncands, 1, nlwin, nlval);
         /* award counts on the temp entries (already written): seek and patch */
         g = fopen(tmp, "r+b");
         if (!g)
@@ -1594,6 +1610,7 @@ static int do_run(const char *pre_dir, const char *hpath)
             g = NULL;
             goto fail;
         }
+        g = NULL;                 /* closed: fail must not fclose it again */
         /* season milestones appended by entry index, kinds ascending per
          * player; out is small because the records are written per cand.
          * The wtot read uses the already-open temp handle parked at the
@@ -1633,6 +1650,25 @@ rfail:
             goto fail;
 racc:
             ;
+        }
+        /* C7 award records after this season's milestones: AL block (kind
+         * 64 + k) then NL block (96 + k), k ascending, one per winner. The
+         * value is stored as u16 (value & 0xffff), not saturated as ms_rec does */
+        for (k = 0; k < 2; k++) {
+            const int32_t *win = k ? nlwin : alwin;
+            const int32_t *val = k ? nlval : alval;
+            for (i = 0; i < 20; i++) {
+                uint8_t ar[8];
+                if (win[i] < 0)
+                    continue;
+                wr16(ar, season_no);
+                wr16(ar + 2, (uint16_t)win[i]);
+                ar[4] = (uint8_t)((k ? 96 : 64) + i);
+                ar[5] = 0;
+                wr16(ar + 6, (uint16_t)(val[i] & 0xffff));
+                if (fwrite(ar, 1, 8, ms) != 8)
+                    goto fail;
+            }
         }
     }
     if (ms != NULL) {
