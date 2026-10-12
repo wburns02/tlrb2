@@ -487,3 +487,8 @@ holds each player's best/historical single season (Wills 1962: 165 G), not caree
 | overlay 4ec4:01d4 (14 B) | the decode | push cs; push 01e2; ax = ds - 0x2240; push ax; push 0148; retf |
 | CONTROL.EXE 1228:00cd | `83fb05772cd1e32effa72701` | `83fb0a772c40eb0790909090` |
 
+BACK, MANAGE and UTIL carry the same menu module and get the same rows at their own segments (2026-10-11): the
+menu seg rows at that EXE's menu seg, the DGROUP rows at its string table + the same relative offsets (+0xb8 pool
+start, +0x15c, +0x268, +0x322, +0x332 new PLAY BALL!), the hook at its own decode, the trampoline's CONTROL pointer
+from its own DGROUP. Table: notes/RE_NOTES.md "Menu bar on every program".
+

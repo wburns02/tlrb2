@@ -121,3 +121,33 @@ further by guessing: ftrace a season action (which program opens .SCH, offsets r
 - Rig check 2026-10-08 (:98, rt1.py): the bar shows DYNASTY with four items; DYNASTY MODE leaves MAIN with CONTROL
   `01 08 ...`; MAIN restarts normally with CONTROL[1] = CONTROL[0].
 
+## Menu bar on every program (BACK, MANAGE, UTIL, decoded 2026-10-11; same patch, contract C10 amendment)
+- The menu module (bar struct, dropdowns, string table and pool, the four menu routines) is linked into MAIN, BACK,
+  MANAGE and UTIL with byte-identical data; only its segments move. In each EXE the next segment starts at menu
+  seg + 0x18, so the cave 0x112..0x17f exists everywhere. The string pool offsets relative to the string table are
+  the same in all four (PLAY BALL! +0xb8, PLAY TO RESERVED GAME +0x15c, SIMULATED STATS +0x268, IMPORT ONLINE
+  SERVICE STATS +0x322).
+- Each program has its own copy of the pick decode `8bd6c1ea0483e60f8bda4b83fb03` (found by signature; resolved to
+  a segment through the far and near call chains into it). MAIN follows the `cmp bx,3` with `jbe table; jmp exit`;
+  BACK, MANAGE and UTIL with `ja exit`. The trampoline returns bx = 4 with the flags of `cmp bx,3`, which sends both
+  shapes to the exit test.
+
+| EXE | DGROUP | menu seg | decode (seg:off) | string table | CONTROL ptr | MZ relocs / table end | exits on |
+|---|---|---|---|---|---|---|---|
+| MAIN | 40fa | 1eba | 4ec4:01d4 (overlay) | 221c | 9b64 | 1458 / 0x1706 | CONTROL[1] != 1 |
+| BACK | 2c71 | 2b2a | 14e6:034c | 0d56 | 50de | 1001 / 0x0fe2 | != 2 |
+| MANAGE | 28bf | 281b | 174a:014e | 0cdc | 3b20 | 1612 / 0x196e | != 4 |
+| UTIL | 3954 | 21d8 | 1bad:00ea | 2b86 | 9628 | 1651 / 0x1a0a | != 5 |
+
+- DRAFT has no copy of the decode and no menu bar (its screens are buttons only).
+- CONTROL[0]: each program writes its own id there on the way out, which is what DYNVIEW and CREATE return to. UTIL
+  and MANAGE show the caller's id in CONTROL[0] while they run (MANAGE entered from UTIL reads `05 04`), so a
+  helper must not read CONTROL[0] before the program has exited.
+- BACK holds the season in memory between days (the day byte on disk lags). Leaving BACK through DYNASTY goes
+  through its normal switch path, which saves the day first: on the :98 rig, one day played (April 9), DYNASTY >
+  ABOUT moved the MAJ day byte 0x07 -> 0x08 and rewrote the ten team V20s that played, and the return to BACK
+  showed the same standings with no extra games; the next day then played normally (April 10, LA 2-0).
+- Rig check 2026-10-11 (:98, work/menubars/p3..p12): the DYNASTY title shows on all four bars. UTIL (EDIT TEAM
+  NAMES) -> ABOUT -> hub -> back with CONTROL 05 05; MANAGE (PLAYER ROSTER) -> ABOUT -> back with 04 04; BACK
+  (STANDINGS) -> ABOUT -> back with 02 02.
+

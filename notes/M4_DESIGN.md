@@ -173,6 +173,14 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
    a share of team innings) last season, falling back to the current rule when a slot has no qualifier. Low stakes
    (one exhibition game a season), so not built; a contract change to C9 plus the C port when you say so.
 
+- Q8 (brain, 2026-10-11): what stat line should a created player start with? CREATE writes the roster record
+   like a C4 rookie (RookieGen._write_stat_constants), so a created pitcher carries IP 200 (shown as 20.0) in the
+   game's own roster screens before he has thrown a pitch, and byte 140 = 7, whose high nibble (the "ratings are
+   user-set" flag, FORMATS.md) is 0. The stat import path recomputes ratings from stats while that flag is 0, so
+   the line is not purely cosmetic. Options: (a) keep the rookie prior (matches drafted rookies); (b) a zero stat
+   line with the user-set flag on, so the typed ratings are exactly what the sim keeps; (c) a prior scaled from the
+   chosen ratings. Recommendation (b): a created player is a sandbox pick. Not built until you answer.
+
 ## Answers (Will, 2026-10-07)
 
 - Q6 (2026-10-08): yes. All-Star picks need a playing-time floor (C9 qualifier: batters half the league's max

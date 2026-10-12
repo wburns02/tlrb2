@@ -434,6 +434,11 @@ mode itself; the old exit to text mode 3 left MAIN drawing into a text screen (b
 mode 13h caller, then DYNVIEW, then MAIN matches the same run without DYNVIEW.
 
 ## C10. The DYNASTY menu on MAIN's menu bar (added 2026-10-08)
+Amendment 2026-10-11: the same DYNASTY title and items are on BACK's, MANAGE's and UTIL's bars too (DRAFT has
+none). menu_patch.py patches MAIN, BACK, MANAGE, UTIL and CONTROL together; it checks all five are stock or
+patched before it writes any. Picking an item from BACK, MANAGE or UTIL leaves that program through its normal
+switch path (BACK saves the day first) with CONTROL[1] = 8 + k, and DYNVIEW / CREATE return to it through
+CONTROL[0], which the program wrote on exit. Per-EXE addresses: notes/RE_NOTES.md "Menu bar on every program".
 Every mod is reachable from the game's own menu bar. tools/m4/menu_patch.py patches MAIN.EXE and CONTROL.EXE in an
 install (idempotent, asserts stock bytes, `--revert` restores them byte for byte, refuses the pristine tree):
 - MAIN's bar gains a sixth entry, DYNASTY (between UTILITIES and the home plate), with four items. Picking item k
