@@ -1322,16 +1322,21 @@ AW_1_ROWS = [('AL MVP', 'HITTER, A', ''), ('AL CY YOUNG', 'PLAYER01, B', ''),
 
 
 def award_recs(season, recs):
-    """MILESTON.DAT records of award kinds for season (value stored as u16)"""
+    """MILESTON.DAT records of award or leader kinds for season (value stored as u16)"""
     return [(season, idx, kind, value & 0xffff) for kind, idx, value in recs]
+
+
+def award_league_ms():
+    """the MILESTON.DAT records of make_awards"""
+    return ([(2, 1, 32, 52), (2, 2, 2, 3000)] + award_recs(2, AW_2)
+            + [(3, 0, 2, 3000), (3, 5, 32, 51)] + award_recs(3, AW_3))
 
 
 def make_awards(tmp_path, ms=None):
     """make_data league: MILESTON.DAT holds the milestone kinds 2 and 32 for seasons 2
     and 3 with the award records after them (season 2: AW_2, season 3: AW_3)"""
     if ms is None:
-        ms = ([(2, 1, 32, 52), (2, 2, 2, 3000)] + award_recs(2, AW_2)
-              + [(3, 0, 2, 3000), (3, 5, 32, 51)] + award_recs(3, AW_3))
+        ms = award_league_ms()
     return make_data(tmp_path, ms=ms)[0]
 
 
@@ -1511,6 +1516,155 @@ def test_awards_max_rows_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(dynview, 'AWARD_MAX', 10)
     assert dynview.total_rows((SA, 0, 0), data) == 10
     assert dynview.rows((SA, 0, 0), data) == AW_3_ROWS[:10]
+
+
+# leader records (C7 second amendment): season 3 has all nine categories of both leagues
+LEAD_3 = [(128, 3, 352), (129, 4, 47), (130, 6, 131), (131, 0, 210), (132, 7, 62),
+          (133, 5, 24), (134, 9, 187), (135, 10, 301), (136, 11, 45),
+          (160, 12, 1000), (161, 13, 5), (162, 14, 99), (163, 15, 65535), (164, 16, 1),
+          (165, 17, 19), (166, 18, 1234), (167, 19, 1234), (168, 20, 65535)]
+LEAD_3_ROWS = [
+    ('AL BA LEADER', 'PLAYER03, B', '.352 BA'), ('AL HR LEADER', 'PLAYER04, B', '47 HR'),
+    ('AL RBI LEADER', 'PLAYER06, B', '131 RBI'), ('AL H LEADER', 'HITTER, A', '210 H'),
+    ('AL SB LEADER', 'PLAYER07, B', '62 SB'), ('AL W LEADER', 'ACE, P', '24 W'),
+    ('AL ERA LEADER', 'PLAYER09, B', '1.87 ERA'), ('AL SO LEADER', 'PLAYER10, B', '301 SO'),
+    ('AL SV LEADER', 'PLAYER11, B', '45 SV'),
+    ('NL BA LEADER', 'PLAYER12, B', '1.000 BA'), ('NL HR LEADER', 'PLAYER13, B', '5 HR'),
+    ('NL RBI LEADER', 'PLAYER14, B', '99 RBI'), ('NL H LEADER', 'PLAYER15, B', '65535 H'),
+    ('NL SB LEADER', 'PLAYER16, B', '1 SB'), ('NL W LEADER', 'PLAYER17, B', '19 W'),
+    ('NL ERA LEADER', 'PLAYER18, B', '12.34 ERA'), ('NL SO LEADER', 'PLAYER19, B', '1234 SO'),
+    ('NL SV LEADER', 'PLAYER20, B', '65535 SV')]
+# season 3 in full: its 40 award rows, then the 18 leader rows
+ALL_3_ROWS = AW_3_ROWS + LEAD_3_ROWS
+
+
+def lead_league_ms(extra=()):
+    """make_awards' records with LEAD_3 after season 3's award records, then extra"""
+    return award_league_ms() + award_recs(3, LEAD_3) + list(extra)
+
+
+def all_rows(state, data):
+    """every row of the screen state, page by page (12 rows a page)"""
+    n = dynview.total_rows(state, data)
+    screen, _page, cat = state
+    return [r for p in range((n + 11) // 12) for r in dynview.rows((screen, p, cat), data)]
+
+
+def test_leader_kinds_and_strings():
+    assert dynview.LEADER_CATS == ['BA', 'HR', 'RBI', 'H', 'SB', 'W', 'ERA', 'SO', 'SV']
+    assert [k for k in range(256) if dynview.leader_kind(k)] == \
+        list(range(128, 137)) + list(range(160, 169))
+    assert [dynview.leader_label(k) for k in range(128, 137)] == \
+        ['AL %s LEADER' % c for c in dynview.LEADER_CATS]
+    assert [dynview.leader_label(k) for k in range(160, 169)] == \
+        ['NL %s LEADER' % c for c in dynview.LEADER_CATS]
+    assert dynview.leader_value(128, 352) == '.352 BA'
+    assert dynview.leader_value(160, 1000) == '1.000 BA'
+    assert dynview.leader_value(128, 0) == '.000 BA'
+    assert dynview.leader_value(134, 187) == '1.87 ERA'
+    assert dynview.leader_value(166, 5) == '0.05 ERA'
+    assert dynview.leader_value(166, 1234) == '12.34 ERA'
+    assert dynview.leader_value(166, 0xffff) == '655.35 ERA'
+    assert dynview.leader_value(129, 47) == '47 HR'
+    assert dynview.leader_value(129, 0xffff) == '65535 HR'      # never a sign
+    assert dynview.leader_value(136, 45) == '45 SV'
+    assert dynview.leader_value(168, 65535) == '65535 SV'
+
+
+def test_leaders_after_awards_58_rows(tmp_path):
+    ldir = make_awards(tmp_path, ms=lead_league_ms())
+    data = dynview.load_data(str(ldir))
+    assert dynview.AWARD_MAX == 64
+    assert dynview.total_rows((SA, 0, 0), data) == 58 == len(ALL_3_ROWS)
+    assert dynview.body_cols((SA, 0, 0), data) == dynview.COLS_AWARDS
+    got = [r for p in range(5) for r in dynview.rows((SA, p, 0), data)]
+    assert got == ALL_3_ROWS
+    assert got[40:] == LEAD_3_ROWS
+    assert [len(dynview.rows((SA, p, 0), data)) for p in range(5)] == [12, 12, 12, 12, 10]
+    # PGDN stops at the last page (page 4 holds rows 48..57)
+    s = (SA, 0, 0)
+    for page in (1, 2, 3, 4):
+        s = press(s, dynview.KEY_PGDN, data)
+        assert s == (SA, page, 0)
+    assert press(s, dynview.KEY_PGDN, data) == (SA, 4, 0)
+    assert dynview.rows(s, data) == ALL_3_ROWS[48:]
+    for row in got:
+        for cell, (_h, _x, w, _a) in zip(row, dynview.COLS_AWARDS):
+            assert len(cell) <= w, cell
+
+
+def test_leaders_al_only_season(tmp_path):
+    """season 3 with the AL leaders only: 49 rows, five pages, the last one row"""
+    ldir = make_awards(tmp_path, ms=award_league_ms() + award_recs(3, LEAD_3[:9]))
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((SA, 0, 0), data) == 49
+    assert all_rows((SA, 0, 0), data) == AW_3_ROWS + LEAD_3_ROWS[:9]
+    assert [len(dynview.rows((SA, p, 0), data)) for p in range(5)] == [12, 12, 12, 12, 1]
+    s = press((SA, 0, 0), dynview.KEY_PGDN, data)
+    assert s == (SA, 1, 0) and dynview.rows(s, data)[0] == AW_3_ROWS[12]
+
+
+def test_leader_records_of_other_seasons_not_shown(tmp_path):
+    ldir = make_awards(tmp_path, ms=lead_league_ms(extra=award_recs(2, [(129, 2, 9)])))
+    data = dynview.load_data(str(ldir))
+    # season 2's own AL HR leader shows after its awards; season 3 has none of it
+    assert dynview.total_rows((SA, 0, 1), data) == 4
+    assert all_rows((SA, 0, 1), data) == AW_2_ROWS + [('AL HR LEADER', 'PLAYER02, B', '9 HR')]
+    assert all_rows((SA, 0, 0), data) == ALL_3_ROWS
+
+
+def test_leader_only_season_has_records(tmp_path):
+    """a season with leader records and no award records shows those records alone:
+    no six-winner fallback and no GG SS row"""
+    (tmp_path / 'lo').mkdir()
+    ldir = make_data(tmp_path / 'lo', ms=[(1, 9, 130, 131)])[0]
+    data = dynview.load_data(str(ldir))
+    s = (SA, 0, 2)
+    assert dynview.screen_title(s, data) == 'SEASON 1 AWARDS'
+    assert dynview.rows(s, data) == [('AL RBI LEADER', 'PLAYER09, B', '131 RBI')]
+    assert dynview.body_cols(s, data) == dynview.COLS_AWARDS
+    assert dynview.total_rows(s, data) == 1
+
+
+def test_leaders_cap_64_rows(tmp_path):
+    """68 award and leader records for season 3: the first 64 in (kind, file position)
+    order, so the NL SB row is the last one shown"""
+    idx = (1, 2, 4, 6, 7, 8, 9, 10, 11, 21)
+    extra = award_recs(3, [(128, i, 300) for i in idx])
+    ldir = make_awards(tmp_path, ms=lead_league_ms(extra=extra))
+    data = dynview.load_data(str(ldir))
+    more = [('AL BA LEADER', 'PLAYER%02d, B' % i, '.300 BA') for i in idx]
+    want = (AW_3_ROWS + LEAD_3_ROWS[:1] + more + LEAD_3_ROWS[1:])[:64]
+    assert dynview.total_rows((SA, 0, 0), data) == 64
+    assert all_rows((SA, 0, 0), data) == want
+    assert [len(dynview.rows((SA, p, 0), data)) for p in range(6)] == [12, 12, 12, 12, 12, 4]
+
+
+def test_leader_records_off_milestones_and_review(tmp_path):
+    """leader records (kinds 128 and up) are on SEASON AWARDS only"""
+    (tmp_path / 'plain').mkdir()
+    (tmp_path / 'lead').mkdir()
+    plain = dynview.load_data(str(make_awards(tmp_path / 'plain')))
+    lead = dynview.load_data(str(make_awards(tmp_path / 'lead', ms=lead_league_ms())))
+    for screen in (dynview.SCREEN_MILESTONES, dynview.SCREEN_REVIEW):
+        assert all_rows(st(screen), lead) == all_rows(st(screen), plain)
+    assert dynview.total_rows(st(dynview.SCREEN_MILESTONES), lead) == 4
+
+
+def test_leader_kinds_outside_ranges_ignored(tmp_path):
+    """kinds 127, 137, 159, 169 and 200 are on no screen: season 3 reads the same as
+    without them, and a season with only such records keeps its six-winner fallback"""
+    (tmp_path / 'lead').mkdir()
+    (tmp_path / 'stray').mkdir()
+    stray = award_recs(3, [(127, 2, 5), (137, 2, 5), (159, 2, 5), (169, 2, 5), (200, 2, 5)])
+    stray += award_recs(1, [(169, 4, 9)])
+    lead = dynview.load_data(str(make_awards(tmp_path / 'lead', ms=lead_league_ms())))
+    odd = dynview.load_data(str(make_awards(tmp_path / 'stray',
+                                            ms=lead_league_ms(extra=stray))))
+    assert all_rows((SA, 0, 0), odd) == all_rows((SA, 0, 0), lead) == ALL_3_ROWS
+    assert all_rows((SA, 0, 2), odd) == AW_1_ROWS
+    for screen in (dynview.SCREEN_MILESTONES, dynview.SCREEN_REVIEW):
+        assert all_rows(st(screen), odd) == all_rows(st(screen), lead)
 
 
 # ---------------------------------------------------------------- standings

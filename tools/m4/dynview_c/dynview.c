@@ -69,11 +69,11 @@
 #define N_ABOUT_ROWS 36
 #define N_TITLE_ROWS 11
 
-/* MILESTON.DAT kinds from AWARD_KIND_MIN up are award records (C7), not milestones;
- * SEASON AWARDS keeps at most AWARD_MAX rows; SEASON STANDINGS at most STAND_MAX (four
- * header rows, one per division, and 32 teams) */
+/* MILESTON.DAT kinds from AWARD_KIND_MIN up are award and leader records (C7), not
+ * milestones; SEASON AWARDS keeps at most AWARD_MAX rows; SEASON STANDINGS at most
+ * STAND_MAX (four header rows, one per division, and 32 teams) */
 #define AWARD_KIND_MIN 64
-#define AWARD_MAX 48
+#define AWARD_MAX 64
 #define STAND_MAX 36
 
 /* offseason phases: cat & 15 is the phase, cat >> 4 the launched flag */
@@ -218,10 +218,10 @@ static List FARDATA g_list_buf[5];
 static Row FARDATA g_rows[MAX_ROWS];
 static int g_nrows;
 
-/* SEASON AWARDS: all rows of the season (AWARD_MAX at most) and the award records
- * kept for them, in (kind, file position) order */
+/* SEASON AWARDS: all rows of the season (AWARD_MAX at most) and the award and leader
+ * records kept for them, in (kind, file position) order */
 static Row FARDATA g_awd[AWARD_MAX];
-static MsRec g_arec[AWARD_MAX];
+static MsRec FARDATA g_arec[AWARD_MAX];
 
 /* SEASON STANDINGS: the rows of the season (STAND_MAX at most) */
 static Row FARDATA g_stnd[STAND_MAX];
@@ -1395,12 +1395,14 @@ static int leaders_count(int cat)
     return (int)b.n;
 }
 
-/* ---------------- SEASON AWARDS (C7 award records) ---------------- */
+/* ---------------- SEASON AWARDS (C7 award and leader records) ---------------- */
 
 static const char *AWARD_POS[10] = {
     "", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH" };
 static const char *AWARD_FALLBACK[6] = {
     "AL MVP", "AL CY YOUNG", "AL ROOKIE", "NL MVP", "NL CY YOUNG", "NL ROOKIE" };
+static const char *LEADER_CATS[9] = {
+    "BA", "HR", "RBI", "H", "SB", "W", "ERA", "SO", "SV" };
 
 /* an award record kind: 64..83 (AL) or 96..115 (NL) */
 static int award_kind(int kind)
@@ -1452,15 +1454,53 @@ static void award_value(int kind, uint16_t value, char *dst)
     }
 }
 
-/* the award records of season into g_arec: the AWARD_MAX first in (kind, file
- * position) order; returns how many. Equal kinds keep file order (insertion). */
+/* a leader record kind: 128..136 (AL) or 160..168 (NL) */
+static int leader_kind(int kind)
+{
+    return (kind >= 128 && kind <= 136) || (kind >= 160 && kind <= 168);
+}
+
+/* k = kind - 128 (AL) or kind - 160 (NL), an index into LEADER_CATS */
+static int leader_k(int kind)
+{
+    return kind >= 160 ? kind - 160 : kind - 128;
+}
+
+/* leader_label: 'AL BA LEADER', 'NL ERA LEADER' and so on */
+static void leader_label(int kind, char *dst)
+{
+    strcpy(dst, kind >= 160 ? "NL " : "AL ");
+    strcat(dst, LEADER_CATS[leader_k(kind)]);
+    strcat(dst, " LEADER");
+}
+
+/* leader_value: the stored u16 with no sign: BA as fp1000, ERA as x100 (d.dd), else a
+ * count */
+static void leader_value(int kind, uint16_t value, char *dst)
+{
+    int k = leader_k(kind);
+    if (k == 0) {
+        fmt_avg((int32_t)value, dst);
+        strcat(dst, " BA");
+    } else if (k == 6) {
+        fmt_era100((int32_t)value, dst);
+        strcat(dst, " ERA");
+    } else {
+        fmt_count((int32_t)value, dst);
+        strcat(dst, " ");
+        strcat(dst, LEADER_CATS[k]);
+    }
+}
+
+/* the award and leader records of season into g_arec: the AWARD_MAX first in (kind,
+ * file position) order; returns how many. Equal kinds keep file order (insertion). */
 static int award_recs(long season)
 {
     int32_t i;
     int n = 0, j;
     for (i = 0; i < g_nms; i++) {
         MsRec *rec = &g_ms[i];
-        if (rec->season != season || !award_kind(rec->kind))
+        if (rec->season != season || (!award_kind(rec->kind) && !leader_kind(rec->kind)))
             continue;
         if (n == AWARD_MAX && rec->kind >= g_arec[n - 1].kind)
             continue;               /* after the last kept record */
@@ -1477,8 +1517,8 @@ static int award_recs(long season)
 }
 
 /* SEASON AWARDS rows of season into g_awd (dynview.awards_rows); returns the count:
- * the award records, else the six winners and the GG SS row of a season recorded
- * before the award records, else one message row past the history table */
+ * the award and leader records, else the six winners and the GG SS row of a season
+ * recorded before the award records, else one message row past the history table */
 static int build_awards(long season)
 {
     int n, k;
@@ -1486,9 +1526,14 @@ static int build_awards(long season)
     if (n > 0) {
         for (k = 0; k < n; k++) {
             Row *row = &g_awd[k];
-            award_label(g_arec[k].kind, row->cells[0]);
+            if (leader_kind(g_arec[k].kind)) {
+                leader_label(g_arec[k].kind, row->cells[0]);
+                leader_value(g_arec[k].kind, g_arec[k].value, row->cells[2]);
+            } else {
+                award_label(g_arec[k].kind, row->cells[0]);
+                award_value(g_arec[k].kind, g_arec[k].value, row->cells[2]);
+            }
             entry_name(g_arec[k].idx, 16, row->cells[1]);
-            award_value(g_arec[k].kind, g_arec[k].value, row->cells[2]);
             row->ncells = 3;
         }
         return n;

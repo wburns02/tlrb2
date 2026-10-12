@@ -25,7 +25,8 @@ from m4.test_dynview import (make_data, write_player, write_season,
                              write_mileston, st, make_offseason, ROSTER_BODY,
                              big_league, make_awards, make_standings,
                              STAND_SEASONS, CLASSIC_SEASON, HALF_EAST, HALF_WEST,
-                             FULL_SEASON)
+                             FULL_SEASON, award_recs, award_league_ms,
+                             lead_league_ms, LEAD_3)
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_C = os.path.join(HERE, 'dynview_c')
@@ -831,6 +832,58 @@ def test_awards_no_history_parity(tmp_path):
     empty.mkdir()
     check_parity(empty, tmp_path, 'aw_nh_open', keys=[57])
     check_parity(empty, tmp_path, 'aw_nh_left', keys=[57, LEFT, RIGHT, PGDN])
+
+
+def test_leaders_parity(tmp_path):
+    """the 58-row season (40 award and 18 leader rows) on every page, then MILESTONES
+    and REVIEW beside it"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'lead').mkdir()
+    ldir = make_awards(tmp_path / 'lead', ms=lead_league_ms())
+    for p in range(5):
+        check_parity(ldir, tmp_path, 'ld_p%d' % p, keys=[57] + [PGDN] * p)
+    check_parity(ldir, tmp_path, 'ld_last_stays', keys=[57] + [PGDN] * 6)
+    check_parity(ldir, tmp_path, 'ld_left_pgdn', keys=[57, LEFT, PGDN])
+    check_parity(ldir, tmp_path, 'ld_milestones', keys=[52])
+    check_parity(ldir, tmp_path, 'ld_review', review=True)
+
+
+def test_leaders_al_only_parity(tmp_path):
+    """season 3 with the AL leaders only (49 rows): KEYS 57 then PGDN, and every page"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'al').mkdir()
+    ldir = make_awards(tmp_path / 'al', ms=award_league_ms() + award_recs(3, LEAD_3[:9]))
+    check_parity(ldir, tmp_path, 'al_57_pgdn', keys=[57, PGDN])
+    check_parity(ldir, tmp_path, 'al_pages', keys=[57] + [PGDN] * 4)
+
+
+def test_leaders_stray_kinds_parity(tmp_path):
+    """kinds 127, 137, 159, 169 and 200 beside the leaders, and a season 1 with only a
+    stray record (its six-winner fallback stays)"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'stray').mkdir()
+    stray = award_recs(3, [(127, 2, 5), (137, 2, 5), (159, 2, 5), (169, 2, 5), (200, 2, 5)])
+    stray += award_recs(1, [(169, 4, 9)])
+    ldir = make_awards(tmp_path / 'stray', ms=lead_league_ms(extra=stray))
+    check_parity(ldir, tmp_path, 'stray_57_pgdn', keys=[57, PGDN])
+    check_parity(ldir, tmp_path, 'stray_p3', keys=[57] + [PGDN] * 3)
+    check_parity(ldir, tmp_path, 'stray_s1', keys=[57, LEFT, LEFT])
+    check_parity(ldir, tmp_path, 'stray_milestones', keys=[52, PGDN])
+    check_parity(ldir, tmp_path, 'stray_review', review=True)
+
+
+def test_leaders_cap_64_parity(tmp_path):
+    """68 records for season 3: the first 64 rows, six pages with the last one 4 rows"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'cap').mkdir()
+    extra = award_recs(3, [(128, i, 300) for i in (1, 2, 4, 6, 7, 8, 9, 10, 11, 21)])
+    ldir = make_awards(tmp_path / 'cap', ms=lead_league_ms(extra=extra))
+    check_parity(ldir, tmp_path, 'cap_p5', keys=[57] + [PGDN] * 5)
+    check_parity(ldir, tmp_path, 'cap_p6', keys=[57] + [PGDN] * 6)
 
 
 # ---------------- test 5e: SEASON STANDINGS (hub key 0) ----------------
