@@ -1443,6 +1443,111 @@ static int c7_milestones(const Cand *c, uint16_t season,
     return n;
 }
 
+/* C7 World Series records (history.series_records): PLAYOFFS.AL in the pre dir,
+ * byte 0 = games n (1..7), game g at 1 + GAME_REC * g. A game stem (8 B cut at the
+ * first NUL, upper-cased) maps to the last matching MAJ stem: AL slots 0..15, then NL. */
+#define PO_NAME     "PLAYOFFS.AL"
+#define GAME_REC    7446L
+#define GAME_MAX    7
+#define SER_KIND    192
+#define SER_HE_KIND 200
+
+/* league-global team id of an 8 B game stem, or -1 (an empty stem never maps) */
+static int32_t series_id(const uint8_t *s8)
+{
+    char up[9];
+    int32_t id = -1;
+    int j, k;
+    for (j = 0; j < 8 && s8[j]; j++)
+        up[j] = (char)s8[j];
+    up[j] = 0;
+    if (j == 0)
+        return -1;
+    to_upper((uint8_t *)up);
+    for (k = 0; k < 32; k++) {
+        if (strcmp(up, g_maj.stem_up[k]) == 0)
+            id = k;
+    }
+    return id;
+}
+
+/* the sum of the 80 bytes at off, capped at 255 */
+static int sum80(FILE *p, long off, int32_t *out)
+{
+    uint8_t b[80];
+    uint32_t s = 0;
+    int i;
+    if (fseek(p, off, SEEK_SET) != 0)
+        return -1;
+    if (fread(b, 1, sizeof b, p) != sizeof b)
+        return -1;
+    for (i = 0; i < 80; i++)
+        s += b[i];
+    *out = (s > 255) ? 255 : (int32_t)s;
+    return 0;
+}
+
+/* the season's World Series records, appended to the open milestone temp ms after the
+ * leader records. A missing, short or out-of-range PLAYOFFS.AL writes nothing. Returns
+ * -1 on a read or write error; the file is closed on every path. */
+static int series_pass(const char *pre_dir, FILE *ms, uint16_t season_no)
+{
+    char *path = g_path;
+    FILE *p;
+    long len, r;
+    int n, g;
+    path_join(path, 600, pre_dir, PO_NAME);
+    p = fopen(path, "rb");
+    if (!p)
+        return 0;
+    if (fseek(p, 0, SEEK_END) != 0)
+        goto bad;
+    len = ftell(p);
+    if (len < 0)
+        goto bad;
+    if (len < 1)
+        goto none;
+    if (fseek(p, 0, SEEK_SET) != 0)
+        goto bad;
+    n = fgetc(p);
+    if (n < 1 || n > GAME_MAX || len < 1 + GAME_REC * n)
+        goto none;
+    for (g = 0; g < n; g++) {
+        uint8_t runs[2], st[16], rec[8];
+        int32_t hits[2], errs[2];
+        int32_t vid, hid;
+        int t;
+        r = 1 + GAME_REC * g;
+        if (fseek(p, r + 0x1beb, SEEK_SET) != 0 || fread(runs, 1, 2, p) != 2)
+            goto bad;
+        if (fseek(p, r + 0x1c01, SEEK_SET) != 0 || fread(st, 1, 16, p) != 16)
+            goto bad;
+        hid = series_id(st);
+        vid = series_id(st + 8);
+        if (vid < 0 || hid < 0 || (vid < 16) == (hid < 16))
+            continue;                 /* unmapped stem or both teams in one league */
+        for (t = 0; t < 2; t++) {
+            if (sum80(p, r + 0x208 + 0x8e8L * t, &hits[t]) != 0
+                || sum80(p, r + 0x5c8 + 0x8e8L * t, &errs[t]) != 0)
+                goto bad;
+        }
+        ms_rec(rec, season_no, (uint16_t)(vid * 256 + hid), (uint8_t)(SER_KIND + g),
+               runs[0] * 256 + runs[1]);
+        if (fwrite(rec, 1, 8, ms) != 8)
+            goto bad;
+        ms_rec(rec, season_no, (uint16_t)(hits[0] * 256 + hits[1]),
+               (uint8_t)(SER_HE_KIND + g), errs[0] * 256 + errs[1]);
+        if (fwrite(rec, 1, 8, ms) != 8)
+            goto bad;
+    }
+none:
+    fclose(p);
+    return 0;
+bad:
+    fclose(p);
+    return -1;
+}
+
 static int do_run(const char *pre_dir, const char *hpath)
 {
     FILE *f = NULL, *g = NULL, *ms = NULL;
@@ -1740,6 +1845,9 @@ racc:
             }
         }
     }
+    /* C7 World Series records after the leader records (PLAYOFFS.AL in the pre dir) */
+    if (series_pass(pre_dir, ms, season_no) != 0)
+        goto fail;
     if (ms != NULL) {
         if (fclose(ms) != 0) {
             ms = NULL;

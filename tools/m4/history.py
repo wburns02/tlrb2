@@ -55,6 +55,9 @@ MILESTONE_RECORD = 8        # 8 B records in MILESTON.DAT
 AWARD_KIND_AL, AWARD_KIND_NL = 64, 96
 # C7 leader record kinds: AL block 128 + k, NL block 160 + k (k in leader_records)
 LEADER_KIND_AL, LEADER_KIND_NL = 128, 160
+# C7 World Series record kinds: game g -> 192 + g (teams, runs), 200 + g (hits, errors)
+SERIES_KIND, SERIES_HE_KIND = 192, 200
+GAME_REC = 7446             # PLAYOFFS.AL byte 0 = games n, game g at 1 + GAME_REC * g
 # career-total keys used by the milestone tables, as TOTALS indexes
 MILESTONE_IDX = {'H': 2, 'HR': 5, 'RBI': 7, 'SB': 10, 'W': 13, 'SV': 15, 'PSO': 23}
 # season-half milestone stats, as collected keys (H/HR/SB = L+R; W/SV/PSO as in C2;
@@ -325,8 +328,9 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     C7 (after step 3): season awards (6 winners in season bytes 88..99, career award
     counts in player bytes 152..156) and MILESTON.DAT next to HISTORY.DAT
     (read, drop season_no >= current, append this season in entry index order,
-    then the AL and NL award records of this season: award_records, and the AL and
-    NL leader records: leader_records).
+    then the AL and NL award records of this season: award_records, the AL and
+    NL leader records: leader_records, and the World Series records of PLAYOFFS.AL:
+    series_records).
     retirees = {v20 basename: [record indexes]} from rollover(); applied later
     by mark_retired() (step 4 runs after the P1 rollover)."""
     hist = History.load(hist_path)
@@ -463,6 +467,9 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     ms_new += award_records(season_no, nlo, AWARD_KIND_NL)
     ms_new += leader_records(season_no, al, LEADER_KIND_AL)
     ms_new += leader_records(season_no, nl, LEADER_KIND_NL)
+    po = os.path.join(league_dir, 'PLAYOFFS.AL')
+    playoffs = open(po, 'rb').read() if os.path.isfile(po) else None
+    ms_new += series_records(season_no, playoffs, series_stem_ids(m))
     write_milestones(hist_path, ms_old + ms_new)
     hist.done = 1
     hist.flush()
@@ -641,6 +648,52 @@ def leader_records(season_no, cands, base):
                 best = (v, c['index'])
         if best is not None:
             out.append((season_no, best[1], base + k, min(best[0], 0xffff)))
+    return out
+
+
+def series_stem_ids(m):
+    """{lower-case MAJ stem: league-global id} for series_records: AL slots 0..15 then NL slots
+    0..15, so the last matching slot wins; empty stems are left out. Cut at the first NUL like
+    the game stems."""
+    ids = {}
+    for lg, base in (('AL', 0), ('NL', 16)):
+        for slot in range(16):
+            s = m.stem(lg, slot).split('\0')[0].lower()
+            if s:
+                ids[s] = base + slot
+    return ids
+
+
+def game_stem(d, off):
+    """A PLAYOFFS.AL game stem: the 8 B at off cut at the first NUL, latin-1, lower-cased."""
+    return bytes(d[off:off + 8]).split(b'\0')[0].decode('latin-1').lower()
+
+
+def series_records(season_no, playoffs, stem_ids):
+    """C7 World Series records: playoffs = the PLAYOFFS.AL bytes or None, stem_ids = {lower-case
+    MAJ stem: league id} (the last slot wins, empty stems left out). Two records per kept game g
+    (kind 192 + g, then 200 + g); a short file or n outside 1..7 gives []."""
+    if playoffs is None or len(playoffs) < 1:
+        return []
+    n = playoffs[0]
+    if not 1 <= n <= 7 or len(playoffs) < 1 + GAME_REC * n:
+        return []
+    out = []
+    for g in range(n):
+        r = 1 + GAME_REC * g
+        home = stem_ids.get(game_stem(playoffs, r + 0x1c01))
+        vis = stem_ids.get(game_stem(playoffs, r + 0x1c09))
+        if home is None or vis is None or (home < 16) == (vis < 16):
+            continue                    # unmapped stem, or both teams in one league
+        # team t: 0 visitor, 1 home; hits and errors are 80 B sums capped at 255
+        hits = [min(255, sum(playoffs[r + 0x208 + 0x8e8 * t:r + 0x208 + 0x8e8 * t + 80]))
+                for t in (0, 1)]
+        errs = [min(255, sum(playoffs[r + 0x5c8 + 0x8e8 * t:r + 0x5c8 + 0x8e8 * t + 80]))
+                for t in (0, 1)]
+        runs = playoffs[r + 0x1beb] * 256 + playoffs[r + 0x1bec]
+        out.append((season_no, vis * 256 + home, SERIES_KIND + g, runs))
+        out.append((season_no, hits[0] * 256 + hits[1], SERIES_HE_KIND + g,
+                    errs[0] * 256 + errs[1]))
     return out
 
 

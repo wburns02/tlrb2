@@ -708,6 +708,165 @@ def test_leader_records_rerun_idempotent(tmp_path):
     assert open(ms_path, 'rb').read() == first
 
 
+GAME_REC = 7446
+
+
+def arr80(*vals):
+    """An 80 B team array: the given leading byte values, zero after."""
+    return bytes(list(vals) + [0] * (80 - len(vals)))
+
+
+def game(visitor, home, vruns=0, hruns=0, hits=(arr80(), arr80()), errs=(arr80(), arr80())):
+    """One synthetic PLAYOFFS.AL game: stems (bytes), runs, and [visitor, home] 80 B arrays."""
+    return {'visitor': visitor, 'home': home, 'vruns': vruns, 'hruns': hruns,
+            'hits': hits, 'errs': errs}
+
+
+def playoffs_al(games):
+    """Synthetic PLAYOFFS.AL: byte 0 = len(games), game g at 1 + GAME_REC * g with the home and
+    visitor stems (8 B, NUL padded), the visitor and home runs, and the per-team [visitor, home]
+    80 B hits and errors arrays. Everything else is zero."""
+    d = bytearray(1 + GAME_REC * len(games))
+    d[0] = len(games)
+    for g, gm in enumerate(games):
+        r = 1 + GAME_REC * g
+        d[r + 0x1beb], d[r + 0x1bec] = gm['vruns'], gm['hruns']
+        d[r + 0x1c01:r + 0x1c09] = gm['home'][:8].ljust(8, b'\0')
+        d[r + 0x1c09:r + 0x1c11] = gm['visitor'][:8].ljust(8, b'\0')
+        for t in (0, 1):
+            d[r + 0x208 + 0x8e8 * t:r + 0x208 + 0x8e8 * t + 80] = gm['hits'][t]
+            d[r + 0x5c8 + 0x8e8 * t:r + 0x5c8 + 0x8e8 * t + 80] = gm['errs'][t]
+    return bytes(d)
+
+
+def series_ids():
+    """The stem ids of make_maj: AL clasale1 = 0, ALA01..ALA13 = 1..13; NL00..NL13 = 16..29."""
+    return history.series_stem_ids(make_maj())
+
+
+def test_series_stem_ids_rule():
+    """series_stem_ids: AL then NL slots, the last matching slot wins, empty stems left out,
+    lower-cased keys."""
+    ids = series_ids()
+    assert ids['clasale1'] == 0 and ids['ala13'] == 13 and ids['nl01'] == 17
+    assert '' not in ids and len(ids) == 14 + 14
+    # one stem on AL slot 2 and NL slot 3: the NL slot is scanned later and wins
+    d = bytearray(make_maj().d)
+    d[0x21d + maj.O_STEM + 8 * 2:0x21d + maj.O_STEM + 8 * 2 + 8] = b'DUPSTEM\0'
+    d[0x758c + maj.O_STEM + 8 * 3:0x758c + maj.O_STEM + 8 * 3 + 8] = b'dupstem\0'
+    assert history.series_stem_ids(maj.Maj(bytes(d)))['dupstem'] == 16 + 3
+
+
+def test_series_records_six_games():
+    """A 6 game series: kinds 192 + g and 200 + g interleaved per game g; values exact. Team
+    ids: visitor * 256 + home (visitor in the high byte); runs visitor * 256 + home; hits and
+    errors per team (a team's hits cap at 255); stems match case-insensitively."""
+    po = playoffs_al([
+        game(b'ALA01', b'NL00', 3, 5, hits=(arr80(4, 3), arr80(10)), errs=(arr80(1), arr80(0, 2))),
+        game(b'NL01', b'clasale1', 0, 7, hits=(arr80(20), arr80(1, 1, 1)),
+             errs=(arr80(0, 0, 3), arr80(9))),
+        game(b'NL00', b'ALA01', 255, 1, hits=(arr80(200, 100), arr80(255)),
+             errs=(arr80(2), arr80(3))),
+        game(b'AlA01', b'Nl01', 1, 0, hits=(arr80(5), arr80(5)), errs=(arr80(), arr80())),
+        game(b'NL00', b'CLASALE1', 9, 9, hits=(arr80(9), arr80(9)), errs=(arr80(4), arr80(4))),
+        game(b'NL01', b'ALA13', 2, 4, hits=(arr80(60, 60, 60, 60, 60), arr80(100)),
+             errs=(arr80(0), arr80(1))),
+    ])
+    assert history.series_records(1, po, series_ids()) == [
+        (1, 272, 192, 773),         # ALA01 (1) at NL00 (16): runs 3 * 256 + 5; hits 7 / 10
+        (1, 1802, 200, 258),        #   -> idx 7 * 256 + 10; errors 1 / 2 -> 1 * 256 + 2
+        (1, 4352, 193, 7),          # NL01 (17) at clasale1 (0): runs 0 * 256 + 7
+        (1, 5123, 201, 777),        #   hits 20 / 3; errors 3 / 9
+        (1, 4097, 194, 65281),      # NL00 (16) at ALA01 (1): runs 255 * 256 + 1
+        (1, 65535, 202, 515),       #   hits 300 / 255 cap to 255 / 255; errors 2 / 3
+        (1, 273, 195, 256),         # AlA01 (1) at Nl01 (17): mixed case maps
+        (1, 1285, 203, 0),          #   hits 5 / 5; errors 0 / 0
+        (1, 4096, 196, 2313),       # NL00 (16) at CLASALE1 (0)
+        (1, 2313, 204, 1028),       #   hits 9 / 9; errors 4 / 4
+        (1, 4365, 197, 516),        # NL01 (17) at ALA13 (13): runs 2 * 256 + 4
+        (1, 65380, 205, 1),         #   hits 255 (capped) / 100; errors 0 / 1
+    ]
+
+
+def test_series_records_gates():
+    """No file, no bytes, n = 0, n = 8, or a file under 1 + 7446 * n bytes: no records."""
+    ids = series_ids()
+    six = [game(b'ALA01', b'NL00')] * 6
+    assert history.series_records(1, None, ids) == []
+    assert history.series_records(1, b'', ids) == []
+    assert history.series_records(1, playoffs_al([]), ids) == []
+    assert history.series_records(1, playoffs_al([game(b'ALA01', b'NL00')] * 8), ids) == []
+    short = playoffs_al(six)
+    assert history.series_records(1, short[:-1], ids) == []
+    assert history.series_records(1, short[:1 + GAME_REC * 5], ids) == []
+    assert len(history.series_records(1, short, ids)) == 12
+
+
+def test_series_records_skipped_games():
+    """An unmapped stem, an empty stem, or two teams of one league writes nothing for that game;
+    later games are kept under their own g. A stem is cut at its first NUL."""
+    ids = series_ids()
+    po = playoffs_al([
+        game(b'ALA01', b'NL00', 1, 2, hits=(arr80(3), arr80(4)), errs=(arr80(5), arr80(6))),
+        game(b'XYZ', b'NL00', 3, 4),                      # g1 unmapped visitor: skipped
+        game(b'ALA02', b'', 5, 6),                        # g2 empty home stem: skipped
+        game(b'ALA02', b'ALA03', 7, 8),                   # g3 both AL: skipped
+        game(b'NL00\0JUNK', b'ALA01\0\0\0', 9, 10,        # g4 kept: stems cut at the NUL
+             hits=(arr80(7), arr80(8)), errs=(arr80(0), arr80(1))),
+        game(b'NL01', b'NL02', 11, 12),                   # g5 both NL: skipped
+        game(b'ALA02', b'NL05', 13, 14,                   # g6 kept under its own g
+             hits=(arr80(1), arr80(2)), errs=(arr80(3), arr80(4))),
+    ])
+    assert history.series_records(1, po, ids) == [
+        (1, 272, 192, 258),          # g0: ALA01 at NL00, runs 1 * 256 + 2
+        (1, 772, 200, 1286),         #   hits 3 / 4, errors 5 / 6
+        (1, 4097, 196, 2314),        # g4: NL00 at ALA01, runs 9 * 256 + 10
+        (1, 1800, 204, 1),           #   hits 7 / 8, errors 0 / 1
+        (1, 533, 198, 3342),         # g6: ALA02 at NL05, runs 13 * 256 + 14
+        (1, 258, 206, 772),          #   hits 1 / 2, errors 3 / 4
+    ]
+
+
+def test_series_records_in_record_season(tmp_path):
+    """record_season on award_league with a 2 game PLAYOFFS.AL whose stems are an AL and an NL
+    MAJ stem: the season's kinds 192..207 equal series_records exactly, they come after every
+    leader record, and a rerun stays byte-identical."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    award_league(ldir)
+    po = playoffs_al([
+        game(b'clasale1', b'NL01', 2, 6, hits=(arr80(5, 2), arr80(9)), errs=(arr80(1), arr80(0, 3))),
+        game(b'NL01', b'clasale1', 0, 1, hits=(arr80(4), arr80(7, 1)), errs=(arr80(), arr80(2))),
+    ])
+    (ldir / 'PLAYOFFS.AL').write_bytes(po)
+    hp = str(tmp_path / 'HISTORY.DAT')
+    history.record_season(str(ldir), hp, 1)
+    ms = history.milestone_entries(hp)
+    want = history.series_records(1, po, series_ids())
+    assert want == [(1, 17, 192, 2 * 256 + 6), (1, 1801, 200, 1 * 256 + 3),
+                    (1, 4352, 193, 0 * 256 + 1), (1, 1032, 201, 0 * 256 + 2)]
+    assert [r for r in ms if 192 <= r[2] <= 207] == want
+    last_leader = max(i for i, r in enumerate(ms) if 128 <= r[2] < 176)
+    first_series = min(i for i, r in enumerate(ms) if 192 <= r[2] <= 207)
+    assert last_leader < first_series
+    ms_path = os.path.join(str(tmp_path), 'MILESTON.DAT')
+    first = open(ms_path, 'rb').read()
+    os.remove(hp)
+    history.record_season(str(ldir), hp, 1)
+    assert open(ms_path, 'rb').read() == first
+
+
+def test_no_playoffs_no_series_records(tmp_path):
+    """Without PLAYOFFS.AL, record_season writes no kinds 192..207 (the other records stay)."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    award_league(ldir)
+    hp = str(tmp_path / 'HISTORY.DAT')
+    history.record_season(str(ldir), hp, 1)
+    ms = history.milestone_entries(hp)
+    assert ms and not any(192 <= r[2] <= 207 for r in ms)
+
+
 # -- real data --
 
 def collect_all(h, ldir, season_no, lg_totals, pf):
@@ -782,7 +941,15 @@ def test_real_data_awards():
         ms = history.milestone_entries(hp)
         print(f'milestones: {len(ms)} records')
         for s, i, k, v in ms:
-            print(f'  s{s} [{i}] {ename(i)} kind {k} value {v}')
+            if 192 <= k <= 207:     # World Series: idx is a team pair, not an entry
+                print(f'  s{s} teams {i >> 8}-{i & 255} kind {k} value {v >> 8}-{v & 255}')
+            else:
+                print(f'  s{s} [{i}] {ename(i)} kind {k} value {v}')
+        # the season 1 World Series: 6 games, each a 192 + g then a 200 + g record
+        ws = [(k, i, v) for s, i, k, v in ms if s == 1 and 192 <= k <= 207]
+        assert [k for k, _, _ in ws] == [192, 200, 193, 201, 194, 202, 195, 203,
+                                         196, 204, 197, 205]
+        assert all(((i >> 8) < 16) != ((i & 255) < 16) for k, i, _ in ws if k < 200)
         # recount the C7 winners exactly as record_season collects them
         m = maj.Maj.load(history.maj_or_none(ldir))
         teams = history.mapped_teams(ldir, m)

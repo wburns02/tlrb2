@@ -22,7 +22,7 @@ import maj
 from m4.test_history import (make_team_v20, make_maj, set_player)
 from m4 import dynasty_ref
 from m4.test_awards import (statbat, statpit, fielding, entry_of,
-                            PRE_AL, PRE_NL)
+                            PRE_AL, PRE_NL, GAME_REC, arr80, game, playoffs_al)
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_H = os.path.join(HERE, 'histwr')
@@ -1062,3 +1062,62 @@ def test_dos_second_season_existing_milestones(tmp_path):
     assert history.History.load(os.path.join(lg, 'HISTORY.DAT')).seasons_recorded == 2
     left = [n for n in os.listdir(lg) if n.upper().endswith(('.BAK', '.TMP'))]
     assert not left, left
+
+
+# ---------------- C7 World Series records (PLAYOFFS.AL) ----------------
+
+def series_parity(tmp_path, po):
+    """HISTWR and the Python reference on full_award_league with the PLAYOFFS.AL bytes po:
+    HISTORY.DAT and MILESTON.DAT equal byte for byte. Returns the reference MILESTON.DAT."""
+    _build()
+    ldir = str(tmp_path / 'lg')
+    os.makedirs(ldir)
+    full_award_league(ldir)
+    open(os.path.join(ldir, 'PLAYOFFS.AL'), 'wb').write(po)
+    host_dir, py_dir = str(tmp_path / 'host'), str(tmp_path / 'py')
+    for d in (host_dir, py_dir):
+        shutil.copytree(ldir, d)
+    hp = os.path.join(host_dir, 'H.DAT')
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    rc = HISTWR(host_dir, hp, ret)
+    assert rc.returncode == 0, rc.stderr
+    hp2 = os.path.join(py_dir, 'H.DAT')
+    history.record_season(py_dir, hp2, 1, None)
+    off, ent = first_diff(open(hp, 'rb').read(), open(hp2, 'rb').read())
+    assert off < 0, f'HISTORY.DAT off {off} (entry {ent})'
+    assert open(ms_path_of(hp), 'rb').read() == open(ms_path_of(hp2), 'rb').read(), \
+        'MILESTON.DAT differs'
+    return history.milestone_entries(hp2)
+
+
+def test_series_host_parity_seven_games(tmp_path):
+    """A 7 game PLAYOFFS.AL with one skipped game (an unmapped visitor stem): HISTWR matches
+    the Python reference byte for byte, and the six kept games write kinds 192 + g and
+    200 + g with their own g (no 193 or 201)."""
+    po = playoffs_al([
+        game(b'ALA01', b'NL00', 3, 5, hits=(arr80(4, 3), arr80(10)), errs=(arr80(1), arr80(0, 2))),
+        game(b'XYZ', b'NL00', 1, 1),                      # skipped
+        game(b'NL01', b'ALA01', 255, 1, hits=(arr80(200, 100), arr80(255)),
+             errs=(arr80(2), arr80(3))),
+        game(b'clasale1', b'NL01', 2, 6, hits=(arr80(5, 2), arr80(9)), errs=(arr80(1), arr80(0, 3))),
+        game(b'NL00', b'ALA13', 9, 9, hits=(arr80(9), arr80(9)), errs=(arr80(4), arr80(4))),
+        game(b'AlA02', b'nl05', 1, 0, hits=(arr80(5), arr80(5)), errs=(arr80(), arr80())),
+        game(b'NL01', b'ALA03', 2, 4, hits=(arr80(60, 60, 60, 60, 60), arr80(100)),
+             errs=(arr80(0), arr80(1))),
+    ])
+    ms = series_parity(tmp_path, po)
+    series = [r for r in ms if 192 <= r[2] <= 207]
+    assert [r[2] for r in series] == [192, 200, 194, 202, 195, 203, 196, 204, 197, 205,
+                                      198, 206]
+    assert len(series) == 12
+
+
+def test_series_host_parity_short_file(tmp_path):
+    """A PLAYOFFS.AL with n = 3 one byte under 1 + 7446 * 3: no World Series records, the
+    leader and award records are still written, and HISTWR matches the reference."""
+    po = playoffs_al([game(b'ALA01', b'NL00', 3, 5), game(b'NL01', b'ALA02', 1, 2),
+                      game(b'ALA03', b'NL03', 4, 4)])
+    ms = series_parity(tmp_path, po[:1 + GAME_REC * 3 - 1])
+    assert not any(192 <= r[2] <= 207 for r in ms)
+    assert any(128 <= r[2] < 176 for r in ms) and any(64 <= r[2] < 128 for r in ms)
