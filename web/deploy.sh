@@ -35,18 +35,21 @@ python3 "$REPO/web/build_bundle.py" "$STAGE" "$DATA/stadiums/tlub_parks.iso" "$N
 newsha=$(sha256sum "$NEW" | cut -c1-16)
 oldsha=$(ssh "$TLRB2_WEB_HOST" 'sha256sum tlrb2-web/site/tlrb2.jsdos 2>/dev/null' | cut -c1-16)
 idx_same=0; ssh "$TLRB2_WEB_HOST" 'cat tlrb2-web/site/index.html' | cmp -s - "$REPO/web/index.html" && idx_same=1
-if [ "$newsha" = "$oldsha" ] && [ $idx_same = 1 ] && [ "$FORCE" != --force ]; then
+srv_same=0; ssh "$TLRB2_WEB_HOST" 'cat tlrb2-web/server.py' | cmp -s - "$REPO/web/server.py" && srv_same=1
+if [ "$newsha" = "$oldsha" ] && [ $idx_same = 1 ] && [ $srv_same = 1 ] && [ "$FORCE" != --force ]; then
   rm -f "$NEW"; say "served bundle $oldsha already current, nothing to deploy"; exit 0
 fi
-say "bundle $oldsha -> $newsha (index.html changed: $((1 - idx_same)))"
+say "bundle $oldsha -> $newsha (index.html changed: $((1 - idx_same)), server.py changed: $((1 - srv_same)))"
 mv "$NEW" "$SITE/tlrb2.jsdos"; cp "$REPO/web/index.html" "$SITE/index.html"
 
 TS=$(date +%Y%m%dT%H%M%S)
 ssh "$TLRB2_WEB_HOST" "cd tlrb2-web && mkdir -p backup && cp -a saves backup/saves.$TS && cp site/tlrb2.jsdos backup/tlrb2.jsdos.$TS \
-  && ([ -d studio ] && cp -a studio backup/studio.$TS || true) \
+  && cp server.py backup/server.py.$TS && ([ -d studio ] && cp -a studio backup/studio.$TS || true) \
   && (ls -d backup/saves.* | sort | head -n -4 | xargs -r rm -r --) && (ls backup/tlrb2.jsdos.* | sort | head -n -4 | xargs -r rm --) \
-  && (ls -d backup/studio.* 2>/dev/null | sort | head -n -4 | xargs -r rm -r --)"
+  && (ls -d backup/studio.* 2>/dev/null | sort | head -n -4 | xargs -r rm -r --) \
+  && (ls backup/server.py.* | sort | head -n -4 | xargs -r rm --)"
 rsync -a "$SITE/tlrb2.jsdos" "$SITE/index.html" "$TLRB2_WEB_HOST:tlrb2-web/site/"
+rsync -a "$REPO/web/server.py" "$TLRB2_WEB_HOST:tlrb2-web/server.py"
 ssh "$TLRB2_WEB_HOST" 'systemctl --user restart tlrb2-web && sleep 2 && systemctl --user is-active tlrb2-web' | sed 's/^/[deploy] unit /'
 
 URL=$(sed -n 's/^url=//p' "$CFG/web_login"); URL=${URL%/}
