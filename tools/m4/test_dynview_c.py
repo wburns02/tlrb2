@@ -23,7 +23,7 @@ import history
 import pytest
 from m4.test_dynview import (make_data, write_player, write_season,
                              write_mileston, st, make_offseason, ROSTER_BODY,
-                             big_league)
+                             big_league, make_awards)
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_C = os.path.join(HERE, 'dynview_c')
@@ -758,6 +758,67 @@ def test_menu_flag_precedence_and_no_control(tmp_path):
     assert (cwd / 'CONTROL').read_bytes() == CONTROL_OUT
 
 
+# ---------------- test 5d: SEASON AWARDS (hub key 9) ----------------
+
+LEFT, RIGHT = dynview.KEY_LEFT, dynview.KEY_RIGHT
+AWARD_SEQS = [
+    ('hub', []),                                     # the nine hub rows
+    ('open', [57]),
+    ('left1', [57, LEFT]),
+    ('left2', [57, LEFT, LEFT]),
+    ('left_stays', [57, LEFT, LEFT, LEFT, LEFT]),    # season 1 stays
+    ('back', [57, LEFT, LEFT, RIGHT, RIGHT, RIGHT]),  # RIGHT at the newest stays
+    ('pages', [57, PGDN, PGDN, PGDN, PGDN, PGUP]),   # 4 pages, PGDN stops at the last
+    ('page_then_left', [57, PGDN, LEFT, PGDN]),      # LEFT resets the page
+    ('left_then_pages', [57, LEFT, PGDN, PGDN, PGDN]),  # season 2 has one page
+    ('page_then_left_stays', [57, PGDN, LEFT, LEFT, LEFT, PGDN]),
+    ('esc', [57, ESC]),
+    ('enter', [57, ENTER]),
+    ('esc_back_in', [57, ESC, 57, LEFT]),
+    ('milestones', [52]),
+    ('milestones_p1', [52, PGDN]),
+    ('hub_then_awards', [57, ESC, 56, ESC, 57]),
+]
+
+
+def test_awards_key_sequences_parity(tmp_path):
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_awards(tmp_path)
+    for tag, keys in AWARD_SEQS:
+        check_parity(ldir, tmp_path, 'aw_' + tag, keys=keys)
+    check_parity(ldir, tmp_path, 'aw_review', review=True)
+    check_parity(ldir, tmp_path, 'aw_title', title=True)
+    check_parity(ldir, tmp_path, 'aw_title_9', title=True, keys=[57])
+    check_parity(ldir, tmp_path, 'aw_title_9_left', title=True, keys=[57, LEFT])
+    check_parity(ldir, tmp_path, 'aw_about', keys=[56, PGDN, PGDN])
+
+
+def test_awards_past_history_table_parity(tmp_path):
+    """a header of 70 recorded seasons: cat 5 shows season 65, past the table, with no
+    records: one message row"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_awards(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[4], d[5] = 70, 0
+    p.write_bytes(bytes(d))
+    check_parity(ldir, tmp_path, 'aw_p70_open', keys=[57])
+    check_parity(ldir, tmp_path, 'aw_p70_s65', keys=[57] + [LEFT] * 5)
+    check_parity(ldir, tmp_path, 'aw_p70_s65_pg', keys=[57] + [LEFT] * 5 + [PGDN])
+    check_parity(ldir, tmp_path, 'aw_p70_s64', keys=[57] + [LEFT] * 6)
+
+
+def test_awards_no_history_parity(tmp_path):
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    check_parity(empty, tmp_path, 'aw_nh_open', keys=[57])
+    check_parity(empty, tmp_path, 'aw_nh_left', keys=[57, LEFT, RIGHT, PGDN])
+
+
 # ---------------- test 6: errors ----------------
 
 def test_errors_no_fonts(tmp_path):
@@ -1028,3 +1089,29 @@ def test_dos_settings_parity(tmp_path):
                     f'python {py[i]} c {dos_raw[i]}')
     assert open(os.path.join(d, 'LEAGUE', 'HISTORY.DAT'), 'rb').read() == history_bytes(p), \
         'dos HISTORY.DAT differs from Python'
+
+
+def test_dos_awards_parity(tmp_path):
+    """Headless DOSBox-X: DYNVIEW.EXE /RAW:OUT.RAW /KEYS:57,0x4b00 LEAGUE FONTS (open
+    SEASON AWARDS, step back to season 2) on the award league, compared with Python"""
+    if not _dos_ready():
+        pytest.skip('DYNVIEW.EXE or dosbox-x missing')
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_awards(tmp_path)
+    d = str(tmp_path / 'dosaw')
+    os.makedirs(os.path.join(d, 'LEAGUE'))
+    os.makedirs(os.path.join(d, 'FONTS'))
+    for f in os.listdir(str(ldir)):
+        shutil.copy2(os.path.join(str(ldir), f), os.path.join(d, 'LEAGUE', f))
+    for f in ('MAIN.FNT', 'BOLD.FNT', 'DEFAULT.PAL'):
+        shutil.copy2(os.path.join(FILES, f), os.path.join(d, 'FONTS', f))
+    rc = run_dos(d, ['DYNVIEW.EXE /RAW:OUT.RAW /KEYS:57,0x4b00 LEAGUE FONTS'])
+    assert rc == 0, f'dos rc {rc}'
+    dos_raw = open(os.path.join(d, 'OUT.RAW'), 'rb').read()
+    py = fb_python(ldir, keys=[57, dynview.KEY_LEFT], font_dir=FILES)
+    if dos_raw != py:
+        i = next(k for k in range(min(len(dos_raw), len(py)))
+                 if dos_raw[k] != py[k])
+        pytest.fail(f'dos awards: first diff at pixel ({i % 320}, {i // 320}): '
+                    f'python {py[i]} c {dos_raw[i]}')

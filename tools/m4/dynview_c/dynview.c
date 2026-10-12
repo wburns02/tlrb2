@@ -60,12 +60,18 @@
 #define SCREEN_OFFSEASON 6
 #define SCREEN_SETTINGS 7
 #define SCREEN_ABOUT 8
+#define SCREEN_AWARDS 9
 #define N_CATS 12
 
 /* the hub rows (SCREEN_MENU) and the ABOUT THE MODS rows */
-#define N_MENU_ROWS 8
-#define N_ABOUT_ROWS 35
+#define N_MENU_ROWS 9
+#define N_ABOUT_ROWS 36
 #define N_TITLE_ROWS 11
+
+/* MILESTON.DAT kinds from AWARD_KIND_MIN up are award records (C7), not milestones;
+ * SEASON AWARDS keeps at most AWARD_MAX rows */
+#define AWARD_KIND_MIN 64
+#define AWARD_MAX 48
 
 /* offseason phases: cat & 15 is the phase, cat >> 4 the launched flag */
 #define OFF_REVIEW 0
@@ -207,6 +213,11 @@ static List FARDATA g_list_buf[5];
 static Row FARDATA g_rows[MAX_ROWS];
 static int g_nrows;
 
+/* SEASON AWARDS: all rows of the season (AWARD_MAX at most) and the award records
+ * kept for them, in (kind, file position) order */
+static Row FARDATA g_awd[AWARD_MAX];
+static MsRec g_arec[AWARD_MAX];
+
 /* ROSTERS.TXT draft table (loaded once): the first DRAFT_KEEP valid DRAFT lines.
  * Slot: [0] stem length, [1] name length, then the upper-case stem and the joined
  * name. g_used marks the DRAFT lines consumed by SIGN picks in one pass. */
@@ -245,7 +256,8 @@ static const char *ABOUT_LINES[N_ABOUT_ROWS] = {
     "",
     "DYNASTY > DYNASTY MODE ON THE MENU BAR",
     "SHOWS HISTORY, HALL OF FAME, LEADERS,",
-    "MILESTONES AND THE LAST OFFSEASON.",
+    "MILESTONES, SEASON AWARDS AND THE LAST",
+    "OFFSEASON.",
     "CREATE A PLAYER",
     "DYNASTY > CREATE A PLAYER PUTS A NEW",
     "PLAYER ON ANY TEAM: NAME, POSITION,",
@@ -282,6 +294,7 @@ static void render(State st);
 static void build_no_hist_rows(void);
 static const ColDef *body_cols(State st);
 static int offseason_body(State st, int page, const ColDef **cols);
+static int awards_body(State st, int page, const ColDef **cols);
 /* ---- helpers ---- */
 
 /* signed division truncating toward zero == C99 / (x86 idiv) */
@@ -1331,13 +1344,16 @@ static void leaders_scan(List *b, int cat)
     }
 }
 
-/* milestones: season desc, file position asc */
+/* milestones (award records skipped): season desc, file position asc */
 static void ms_scan(List *b)
 {
     int32_t i;
     b->n = 0;
-    for (i = 0; i < g_nms; i++)
+    for (i = 0; i < g_nms; i++) {
+        if (g_ms[i].kind >= AWARD_KIND_MIN)
+            continue;
         list_add_desc(b, (int32_t)g_ms[i].season, (uint32_t)i);
+    }
 }
 
 /* history: one row per season, newest first (at most 64 seasons) */
@@ -1361,6 +1377,125 @@ static int leaders_count(int cat)
     List b;
     leaders_scan(&b, cat);
     return (int)b.n;
+}
+
+/* ---------------- SEASON AWARDS (C7 award records) ---------------- */
+
+static const char *AWARD_POS[10] = {
+    "", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH" };
+static const char *AWARD_FALLBACK[6] = {
+    "AL MVP", "AL CY YOUNG", "AL ROOKIE", "NL MVP", "NL CY YOUNG", "NL ROOKIE" };
+
+/* an award record kind: 64..83 (AL) or 96..115 (NL) */
+static int award_kind(int kind)
+{
+    return (kind >= 64 && kind <= 83) || (kind >= 96 && kind <= 115);
+}
+
+/* k = kind - 64 (AL) or kind - 96 (NL) */
+static int award_k(int kind)
+{
+    return kind >= 96 ? kind - 96 : kind - 64;
+}
+
+/* award_label: 'AL MVP', 'NL GLOVE CF', 'AL SLUGGER DH' and so on */
+static void award_label(int kind, char *dst)
+{
+    int k = award_k(kind);
+    strcpy(dst, kind >= 96 ? "NL " : "AL ");
+    if (k == 0)
+        strcat(dst, "MVP");
+    else if (k == 1)
+        strcat(dst, "CY YOUNG");
+    else if (k == 2)
+        strcat(dst, "ROOKIE");
+    else if (k <= 10) {
+        strcat(dst, "GLOVE ");
+        strcat(dst, AWARD_POS[k - 2]);
+    } else {
+        strcat(dst, "SLUGGER ");
+        strcat(dst, AWARD_POS[k - 10]);
+    }
+}
+
+/* award_value: the stored u16 read as s16; WAR10 for MVP, CY and ROOKIE, fp1000 for a
+ * GLOVE, bat100 for a SLUGGER (runs, v / 10 truncated toward zero) */
+static void award_value(int kind, uint16_t value, char *dst)
+{
+    int k = award_k(kind);
+    int16_t v = (int16_t)value;
+    if (k <= 2) {
+        fmt_war10(v, dst);
+        strcat(dst, " WAR");
+    } else if (k <= 10) {
+        fmt_avg(v, dst);
+        strcat(dst, " FLD");
+    } else {
+        fmt_war10(v / 10, dst);
+        strcat(dst, " RUNS");
+    }
+}
+
+/* the award records of season into g_arec: the AWARD_MAX first in (kind, file
+ * position) order; returns how many. Equal kinds keep file order (insertion). */
+static int award_recs(long season)
+{
+    int32_t i;
+    int n = 0, j;
+    for (i = 0; i < g_nms; i++) {
+        MsRec *rec = &g_ms[i];
+        if (rec->season != season || !award_kind(rec->kind))
+            continue;
+        if (n == AWARD_MAX && rec->kind >= g_arec[n - 1].kind)
+            continue;               /* after the last kept record */
+        j = n < AWARD_MAX ? n : n - 1;
+        while (j > 0 && g_arec[j - 1].kind > rec->kind) {
+            g_arec[j] = g_arec[j - 1];
+            j--;
+        }
+        g_arec[j] = *rec;
+        if (n < AWARD_MAX)
+            n++;
+    }
+    return n;
+}
+
+/* SEASON AWARDS rows of season into g_awd (dynview.awards_rows); returns the count:
+ * the award records, else the six winners and the GG SS row of a season recorded
+ * before the award records, else one message row past the history table */
+static int build_awards(long season)
+{
+    int n, k;
+    n = award_recs(season);
+    if (n > 0) {
+        for (k = 0; k < n; k++) {
+            Row *row = &g_awd[k];
+            award_label(g_arec[k].kind, row->cells[0]);
+            entry_name(g_arec[k].idx, 16, row->cells[1]);
+            award_value(g_arec[k].kind, g_arec[k].value, row->cells[2]);
+            row->ncells = 3;
+        }
+        return n;
+    }
+    if (season <= SEASON_COUNT) {
+        SeasonEntry se;
+        read_season(&se, (int)season);
+        for (k = 0; k < 6; k++) {
+            Row *row = &g_awd[k];
+            strcpy(row->cells[0], AWARD_FALLBACK[k]);
+            entry_name(se.awards[k], 16, row->cells[1]);
+            row->cells[2][0] = 0;
+            row->ncells = 3;
+        }
+        strcpy(g_awd[6].cells[0], "GG SS");
+        strcpy(g_awd[6].cells[1], "NOT RECORDED");
+        g_awd[6].cells[2][0] = 0;
+        g_awd[6].ncells = 3;
+        return 7;
+    }
+    strcpy(g_awd[0].cells[0], "NO AWARDS RECORDED");
+    g_awd[0].ncells = 1;
+    return 1;
 }
 
 /* ---------------- row builders ---------------- */
@@ -1505,7 +1640,7 @@ static int build_review_rows(void)
     }
     for (i = 0; i < g_nms; i++) {
         MsRec *rec = &g_ms[i];
-        if (rec->season != last)
+        if (rec->season != last || rec->kind >= AWARD_KIND_MIN)
             continue;
         entry_name(rec->idx, 16, nm);
         event_text(rec->kind, (int32_t)rec->value, ev);
@@ -1529,7 +1664,7 @@ static void build_menu_rows(void)
     static const char *items[N_MENU_ROWS] = {
         "1  SEASON HISTORY", "2  HALL OF FAME", "3  CAREER LEADERS",
         "4  MILESTONES", "5  LAST SEASON REVIEW", "6  OFFSEASON",
-        "7  DYNASTY SETTINGS", "8  ABOUT THE MODS" };
+        "7  DYNASTY SETTINGS", "8  ABOUT THE MODS", "9  SEASON AWARDS" };
     int k;
     for (k = 0; k < N_MENU_ROWS; k++) {
         strcpy(g_rows[k].cells[0], items[k]);
@@ -1724,6 +1859,8 @@ static int total_rows(State st)
         return build_review_rows();
     case SCREEN_OFFSEASON:
         return offseason_body(st, -1, &cols);
+    case SCREEN_AWARDS:
+        return awards_body(st, -1, &cols);
     case SCREEN_SETTINGS:
         return 1 + g_nteams;
     case SCREEN_ABOUT:
@@ -1773,13 +1910,15 @@ static int refresh_rows(State st, const ColDef **cols)
         return build_ms_rows(st.page);
     case SCREEN_OFFSEASON:
         return page_rows(offseason_body(st, st.page, cols), st.page);
+    case SCREEN_AWARDS:
+        return page_rows(awards_body(st, st.page, cols), st.page);
     default:
         return build_review_rows();
     }
 }
 
 /* step: ESC exits from MENU, otherwise goes back to MENU; PGUP/PGDN page by
- * 12; LEFT/RIGHT cycle the LEADERS category */
+ * 12; LEFT/RIGHT cycle the LEADERS category or step the SEASON AWARDS season */
 static State step(State in, int32_t key)
 {
     State s = in;
@@ -1792,7 +1931,7 @@ static State step(State in, int32_t key)
         return s;
     }
     if (s.screen == SCREEN_MENU) {
-        if (49 <= key && key <= 56) {
+        if (49 <= key && key <= 57) {
             s.screen = (int16_t)(key - 48);
             s.page = 0;
             s.cat = 0;
@@ -1869,6 +2008,22 @@ static State step(State in, int32_t key)
         s.cat = (int16_t)((s.cat + d + N_CATS) % N_CATS);
         return s;
     }
+    /* SEASON AWARDS: LEFT goes back a season while the shown one is above 1 (season
+     * = seasons recorded - cat), RIGHT forward; otherwise the state is unchanged */
+    if (s.screen == SCREEN_AWARDS && key == KEY_LEFT) {
+        if ((long)g_hdr_seasons - s.cat > 1) {
+            s.cat = (int16_t)(s.cat + 1);
+            s.page = 0;
+        }
+        return s;
+    }
+    if (s.screen == SCREEN_AWARDS && key == KEY_RIGHT) {
+        if (s.cat > 0) {
+            s.cat = (int16_t)(s.cat - 1);
+            s.page = 0;
+        }
+        return s;
+    }
     return s;
 }
 
@@ -1912,6 +2067,9 @@ static const ColDef COLS_DRAFT[] = {
 static const ColDef COLS_MOVE[] = {
     { "TEAM", CX(0), 13, 0 }, { "PLAYER", CX(14), 15, 0 }, { "FROM", CX(30), 12, 0 } };
 
+static const ColDef COLS_AWARDS[] = {
+    { "AWARD", CX(0), 13, 0 }, { "NAME", CX(14), 16, 0 }, { "VALUE", CX(30), 12, 1 } };
+
 #define NCOLS(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 static int n_cols(const ColDef *cols)
@@ -1932,6 +2090,8 @@ static int n_cols(const ColDef *cols)
         return NCOLS(COLS_MOVE);
     if (cols == COLS_SETTINGS)
         return NCOLS(COLS_SETTINGS);
+    if (cols == COLS_AWARDS)
+        return NCOLS(COLS_AWARDS);
     return NCOLS(COLS_MILESTONES);
 }
 
@@ -1956,6 +2116,8 @@ static const ColDef *body_cols(State st)
         return COLS_LEADERS;
     case SCREEN_MILESTONES:
         return COLS_MILESTONES;
+    case SCREEN_AWARDS:
+        return COLS_AWARDS;
     default:
         return COLS_SINGLE;
     }
@@ -2013,22 +2175,45 @@ static int offseason_body(State st, int page, const ColDef **cols)
     }
 }
 
+/* SEASON AWARDS page: the rows of the season cat seasons back from the newest into
+ * g_rows for page (page < 0 counts only). Returns the row count; *cols is COLS_SINGLE
+ * for the lone message row and with no history, else COLS_AWARDS. */
+static int awards_body(State st, int page, const ColDef **cols)
+{
+    int n, k, r;
+    *cols = COLS_AWARDS;
+    if (g_hdr_seasons == 0) {
+        *cols = COLS_SINGLE;
+        return 0;
+    }
+    n = build_awards((long)g_hdr_seasons - st.cat);
+    if (n == 1 && g_awd[0].ncells == 1)
+        *cols = COLS_SINGLE;
+    if (page >= 0) {
+        for (k = 0, r = page * ROWS_PER_PAGE; r < n && k < ROWS_PER_PAGE; r++, k++)
+            g_rows[k] = g_awd[r];
+    }
+    return n;
+}
+
 /* footer line: the offseason's ENTER label follows its phase */
 static const char *footer_of(State st)
 {
     static const char *footers[6] = {
-        "1-8 SELECT   ESC EXIT",
+        "1-9 SELECT   ESC EXIT",
         "PGUP PGDN   ESC MENU",
         "PGUP PGDN   ESC MENU",
         "LEFT RIGHT CATEGORY   ESC MENU",
         "PGUP PGDN   ESC MENU",
         "ENTER MENU   ESC MENU" };
     if (st.screen == SCREEN_MENU && (st.cat >> 4))
-        return g_hdr_seasons == 0 ? "ENTER PLAY BALL" : "1-8 SELECT   ENTER PLAY BALL";
+        return g_hdr_seasons == 0 ? "ENTER PLAY BALL" : "1-9 SELECT   ENTER PLAY BALL";
     if (st.screen == SCREEN_SETTINGS)
         return "UP DOWN MOVE   ENTER CHANGE   ESC MENU";
     if (st.screen == SCREEN_ABOUT)
         return "PGUP PGDN   ESC MENU";
+    if (st.screen == SCREEN_AWARDS)
+        return "LEFT RIGHT SEASON   PGUP PGDN   ESC MENU";
     if (st.screen == SCREEN_OFFSEASON) {
         if ((st.cat & 15) < OFF_READY)
             return "ENTER NEXT   PGUP PGDN   ESC MENU";
@@ -2057,6 +2242,8 @@ static void screen_title(State st, char *dst)
     else if (st.screen == SCREEN_ABOUT)
         sprintf(dst, "ABOUT THE MODS %d/%d", st.page + 1,
                 (N_ABOUT_ROWS + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE);
+    else if (st.screen == SCREEN_AWARDS)
+        sprintf(dst, "SEASON %ld AWARDS", (long)g_hdr_seasons - st.cat);
     else if (st.screen == SCREEN_OFFSEASON) {
         int phase = st.cat & 15;
         unsigned long n = (unsigned long)g_hdr_seasons;

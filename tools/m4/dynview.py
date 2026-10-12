@@ -51,12 +51,18 @@ SCREEN_MENU, SCREEN_HISTORY, SCREEN_HOF = 0, 1, 2
 SCREEN_LEADERS, SCREEN_MILESTONES, SCREEN_REVIEW = 3, 4, 5
 SCREEN_OFFSEASON = 6
 SCREEN_SETTINGS, SCREEN_ABOUT = 7, 8
+SCREEN_AWARDS = 9
 N_CATS = 12
 
-# the hub (SCREEN_MENU) rows: key 1..8 opens screen key - 48
+# MILESTON.DAT kinds from this one up are award records (C7), not milestones
+AWARD_KIND_MIN = 64
+# SEASON AWARDS keeps at most this many rows (the DOS port's fixed buffer)
+AWARD_MAX = 48
+
+# the hub (SCREEN_MENU) rows: key 1..9 opens screen key - 48
 MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  CAREER LEADERS',
              '4  MILESTONES', '5  LAST SEASON REVIEW', '6  OFFSEASON',
-             '7  DYNASTY SETTINGS', '8  ABOUT THE MODS']
+             '7  DYNASTY SETTINGS', '8  ABOUT THE MODS', '9  SEASON AWARDS']
 
 # HISTORY.DAT header fields used by DYNASTY SETTINGS: byte 10 era, bytes 12..15 mask
 HDR_SIZE = 32
@@ -102,7 +108,8 @@ ABOUT_ROWS = ['DYNASTY MODE',
               '',
               'DYNASTY > DYNASTY MODE ON THE MENU BAR',
               'SHOWS HISTORY, HALL OF FAME, LEADERS,',
-              'MILESTONES AND THE LAST OFFSEASON.',
+              'MILESTONES, SEASON AWARDS AND THE LAST',
+              'OFFSEASON.',
               'CREATE A PLAYER',
               'DYNASTY > CREATE A PLAYER PUTS A NEW',
               'PLAYER ON ANY TEAM: NAME, POSITION,',
@@ -647,12 +654,13 @@ def leaders_rows(hist, cat_index, page=0):
 
 
 def milestone_rows(hist, ms):
-    """MILESTON.DAT records, newest season first, within a season in file order:
-    YEAR, NAME, EVENT."""
+    """MILESTON.DAT records (award records skipped), newest season first, within a
+    season in file order: YEAR, NAME, EVENT."""
     items = []
     for pos, rec in enumerate(ms):
-        season, _idx, _kind, _value = rec
-        items.append((-season, pos, rec))
+        season, _idx, kind, _value = rec
+        if kind < AWARD_KIND_MIN:
+            items.append((-season, pos, rec))
     items.sort(key=lambda t: (t[0], t[1]))
     out = []
     for _s, _p, (season, idx, kind, value) in items[:LIST_MAX]:
@@ -663,8 +671,8 @@ def milestone_rows(hist, ms):
 
 def review_rows(hist, ms, league_dir=None):
     """REVIEW lines for the last recorded season; None when there is no history.
-    Champion/runner-up, six award lines, new HoF entries, that season's milestones;
-    cut at 12 lines."""
+    Champion/runner-up, six award lines, new HoF entries, that season's milestones
+    (award records skipped); cut at 12 lines."""
     if hist.seasons_recorded <= 0:
         return None
     last = hist.seasons_recorded
@@ -684,9 +692,84 @@ def review_rows(hist, ms, league_dir=None):
             lines.append(('NEW HALL OF FAME: ' + (name_display(e['name']) or '?'),))
     for pos, rec in enumerate(ms):
         season, idx, kind, value = rec
-        if season == last:
+        if season == last and kind < AWARD_KIND_MIN:
             lines.append((entry_name(hist, idx, 16) + ' ' + event_text(kind, value),))
     return lines[:ROWS_PER_PAGE]
+
+
+# ---------------------------------------------------------------- awards
+# SEASON AWARDS (C7 award records): kind 64 + k (AL) or 96 + k (NL); k 0 MVP, 1 CY YOUNG,
+# 2 ROOKIE, 2 + q GLOVE at position q (1..8), 10 + q SLUGGER at position q (1..9)
+AWARD_POS = ['', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
+AWARD_FALLBACK = ['AL MVP', 'AL CY YOUNG', 'AL ROOKIE',
+                  'NL MVP', 'NL CY YOUNG', 'NL ROOKIE']
+
+
+def award_kind(kind):
+    return 64 <= kind <= 83 or 96 <= kind <= 115
+
+
+def award_k(kind):
+    return kind - 96 if kind >= 96 else kind - 64
+
+
+def award_label(kind):
+    k = award_k(kind)
+    lg = 'NL' if kind >= 96 else 'AL'
+    if k == 0:
+        what = 'MVP'
+    elif k == 1:
+        what = 'CY YOUNG'
+    elif k == 2:
+        what = 'ROOKIE'
+    elif k <= 10:
+        what = 'GLOVE ' + AWARD_POS[k - 2]
+    else:
+        what = 'SLUGGER ' + AWARD_POS[k - 10]
+    return lg + ' ' + what
+
+
+def award_value(kind, value):
+    """value is the stored u16 (an s16): WAR10 for MVP, CY and ROOKIE, fp1000 for a
+    GLOVE, bat100 for a SLUGGER (shown as runs, truncated toward zero)."""
+    v = value - 65536 if value >= 32768 else value
+    k = award_k(kind)
+    if k <= 2:
+        return fmt_war10(v) + ' WAR'
+    if k <= 10:
+        return fmt_avg(v) + ' FLD'
+    t = -((-v) // 10) if v < 0 else v // 10
+    return fmt_war10(t) + ' RUNS'
+
+
+def awards_rows(hist, ms, season):
+    """SEASON AWARDS rows of season: its award records of ms in (kind, file position)
+    order; a season recorded before the award records shows its six winners and a
+    GG SS row; past the history table one message row. At most AWARD_MAX rows."""
+    recs = [(kind, pos, idx, value) for pos, (s, idx, kind, value) in enumerate(ms)
+            if s == season and award_kind(kind)]
+    if recs:
+        recs.sort(key=lambda t: (t[0], t[1]))
+        return [(award_label(kind), entry_name(hist, idx, 16), award_value(kind, value))
+                for kind, _pos, idx, value in recs[:AWARD_MAX]]
+    if season <= history.SEASON_COUNT:
+        aw = hist.read_season_entry(season)['awards']
+        out = [(label, entry_name(hist, aw[k], 16), '')
+               for k, label in enumerate(AWARD_FALLBACK)]
+        return out + [('GG SS', 'NOT RECORDED', '')]
+    return [('NO AWARDS RECORDED',)]
+
+
+def awards_body(state, data):
+    """(cols, rows) of SEASON AWARDS: the season cat seasons back from the newest. A
+    lone message row uses COLS_SINGLE (as the offseason's); no history gives no rows."""
+    hist = data['hist']
+    if hist.seasons_recorded == 0:
+        return COLS_SINGLE, []
+    rows = awards_rows(hist, data['ms'], hist.seasons_recorded - state[2])
+    if len(rows) == 1 and len(rows[0]) == 1:
+        return COLS_SINGLE, rows
+    return COLS_AWARDS, rows
 
 
 # ---------------------------------------------------------------- offseason
@@ -833,6 +916,8 @@ def total_rows(state, data):
         n = review_rows(hist, data['ms']) or []
     elif screen == SCREEN_OFFSEASON:
         n = offseason_body(state, data)[1]
+    elif screen == SCREEN_AWARDS:
+        n = awards_body(state, data)[1]
     elif screen == SCREEN_SETTINGS:
         n = settings_rows(data)
     elif screen == SCREEN_ABOUT:
@@ -861,6 +946,9 @@ def rows(state, data):
     if screen == SCREEN_OFFSEASON:
         body = offseason_body(state, data)[1]
         return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
+    if screen == SCREEN_AWARDS:
+        body = awards_body(state, data)[1]
+        return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_HISTORY:
         all_rows = history_rows(hist, data.get('league_dir'))
     elif screen == SCREEN_HOF:
@@ -876,7 +964,8 @@ def rows(state, data):
 
 def step(state, key, data):
     """(state, exit_flag). ESC exits from MENU; from any other screen it goes back
-    to MENU. PGUP/PGDN page by 12; LEFT/RIGHT cycle the LEADERS category. ENTER on
+    to MENU. PGUP/PGDN page by 12; LEFT/RIGHT cycle the LEADERS category or step the
+    SEASON AWARDS season. ENTER on
     REVIEW goes to MENU. ENTER walks the offseason phases; past the last one it exits
     when the offseason was launched (cat >> 4) and goes to MENU otherwise. ENTER on the
     /TITLE menu (cat >> 4) exits."""
@@ -886,7 +975,7 @@ def step(state, key, data):
             return (SCREEN_MENU, 0, 0), 1
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_MENU:
-        if 49 <= key <= 56:
+        if 49 <= key <= 57:
             return (key - 48, 0, 0), 0
         if key == KEY_ENTER and cat >> 4:
             return state, 1
@@ -932,6 +1021,12 @@ def step(state, key, data):
     if screen == SCREEN_LEADERS and key in (KEY_LEFT, KEY_RIGHT):
         d = -1 if key == KEY_LEFT else 1
         return (SCREEN_LEADERS, 0, (cat + d) % N_CATS), 0
+    if screen == SCREEN_AWARDS and key in (KEY_LEFT, KEY_RIGHT):
+        # LEFT goes back a season while one is left (shown season > 1), RIGHT forward
+        if key == KEY_LEFT and data['hist'].seasons_recorded - cat > 1:
+            return (SCREEN_AWARDS, 0, cat + 1), 0
+        if key == KEY_RIGHT and cat > 0:
+            return (SCREEN_AWARDS, 0, cat - 1), 0
     return state, 0
 
 
@@ -960,20 +1055,23 @@ COLS_RETIRE = [('NAME', _cx(0), 18, 'L'), ('AGE', _cx(18), 5, 'R'), ('YRS', _cx(
                ('WAR', _cx(28), 7, 'R'), ('HOF', _cx(36), 6, 'R')]
 COLS_DRAFT = [('#', _cx(0), 4, 'L'), ('TEAM', _cx(4), 15, 'L'), ('PLAYER', _cx(19), 23, 'L')]
 COLS_MOVE = [('TEAM', _cx(0), 13, 'L'), ('PLAYER', _cx(14), 15, 'L'), ('FROM', _cx(30), 12, 'L')]
+COLS_AWARDS = [('AWARD', _cx(0), 13, 'L'), ('NAME', _cx(14), 16, 'L'),
+               ('VALUE', _cx(30), 12, 'R')]
 COLS_SETTINGS = [('SETTING', _cx(0), 24, 'L'), ('VALUE', _cx(26), 16, 'L')]
 OFF_COLS = [COLS_SINGLE, COLS_RETIRE, COLS_DRAFT, COLS_MOVE, COLS_MOVE, COLS_SINGLE]
 
-FOOTERS = {SCREEN_MENU: '1-8 SELECT   ESC EXIT',
+FOOTERS = {SCREEN_MENU: '1-9 SELECT   ESC EXIT',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT CATEGORY   ESC MENU',
            SCREEN_MILESTONES: 'PGUP PGDN   ESC MENU',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU',
            SCREEN_SETTINGS: 'UP DOWN MOVE   ENTER CHANGE   ESC MENU',
-           SCREEN_ABOUT: 'PGUP PGDN   ESC MENU'}
+           SCREEN_ABOUT: 'PGUP PGDN   ESC MENU',
+           SCREEN_AWARDS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'}
 
 
-TITLE_FOOTER = '1-8 SELECT   ENTER PLAY BALL'
+TITLE_FOOTER = '1-9 SELECT   ENTER PLAY BALL'
 TITLE_FOOTER_NEW = 'ENTER PLAY BALL'
 
 
@@ -1020,6 +1118,8 @@ def screen_title(state, data):
     if screen == SCREEN_ABOUT:
         return 'ABOUT THE MODS %d/%d' % (page + 1, (len(ABOUT_ROWS) + ROWS_PER_PAGE - 1)
                                          // ROWS_PER_PAGE)
+    if screen == SCREEN_AWARDS:
+        return 'SEASON %d AWARDS' % (data['hist'].seasons_recorded - cat)
     return 'SEASON %d IN REVIEW' % data['hist'].seasons_recorded
 
 
@@ -1044,6 +1144,8 @@ def body_cols(state, data):
         return COLS_SINGLE
     if state[0] == SCREEN_OFFSEASON:
         return offseason_body(state, data)[0]
+    if state[0] == SCREEN_AWARDS:
+        return awards_body(state, data)[0]
     return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
             SCREEN_HOF: COLS_HOF, SCREEN_LEADERS: COLS_LEADERS,
             SCREEN_MILESTONES: COLS_MILESTONES, SCREEN_REVIEW: COLS_SINGLE}[state[0]]

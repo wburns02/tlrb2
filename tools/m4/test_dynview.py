@@ -420,7 +420,7 @@ def test_title_mode(tmp_path):
     hdir, _ = make_data(tmp_path)
     data = dynview.load_data(str(hdir))
     assert dynview.rows(T, data)[0] == ('1  SEASON HISTORY',)
-    assert dynview.footer_text(T, data) == '1-8 SELECT   ENTER PLAY BALL'
+    assert dynview.footer_text(T, data) == '1-9 SELECT   ENTER PLAY BALL'
     assert dynview.screen_title(T, data) == 'DYNASTY MODE: SEASON 4'
     s, ex = dynview.step(T, ord('2'), data)
     assert s == (dynview.SCREEN_HOF, 0, 0) and ex == 0
@@ -475,7 +475,7 @@ def test_column_layout_fits_and_never_overlaps():
     assert dynview.CHAR_W == 7
     for cols in (dynview.COLS_SINGLE, dynview.COLS_HISTORY, dynview.COLS_HOF,
                  dynview.COLS_LEADERS, dynview.COLS_MILESTONES, dynview.COLS_RETIRE,
-                 dynview.COLS_DRAFT, dynview.COLS_MOVE):
+                 dynview.COLS_DRAFT, dynview.COLS_MOVE, dynview.COLS_AWARDS):
         prev_end = 0
         for header, x, w, _a in cols:
             assert len(header) <= w
@@ -782,16 +782,16 @@ def test_offseason_titles_footers_and_menu(tmp_path):
                 'ENTER NEXT   PGUP PGDN   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5))) == 'ENTER CONTINUE   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5, 0))) == 'ENTER MENU   ESC MENU'
-    assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '1-8 SELECT   ESC EXIT'
+    assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '1-9 SELECT   ESC EXIT'
     assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == 'PGUP PGDN   ESC MENU'
     assert dynview.footer_text((dynview.SCREEN_REVIEW, 0, 0)) == 'ENTER MENU   ESC MENU'
-    # the menu's sixth row and key 6; key 7 now opens DYNASTY SETTINGS, 9 is unused
+    # the menu's sixth row and key 6; key 7 opens DYNASTY SETTINGS, 9 SEASON AWARDS
     assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data)[5] == ('6  OFFSEASON',)
-    assert dynview.total_rows((dynview.SCREEN_MENU, 0, 0), data) == 8
+    assert dynview.total_rows((dynview.SCREEN_MENU, 0, 0), data) == 9
     s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('6'), data)
     assert s == (SO, 0, 0) and ex == 0
     s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('9'), data)
-    assert s == (dynview.SCREEN_MENU, 0, 0) and ex == 0
+    assert s == (dynview.SCREEN_AWARDS, 0, 0) and ex == 0
 
 
 def test_offseason_enter_walk(tmp_path):
@@ -942,15 +942,16 @@ def test_hub_rows_with_and_without_history(tmp_path):
     ldir, _ = make_data(tmp_path)
     data = dynview.load_data(str(ldir))
     assert dynview.rows(HUB, data) == [(t,) for t in dynview.MENU_ROWS]
-    assert dynview.MENU_ROWS[6:] == ['7  DYNASTY SETTINGS', '8  ABOUT THE MODS']
-    assert dynview.total_rows(HUB, data) == 8
+    assert dynview.MENU_ROWS[6:] == ['7  DYNASTY SETTINGS', '8  ABOUT THE MODS',
+                                     '9  SEASON AWARDS']
+    assert dynview.total_rows(HUB, data) == 9
     empty = tmp_path / 'empty'
     empty.mkdir()
     data = dynview.load_data(str(empty))
     assert dynview.rows(HUB, data) == [(t,) for t in dynview.MENU_ROWS]
-    assert dynview.footer_text(HUB, data) == '1-8 SELECT   ESC EXIT'
-    # screens 1..6 with no history keep the one NO DYNASTY row
-    for scr in range(1, 7):
+    assert dynview.footer_text(HUB, data) == '1-9 SELECT   ESC EXIT'
+    # screens 1..6 and SEASON AWARDS with no history keep the one NO DYNASTY row
+    for scr in list(range(1, 7)) + [dynview.SCREEN_AWARDS]:
         assert dynview.rows(st(scr), data) == [('NO DYNASTY HISTORY YET',)]
     # /TITLE with no season keeps TITLE_ROWS; with a season the hub rows
     T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
@@ -965,7 +966,7 @@ def test_hub_keys_open_settings_and_about(tmp_path):
     data = dynview.load_data(str(ldir))
     assert dynview.step(HUB, ord('7'), data) == ((SET, 0, 0), 0)
     assert dynview.step(HUB, ord('8'), data) == ((ABOUT, 0, 0), 0)
-    assert dynview.step(HUB, ord('9'), data) == (HUB, 0)
+    assert dynview.step(HUB, ord('9'), data) == ((dynview.SCREEN_AWARDS, 0, 0), 0)
     # the title menu's keys 7 and 8 open the screens too (cat cleared)
     T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
     assert dynview.step(T, ord('7'), data) == ((SET, 0, 0), 0)
@@ -1143,18 +1144,18 @@ def test_about_paging(tmp_path):
     ldir = tmp_path / 'empty'
     ldir.mkdir()
     data = dynview.load_data(str(ldir))
-    assert len(dynview.ABOUT_ROWS) == 35
+    assert len(dynview.ABOUT_ROWS) == 36
     s = (ABOUT, 0, 0)
     assert dynview.rows(s, data)[0] == ('DYNASTY MODE',)
     assert len(dynview.rows(s, data)) == 12
-    assert dynview.total_rows(s, data) == 35
+    assert dynview.total_rows(s, data) == 36
     assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
     s = press(s, dynview.KEY_PGDN, data)
     assert s == (ABOUT, 1, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 2/3'
     assert dynview.rows(s, data)[0] == (dynview.ABOUT_ROWS[12],)
     s = press(s, dynview.KEY_PGDN, data)
     assert s == (ABOUT, 2, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 3/3'
-    assert len(dynview.rows(s, data)) == 11
+    assert len(dynview.rows(s, data)) == 12
     assert press(s, dynview.KEY_PGDN, data) == (ABOUT, 2, 0)   # last page stays
     s = press(s, dynview.KEY_PGUP, data)
     assert s == (ABOUT, 1, 0)
@@ -1268,3 +1269,232 @@ def test_settings_and_about_render_without_history(tmp_path):
         fb = dynview.render(state, data)
         assert len(fb) == 64000
     assert dynview.render((SET, 0, 0), data) != dynview.render(HUB, data)
+
+
+# ---------------------------------------------------------------- SEASON AWARDS (C7)
+SA = dynview.SCREEN_AWARDS
+AWARDS_FOOTER = 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'
+# award records (kind, entry index, value): season 2 has three; season 3 has all 40
+# kinds (AL 64..83, then NL 96..115). Values are signed; the file stores them as u16.
+AW_2 = [(64, 1, 45), (65, 4, 120), (96, 9, 70)]
+AW_3 = [(64, 0, -4), (65, 5, 123), (66, 2, 30),
+        (67, 3, 1000), (68, 4, 987), (69, 6, 0), (70, 7, 975), (71, 8, 961),
+        (72, 9, 1000), (73, 10, 993), (74, 11, 500),
+        (75, 12, -1234), (76, 13, 4520), (77, 14, 0), (78, 15, 15), (79, 16, -5),
+        (80, 17, -15), (81, 18, 2999), (82, 19, 1000), (83, 20, 9999),
+        (96, 1, 50), (97, 4, 77), (98, 9, 0),
+        (99, 10, 998), (100, 12, 1000), (101, 13, 960), (102, 14, 945), (103, 15, 920),
+        (104, 16, 990), (105, 17, 1000), (106, 18, 985),
+        (107, 19, 1), (108, 21, 60), (109, 22, -60), (110, 23, 1234), (111, 24, 205),
+        (112, 25, 300), (113, 26, 401), (114, 27, 502), (115, 28, 4520)]
+# the season 3 rows in file order: label, name, value
+AW_3_ROWS = [
+    ('AL MVP', 'HITTER, A', '-0.4 WAR'), ('AL CY YOUNG', 'ACE, P', '12.3 WAR'),
+    ('AL ROOKIE', 'PLAYER02, B', '3.0 WAR'),
+    ('AL GLOVE C', 'PLAYER03, B', '1.000 FLD'), ('AL GLOVE 1B', 'PLAYER04, B', '.987 FLD'),
+    ('AL GLOVE 2B', 'PLAYER06, B', '.000 FLD'), ('AL GLOVE 3B', 'PLAYER07, B', '.975 FLD'),
+    ('AL GLOVE SS', 'PLAYER08, B', '.961 FLD'), ('AL GLOVE LF', 'PLAYER09, B', '1.000 FLD'),
+    ('AL GLOVE CF', 'PLAYER10, B', '.993 FLD'), ('AL GLOVE RF', 'PLAYER11, B', '.500 FLD'),
+    ('AL SLUGGER C', 'PLAYER12, B', '-12.3 RUNS'), ('AL SLUGGER 1B', 'PLAYER13, B', '45.2 RUNS'),
+    ('AL SLUGGER 2B', 'PLAYER14, B', '0.0 RUNS'), ('AL SLUGGER 3B', 'PLAYER15, B', '0.1 RUNS'),
+    ('AL SLUGGER SS', 'PLAYER16, B', '0.0 RUNS'), ('AL SLUGGER LF', 'PLAYER17, B', '-0.1 RUNS'),
+    ('AL SLUGGER CF', 'PLAYER18, B', '29.9 RUNS'), ('AL SLUGGER RF', 'PLAYER19, B', '10.0 RUNS'),
+    ('AL SLUGGER DH', 'PLAYER20, B', '99.9 RUNS'),
+    ('NL MVP', 'PLAYER01, B', '5.0 WAR'), ('NL CY YOUNG', 'PLAYER04, B', '7.7 WAR'),
+    ('NL ROOKIE', 'PLAYER09, B', '0.0 WAR'),
+    ('NL GLOVE C', 'PLAYER10, B', '.998 FLD'), ('NL GLOVE 1B', 'PLAYER12, B', '1.000 FLD'),
+    ('NL GLOVE 2B', 'PLAYER13, B', '.960 FLD'), ('NL GLOVE 3B', 'PLAYER14, B', '.945 FLD'),
+    ('NL GLOVE SS', 'PLAYER15, B', '.920 FLD'), ('NL GLOVE LF', 'PLAYER16, B', '.990 FLD'),
+    ('NL GLOVE CF', 'PLAYER17, B', '1.000 FLD'), ('NL GLOVE RF', 'PLAYER18, B', '.985 FLD'),
+    ('NL SLUGGER C', 'PLAYER19, B', '0.0 RUNS'), ('NL SLUGGER 1B', 'PLAYER21, B', '0.6 RUNS'),
+    ('NL SLUGGER 2B', 'PLAYER22, B', '-0.6 RUNS'), ('NL SLUGGER 3B', 'PLAYER23, B', '12.3 RUNS'),
+    ('NL SLUGGER SS', 'PLAYER24, B', '2.0 RUNS'), ('NL SLUGGER LF', 'PLAYER25, B', '3.0 RUNS'),
+    ('NL SLUGGER CF', 'PLAYER26, B', '4.0 RUNS'), ('NL SLUGGER RF', 'PLAYER27, B', '5.0 RUNS'),
+    ('NL SLUGGER DH', 'PLAYER28, B', '45.2 RUNS')]
+AW_2_ROWS = [('AL MVP', 'PLAYER01, B', '4.5 WAR'), ('AL CY YOUNG', 'PLAYER04, B', '12.0 WAR'),
+             ('NL MVP', 'PLAYER09, B', '7.0 WAR')]
+# season 1 has no award records: the six winners of its season entry, then GG SS
+AW_1_ROWS = [('AL MVP', 'HITTER, A', ''), ('AL CY YOUNG', 'PLAYER01, B', ''),
+             ('AL ROOKIE', 'PLAYER02, B', ''), ('NL MVP', 'PLAYER03, B', ''),
+             ('NL CY YOUNG', 'PLAYER04, B', ''), ('NL ROOKIE', 'ACE, P', ''),
+             ('GG SS', 'NOT RECORDED', '')]
+
+
+def award_recs(season, recs):
+    """MILESTON.DAT records of award kinds for season (value stored as u16)"""
+    return [(season, idx, kind, value & 0xffff) for kind, idx, value in recs]
+
+
+def make_awards(tmp_path, ms=None):
+    """make_data league: MILESTON.DAT holds the milestone kinds 2 and 32 for seasons 2
+    and 3 with the award records after them (season 2: AW_2, season 3: AW_3)"""
+    if ms is None:
+        ms = ([(2, 1, 32, 52), (2, 2, 2, 3000)] + award_recs(2, AW_2)
+              + [(3, 0, 2, 3000), (3, 5, 32, 51)] + award_recs(3, AW_3))
+    return make_data(tmp_path, ms=ms)[0]
+
+
+def test_awards_hub_key_and_footers(tmp_path):
+    ldir = make_awards(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.MENU_ROWS[8] == '9  SEASON AWARDS'
+    assert dynview.rows(HUB, data)[8] == ('9  SEASON AWARDS',)
+    assert dynview.step(HUB, ord('9'), data) == ((SA, 0, 0), 0)
+    # from the /TITLE menu too; ESC goes back to the plain hub
+    T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
+    assert dynview.step(T, ord('9'), data) == ((SA, 0, 0), 0)
+    assert dynview.step((SA, 0, 0), ESC, data) == (HUB, 0)
+    assert dynview.screen_title((SA, 0, 0), data) == 'SEASON 3 AWARDS'
+    assert dynview.footer_text((SA, 0, 0), data) == AWARDS_FOOTER
+    assert dynview.footer_text(HUB, data) == '1-9 SELECT   ESC EXIT'
+    assert dynview.footer_text(T, data) == '1-9 SELECT   ENTER PLAY BALL'
+    assert dynview.TITLE_FOOTER == '1-9 SELECT   ENTER PLAY BALL'
+    # ENTER does nothing on SEASON AWARDS
+    assert dynview.step((SA, 0, 0), ENTER, data) == ((SA, 0, 0), 0)
+
+
+def test_awards_milestones_and_review_skip_award_records(tmp_path):
+    ldir = make_awards(tmp_path)
+    data = dynview.load_data(str(ldir))
+    # the award records (kinds 64 and up) are on SEASON AWARDS only
+    assert dynview.rows(st(dynview.SCREEN_MILESTONES), data) == [
+        ('3', 'HITTER, A', '3000 HITS'), ('3', 'ACE, P', '51 HR SEASON'),
+        ('2', 'PLAYER01, B', '52 HR SEASON'), ('2', 'PLAYER02, B', '3000 HITS')]
+    assert dynview.total_rows(st(dynview.SCREEN_MILESTONES), data) == 4
+    review = [r[0] for r in dynview.rows(st(dynview.SCREEN_REVIEW), data)]
+    assert review == [
+        'CHAMPION ALA03', 'RUNNER-UP NL03', 'AL MVP HITTER, A',
+        'AL CY YOUNG PLAYER01, B', 'AL ROOKIE PLAYER02, B', 'NL MVP PLAYER03, B',
+        'NL CY YOUNG PLAYER04, B', 'NL ROOKIE ACE, P', 'NEW HALL OF FAME: PLAYER29, B',
+        'HITTER, A 3000 HITS', 'ACE, P 51 HR SEASON']
+    # the offseason review walks the same lines
+    assert dynview.rows((dynview.SCREEN_OFFSEASON, 0, 16), data) == \
+        dynview.rows(st(dynview.SCREEN_REVIEW), data)
+    assert dynview.ABOUT_ROWS[10:13] == ['SHOWS HISTORY, HALL OF FAME, LEADERS,',
+                                         'MILESTONES, SEASON AWARDS AND THE LAST',
+                                         'OFFSEASON.']
+
+
+def test_awards_season3_rows_exact(tmp_path):
+    ldir = make_awards(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((SA, 0, 0), data) == 40 == len(AW_3_ROWS)
+    assert dynview.body_cols((SA, 0, 0), data) == dynview.COLS_AWARDS
+    got = [r for p in range(4) for r in dynview.rows((SA, p, 0), data)]
+    assert got == AW_3_ROWS
+    assert [len(dynview.rows((SA, p, 0), data)) for p in range(4)] == [12, 12, 12, 4]
+    # every label and value cell fits its column
+    for row in got:
+        for cell, (_h, _x, w, _a) in zip(row, dynview.COLS_AWARDS):
+            assert len(cell) <= w, cell
+
+
+def test_awards_paging_four_pages(tmp_path):
+    ldir = make_awards(tmp_path)
+    data = dynview.load_data(str(ldir))
+    s = (SA, 0, 0)
+    for page in (1, 2, 3):
+        s = press(s, dynview.KEY_PGDN, data)
+        assert s == (SA, page, 0)
+    assert press(s, dynview.KEY_PGDN, data) == (SA, 3, 0)     # last page stays
+    assert dynview.rows(s, data)[0] == AW_3_ROWS[36]
+    assert press(s, dynview.KEY_PGUP, data) == (SA, 2, 0)
+    assert dynview.rows((SA, 2, 0), data)[0] == AW_3_ROWS[24]
+
+
+def test_awards_left_right_seasons(tmp_path):
+    ldir = make_awards(tmp_path)
+    data = dynview.load_data(str(ldir))
+    s, ex = dynview.step((SA, 0, 0), dynview.KEY_LEFT, data)
+    assert (s, ex) == ((SA, 0, 1), 0)
+    assert dynview.screen_title(s, data) == 'SEASON 2 AWARDS'
+    assert dynview.rows(s, data) == AW_2_ROWS
+    assert dynview.total_rows(s, data) == 3
+    # season 1 has no award records: its six winners and the GG SS row
+    s = press(s, dynview.KEY_LEFT, data)
+    assert s == (SA, 0, 2)
+    assert dynview.screen_title(s, data) == 'SEASON 1 AWARDS'
+    assert dynview.rows(s, data) == AW_1_ROWS
+    assert dynview.body_cols(s, data) == dynview.COLS_AWARDS
+    # LEFT at season 1 stays, page included
+    assert dynview.step((SA, 0, 2), dynview.KEY_LEFT, data) == ((SA, 0, 2), 0)
+    assert dynview.step((SA, 1, 2), dynview.KEY_LEFT, data) == ((SA, 1, 2), 0)
+    # RIGHT goes forward again; RIGHT at the newest season stays
+    s = press(s, dynview.KEY_RIGHT, data)
+    assert s == (SA, 0, 1)
+    s = press(s, dynview.KEY_RIGHT, data)
+    assert s == (SA, 0, 0)
+    assert dynview.rows(s, data)[0] == AW_3_ROWS[0]
+    assert dynview.step((SA, 0, 0), dynview.KEY_RIGHT, data) == ((SA, 0, 0), 0)
+    assert dynview.step((SA, 2, 0), dynview.KEY_RIGHT, data) == ((SA, 2, 0), 0)
+
+
+def test_awards_sorted_by_kind_then_file_order(tmp_path):
+    """season 2 written backwards with a repeated kind: rows in (kind, file position)
+    order, the repeat keeps its file order"""
+    recs = award_recs(2, [(96, 9, 70), (65, 4, 120), (64, 1, 45), (64, 7, 10)])
+    (tmp_path / 'sorted').mkdir()
+    ldir = make_data(tmp_path / 'sorted', ms=recs)[0]
+    data = dynview.load_data(str(ldir))
+    s = (SA, 0, 1)
+    assert dynview.rows(s, data) == [
+        ('AL MVP', 'PLAYER01, B', '4.5 WAR'), ('AL MVP', 'PLAYER07, B', '1.0 WAR'),
+        ('AL CY YOUNG', 'PLAYER04, B', '12.0 WAR'), ('NL MVP', 'PLAYER09, B', '7.0 WAR')]
+
+
+def test_awards_past_history_table(tmp_path):
+    """a season past the 64-season table with no records: one message row; the
+    header count drives the season (70 recorded, cat 5 shows season 65)"""
+    ldir = make_awards(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[4], d[5] = 70, 0
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    s = (SA, 0, 0)
+    for _ in range(5):
+        s = press(s, dynview.KEY_LEFT, data)
+    assert s == (SA, 0, 5)
+    assert dynview.screen_title(s, data) == 'SEASON 65 AWARDS'
+    assert dynview.rows(s, data) == [('NO AWARDS RECORDED',)]
+    assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
+    assert dynview.total_rows(s, data) == 1
+    assert dynview.step(s, dynview.KEY_PGDN, data) == (s, 0)
+
+
+def test_awards_no_history(tmp_path):
+    ldir = tmp_path / 'empty'
+    ldir.mkdir()
+    data = dynview.load_data(str(ldir))
+    s = (SA, 0, 0)
+    assert dynview.rows(s, data) == [('NO DYNASTY HISTORY YET',)]
+    assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
+    assert dynview.total_rows(s, data) == 0
+    assert dynview.step(s, dynview.KEY_LEFT, data) == (s, 0)
+    assert dynview.step(s, dynview.KEY_RIGHT, data) == (s, 0)
+
+
+def test_awards_label_strings_per_league():
+    """all 20 kinds of one league: the label strings"""
+    pos = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
+    want = ['MVP', 'CY YOUNG', 'ROOKIE'] + ['GLOVE ' + p for p in pos[:8]] \
+        + ['SLUGGER ' + p for p in pos]
+    assert len(want) == 20
+    assert [dynview.award_label(k) for k in range(64, 84)] == ['AL ' + w for w in want]
+    assert [dynview.award_label(k) for k in range(96, 116)] == ['NL ' + w for w in want]
+    assert dynview.award_label(67) == 'AL GLOVE C' and dynview.award_label(115) == 'NL SLUGGER DH'
+    # the value strings of the kinds that the season 3 rows do not cover
+    assert dynview.award_value(64, 0) == '0.0 WAR'
+    assert dynview.award_value(66, 0xffff) == '-0.1 WAR'
+    assert dynview.award_value(70, 0) == '.000 FLD'
+    assert dynview.award_value(75, 0xffff) == '0.0 RUNS'       # -1 truncates to 0
+    assert dynview.award_value(75, 0xfff1) == '-0.1 RUNS'      # -15
+    assert dynview.award_value(83, 0x7fff) == '327.6 RUNS'     # 32767 / 10 = 3276
+
+
+def test_awards_max_rows_cap(tmp_path, monkeypatch):
+    ldir = make_awards(tmp_path)
+    data = dynview.load_data(str(ldir))
+    monkeypatch.setattr(dynview, 'AWARD_MAX', 10)
+    assert dynview.total_rows((SA, 0, 0), data) == 10
+    assert dynview.rows((SA, 0, 0), data) == AW_3_ROWS[:10]
