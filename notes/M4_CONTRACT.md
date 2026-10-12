@@ -394,6 +394,20 @@ a value > 0. Ties go to the lower entry index. Written every season, dropped on 
 Milestone readers skip them (kind >= 64). SEASON AWARDS lists them after the award records in kind order: AWARD
 `AL BA LEADER` .. `NL SV LEADER` (`<lg> <cat> LEADER`, cat BA HR RBI H SB W ERA SO SV), NAME, VALUE `.352 BA`,
 `47 HR`, `131 RBI`, `210 H`, `62 SB`, `24 W`, `1.87 ERA`, `301 SO`, `45 SV`. Seasons recorded before have none.
+World Series records (third amendment 2026-10-11, closes IDEAS "playoff box scores of an archived season" for the
+World Series): after the leader records HISTWR appends the season's World Series games from the league's PLAYOFFS.AL
+(FORMATS.md: 59569 B, byte 0 = games played n, record g of 7446 B at file offset 1 + 7446 * g, GAME.TMP layout; the
+stock game reuses it for the World Series and it is still there at roll time). Read only when the file exists, is at
+least 1 + 7446 * n bytes and 1 <= n <= 7. Per game g < n (record offsets r): home stem = the 8 B at r + 0x1c01,
+visitor stem = r + 0x1c09 (NUL padded), each matched case-insensitively to the MAJ slot stems (id = slot for AL, slot +
+16 for NL, as the V20 team mapping); visitor runs u8 at r + 0x1beb, home runs u8 at r + 0x1bec; team t (0 visitor, 1
+home) hits = sum of the 80 bytes at r + 0x208 + 0x8e8 * t, errors = sum of the 80 bytes at r + 0x5c8 + 0x8e8 * t
+(each sum capped at 255). A game whose stems do not both map, or whose two teams are in the same league, writes
+nothing. Each kept game writes two records, in g order: kind 192 + g, idx = visitor id * 256 + home id, value =
+visitor runs * 256 + home runs; then kind 200 + g, idx = visitor hits * 256 + home hits, value = visitor errors * 256 +
+home errors. Verified on three real seasons: runs equal the accumulator R sums and the series winner is the season
+entry's champion every time. Dropped on a rerun like every record of the season; milestone, award and leader readers
+ignore kinds 192..207.
 
 ## C8. The patched TONY2.BAT and DYNVIEW (added 2026-10-07; supersedes the C5 BAT block)
 
@@ -516,6 +530,14 @@ screen's order), each sorted and GB-measured on its own. A league with games in 
 `LAST SEASON REVIEW` (a954686).
 A header that would land on a page's last row (row 12 of 12) gets one blank row before it, so it opens the next
 page with its teams (CLASSIC: NL EAST moves from page 2's foot to the top of page 3); at most four, 40 rows.
+Fourth amendment 2026-10-11: an eleventh hub row `W  WORLD SERIES` (screen 11, keys `W` 87 and `w` 119; hub
+footer `0-9 W SELECT   ESC EXIT`, /TITLE footer `0-9 W SELECT   ENTER PLAY BALL` when a season is recorded), same
+season browsing as SEASON AWARDS, title `SEASON N WORLD SERIES` (`WORLD SERIES` with no recorded season). Columns
+TEAM (17, left), R, H, E (5 each, right), and a 10 wide right column. Per game with a kind 192 + g record of the
+season (g ascending, the first record of a kind wins): a header row `GAME g+1`, the visitor row and the home row (team
+name as SEASON STANDINGS names it, R, H and E from the 200 + g record or empty without one, `W` in the last column of
+the team with more runs). Then one summary row: the team with more wins and `WINS a-b` when it has 4, else
+`LEADS a-b`; equal wins: `SERIES` and `TIED a-a`. A season with no such record, or past 64: `NO WORLD SERIES RECORDED`.
 
 DYNASTY SETTINGS edits the C2 header fields that had no UI: byte 10 era mode (ENTER cycles REAL CALENDAR (0) ->
 RESERVE CLAUSE (1) -> FREE AGENCY (2) -> REAL CALENDAR; any other value shows RESERVE CLAUSE and goes to FREE AGENCY)
