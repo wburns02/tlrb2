@@ -1158,9 +1158,10 @@ static const Cand *pick_max(const Cand *cands, int nc, int32_t (*key)(const Cand
 
 static int32_t key_w10(const Cand *c) { return c->w10; }
 static int32_t key_bat100(const Cand *c) { return c->bat100; }
+/* history.gold_glove_score: fp1000 + 10 * (2 * range + arm) */
 static int32_t key_field(const Cand *c)
 {
-    return (int)2 * (int)c->rng + (int)c->arm;
+    return gg_fp1000(c->po1, c->a1, c->e1) + 10L * (2 * (int32_t)c->rng + (int32_t)c->arm);
 }
 static int32_t key_fp1000(const Cand *c)
 {
@@ -1230,7 +1231,7 @@ static void pick_league(const Cand *lc, int nlc, int league, int32_t *win,
         win[2] = best->idx;
         val[2] = best->w10;
     }
-    /* GG positions 1..8: games gate, 2*range + arm, then fp1000 on the tie tier */
+    /* GG positions 1..8: games gate, max gold_glove_score, then fp1000 on the tie tier */
     for (q = 1; q <= 8; q++) {
         int32_t top;
         int need = (q == 1) ? 90 : 100;

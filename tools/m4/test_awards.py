@@ -693,3 +693,26 @@ def test_real_data_awards():
         assert total == top3 + gg + ss
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_gold_glove_score_errors_beat_arm():
+    """Amendment 2026-10-11: the Gold Glove ranks by fp1000 + 10 * (2 * range + arm), so
+    the real season case (RF, range 6 arm 12, 69 PO 26 A 38 E, fp .714) loses to a clean
+    fielder with lower ratings; equal scores fall to the higher fp1000, then the lower index."""
+    def rf(idx, rng, arm, po1, a1, e1):
+        return {'index': idx, 'pos1': 8, 'exp': 3, 'games': 130, 'w10': 10, 'pa': 400,
+                'outs': 0, 'bat100': 0, 'range': rng, 'arm': arm, 'po1': po1, 'a1': a1, 'e1': e1}
+    wild = rf(1, 6, 12, 69, 26, 38)      # 714 + 240 = 954
+    clean = rf(2, 5, 8, 250, 10, 4)      # 984 + 180 = 1164
+    assert history.gold_glove_score(wild) == 954
+    assert history.gold_glove_score(clean) == 1164
+    sel = history.pick_awards([wild, clean], lambda x: x['bat100'])
+    assert sel['gg'][8]['index'] == 2
+    # equal score 1000: fp 980 + ratings 20 vs fp 1000 + ratings 0 -> the higher fp1000
+    a = rf(3, 1, 0, 98, 0, 2)            # 980 + 10 * 2 = 1000
+    b = rf(4, 0, 0, 50, 0, 0)            # 1000 + 0 = 1000
+    assert history.gold_glove_score(a) == history.gold_glove_score(b) == 1000
+    assert history.pick_awards([a, b], lambda x: x['bat100'])['gg'][8]['index'] == 4
+    # full tie: the lower index
+    c = rf(5, 0, 0, 50, 0, 0)
+    assert history.pick_awards([b, c], lambda x: x['bat100'])['gg'][8]['index'] == 4

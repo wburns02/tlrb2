@@ -354,7 +354,9 @@ Awards, per league:
 - Cy Young: pitchers with outs >= 486: max season WAR10; if none qualify, max WAR10 over pitchers with outs > 0.
 - Rookie of the Year: roster exp (record byte 22) == 0 and (pa >= 130 or outs >= 150): max season WAR10.
 - Gold Glove, positions 1..8 (C, 1B, 2B, 3B, SS, LF, CF, RF) by roster pos1: games >= 100 (C: >= 90): max
-  2 * range + arm, then max fp1000 = ((po1 + a1) * 1000) / (po1 + a1 + e1) (1000 if the denominator is 0).
+  score fp1000 + 10 * (2 * range + arm), then max fp1000, with fp1000 = ((po1 + a1) * 1000) / (po1 + a1 + e1)
+  (1000 if the denominator is 0). Amendment 2026-10-11: the rank was 2 * range + arm alone, which on real seasons
+  gave a right fielder with 38 errors (.714) the award; seasons recorded before keep their winners.
 - Silver Slugger, positions 1..9 (DH = 9, NL usually none): pa >= 300: max bat100.
 Storage:
 - Season entry bytes 88..99 (season table entries 1..64 only): AL MVP, AL CY, AL ROY, NL MVP, NL CY, NL ROY as u16

@@ -524,6 +524,12 @@ def max_by_key(cands, key):
     return best
 
 
+def gold_glove_score(c):
+    """Gold Glove rank: the season's fp1000 plus 10 x (2 * range + arm), so a strong arm
+    cannot carry a fielder through a season of errors (amendment 2026-10-11)."""
+    return gold_glove_fp1000(c['po1'], c['a1'], c['e1']) + 10 * (2 * c['range'] + c['arm'])
+
+
 def gold_glove_fp1000(po1, a1, e1):
     """fp1000 = ((po1 + a1) * 1000) / (po1 + a1 + e1), 1000 if the denominator is 0."""
     den = po1 + a1 + e1
@@ -553,16 +559,16 @@ def pick_awards(recs, bat100_of):
     out['roy'] = max_by_key([c for c in recs if c['exp'] == 0
                              and (c['pa'] >= 130 or c['outs'] >= 150)],
                             lambda c: c['w10'])
-    # Gold Glove, positions 1..8 by roster pos1
+    # Gold Glove, positions 1..8 by roster pos1: max gold_glove_score, then max fp1000
     gg = {}
     for q in range(1, 9):
         need = 90 if q == 1 else 100
         cands = [c for c in recs if c['pos1'] == q and c['games'] >= need]
-        best = max_by_key(cands, lambda c: 2 * c['range'] + c['arm'])
+        best = max_by_key(cands, gold_glove_score)
         if best is None:
             gg[q] = None
             continue
-        top = [c for c in cands if 2 * c['range'] + c['arm'] == 2 * best['range'] + best['arm']]
+        top = [c for c in cands if gold_glove_score(c) == gold_glove_score(best)]
         best = max_by_key(top, lambda c: gold_glove_fp1000(c['po1'], c['a1'], c['e1']))
         gg[q] = best
     out['gg'] = gg
