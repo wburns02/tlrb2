@@ -26,7 +26,8 @@ from m4.test_dynview import (make_data, write_player, write_season,
                              big_league, make_awards, make_standings,
                              STAND_SEASONS, CLASSIC_SEASON, HALF_EAST, HALF_WEST,
                              FULL_SEASON, award_recs, award_league_ms,
-                             lead_league_ms, LEAD_3)
+                             lead_league_ms, LEAD_3, make_series, series_recs,
+                             SERIES6, SERIES7, UNFINISHED5, TIED4)
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_C = os.path.join(HERE, 'dynview_c')
@@ -983,6 +984,105 @@ def test_standings_full_36_parity(tmp_path):
     check_parity(ldir, tmp_path, 'st_full_p3_end', keys=[48, PGDN, PGDN, PGDN])
 
 
+# ---------------- test 5f: WORLD SERIES (hub key W or w) ----------------
+
+# season 3 (the newest) is SERIES7 and season 2 SERIES6; season 1 has no game record
+SERIES_SEQS = [
+    ('hub', []),
+    ('open', [87]),
+    ('open_lower', [119]),
+    ('pgdn', [87, PGDN]),                               # 7 games: page 2
+    ('pgdn_stays', [87, PGDN, PGDN, PGDN]),
+    ('pgdn_pgup', [87, PGDN, PGUP]),
+    ('left', [87, LEFT]),                               # season 2: 6 games, page 1
+    ('left_pgdn', [87, LEFT, PGDN]),                    # page 2: games 5..6 and the summary
+    ('left_pgdn_stays', [87, LEFT, PGDN, PGDN]),
+    ('left_left_msg', [87, LEFT, LEFT]),                # season 1: the message row
+    ('msg_pgdn', [87, LEFT, LEFT, PGDN]),
+    ('left_stays', [87, LEFT, LEFT, LEFT, LEFT]),
+    ('right', [87, LEFT, LEFT, RIGHT, RIGHT, RIGHT]),
+    ('esc', [87, ESC]),
+    ('enter', [87, ENTER]),
+    ('esc_back_in', [87, ESC, 119, RIGHT]),
+    ('hub_then_w', [56, ESC, 119, PGDN]),
+    ('w_then_standings', [119, ESC, 48, LEFT]),
+    ('standings_then_w', [48, ESC, 119, LEFT]),
+]
+
+
+def test_series_key_sequences_parity(tmp_path):
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_series(tmp_path, series_recs(3, SERIES7) + series_recs(2, SERIES6))
+    for tag, keys in SERIES_SEQS:
+        check_parity(ldir, tmp_path, 'sr_' + tag, keys=keys)
+    check_parity(ldir, tmp_path, 'sr_review', review=True)
+    check_parity(ldir, tmp_path, 'sr_title', title=True)
+    check_parity(ldir, tmp_path, 'sr_title_w', title=True, keys=[119])
+    check_parity(ldir, tmp_path, 'sr_title_w_pgdn', title=True, keys=[119, PGDN])
+
+
+def test_series_six_game_pages_parity(tmp_path):
+    """6 games as the newest season: page 1 (games 1..4) and page 2 (games 5..6, WINS 4-2)"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'six').mkdir()
+    ldir = make_series(tmp_path / 'six', series_recs(3, SERIES6))
+    check_parity(ldir, tmp_path, 'sr6_p1', keys=[87])
+    check_parity(ldir, tmp_path, 'sr6_p2', keys=[87, PGDN])
+    check_parity(ldir, tmp_path, 'sr6_p2_end', keys=[87, PGDN, PGDN])
+
+
+def test_series_variants_parity(tmp_path):
+    """a tie (SERIES, TIED 2-2) with game 2 lacking its kind 201 record and a duplicate
+    of game 1's records after them, and a 3-2 lead (LEADS) of the first game's home"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'var').mkdir()
+    dup = [(3, 0 * 256 + 16, 192, 1 * 256 + 9), (3, 1 * 256 + 1, 200, 0)]
+    ldir = make_series(tmp_path / 'var', series_recs(3, TIED4, no_he=(1,)) + dup
+                       + series_recs(2, UNFINISHED5))
+    check_parity(ldir, tmp_path, 'var_tie', keys=[87])
+    check_parity(ldir, tmp_path, 'var_tie_p2', keys=[87, PGDN])
+    check_parity(ldir, tmp_path, 'var_lead', keys=[87, LEFT])
+    check_parity(ldir, tmp_path, 'var_msg', keys=[87, LEFT, LEFT])
+
+
+def test_series_past_history_table_parity(tmp_path):
+    """a header of 70 seasons: season 70 and season 65 are past the table (one message
+    row), season 64 has its records"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'past').mkdir()
+    ldir = make_series(tmp_path / 'past', series_recs(64, UNFINISHED5)
+                       + series_recs(65, SERIES6) + series_recs(70, SERIES7))
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[4], d[5] = 70, 0
+    p.write_bytes(bytes(d))
+    check_parity(ldir, tmp_path, 'srp_70', keys=[87])
+    check_parity(ldir, tmp_path, 'srp_65', keys=[87] + [LEFT] * 5)
+    check_parity(ldir, tmp_path, 'srp_64', keys=[87] + [LEFT] * 6)
+    check_parity(ldir, tmp_path, 'srp_64_pgdn', keys=[87] + [LEFT] * 6 + [PGDN])
+
+
+def test_series_kinds_off_other_screens_parity(tmp_path):
+    """kinds 192..207 beside the award and leader records: MILESTONES, LAST SEASON REVIEW
+    and SEASON AWARDS (every season) show what they show without them"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'koff').mkdir()
+    kinds = [(3, 9, kind, 7) for kind in range(192, 208)]
+    ldir = make_awards(tmp_path / 'koff', ms=award_league_ms() + series_recs(3, SERIES6)
+                       + kinds)
+    check_parity(ldir, tmp_path, 'koff_ms', keys=[52])
+    check_parity(ldir, tmp_path, 'koff_ms_p1', keys=[52, PGDN])
+    check_parity(ldir, tmp_path, 'koff_review', review=True)
+    check_parity(ldir, tmp_path, 'koff_aw', keys=[57])
+    check_parity(ldir, tmp_path, 'koff_aw_s2', keys=[57, LEFT, PGDN])
+    check_parity(ldir, tmp_path, 'koff_aw_s3', keys=[57, LEFT, LEFT])
+
+
 # ---------------- test 6: errors ----------------
 
 def test_errors_no_fonts(tmp_path):
@@ -1306,4 +1406,30 @@ def test_dos_standings_parity(tmp_path):
         i = next(k for k in range(min(len(dos_raw), len(py)))
                  if dos_raw[k] != py[k])
         pytest.fail(f'dos standings: first diff at pixel ({i % 320}, {i // 320}): '
+                    f'python {py[i]} c {dos_raw[i]}')
+
+
+def test_dos_series_parity(tmp_path):
+    """Headless DOSBox-X: DYNVIEW.EXE /RAW:OUT.RAW /KEYS:87,0x5100 LEAGUE FONTS (open
+    WORLD SERIES, PGDN) on the 6 game series, compared with Python: page 2 with WINS 4-2"""
+    if not _dos_ready():
+        pytest.skip('DYNVIEW.EXE or dosbox-x missing')
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_series(tmp_path, series_recs(3, SERIES6))
+    d = str(tmp_path / 'dossr')
+    os.makedirs(os.path.join(d, 'LEAGUE'))
+    os.makedirs(os.path.join(d, 'FONTS'))
+    for f in os.listdir(str(ldir)):
+        shutil.copy2(os.path.join(str(ldir), f), os.path.join(d, 'LEAGUE', f))
+    for f in ('MAIN.FNT', 'BOLD.FNT', 'DEFAULT.PAL'):
+        shutil.copy2(os.path.join(FILES, f), os.path.join(d, 'FONTS', f))
+    rc = run_dos(d, ['DYNVIEW.EXE /RAW:OUT.RAW /KEYS:87,0x5100 LEAGUE FONTS'])
+    assert rc == 0, f'dos rc {rc}'
+    dos_raw = open(os.path.join(d, 'OUT.RAW'), 'rb').read()
+    py = fb_python(ldir, keys=[87, dynview.KEY_PGDN], font_dir=FILES)
+    if dos_raw != py:
+        i = next(k for k in range(min(len(dos_raw), len(py)))
+                 if dos_raw[k] != py[k])
+        pytest.fail(f'dos series: first diff at pixel ({i % 320}, {i // 320}): '
                     f'python {py[i]} c {dos_raw[i]}')

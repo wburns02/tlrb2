@@ -53,6 +53,7 @@ SCREEN_OFFSEASON = 6
 SCREEN_SETTINGS, SCREEN_ABOUT = 7, 8
 SCREEN_AWARDS = 9
 SCREEN_STANDINGS = 10
+SCREEN_SERIES = 11
 N_CATS = 12
 
 # MILESTON.DAT kinds from this one up are award and leader records (C7), not milestones
@@ -60,11 +61,12 @@ AWARD_KIND_MIN = 64
 # SEASON AWARDS keeps at most this many rows (the DOS port's fixed buffer)
 AWARD_MAX = 64
 
-# the hub (SCREEN_MENU) rows: key 1..9 opens screen key - 48, key 0 SEASON STANDINGS
+# the hub (SCREEN_MENU) rows: key 1..9 opens screen key - 48, key 0 SEASON STANDINGS,
+# key W (87 or 119) WORLD SERIES
 MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  CAREER LEADERS',
              '4  MILESTONES', '5  LAST SEASON REVIEW', '6  OFFSEASON',
              '7  DYNASTY SETTINGS', '8  ABOUT THE MODS', '9  SEASON AWARDS',
-             '0  SEASON STANDINGS']
+             '0  SEASON STANDINGS', 'W  WORLD SERIES']
 
 # HISTORY.DAT header fields used by DYNASTY SETTINGS: byte 10 era, bytes 12..15 mask
 HDR_SIZE = 32
@@ -883,6 +885,81 @@ def standings_body(state, data):
     return COLS_STANDINGS, rows
 
 
+# ---------------------------------------------------------------- world series
+# WORLD SERIES (C7 third amendment): MILESTON.DAT kind 192 + g (g 0..6) is game g + 1, idx =
+# visitor id * 256 + home id, value = visitor runs * 256 + home runs; kind 200 + g is the
+# same game's hits and errors, idx = visitor hits * 256 + home hits, value = visitor errors
+# * 256 + home errors. Team ids are league-global (AL 0..15, NL 16..31).
+SERIES_GAME_KIND, SERIES_HE_KIND, SERIES_GAMES = 192, 200, 7
+
+
+def first_record(ms, season, kind):
+    """(idx, value) of the first MILESTON.DAT record of season and kind in file order;
+    None when there is none."""
+    for s, idx, k, value in ms:
+        if s == season and k == kind:
+            return idx, value
+    return None
+
+
+def series_rows(hist, ms, teams, season):
+    """WORLD SERIES rows of season: per game with a kind 192 + g record (g ascending),
+    a header row GAME g+1, the visitor and home rows (R, then H and E from the kind
+    200 + g record, empty without one, W in the last column of the side with more runs),
+    then one summary row over the first game's two teams t1 (visitor) and t2 (home): the
+    one with more game wins (WINS a-b with 4 or more, else LEADS a-b), or SERIES with
+    TIED a-a for equal wins. Past the history table or with no game record, one message
+    row."""
+    if season > history.SEASON_COUNT:
+        return [('NO WORLD SERIES RECORDED',)]
+    names = dict(teams)
+    games = []
+    for g in range(SERIES_GAMES):
+        game = first_record(ms, season, SERIES_GAME_KIND + g)
+        if game is not None:
+            games.append((g, game, first_record(ms, season, SERIES_HE_KIND + g)))
+    if not games:
+        return [('NO WORLD SERIES RECORDED',)]
+    out = []
+    wins = Counter()
+    for g, (idx, value), he in games:
+        v, h = idx >> 8, idx & 255
+        vr, hr = value >> 8, value & 255
+        if he is None:
+            hits = errs = ('', '')
+        else:
+            hits = ('%d' % (he[0] >> 8), '%d' % (he[0] & 255))
+            errs = ('%d' % (he[1] >> 8), '%d' % (he[1] & 255))
+        out.append(('GAME %d' % (g + 1), '', '', '', ''))
+        out.append((names.get(v, 'TEAM %d' % v), '%d' % vr, hits[0], errs[0],
+                    'W' if vr > hr else ''))
+        out.append((names.get(h, 'TEAM %d' % h), '%d' % hr, hits[1], errs[1],
+                    'W' if hr > vr else ''))
+        if vr != hr:
+            wins[v if vr > hr else h] += 1
+    t1, t2 = games[0][1][0] >> 8, games[0][1][0] & 255
+    w1, w2 = wins[t1], wins[t2]
+    if w1 == w2:
+        out.append(('SERIES', '', '', '', 'TIED %d-%d' % (w1, w2)))
+    else:
+        lead, a, b = (t1, w1, w2) if w1 > w2 else (t2, w2, w1)
+        out.append((names.get(lead, 'TEAM %d' % lead), '', '', '',
+                    ('WINS %d-%d' if a >= 4 else 'LEADS %d-%d') % (a, b)))
+    return out
+
+
+def series_body(state, data):
+    """(cols, rows) of WORLD SERIES: the season cat seasons back from the newest. A lone
+    message row uses COLS_SINGLE (as SEASON STANDINGS'); no history gives no rows."""
+    hist = data['hist']
+    if hist.seasons_recorded == 0:
+        return COLS_SINGLE, []
+    rows = series_rows(hist, data['ms'], data['teams'], hist.seasons_recorded - state[2])
+    if len(rows) == 1 and len(rows[0]) == 1:
+        return COLS_SINGLE, rows
+    return COLS_SERIES, rows
+
+
 # ---------------------------------------------------------------- offseason
 def retire_entries(hist):
     """(index, entry) of the players who retired with the season just recorded (status
@@ -1031,6 +1108,8 @@ def total_rows(state, data):
         n = awards_body(state, data)[1]
     elif screen == SCREEN_STANDINGS:
         n = standings_body(state, data)[1]
+    elif screen == SCREEN_SERIES:
+        n = series_body(state, data)[1]
     elif screen == SCREEN_SETTINGS:
         n = settings_rows(data)
     elif screen == SCREEN_ABOUT:
@@ -1065,6 +1144,9 @@ def rows(state, data):
     if screen == SCREEN_STANDINGS:
         body = standings_body(state, data)[1]
         return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
+    if screen == SCREEN_SERIES:
+        body = series_body(state, data)[1]
+        return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_HISTORY:
         all_rows = history_rows(hist, data.get('league_dir'))
     elif screen == SCREEN_HOF:
@@ -1081,10 +1163,11 @@ def rows(state, data):
 def step(state, key, data):
     """(state, exit_flag). ESC exits from MENU; from any other screen it goes back
     to MENU. PGUP/PGDN page by 12; LEFT/RIGHT cycle the LEADERS category or step the
-    SEASON AWARDS or SEASON STANDINGS season. ENTER on
+    SEASON AWARDS, SEASON STANDINGS or WORLD SERIES season. ENTER on
     REVIEW goes to MENU. ENTER walks the offseason phases; past the last one it exits
     when the offseason was launched (cat >> 4) and goes to MENU otherwise. ENTER on the
-    /TITLE menu (cat >> 4) exits. Key 0 on the hub opens SEASON STANDINGS."""
+    /TITLE menu (cat >> 4) exits. Key 0 on the hub opens SEASON STANDINGS, W or w
+    WORLD SERIES."""
     screen, page, cat = state
     if key == KEY_ESC:
         if screen == SCREEN_MENU:
@@ -1095,6 +1178,8 @@ def step(state, key, data):
             return (SCREEN_STANDINGS, 0, 0), 0
         if 49 <= key <= 57:
             return (key - 48, 0, 0), 0
+        if key in (87, 119):
+            return (SCREEN_SERIES, 0, 0), 0
         if key == KEY_ENTER and cat >> 4:
             return state, 1
         return state, 0
@@ -1139,7 +1224,8 @@ def step(state, key, data):
     if screen == SCREEN_LEADERS and key in (KEY_LEFT, KEY_RIGHT):
         d = -1 if key == KEY_LEFT else 1
         return (SCREEN_LEADERS, 0, (cat + d) % N_CATS), 0
-    if screen in (SCREEN_AWARDS, SCREEN_STANDINGS) and key in (KEY_LEFT, KEY_RIGHT):
+    if screen in (SCREEN_AWARDS, SCREEN_STANDINGS, SCREEN_SERIES) \
+            and key in (KEY_LEFT, KEY_RIGHT):
         # LEFT goes back a season while one is left (shown season > 1), RIGHT forward
         if key == KEY_LEFT and data['hist'].seasons_recorded - cat > 1:
             return (screen, 0, cat + 1), 0
@@ -1178,10 +1264,12 @@ COLS_AWARDS = [('AWARD', _cx(0), 13, 'L'), ('NAME', _cx(14), 16, 'L'),
 COLS_STANDINGS = [('TEAM', _cx(0), 17, 'L'), ('W', _cx(17), 5, 'R'),
                   ('L', _cx(22), 5, 'R'), ('PCT', _cx(27), 6, 'R'),
                   ('GB', _cx(33), 6, 'R'), (' ', _cx(39), 3, 'R')]
+COLS_SERIES = [('TEAM', _cx(0), 17, 'L'), ('R', _cx(17), 5, 'R'), ('H', _cx(22), 5, 'R'),
+               ('E', _cx(27), 5, 'R'), (' ', _cx(32), 10, 'R')]
 COLS_SETTINGS = [('SETTING', _cx(0), 24, 'L'), ('VALUE', _cx(26), 16, 'L')]
 OFF_COLS = [COLS_SINGLE, COLS_RETIRE, COLS_DRAFT, COLS_MOVE, COLS_MOVE, COLS_SINGLE]
 
-FOOTERS = {SCREEN_MENU: '0-9 SELECT   ESC EXIT',
+FOOTERS = {SCREEN_MENU: '0-9 W SELECT   ESC EXIT',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT CATEGORY   ESC MENU',
@@ -1190,10 +1278,11 @@ FOOTERS = {SCREEN_MENU: '0-9 SELECT   ESC EXIT',
            SCREEN_SETTINGS: 'UP DOWN MOVE   ENTER CHANGE   ESC MENU',
            SCREEN_ABOUT: 'PGUP PGDN   ESC MENU',
            SCREEN_AWARDS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU',
-           SCREEN_STANDINGS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'}
+           SCREEN_STANDINGS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU',
+           SCREEN_SERIES: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'}
 
 
-TITLE_FOOTER = '0-9 SELECT   ENTER PLAY BALL'
+TITLE_FOOTER = '0-9 W SELECT   ENTER PLAY BALL'
 TITLE_FOOTER_NEW = 'ENTER PLAY BALL'
 
 
@@ -1246,6 +1335,8 @@ def screen_title(state, data):
         return 'SEASON %d AWARDS' % (n - cat) if n else 'SEASON AWARDS'
     if screen == SCREEN_STANDINGS:
         return 'SEASON %d STANDINGS' % (n - cat) if n else 'SEASON STANDINGS'
+    if screen == SCREEN_SERIES:
+        return 'SEASON %d WORLD SERIES' % (n - cat) if n else 'WORLD SERIES'
     return 'SEASON %d IN REVIEW' % n if n else 'LAST SEASON REVIEW'
 
 
@@ -1274,6 +1365,8 @@ def body_cols(state, data):
         return awards_body(state, data)[0]
     if state[0] == SCREEN_STANDINGS:
         return standings_body(state, data)[0]
+    if state[0] == SCREEN_SERIES:
+        return series_body(state, data)[0]
     return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
             SCREEN_HOF: COLS_HOF, SCREEN_LEADERS: COLS_LEADERS,
             SCREEN_MILESTONES: COLS_MILESTONES, SCREEN_REVIEW: COLS_SINGLE}[state[0]]
