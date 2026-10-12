@@ -58,6 +58,21 @@ LEADER_KIND_AL, LEADER_KIND_NL = 128, 160
 # C7 World Series record kinds: game g -> 192 + g (teams, runs), 200 + g (hits, errors)
 SERIES_KIND, SERIES_HE_KIND = 192, 200
 GAME_REC = 7446             # PLAYOFFS.AL byte 0 = games n, game g at 1 + GAME_REC * g
+# C7 box scores (fourth amendment): BOXSCORE.DAT, 16 B records. Team t block at r + BOX_TEAM * t;
+# b bytes at r + BOX_B + 40 * t + i. Stats are (offset, pair): a single is the u8 at OFF + i, a pair
+# is the sum of OFF + 2i and OFF + 2i + 1 capped at 255. The stats span is offsets BOX_LO..BOX_LO+BOX_SPAN-1.
+BOX_NAME = 'BOXSCORE.DAT'
+BOX_RECORD = 16
+BOX_FMT = '<HBBHBB8B'
+NO_ENTRY = 0xffff
+BOX_B = 6975
+BOX_TEAM = 0x8e8
+BOX_LO = 0xf0
+BOX_SPAN = 0x988 - BOX_LO
+BOX_BAT = ((0x1b8, True), (0xf0, False), (0x208, True), (0x118, False),      # AB R H RBI
+           (0x2f8, True), (0x348, True), (0x398, True), (0x168, False))     # HR BB SO SB
+BOX_PIT = ((0x6e0, False), (0x7a8, True), (0x730, False), (0x708, False),    # IP10 H R ER
+           (0x898, True), (0x8e8, True), (0x938, True), (0x758, True))      # HR BB SO BF
 # career-total keys used by the milestone tables, as TOTALS indexes
 MILESTONE_IDX = {'H': 2, 'HR': 5, 'RBI': 7, 'SB': 10, 'W': 13, 'SV': 15, 'PSO': 23}
 # season-half milestone stats, as collected keys (H/HR/SB = L+R; W/SV/PSO as in C2;
@@ -330,9 +345,12 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     (read, drop season_no >= current, append this season in entry index order,
     then the AL and NL award records of this season: award_records, the AL and
     NL leader records: leader_records, and the World Series records of PLAYOFFS.AL:
-    series_records).
+    series_records). C7 fourth amendment: BOXSCORE.DAT next to HISTORY.DAT (old
+    records with season < current kept only when HISTORY.DAT existed, then
+    box_records of the kept games).
     retirees = {v20 basename: [record indexes]} from rollover(); applied later
     by mark_retired() (step 4 runs after the P1 rollover)."""
+    had_hist = os.path.isfile(hist_path) and os.path.getsize(hist_path) > 0
     hist = History.load(hist_path)
     mp = maj_or_none(league_dir)
     m = maj.Maj.load(mp)
@@ -359,6 +377,7 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     # 3. per player; collect the C7 inputs per named record
     collected = []
     table_season = season_no <= SEASON_COUNT
+    rec_idx = {}                        # C7 box: (team id, V20 record number) -> entry index
     for p, lg_id in teams:
         t = Team.load(p)
         for i in range(40):
@@ -381,6 +400,7 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
                      'totals': [0] * 25, 'WAR10': 0, 'top7': [EMPTY_TOP] * 7,
                      'JAWS10': 0, 'hof_season': 0, 'awards': [0] * 5}
                 idx = hist.append_entry(e)
+            rec_idx[(lg_id, i)] = idx
             e = hist.read_entry(idx)
             # C7 career totals BEFORE this record's stats are added ('before' is
             # always the entry as it stands, never rewound: milestone idempotence
@@ -459,6 +479,7 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
         hist.write_season_entry(season_no, se)
     # C7 milestones: drop season_no >= current (idempotent rerun), append this season
     ms_old = [r for r in milestone_entries(hist_path) if r[0] < season_no]
+    box_old = [r for r in box_entries(hist_path) if r[0] < season_no] if had_hist else []
     exps = {}
     for idx, c, before, after in ordered:
         exps[idx] = {'season': season_no, 'before': before, 'after': after}
@@ -469,8 +490,10 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     ms_new += leader_records(season_no, nl, LEADER_KIND_NL)
     po = os.path.join(league_dir, 'PLAYOFFS.AL')
     playoffs = open(po, 'rb').read() if os.path.isfile(po) else None
-    ms_new += series_records(season_no, playoffs, series_stem_ids(m))
+    stem_ids = series_stem_ids(m)
+    ms_new += series_records(season_no, playoffs, stem_ids)
     write_milestones(hist_path, ms_old + ms_new)
+    write_box(hist_path, box_old + box_records(season_no, playoffs, stem_ids, rec_idx))
     hist.done = 1
     hist.flush()
     hist.save(hist_path)
@@ -669,10 +692,10 @@ def game_stem(d, off):
     return bytes(d[off:off + 8]).split(b'\0')[0].decode('latin-1').lower()
 
 
-def series_records(season_no, playoffs, stem_ids):
-    """C7 World Series records: playoffs = the PLAYOFFS.AL bytes or None, stem_ids = {lower-case
-    MAJ stem: league id} (the last slot wins, empty stems left out). Two records per kept game g
-    (kind 192 + g, then 200 + g); a short file or n outside 1..7 gives []."""
+def series_games(playoffs, stem_ids):
+    """The kept World Series games of PLAYOFFS.AL: [(g, r, visitor id, home id)] in g order.
+    playoffs None, short, or n outside 1..7 gives []; a game with an unmapped stem, or with both
+    teams in one league, is left out."""
     if playoffs is None or len(playoffs) < 1:
         return []
     n = playoffs[0]
@@ -685,6 +708,16 @@ def series_records(season_no, playoffs, stem_ids):
         vis = stem_ids.get(game_stem(playoffs, r + 0x1c09))
         if home is None or vis is None or (home < 16) == (vis < 16):
             continue                    # unmapped stem, or both teams in one league
+        out.append((g, r, vis, home))
+    return out
+
+
+def series_records(season_no, playoffs, stem_ids):
+    """C7 World Series records: playoffs = the PLAYOFFS.AL bytes or None, stem_ids = {lower-case
+    MAJ stem: league id} (the last slot wins, empty stems left out). Two records per kept game g
+    (kind 192 + g, then 200 + g); a short file or n outside 1..7 gives []."""
+    out = []
+    for g, r, vis, home in series_games(playoffs, stem_ids):
         # team t: 0 visitor, 1 home; hits and errors are 80 B sums capped at 255
         hits = [min(255, sum(playoffs[r + 0x208 + 0x8e8 * t:r + 0x208 + 0x8e8 * t + 80]))
                 for t in (0, 1)]
@@ -695,6 +728,68 @@ def series_records(season_no, playoffs, stem_ids):
         out.append((season_no, hits[0] * 256 + hits[1], SERIES_HE_KIND + g,
                     errs[0] * 256 + errs[1]))
     return out
+
+
+def box_stat(d, base, off, i, pair):
+    """One box stat of id i: the u8 at base + off + i, or the pair at base + off + 2 * i (summed,
+    capped at 255). base = r + BOX_TEAM * t."""
+    o = base + off
+    if pair:
+        return min(255, d[o + 2 * i] + d[o + 2 * i + 1])
+    return d[o + i]
+
+
+def box_records(season_no, playoffs, stem_ids, rec_idx):
+    """C7 box score records (fourth amendment): playoffs and stem_ids as series_records; rec_idx =
+    {(team id, V20 record number): player entry index}. Per kept game g in order, side t = 0 (team
+    id = visitor) then 1 (home): batting rows (b & 15 <= 8, sorted by slot, entry order, id), then
+    pitching rows (b & 15 == 9, or IP10 > 0, or BF > 0; sorted by entry order, id). Returns a list of
+    (season_no, g, flags, idx, b, i, stats) tuples in file order: flags bit 0 the side, bit 1 a
+    pitching row; idx NO_ENTRY when rec_idx has no entry; stats a tuple of 8 ints."""
+    out = []
+    for g, r, vis, home in series_games(playoffs, stem_ids):
+        for t, tid in ((0, vis), (1, home)):
+            base = r + BOX_TEAM * t
+            b = playoffs[r + BOX_B + 40 * t:r + BOX_B + 40 * t + 40]
+            bat = sorted((b[i] & 15, b[i] >> 4, i) for i in range(40)
+                         if b[i] and (b[i] & 15) <= 8)
+            for slot, order, i in bat:
+                st = tuple(box_stat(playoffs, base, off, i, pair) for off, pair in BOX_BAT)
+                out.append((season_no, g, t, rec_idx.get((tid, i), NO_ENTRY), b[i], i, st))
+            pit = []
+            for i in range(16):
+                if not b[i]:
+                    continue
+                st = tuple(box_stat(playoffs, base, off, i, pair) for off, pair in BOX_PIT)
+                if (b[i] & 15) == 9 or st[0] > 0 or st[7] > 0:
+                    pit.append((b[i] >> 4, i, st))
+            for order, i, st in sorted(pit):
+                out.append((season_no, g, t | 2, rec_idx.get((tid, i), NO_ENTRY), b[i], i, st))
+    return out
+
+
+def box_entries(hist_path):
+    """BOXSCORE.DAT next to hist_path as the same tuples ([] when missing; a short tail dropped)."""
+    p = os.path.join(os.path.dirname(hist_path), BOX_NAME)
+    if not os.path.exists(p):
+        return []
+    raw = open(p, 'rb').read()
+    out = []
+    for o in range(0, len(raw) - BOX_RECORD + 1, BOX_RECORD):
+        f = struct.unpack_from(BOX_FMT, raw, o)
+        out.append(f[:6] + (tuple(f[6:]),))
+    return out
+
+
+def write_box(hist_path, recs):
+    """Write BOXSCORE.DAT next to hist_path (BOX_FMT per record; values capped at 0xffff / 0xff)."""
+    p = os.path.join(os.path.dirname(hist_path), BOX_NAME)
+    d = bytearray()
+    for season, g, flags, idx, b, i, stats in recs:
+        d += struct.pack(BOX_FMT, min(season, 0xffff), min(g, 0xff), min(flags, 0xff),
+                         min(idx, 0xffff), min(b, 0xff), min(i, 0xff),
+                         *(min(v, 0xff) for v in stats))
+    open(p, 'wb').write(bytes(d))
 
 
 def milestone_entries(hist_path):

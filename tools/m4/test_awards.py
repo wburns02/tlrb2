@@ -716,16 +716,41 @@ def arr80(*vals):
     return bytes(list(vals) + [0] * (80 - len(vals)))
 
 
-def game(visitor, home, vruns=0, hruns=0, hits=(arr80(), arr80()), errs=(arr80(), arr80())):
-    """One synthetic PLAYOFFS.AL game: stems (bytes), runs, and [visitor, home] 80 B arrays."""
+def game(visitor, home, vruns=0, hruns=0, hits=(arr80(), arr80()), errs=(arr80(), arr80()),
+         box=None):
+    """One synthetic PLAYOFFS.AL game: stems (bytes), runs, [visitor, home] 80 B arrays, and
+    optionally box = [visitor, home] sides (see put_box)."""
     return {'visitor': visitor, 'home': home, 'vruns': vruns, 'hruns': hruns,
-            'hits': hits, 'errs': errs}
+            'hits': hits, 'errs': errs, 'box': box}
+
+
+# C7 box score stat offsets (team block base + OFF) as the spec lists them, and which are pairs
+BOX_OFF = {'AB': 0x1b8, 'R': 0xf0, 'H': 0x208, 'RBI': 0x118, 'HR': 0x2f8, 'BB': 0x348,
+           'SO': 0x398, 'SB': 0x168, 'IP10': 0x6e0, 'HA': 0x7a8, 'RA': 0x730, 'ER': 0x708,
+           'HRA': 0x898, 'BBA': 0x8e8, 'SOA': 0x938, 'BF': 0x758}
+BOX_PAIR = {'AB', 'H', 'HR', 'BB', 'SO', 'HA', 'HRA', 'BBA', 'SOA', 'BF'}
+
+
+def put_box(d, r, t, side):
+    """One team side t of the game at r. side = {'b': {id: b byte}, 'v': {stat: {id: value}}}:
+    b at r + 6975 + 40 t + id; a single at r + 0x8e8 t + OFF + id; a pair at + 2 id (low byte)
+    and + 2 id + 1 (high byte). A pair value is an int <= 255 or a (low, high) tuple."""
+    for i, bv in side.get('b', {}).items():
+        d[r + 6975 + 40 * t + i] = bv
+    base = r + 0x8e8 * t
+    for key, vals in side.get('v', {}).items():
+        for i, v in vals.items():
+            if key in BOX_PAIR:
+                lo, hi = v if isinstance(v, tuple) else (v, 0)
+                d[base + BOX_OFF[key] + 2 * i], d[base + BOX_OFF[key] + 2 * i + 1] = lo, hi
+            else:
+                d[base + BOX_OFF[key] + i] = v
 
 
 def playoffs_al(games):
     """Synthetic PLAYOFFS.AL: byte 0 = len(games), game g at 1 + GAME_REC * g with the home and
     visitor stems (8 B, NUL padded), the visitor and home runs, and the per-team [visitor, home]
-    80 B hits and errors arrays. Everything else is zero."""
+    80 B hits and errors arrays, then the box sides when given. Everything else is zero."""
     d = bytearray(1 + GAME_REC * len(games))
     d[0] = len(games)
     for g, gm in enumerate(games):
@@ -736,6 +761,8 @@ def playoffs_al(games):
         for t in (0, 1):
             d[r + 0x208 + 0x8e8 * t:r + 0x208 + 0x8e8 * t + 80] = gm['hits'][t]
             d[r + 0x5c8 + 0x8e8 * t:r + 0x5c8 + 0x8e8 * t + 80] = gm['errs'][t]
+        for t, side in enumerate(gm.get('box') or ({}, {})):
+            put_box(d, r, t, side)
     return bytes(d)
 
 
@@ -867,6 +894,196 @@ def test_no_playoffs_no_series_records(tmp_path):
     assert ms and not any(192 <= r[2] <= 207 for r in ms)
 
 
+# -- C7 box scores (BOXSCORE.DAT, fourth amendment) --
+
+# game 0 visitor: clasale1 (team id 0), a DH lineup: starters in slots 0..8 (b = 0x10 + id),
+# a pinch hitter (id 30, slot 7 entry 2), the starting pitcher id 15 (slot 9, entry 1) and a
+# reliever id 14 (slot 9, entry 2). id 1 has an AB pair split 200 / 100 (capped at 255), id 2 an
+# H pair 100 / 27 (127). id 9 has an AB but b 0: never listed.
+BOX_VIS = {
+    'b': {**{i: 0x10 + i for i in range(9)}, 30: 0x27, 15: 0x19, 14: 0x29},
+    'v': {
+        'AB': {**{i: i + 4 for i in range(9)}, 1: (200, 100), 30: 3, 9: 50},
+        'R': {**{i: i for i in range(9)}, 30: 1},
+        'H': {**{i: i for i in range(9)}, 2: (100, 27), 30: 1},
+        'RBI': {**{i: 10 + i for i in range(9)}, 30: 1},
+        'SO': {**{i: 2 for i in range(9)}, 30: 1},
+        'SB': {7: 1},
+        'IP10': {15: 72, 14: 10},
+        'HA': {15: 5}, 'RA': {15: 3}, 'ER': {15: 2}, 'HRA': {15: 1}, 'BBA': {15: 2},
+        'SOA': {15: 6}, 'BF': {15: 28, 14: 3},
+    }}
+# game 0 home: a no-DH game on NL01 (team id 17): the pitcher id 3 bats in slot 8, the
+# reliever id 4 takes slot 3 entry 2 for the starter id 5 (double switch), id 2 bats, and id 6
+# is a slot 9 pitcher with no stats (still listed)
+BOX_HOME = {
+    'b': {2: 0x12, 5: 0x13, 4: 0x23, 3: 0x18, 6: 0x19},
+    'v': {
+        'AB': {2: 3, 5: 4, 4: 2, 3: 2},
+        'H': {2: 2, 5: 1, 3: 1},
+        'RBI': {2: 1}, 'SO': {2: 1}, 'SB': {5: 2},
+        'IP10': {3: 20, 4: 5},
+        'HA': {3: 3, 4: 1}, 'RA': {3: 2}, 'ER': {3: 2}, 'BBA': {3: 1},
+        'SOA': {3: 4, 4: 1}, 'BF': {3: 9, 4: 2},
+    }}
+
+
+def box_rec_idx():
+    """(team id, record) -> entry index for the box unit game: id 30 and home record 6 are
+    missing, and team 1 has no entries at all."""
+    idx = {(0, i): 100 + i for i in list(range(9)) + [14, 15]}
+    idx.update({(17, i): 200 + i for i in (2, 3, 4, 5)})
+    idx[(16, 0)] = 300
+    return idx
+
+
+def test_box_records_rows_order_flags_and_gates():
+    """box_records: the DH lineup (slot, entry order, id order; pinch hitter after the starter; the
+    pitcher in slot 9 only as a pitching row), the no-DH game (pitcher batting in slot 8, double
+    switch reliever), the flags 0..3, the capped pair sums, NO_ENTRY ids, a skipped same-league
+    game (writes nothing, the next game keeps its g), and the gates (None, n = 0, short file)."""
+    ids = series_ids()
+    po = playoffs_al([
+        game(b'clasale1', b'NL01', 3, 5, box=[BOX_VIS, BOX_HOME]),          # g0 kept
+        game(b'ALA01', b'clasale1', 1, 0, box=[{'b': {1: 0x11}, 'v': {'AB': {1: 9}}}, {}]),
+        game(b'NL00', b'ALA01', 0, 2, box=[{'b': {0: 0x10}, 'v': {'AB': {0: 4}}},
+                                           {'b': {0: 0x19}}]),                  # g2 kept
+    ])
+    got = history.box_records(1, po, ids, box_rec_idx())
+    assert got == [
+        # g0 visitor batting: slots 0..6, slot 7 starter then pinch hitter (order 2), slot 8
+        (1, 0, 0, 100, 0x10, 0, (4, 0, 0, 10, 0, 0, 2, 0)),
+        (1, 0, 0, 101, 0x11, 1, (255, 1, 1, 11, 0, 0, 2, 0)),      # AB split 200 + 100
+        (1, 0, 0, 102, 0x12, 2, (6, 2, 127, 12, 0, 0, 2, 0)),      # H split 100 + 27
+        (1, 0, 0, 103, 0x13, 3, (7, 3, 3, 13, 0, 0, 2, 0)),
+        (1, 0, 0, 104, 0x14, 4, (8, 4, 4, 14, 0, 0, 2, 0)),
+        (1, 0, 0, 105, 0x15, 5, (9, 5, 5, 15, 0, 0, 2, 0)),
+        (1, 0, 0, 106, 0x16, 6, (10, 6, 6, 16, 0, 0, 2, 0)),
+        (1, 0, 0, 107, 0x17, 7, (11, 7, 7, 17, 0, 0, 2, 1)),
+        (1, 0, 0, 0xffff, 0x27, 30, (3, 1, 1, 1, 0, 0, 1, 0)),     # no entry for the PH
+        (1, 0, 0, 108, 0x18, 8, (12, 8, 8, 18, 0, 0, 2, 0)),
+        # g0 visitor pitching: slot 9 entry 1 (id 15), entry 2 (id 14, IP 1.0 and BF 3)
+        (1, 0, 2, 115, 0x19, 15, (72, 5, 3, 2, 1, 2, 6, 28)),
+        (1, 0, 2, 114, 0x29, 14, (10, 0, 0, 0, 0, 0, 0, 3)),
+        # g0 home batting: id 2 (slot 2), id 5 (slot 3 entry 1), id 4 (slot 3 entry 2), id 3 (slot 8)
+        (1, 0, 1, 202, 0x12, 2, (3, 0, 2, 1, 0, 0, 1, 0)),
+        (1, 0, 1, 205, 0x13, 5, (4, 0, 1, 0, 0, 0, 0, 2)),
+        (1, 0, 1, 204, 0x23, 4, (2, 0, 0, 0, 0, 0, 0, 0)),
+        (1, 0, 1, 203, 0x18, 3, (2, 0, 1, 0, 0, 0, 0, 0)),
+        # g0 home pitching: id 3 (entry 1), id 6 (slot 9, no stats, no entry), id 4 (entry 2)
+        (1, 0, 3, 203, 0x18, 3, (20, 3, 2, 2, 0, 1, 4, 9)),
+        (1, 0, 3, 0xffff, 0x19, 6, (0, 0, 0, 0, 0, 0, 0, 0)),
+        (1, 0, 3, 204, 0x23, 4, (5, 1, 0, 0, 0, 0, 1, 2)),
+        # g2 (the skipped game 1 wrote nothing): visitor NL00 id 0 (team 16), home ALA01 id 0
+        # (team 1 has no entries), the home pitcher-only slot 9 id 0
+        (1, 2, 0, 300, 0x10, 0, (4, 0, 0, 0, 0, 0, 0, 0)),
+        (1, 2, 3, 0xffff, 0x19, 0, (0, 0, 0, 0, 0, 0, 0, 0)),
+    ]
+    # the same game with an empty rec_idx: every idx is NO_ENTRY, nothing else moves
+    assert history.box_records(1, po, ids, {}) == [r[:3] + (0xffff,) + r[4:] for r in got]
+
+
+def test_box_records_gates():
+    """No file, no bytes, n = 0, n = 8, or a file under 1 + 7446 * n bytes: no box records;
+    the full six game file gives one batting row per game (the home side is empty)."""
+    ids = series_ids()
+    six = [game(b'ALA01', b'NL00', box=[{'b': {0: 0x10}}, {}])] * 6
+    assert history.box_records(1, None, ids, {}) == []
+    assert history.box_records(1, b'', ids, {}) == []
+    assert history.box_records(1, playoffs_al([]), ids, {}) == []
+    assert history.box_records(1, playoffs_al(six + six[:2]), ids, {}) == []
+    short = playoffs_al(six)
+    assert history.box_records(1, short[:-1], ids, {}) == []
+    assert history.box_records(1, short[:1 + GAME_REC * 5], ids, {}) == []
+    assert len(history.box_records(1, short, ids, {})) == 6
+
+
+def test_box_entries_write_roundtrip(tmp_path):
+    """write_box then box_entries: the same tuples in file order, values capped at 0xffff and 0xff,
+    a short tail dropped, [] for a missing file, a 0 byte file for no records."""
+    hp = str(tmp_path / 'HISTORY.DAT')
+    bp = os.path.join(str(tmp_path), 'BOXSCORE.DAT')
+    assert history.box_entries(hp) == []
+    recs = [(1, 0, 0, 0xffff, 0x10, 0, (4, 0, 0, 10, 0, 0, 2, 0)),
+            (2, 6, 3, 300, 0x19, 15, (255, 1, 0, 0, 0, 0, 0, 0))]
+    history.write_box(hp, recs)
+    assert os.path.getsize(bp) == 32
+    assert history.box_entries(hp) == recs
+    with open(bp, 'ab') as f:
+        f.write(b'\x01\x02\x03')
+    assert history.box_entries(hp) == recs
+    history.write_box(hp, [(1, 0, 0, 0x12345, 0x110, 0x123, (300, 0, 0, 0, 0, 0, 0, 0))])
+    assert history.box_entries(hp) == [(1, 0, 0, 0xffff, 0xff, 0xff, (255, 0, 0, 0, 0, 0, 0, 0))]
+    history.write_box(hp, [])
+    assert os.path.getsize(bp) == 0 and history.box_entries(hp) == []
+
+
+def rec_index(h, ldir, season_no):
+    """{(team id, V20 record number): entry index} as record_season builds it: the last file of
+    an id wins, and only active records count."""
+    m = maj.Maj.load(history.maj_or_none(ldir))
+    out = {}
+    for p, lg_id in history.mapped_teams(ldir, m):
+        t = Team.load(p)
+        for i in range(40):
+            if not t.players[i].active:
+                continue
+            roster = t.players[i].raw
+            birth = 1000 + season_no - _get(roster, *F['age'])
+            out[(lg_id, i)] = history.find_entry(h, bytes(roster[0:20]), birth)
+    return out
+
+
+def test_box_record_season_award_league(tmp_path):
+    """record_season on award_league with a two game PLAYOFFS.AL: BOXSCORE.DAT equals box_records
+    for that input and the entry indices record_season gave the records (MVPWIN is AL record 16);
+    a rerun of the season is byte-identical; a second season keeps the first season's records
+    first, then its own."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    award_league(ldir)
+    po = playoffs_al([
+        game(b'clasale1', b'NL01', 2, 6, box=[
+            {'b': {16: 0x10, 17: 0x11, 0: 0x19},
+             'v': {'AB': {16: 4, 17: 3}, 'IP10': {0: 30}, 'BF': {0: 7}}},
+            {'b': {16: 0x10, 17: 0x21}, 'v': {'AB': {16: (3, 1)}}}]),
+        game(b'NL01', b'clasale1', 0, 1, box=[{'b': {17: 0x10}, 'v': {'AB': {17: 5}}}, {}]),
+    ])
+    (ldir / 'PLAYOFFS.AL').write_bytes(po)
+    hp = str(tmp_path / 'HISTORY.DAT')
+    bp = os.path.join(str(tmp_path), 'BOXSCORE.DAT')
+    h = history.record_season(str(ldir), hp, 1)
+    rec = history.box_entries(hp)
+    idx = rec_index(h, str(ldir), 1)
+    assert rec == history.box_records(1, po, series_ids(), idx) and len(rec) > 0
+    mvp = [r for r in rec if r[1] == 0 and r[2] == 0 and r[5] == 16]
+    assert len(mvp) == 1 and mvp[0][3] == idx[(0, 16)]
+    assert h.read_entry(mvp[0][3])['name'][1:6] == b'VPWIN'      # byte 0 is the active flag
+    first = open(bp, 'rb').read()
+    os.remove(hp)
+    history.record_season(str(ldir), hp, 1)
+    assert open(bp, 'rb').read() == first
+    s1 = history.box_entries(hp)
+    po2 = playoffs_al([game(b'NL01', b'clasale1', 1, 0, box=[{'b': {16: 0x10}, 'v': {'AB': {16: 6}}}, {}])])
+    (ldir / 'PLAYOFFS.AL').write_bytes(po2)
+    h = history.record_season(str(ldir), hp, 2)
+    rec2 = history.box_entries(hp)
+    assert rec2 == s1 + history.box_records(2, po2, series_ids(), rec_index(h, str(ldir), 2))
+    assert rec2[:len(s1)] == s1 and any(r[0] == 2 for r in rec2)
+
+
+def test_no_playoffs_empty_box_file(tmp_path):
+    """Without PLAYOFFS.AL, record_season writes BOXSCORE.DAT as a 0 byte file on a first run."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    award_league(ldir)
+    hp = str(tmp_path / 'HISTORY.DAT')
+    history.record_season(str(ldir), hp, 1)
+    bp = os.path.join(str(tmp_path), 'BOXSCORE.DAT')
+    assert os.path.exists(bp) and os.path.getsize(bp) == 0
+    assert history.box_entries(hp) == []
+
+
 # -- real data --
 
 def collect_all(h, ldir, season_no, lg_totals, pf):
@@ -982,6 +1199,36 @@ def test_real_data_awards():
         for i in range(len(h._entries)):
             total += sum(h.read_entry(i)['awards'])
         assert total == top3 + gg + ss
+        # box score: a kept game's batting rows sum to each side's runs (kind 192 + g) and hits
+        # (kind 200 + g); a side with a 255 stat or total is skipped (it may be capped)
+        box = history.box_entries(hp)
+        runs_of = {k - 192: (i, v) for s, i, k, v in ms if s == 1 and 192 <= k < 200}
+        hits_of = {k - 200: (i, v) for s, i, k, v in ms if s == 1 and 200 <= k < 208}
+        assert runs_of and set(runs_of) == set(hits_of)
+        for g in sorted(runs_of):
+            runs = (runs_of[g][1] >> 8, runs_of[g][1] & 255)
+            hits = (hits_of[g][0] >> 8, hits_of[g][0] & 255)
+            for t in (0, 1):
+                bat = [r for r in box if r[1] == g and r[2] == t]
+                if any(v == 255 for r in bat for v in (r[6][1], r[6][2])) or 255 in (runs[t], hits[t]):
+                    continue
+                assert sum(r[6][1] for r in bat) == runs[t], (g, t)
+                assert sum(r[6][2] for r in bat) == hits[t], (g, t)
+        g0 = min(runs_of)
+        print(f'World Series game {g0 + 1} box (batting: AB R H RBI HR BB SO SB; '
+              f'pitching: IP H R ER HR BB SO BF):')
+        for t in (0, 1):
+            print('  visitor' if t == 0 else '  home')
+            for r in box:
+                if r[1] != g0 or (r[2] & 1) != t:
+                    continue
+                who = ename(r[3]) if r[3] != history.NO_ENTRY else '(no entry)'
+                st = r[6]
+                if r[2] & 2:
+                    print(f'    {who:24} P {st[0] // 10}.{st[0] % 10} {st[1]} {st[2]} {st[3]} '
+                          f'{st[4]} {st[5]} {st[6]} {st[7]}')
+                else:
+                    print(f'    {who:24} B {" ".join(str(v) for v in st)}')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

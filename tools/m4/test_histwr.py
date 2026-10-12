@@ -1121,3 +1121,163 @@ def test_series_host_parity_short_file(tmp_path):
     ms = series_parity(tmp_path, po[:1 + GAME_REC * 3 - 1])
     assert not any(192 <= r[2] <= 207 for r in ms)
     assert any(128 <= r[2] < 176 for r in ms) and any(64 <= r[2] < 128 for r in ms)
+
+
+# ---------------- C7 box scores (BOXSCORE.DAT, fourth amendment) ----------------
+
+def box_seven_games():
+    """A 7 game PLAYOFFS.AL on full_award_league (AL clasale1 = team 0, NL01 = team 17). Game 1 is
+    skipped (unmapped visitor stem). The AL ace (record 0) is a slot 9 pitcher only (IP 3.0). Teams
+    2, 3, 13, 16 and 21 are on the MAJ but have no V20 here, so their rows carry NO_ENTRY."""
+    return playoffs_al([
+        game(b'clasale1', b'NL01', 3, 5, box=[
+            {'b': {0: 0x19, **{i: 0x10 + i for i in range(1, 9)}},
+             'v': {'IP10': {0: 30}, 'BF': {0: 7}, 'AB': {i: 4 for i in range(1, 9)},
+                   'H': {1: 1, 2: (100, 27)}, 'R': {1: 1}}},
+            {'b': {1: 0x11, 2: 0x12, 6: 0x29},
+             'v': {'AB': {1: (200, 100), 2: 3}, 'IP10': {6: 10}, 'SOA': {6: (2, 0)}}}]),
+        game(b'XYZ', b'NL00', 1, 1, box=[{'b': {0: 0x19}, 'v': {'IP10': {0: 9}}},
+                                         {'b': {0: 0x10}}]),
+        game(b'NL01', b'ALA01', 255, 1, box=[{'b': {1: 0x18}, 'v': {'AB': {1: (255, 255)}}},
+                                             {'b': {3: 0x13}}]),
+        game(b'clasale1', b'NL01', 2, 6, box=[{'b': {2: 0x12}, 'v': {'AB': {2: 3}}},
+                                              {'b': {5: 0x19}}]),
+        game(b'NL00', b'ALA13', 9, 9, box=[{'b': {0: 0x10}, 'v': {'AB': {0: 2}}}, {}]),
+        game(b'AlA02', b'nl05', 1, 0, box=[{'b': {4: 0x14}, 'v': {'AB': {4: 1}}}, {}]),
+        game(b'NL01', b'ALA03', 2, 4, box=[{'b': {16: 0x10}, 'v': {'AB': {16: 3}}},
+                                           {'b': {0: 0x18}}]),
+    ])
+
+
+def test_box_host_parity_seven_games(tmp_path):
+    """HISTWR and the Python reference on the 7 game box league: HISTORY.DAT, MILESTON.DAT and
+    BOXSCORE.DAT equal byte for byte; game 1 (skipped) has no rows; the slot 9 ace is a pitching
+    row alone."""
+    series_parity(tmp_path, box_seven_games())
+    host, py = os.path.join(str(tmp_path), 'host'), os.path.join(str(tmp_path), 'py')
+    bc = open(os.path.join(host, 'BOXSCORE.DAT'), 'rb').read()
+    bp = open(os.path.join(py, 'BOXSCORE.DAT'), 'rb').read()
+    assert bc == bp and len(bc) > 0 and len(bc) % 16 == 0
+    rows = history.box_entries(os.path.join(py, 'H.DAT'))
+    assert {r[1] for r in rows} == {0, 2, 3, 4, 5, 6}
+    ace = [r for r in rows if r[1] == 0 and r[2] == 2 and r[5] == 0]
+    assert len(ace) == 1 and ace[0][4] == 0x19 and ace[0][6][0] == 30
+    assert not [r for r in rows if r[1] == 0 and r[5] == 0 and r[2] & 2 == 0]
+
+
+def test_box_rerun_parity(tmp_path):
+    """The same season run again on a fresh HISTORY.DAT, with the first run's BOXSCORE.DAT still
+    beside it: the same bytes, equal to the Python reference."""
+    _build()
+    ldir = str(tmp_path / 'lg')
+    os.makedirs(ldir)
+    full_award_league(ldir)
+    open(os.path.join(ldir, 'PLAYOFFS.AL'), 'wb').write(box_seven_games())
+    d = str(tmp_path / 'c')
+    shutil.copytree(ldir, d)
+    hp = os.path.join(d, 'H.DAT')
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    r = HISTWR(d, hp, ret)
+    assert r.returncode == 0, r.stderr
+    first = open(os.path.join(d, 'BOXSCORE.DAT'), 'rb').read()
+    os.remove(hp)
+    r = HISTWR(d, hp, ret)
+    assert r.returncode == 0, r.stderr
+    assert open(os.path.join(d, 'BOXSCORE.DAT'), 'rb').read() == first
+    assert len(first) > 0
+    py = str(tmp_path / 'py')
+    shutil.copytree(ldir, py)
+    history.record_season(py, os.path.join(py, 'H.DAT'), 1, None)
+    assert open(os.path.join(py, 'BOXSCORE.DAT'), 'rb').read() == first
+
+
+def test_box_two_seasons_host_parity(tmp_path):
+    """Season 1 then season 2 in one league directory: HISTORY.DAT, MILESTON.DAT and BOXSCORE.DAT
+    match the Python reference run the same way, and BOXSCORE.DAT keeps season 1's rows first."""
+    _build()
+    ldir = str(tmp_path / 'lg')
+    os.makedirs(ldir)
+    full_award_league(ldir)
+    open(os.path.join(ldir, 'PLAYOFFS.AL'), 'wb').write(box_seven_games())
+    host, py = str(tmp_path / 'host'), str(tmp_path / 'py')
+    shutil.copytree(ldir, host)
+    shutil.copytree(ldir, py)
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    hp = os.path.join(host, 'H.DAT')
+    for _ in range(2):
+        r = HISTWR(host, hp, ret)
+        assert r.returncode == 0, r.stderr
+    hp2 = os.path.join(py, 'H.DAT')
+    history.record_season(py, hp2, 1, None)
+    history.record_season(py, hp2, 2, None)
+    for leaf in ('H.DAT', 'MILESTON.DAT', 'BOXSCORE.DAT'):
+        a = open(os.path.join(host, leaf), 'rb').read()
+        b = open(os.path.join(py, leaf), 'rb').read()
+        off, ent = first_diff(a, b)
+        assert off < 0, f'{leaf}: first diff at offset {off} (entry {ent})'
+    rows = history.box_entries(hp2)
+    s1 = [r for r in rows if r[0] == 1]
+    assert s1 and {r[0] for r in rows} == {1, 2}
+    assert rows == s1 + [r for r in rows if r[0] == 2]
+
+
+def test_box_fail_rename_keeps_three_files(tmp_path):
+    """A failing last rename (host build with -DTEST_FAIL_RENAME, BOXSCORE last): HISTORY.DAT,
+    MILESTON.DAT and BOXSCORE.DAT are restored byte for byte, rc 2, and no TMP or BAK is left.
+    Without an earlier BOXSCORE.DAT the failure leaves none behind."""
+    _build()
+    _build_special(HC, ['-DTEST_FAIL_RENAME'])
+    try:
+        ldir = str(tmp_path / 'lg')
+        os.makedirs(ldir)
+        full_award_league(ldir)
+        open(os.path.join(ldir, 'PLAYOFFS.AL'), 'wb').write(box_seven_games())
+        ret = os.path.join(str(tmp_path), 'R.DAT')
+        open(ret, 'wb').write(bytes(1))
+        hp = os.path.join(str(tmp_path), 'H.DAT')
+        open(hp, 'wb').write(bytes(range(32)))
+        ms = ms_path_of(hp)
+        open(ms, 'wb').write(bytes([1, 0, 0, 0, 40, 0, 5, 0]))
+        bp = os.path.join(str(tmp_path), 'BOXSCORE.DAT')
+        open(bp, 'wb').write(struct.pack('<HBBHBB8B', 1, 0, 0, 0, 0x19, 0, *range(8)))
+        before = {p: open(p, 'rb').read() for p in (hp, ms, bp)}
+        rc = subprocess.run([HC, ldir, hp, ret], capture_output=True, text=True)
+        assert rc.returncode == 2, rc.returncode
+        for p, data in before.items():
+            assert open(p, 'rb').read() == data, f'{os.path.basename(p)} not restored'
+        for leftover in ('HISTWR.BAK', 'HISTWR.TMP', 'MILESTON.BAK', 'MILESTON.TMP',
+                         'BOXSCORE.BAK', 'BOXSCORE.TMP'):
+            assert not os.path.exists(os.path.join(str(tmp_path), leftover)), \
+                f'{leftover} left'
+        d2 = str(tmp_path / 'fresh')
+        os.makedirs(d2)
+        shutil.copytree(ldir, os.path.join(d2, 'lg'))
+        hp2 = os.path.join(d2, 'H.DAT')
+        rc = subprocess.run([HC, os.path.join(d2, 'lg'), hp2, ret], capture_output=True, text=True)
+        assert rc.returncode == 2, rc.returncode
+        assert not os.path.exists(hp2) and not os.path.exists(os.path.join(d2, 'BOXSCORE.DAT'))
+        assert not os.path.exists(os.path.join(d2, 'BOXSCORE.TMP'))
+    finally:
+        if os.path.exists(HC):
+            os.remove(HC)
+
+
+def test_box_no_playoffs_host_empty_file(tmp_path):
+    """No PLAYOFFS.AL: HISTWR and the Python reference both leave a 0 byte BOXSCORE.DAT."""
+    _build()
+    ldir = str(tmp_path / 'lg')
+    os.makedirs(ldir)
+    full_award_league(ldir)
+    host, py = str(tmp_path / 'host'), str(tmp_path / 'py')
+    shutil.copytree(ldir, host)
+    shutil.copytree(ldir, py)
+    hp = os.path.join(host, 'H.DAT')
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    r = HISTWR(host, hp, ret)
+    assert r.returncode == 0, r.stderr
+    history.record_season(py, os.path.join(py, 'H.DAT'), 1, None)
+    for d in (host, py):
+        assert open(os.path.join(d, 'BOXSCORE.DAT'), 'rb').read() == b''
