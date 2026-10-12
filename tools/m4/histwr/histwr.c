@@ -3,8 +3,10 @@
  * OpenWatcom (large model). Streams player entries from HIST_PATH to HISTWR.TMP
  * beside it; never holds the whole player table in memory. C7: awards (season
  * entry bytes 88..99, player entry award counts 152..156) and MILESTON.DAT
- * beside HISTORY.DAT.
+ * beside HISTORY.DAT. C13.2: SEASLINE.DAT beside HISTORY.DAT (one 80 B line per active record
+ * per season); HISTWR /LINES backfills it from the season archives.
  * usage: HISTWR [PRE_DIR HIST_PATH RETIRED_PATH]
+ *        HISTWR /LINES [HIST_PATH SEASONS_DIR]
  * exit 0 on success, 2 after any error (HIST_PATH left unchanged).
  */
 #include <stdio.h>
@@ -46,6 +48,13 @@
 #define BOX_NAME       "BOXSCORE.DAT"
 #define BOX_TMP_NAME   "BOXSCORE.TMP"
 #define BOX_BAK_NAME   "BOXSCORE.BAK"
+#define SL_NAME        "SEASLINE.DAT"
+#define SL_TMP_NAME    "SEASLINE.TMP"
+#define SL_BAK_NAME    "SEASLINE.BAK"
+#define SL_HDR         16
+#define SL_LINE        80
+#define SWAP_N         4              /* HISTORY, MILESTON, BOXSCORE, SEASLINE */
+#define RUN_PATHS      11             /* PATH_CAP blocks of a run: 2 history, 3 milestone, 3 box, 3 seasline */
 #define BOX_REC        16
 #define NO_AWARD       0xffff
 #define NO_ENTRY       0xffff
@@ -105,6 +114,14 @@
 #define R_EXP    0x16
 #define R_PO1    0x4d
 #define R_A1     0x51
+#define R_PORTRAIT 0x1b
+#define R_SPEED  0x1d
+#define R_B29    29
+#define R_POWER  0x4a
+#define R_HITRUN 0x4b
+#define R_CONTROL 0x86
+#define R_ENDUR  0x87
+#define R_DEV    142
 
 #define MAJ_SIZE     59771
 #define MAJ_DAYS     244
@@ -136,6 +153,13 @@
 #define DEF_PRE  "C:\\DYNSNAP"
 #define DEF_HIST "TEAMS\\CLASSIC\\HISTORY.DAT"
 #define DEF_RET  "C:\\DYNSNAP\\RETIRED.DAT"
+#define DEF_SEASONS "C:\\SEASONS"
+#define ARCH_MAX 99
+#ifdef __WATCOMC__
+#define FARDATA __far
+#else
+#define FARDATA
+#endif
 
 typedef struct {
     uint8_t *d;
@@ -232,6 +256,15 @@ static Maj g_maj;
 static char g_retpath[512];
 static Cand *g_cands;
 static int32_t g_ncands, g_cands_cap;
+/* /LINES (C13.2 backfill): the archive being read goes in g_maj (series_id reads it), the Snn subdirs by nn, the archives that hold a
+ * MAJ in nn order, the season -> archive match, and the directory listing scratch */
+static char FARDATA g_adir[600];
+static char FARDATA g_snn[100][16];
+static char FARDATA g_arch[ARCH_MAX][16];
+static int g_arch_cnt;
+static int FARDATA g_arch_sel[SEASON_COUNT + 1];
+static char FARDATA g_mnames[MAXV][16];
+static uint8_t FARDATA g_line[SL_LINE];
 static uint16_t rd16(const uint8_t *p)
 {
     return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
@@ -1007,6 +1040,26 @@ static void apply_chain(int32_t s, uint8_t *eb, int collect)
 
 /* history.record_season step 1 (C12.7): W/L by stable id, byte 22 and the division map (bytes
  * 100..115) only when the MAJ has 3 divisions or TEAMID.DAT exists; else both stay 0 */
+/* history.league_wl (C2 step 1, C12.3): W and L by stable id, 0 for a team with no games */
+static void maj_wl(const Maj *m, uint8_t *wl_w, uint8_t *wl_l)
+{
+    const uint8_t *tab = m->have_table ? m->table : NULL;
+    TiTeam t[TI_MAX_TEAMS];
+    int nt, i;
+    memset(wl_w, 0, 32);
+    memset(wl_l, 0, 32);
+    nt = ti_teams(m->d, MAJ_SIZE, tab, t);
+    for (i = 0; i < nt; i++) {
+        int s = t[i].L ? MAJ_S_NL : MAJ_S_AL;
+        uint8_t w = m->d[s + MAJ_O_W + t[i].slot];
+        uint8_t l = m->d[s + MAJ_O_L + t[i].slot];
+        if (w || l) {
+            wl_w[t[i].id] = w;
+            wl_l[t[i].id] = l;
+        }
+    }
+}
+
 static void write_season_entry(uint16_t season_no, const Maj *m)
 {
     uint32_t o = SEASON_TABLE + (uint32_t)(season_no - 1) * SEASON_ENTRY;
@@ -1014,21 +1067,13 @@ static void write_season_entry(uint16_t season_no, const Maj *m)
     TiTeam t[TI_MAX_TEAMS];
     uint8_t wl_w[32], wl_l[32], dmap[16];
     int nd, nt, map_on, i, k;
-    memset(wl_w, 0, 32);
-    memset(wl_l, 0, 32);
     memset(dmap, 0, 16);
+    maj_wl(m, wl_w, wl_l);
     nd = ti_ndiv(m->d, MAJ_SIZE);
     map_on = nd == 3 || m->have_table;
     nt = ti_teams(m->d, MAJ_SIZE, tab, t);
     for (i = 0; i < nt; i++) {
-        int s = t[i].L ? MAJ_S_NL : MAJ_S_AL;
-        uint8_t w = m->d[s + MAJ_O_W + t[i].slot];
-        uint8_t l = m->d[s + MAJ_O_L + t[i].slot];
         k = t[i].id;
-        if (w || l) {
-            wl_w[k] = w;
-            wl_l[k] = l;
-        }
         if (map_on)
             dmap[k / 2] |= (uint8_t)((t[i].slot / 8 + 1) << (4 * (k & 1)));
     }
@@ -1755,7 +1800,7 @@ bad:
     return -1;
 }
 
-/* one file of the three-file swap: fin is replaced by tmp; bak keeps the original */
+/* one file of the swap: fin is replaced by tmp; bak keeps the original */
 typedef struct {
     const char *fin;
     char *tmp, *bak;
@@ -1775,6 +1820,430 @@ static void swap_undo(Swap *s)
     s->moved = 0;
 }
 
+/* the mapped teams of dir (its *.V20 files whose stem names a team of m, in sorted order) into g_tp,
+ * and the identity slot table for them. 0 on success, -1 when memory runs out */
+static int load_teams(const char *dir, const Maj *m)
+{
+    int nv, k;
+    nv = scan_dir(dir, ".V20", g_names);
+    for (k = 0; k < nv; k++) {
+        static char stem[16];
+        int kid, lg_slot = -1;         /* lg_slot: the stable id (C12.3) */
+        size_t l = strlen(g_names[k]);
+        TeamInfo *ti;
+        if (l <= 4 || l - 4 > 12)
+            continue;
+        memcpy(stem, g_names[k], l - 4);
+        stem[l - 4] = 0;
+        to_upper((uint8_t *)stem);
+        for (kid = 0; kid < 32; kid++) {
+            if (strcmp(stem, m->stem_up[kid]) == 0)
+                lg_slot = kid;
+        }
+        if (lg_slot < 0)
+            continue;
+        ti = (TeamInfo *)calloc(1, sizeof(TeamInfo));
+        if (!ti)
+            return -1;
+        strcpy(ti->fname, g_names[k]);
+        ti->lg_slot = (uint8_t)lg_slot;
+        ti->ncur = 0;
+        if (g_nt < MAXV)
+            g_tp[g_nt++] = ti;
+        else
+            free(ti);
+    }
+    {
+        int32_t ncap = (int32_t)g_nt * 40;
+        g_slots = NULL;
+        g_slots_cap = 0;
+        if (ncap > 0) {
+            g_slots = (Slot *)calloc((size_t)ncap, sizeof(Slot));
+            if (!g_slots)
+                return -1;
+            g_slots_cap = ncap;
+        }
+    }
+    return 0;
+}
+
+/* ---------------- C13.2: SEASLINE.DAT ---------------- */
+
+/* one SEASLINE.DAT line (history.line_bytes): bio, dev grade and ratings from the roster half, stats
+ * (cp->tot = season_stats_inputs, TOTALS order) and the season WAR10 (cp->w10) from the record */
+static void line_put(int32_t idx, uint16_t season_no, int team_id,
+                     const uint8_t *roster, const CurPlayer *cp)
+{
+    uint8_t *b = g_line;
+    int k;
+    memset(b, 0, SL_LINE);
+    wr16(b, (uint16_t)idx);
+    wr16(b + 2, season_no);
+    b[4] = (uint8_t)team_id;
+    b[5] = (cp->pos1 == 0) ? 1 : 0;
+    b[6] = roster[R_AGE];
+    b[7] = (uint8_t)(roster[R_POS1] & 15);
+    wr16(b + 8, rd16(roster + R_PORTRAIT));
+    b[10] = roster[R_B29];
+    b[11] = roster[R_DEV];
+    /* power, bunt, hit_run, speed, range, arm, control, velocity, endurance (the nibbles) */
+    b[12] = (uint8_t)(roster[R_POWER] & 15);
+    b[13] = (uint8_t)(roster[R_POWER] >> 4);
+    b[14] = (uint8_t)(roster[R_HITRUN] & 15);
+    b[15] = (uint8_t)(roster[R_SPEED] >> 4);
+    b[16] = (uint8_t)(roster[R_RANGE] >> 4);
+    b[17] = (uint8_t)(roster[R_ARM] & 15);
+    b[18] = (uint8_t)(roster[R_CONTROL] & 15);
+    b[19] = (uint8_t)(roster[R_CONTROL] >> 4);
+    b[20] = (uint8_t)(roster[R_ENDUR] >> 4);
+    for (k = 0; k < NUM_TOT; k++)
+        wr16(b + 22 + 2 * k, (uint16_t)(cp->tot[k] > 0xffffu ? 0xffffu : cp->tot[k]));
+    wr16(b + 72, (uint16_t)cp->w10);
+}
+
+/* the 16 B SEASLINE.DAT header: S L, version 1, 0, line size 80, highest season in 6..7, 8 zero */
+static int sl_header(FILE *f, uint16_t highest)
+{
+    uint8_t h[SL_HDR];
+    memset(h, 0, sizeof h);
+    h[0] = 'S';
+    h[1] = 'L';
+    h[2] = VERSION_ONE;
+    wr16(h + 4, SL_LINE);
+    wr16(h + 6, highest);
+    return fwrite(h, 1, SL_HDR, f) == SL_HDR ? 0 : -1;
+}
+
+/* the lines of old (a SEASLINE.DAT) below season_no, copied to out in file order. A missing or bad
+ * header keeps none; a short tail is dropped */
+static int sl_keep(FILE *old, FILE *out, uint16_t season_no)
+{
+    uint8_t h[SL_HDR];
+    if (fread(h, 1, SL_HDR, old) != SL_HDR)
+        return 0;
+    if (h[0] != 'S' || h[1] != 'L' || h[2] != VERSION_ONE || h[3] != 0
+        || rd16(h + 4) != SL_LINE)
+        return 0;
+    while (fread(g_line, 1, SL_LINE, old) == SL_LINE) {
+        if (rd16(g_line + 2) < season_no
+            && fwrite(g_line, 1, SL_LINE, out) != SL_LINE)
+            return -1;
+    }
+    return 0;
+}
+
+/* the lines of the mapped teams' active records in step 3 order (g_tp order, records 0..39), with
+ * the player entry indexes of cur_entries; a record with no entry (-1) gets no line. dir holds the
+ * V20 files */
+static int season_lines(FILE *out, const char *dir, uint16_t season_no)
+{
+    char *path = g_path;
+    int k, i;
+    for (k = 0; k < g_nt; k++) {
+        TeamInfo *ti = g_tp[k];
+        int j = 0;
+        if (!path_join(path, 600, dir, ti->fname) || !load_v20(path))
+            return -1;
+        for (i = 0; i < 40; i++) {
+            const uint8_t *roster = g_v20 + V20_HDR + V20_REC * i;
+            const CurPlayer *cp;
+            if (roster[R_ACTIVE] == 0)
+                continue;
+            cp = &ti->cur[j++];
+            if (cp->entry_index < 0)
+                continue;
+            line_put(cp->entry_index, season_no, ti->lg_slot, roster, cp);
+            if (fwrite(g_line, 1, SL_LINE, out) != SL_LINE)
+                return -1;
+        }
+    }
+    return 0;
+}
+
+/* the SEASLINE.DAT of this season into the temp file sltmp: the header, the lines of the file slpath
+ * below season_no (season_no >= current is dropped), then this season's lines */
+static int seasline_write(const char *pre_dir, const char *slpath, const char *sltmp,
+                          uint16_t season_no)
+{
+    FILE *old = fopen(slpath, "rb");
+    FILE *out = fopen(sltmp, "wb");
+    int rc = -1;
+    if (!out)
+        goto done;
+    if (sl_header(out, season_no) != 0)
+        goto done;
+    if (old && sl_keep(old, out, season_no) != 0)
+        goto done;
+    if (season_lines(out, pre_dir, season_no) != 0)
+        goto done;
+    rc = 0;
+done:
+    if (old)
+        fclose(old);
+    if (out && fclose(out) != 0)
+        rc = -1;
+    return rc;
+}
+
+/* the per-run state of one archive: teams, identity slots, park factors and league totals start clean */
+static void lines_reset(void)
+{
+    int k;
+    for (k = 0; k < g_nt; k++) {
+        free(g_tp[k]);
+        g_tp[k] = NULL;
+    }
+    g_nt = 0;
+    free(g_slots);
+    g_slots = NULL;
+    g_slots_cap = 0;
+    g_nslots = 0;
+    for (k = 0; k < HASH_BUCKETS; k++)
+        g_hhead[k] = -1;
+    memset(g_pf_valid, 0, sizeof g_pf_valid);
+    g_L_lw = 0;
+    g_L_pa = 0;
+    g_L_runs = 0;
+    g_L_er = 0;
+    g_L_outs = 0;
+}
+
+/* history.find_entry for the current players: each identity slot takes the lowest HISTORY.DAT entry
+ * index with its name and birth (-1 when none). hf is HISTORY.DAT, n player entries. Reads only. */
+static int hist_identities(FILE *hf, long n)
+{
+    static uint8_t eb[PLAYER_ENTRY];
+    long i;
+    if (fseek(hf, PLAYER_TABLE, SEEK_SET) != 0)
+        return -1;
+    for (i = 0; i < n; i++) {
+        int32_t s;
+        if (fread(eb, 1, PLAYER_ENTRY, hf) != (size_t)PLAYER_ENTRY)
+            return -1;
+        s = hash_find(eb, rd16(eb + 20));
+        if (s >= 0 && g_slots[s].entry_index < 0)
+            g_slots[s].entry_index = (int32_t)i;
+    }
+    return 0;
+}
+
+/* history.archive_dirs name test: S (either case) and two digits, nn 1..99 */
+static int snn_of(const char *name, int *nn)
+{
+    if (strlen(name) != 3 || (name[0] != 'S' && name[0] != 's'))
+        return 0;
+    if (name[1] < '0' || name[1] > '9' || name[2] < '0' || name[2] > '9')
+        return 0;
+    *nn = (name[1] - '0') * 10 + (name[2] - '0');
+    return *nn >= 1;
+}
+
+/* the Snn subdirs of sdir into g_snn[nn] (the first name of each nn wins) */
+#ifdef __WATCOMC__
+
+static void snn_list(const char *sdir)
+{
+    struct find_t ft;
+    int nn = 0;
+    if (!path_join(g_path, 600, sdir, "*.*"))
+        return;
+    if (_dos_findfirst(g_path, _A_SUBDIR, &ft) != 0)
+        return;
+    do {
+        if ((ft.attrib & _A_SUBDIR) && snn_of(ft.name, &nn) && g_snn[nn][0] == 0)
+            strcpy(g_snn[nn], ft.name);
+    } while (_dos_findnext(&ft) == 0);
+}
+
+#else
+
+static void snn_list(const char *sdir)
+{
+    DIR *dirp = opendir(sdir);
+    struct dirent *de;
+    int nn = 0;
+    if (!dirp)
+        return;
+    while ((de = readdir(dirp)) != NULL)
+        if (snn_of(de->d_name, &nn) && g_snn[nn][0] == 0)
+            strcpy(g_snn[nn], de->d_name);
+    closedir(dirp);
+}
+
+#endif
+
+/* the archive dir sdir\name into g_adir; 0 when it does not fit */
+static int arch_dir(const char *sdir, const char *name)
+{
+    return path_join(g_adir, sizeof g_adir, sdir, name);
+}
+
+/* history.archive_dirs: the Snn subdirs of sdir that hold a *.MAJ, in nn order, into g_arch */
+static int arch_list(const char *sdir)
+{
+    int nn;
+    memset(g_snn, 0, sizeof g_snn);
+    g_arch_cnt = 0;
+    snn_list(sdir);
+    for (nn = 1; nn <= 99; nn++) {
+        if (g_snn[nn][0] == 0 || !arch_dir(sdir, g_snn[nn])
+            || scan_dir(g_adir, ".MAJ", g_mnames) < 1)
+            continue;
+        strcpy(g_arch[g_arch_cnt++], g_snn[nn]);
+    }
+    return g_arch_cnt;
+}
+
+/* 1 when the 32 (W, L) pairs of st (the stored season entry) equal wl_w / wl_l */
+static int wl_equal(const uint8_t *wl_w, const uint8_t *wl_l, const uint8_t *st)
+{
+    int k;
+    for (k = 0; k < 32; k++) {
+        if (wl_w[k] != st[2 * k] || wl_l[k] != st[2 * k + 1])
+            return 0;
+    }
+    return 1;
+}
+
+/* history.backfill_lines match: archives in nn order, each takes the lowest season s (1..limit, not
+ * yet taken) whose stored W-L (g_tab's season table) equals its own, when it has a game. Sets
+ * g_arch_sel. -1 on a read or memory failure */
+static int lines_match(const char *sdir, int limit)
+{
+    int a, s, k, played;
+    for (s = 0; s <= SEASON_COUNT; s++)
+        g_arch_sel[s] = -1;
+    for (a = 0; a < g_arch_cnt; a++) {
+        uint8_t wl_w[32], wl_l[32];
+        if (!arch_dir(sdir, g_arch[a]) || !read_maj(g_adir, &g_maj))
+            return -1;
+        maj_wl(&g_maj, wl_w, wl_l);
+        free(g_maj.d);
+        g_maj.d = NULL;
+        played = 0;
+        for (k = 0; k < 32; k++)
+            played |= wl_w[k] || wl_l[k];
+        if (!played)
+            continue;
+        for (s = 1; s <= limit; s++) {
+            const uint8_t *st = g_tab + SEASON_TABLE + (s - 1) * SEASON_ENTRY + 24;
+            if (g_arch_sel[s] < 0 && wl_equal(wl_w, wl_l, st)) {
+                g_arch_sel[s] = a;
+                break;
+            }
+        }
+    }
+    return 0;
+}
+
+/* the lines of one archive (the pre-roll league of season s, history.archive_lines) appended to out.
+ * Entry indexes come from hf, the HISTORY.DAT as it stands (n entries); nothing is written to it */
+static int archive_lines(FILE *hf, long n, uint16_t s, FILE *out)
+{
+    int rc;
+    lines_reset();
+    g_season_no = s;
+    rc = read_maj(g_adir, &g_maj) ? 0 : -1;
+    if (rc == 0 && (load_teams(g_adir, &g_maj) != 0 || league_pass(g_adir) != 0
+                    || player_pass(g_adir) != 0 || hist_identities(hf, n) != 0))
+        rc = -1;
+    if (rc == 0) {
+        cur_entries();
+        rc = season_lines(out, g_adir, s);
+    }
+    lines_reset();
+    free(g_maj.d);
+    g_maj.d = NULL;
+    return rc;
+}
+
+/* HISTWR /LINES (history.backfill_lines): SEASLINE.DAT beside hpath from the season archives of
+ * sdir, only when SEASLINE.DAT does not exist yet and HISTORY.DAT has seasons recorded. The file is
+ * written even when nothing matched. 0 on success and on nothing to do, 2 on an I/O or memory failure */
+static int run_lines(const char *hpath, const char *sdir)
+{
+    static char FARDATA slname[PATH_CAP];
+    static char FARDATA sltmp[PATH_CAP];
+    FILE *f, *out = NULL, *sl;
+    long len = 0, n = 0;
+    size_t want;
+    int limit, s, highest = 0;
+    tmp_of(hpath, slname, PATH_CAP, SL_NAME);
+    tmp_of(hpath, sltmp, PATH_CAP, SL_TMP_NAME);
+    sl = fopen(slname, "rb");
+    if (sl) {
+        fclose(sl);
+        return 0;                      /* exists: the backfill never runs twice */
+    }
+    f = fopen(hpath, "rb");
+    if (!f)
+        return 0;
+    if (fseek(f, 0, SEEK_END) != 0 || (len = ftell(f)) < 0)
+        goto fail;
+    memset(g_tab, 0, sizeof g_tab);
+    want = len < (long)sizeof g_tab ? (size_t)len : sizeof g_tab;
+    if (fseek(f, 0, SEEK_SET) != 0 || fread(g_tab, 1, want, f) != want)
+        goto fail;
+    limit = rd16(g_tab + 4);
+    if (limit == 0) {
+        fclose(f);
+        return 0;
+    }
+    if (limit > SEASON_COUNT)
+        limit = SEASON_COUNT;
+    if (len >= (long)PLAYER_TABLE)
+        n = (len - PLAYER_TABLE) / PLAYER_ENTRY;
+    arch_list(sdir);
+    if (lines_match(sdir, limit) != 0)
+        goto fail;
+    for (s = 1; s <= limit; s++) {
+        if (g_arch_sel[s] >= 0)
+            highest = s;
+    }
+    out = fopen(sltmp, "wb");
+    if (!out || sl_header(out, (uint16_t)highest) != 0)
+        goto fail;
+    for (s = 1; s <= limit; s++) {
+        if (g_arch_sel[s] < 0)
+            continue;
+        if (!arch_dir(sdir, g_arch[g_arch_sel[s]])
+            || archive_lines(f, n, (uint16_t)s, out) != 0)
+            goto fail;
+    }
+    if (fclose(out) != 0) {
+        out = NULL;
+        goto fail;
+    }
+    out = NULL;
+    if (rename(sltmp, slname) != 0)
+        goto fail;
+    fclose(f);
+    return 0;
+fail:
+    if (out)
+        fclose(out);
+    fclose(f);
+    remove(sltmp);
+    return 2;
+}
+
+/* the /LINES form, case-insensitive */
+static int is_lines_arg(const char *s)
+{
+    static const char want[] = "/LINES";
+    size_t i;
+    if (strlen(s) != sizeof want - 1)
+        return 0;
+    for (i = 0; want[i]; i++) {
+        char c = s[i];
+        if (c >= 'a' && c <= 'z')
+            c = (char)(c - 32);
+        if (c != want[i])
+            return 0;
+    }
+    return 1;
+}
+
 static int do_run(const char *pre_dir, const char *hpath)
 {
     FILE *f = NULL, *g = NULL, *ms = NULL, *bx = NULL;
@@ -1789,9 +2258,10 @@ static int do_run(const char *pre_dir, const char *hpath)
     /* every path of the run in one block: history temp and backup, milestone and box
      * temps, backups and finals */
     char *paths, *tmp, *bak, *mstmp, *msbak, *msname, *boxtmp, *boxbak, *boxname;
-    Swap sw[3];
+    char *sltmp, *slbak, *slname;
+    Swap sw[SWAP_N];
 
-    paths = (char *)malloc(8 * PATH_CAP);
+    paths = (char *)malloc(RUN_PATHS * PATH_CAP);
     if (!paths)
         return 2;
     tmp = paths;
@@ -1802,6 +2272,9 @@ static int do_run(const char *pre_dir, const char *hpath)
     boxtmp = paths + 5 * PATH_CAP;
     boxbak = paths + 6 * PATH_CAP;
     boxname = paths + 7 * PATH_CAP;
+    sltmp = paths + 8 * PATH_CAP;
+    slbak = paths + 9 * PATH_CAP;
+    slname = paths + 10 * PATH_CAP;
     tmp_of(hpath, tmp, PATH_CAP, TMP_NAME);
     bak_of(hpath, bak, PATH_CAP);
     tmp_of(hpath, mstmp, PATH_CAP, MS_TMP_NAME);
@@ -1810,6 +2283,9 @@ static int do_run(const char *pre_dir, const char *hpath)
     tmp_of(hpath, boxtmp, PATH_CAP, BOX_TMP_NAME);
     tmp_of(hpath, boxbak, PATH_CAP, BOX_BAK_NAME);
     tmp_of(hpath, boxname, PATH_CAP, BOX_NAME);
+    tmp_of(hpath, sltmp, PATH_CAP, SL_TMP_NAME);
+    tmp_of(hpath, slbak, PATH_CAP, SL_BAK_NAME);
+    tmp_of(hpath, slname, PATH_CAP, SL_NAME);
     f = fopen(hpath, "rb");
     if (f) {
         if (fseek(f, 0, SEEK_END) != 0)
@@ -2089,6 +2565,9 @@ racc:
         bx = NULL;
     }
 
+    /* C13.2 SEASLINE.DAT: the earlier seasons' lines, then this season's step 3 lines */
+    if (seasline_write(pre_dir, slname, sltmp, season_no) != 0)
+        goto fail;
     nrt = load_retired(g_retpath, &rt);
     if (nrt < 0)
         goto fail;
@@ -2100,10 +2579,10 @@ racc:
         fclose(f);
         f = NULL;
     }
-    /* swap the three temp files in: each original moves to its BAK first (a failed move
+    /* swap the four temp files in: each original moves to its BAK first (a failed move
      * counts as a failed rename), then each temp lands in the order HISTORY, MILESTON,
-     * BOXSCORE. All three temps are complete before the first rename; a failure at any
-     * step restores all three originals, removes the new files and leaves no TMP or BAK
+     * BOXSCORE, SEASLINE. All four temps are complete before the first rename; a failure at
+     * any step restores all four originals, removes the new files and leaves no TMP or BAK
      * behind (exit 2) */
     sw[0].fin = hpath;
     sw[0].tmp = tmp;
@@ -2114,11 +2593,14 @@ racc:
     sw[2].fin = boxname;
     sw[2].tmp = boxtmp;
     sw[2].bak = boxbak;
-    for (k = 0; k < 3; k++) {
+    sw[3].fin = slname;
+    sw[3].tmp = sltmp;
+    sw[3].bak = slbak;
+    for (k = 0; k < SWAP_N; k++) {
         sw[k].moved = 0;
         sw[k].landed = 0;
     }
-    for (k = 0; k < 3; k++) {
+    for (k = 0; k < SWAP_N; k++) {
         FILE *probe = fopen(sw[k].fin, "rb");
         if (!probe)
             continue;
@@ -2128,23 +2610,23 @@ racc:
             goto restore;
         sw[k].moved = 1;
     }
-    for (k = 0; k < 3; k++) {
+    for (k = 0; k < SWAP_N; k++) {
         if (rename(sw[k].tmp, sw[k].fin) != 0)
             goto restore;
         sw[k].landed = 1;
 #ifdef TEST_FAIL_RENAME
         /* host-only test build: the last rename counts as failed after all temps landed */
-        if (k == 2)
+        if (k == SWAP_N - 1)
             goto restore;
 #endif
     }
-    for (k = 0; k < 3; k++)
+    for (k = 0; k < SWAP_N; k++)
         if (sw[k].moved)
             remove(sw[k].bak);
     free(paths);
     return 0;
 restore:
-    for (k = 0; k < 3; k++)
+    for (k = 0; k < SWAP_N; k++)
         swap_undo(&sw[k]);
     free(paths);
     return 2;
@@ -2160,6 +2642,7 @@ fail:
     remove(tmp);
     remove(mstmp);
     remove(boxtmp);
+    remove(sltmp);
     free(rt);
     free(paths);
     return 2;
@@ -2174,7 +2657,19 @@ static const char *bak_of(const char *hpath, char *dst, size_t cap)
 int main(int argc, char **argv)
 {
     const char *pre, *hpath, *rpath;
-    int nv, k, rc;
+    int k, rc;
+    if (argc >= 2 && is_lines_arg(argv[1])) {
+        const char *lh = DEF_HIST, *ls = DEF_SEASONS;
+        if (argc == 4) {
+            lh = argv[2];
+            ls = argv[3];
+        } else if (argc != 2) {
+            return 2;
+        }
+        if (strlen(lh) >= 600 || strlen(ls) >= 600)
+            return 2;
+        return run_lines(lh, ls);
+    }
     if (argc >= 4) {
         pre = argv[1];
         hpath = argv[2];
@@ -2190,45 +2685,8 @@ int main(int argc, char **argv)
         return 2;                     /* HIST/PRE path too long for built paths */
     if (!read_maj(pre, &g_maj))
         return 2;
-    nv = scan_dir(pre, ".V20", g_names);
-    for (k = 0; k < nv; k++) {
-        static char stem[16];
-        int kid, lg_slot = -1;         /* lg_slot: the stable id (C12.3) */
-        size_t l = strlen(g_names[k]);
-        TeamInfo *ti;
-        if (l <= 4 || l - 4 > 12)
-            continue;
-        memcpy(stem, g_names[k], l - 4);
-        stem[l - 4] = 0;
-        to_upper((uint8_t *)stem);
-        for (kid = 0; kid < 32; kid++) {
-            if (strcmp(stem, g_maj.stem_up[kid]) == 0)
-                lg_slot = kid;
-        }
-        if (lg_slot < 0)
-            continue;
-        ti = (TeamInfo *)calloc(1, sizeof(TeamInfo));
-        if (!ti)
-            return 2;
-        strcpy(ti->fname, g_names[k]);
-        ti->lg_slot = (uint8_t)lg_slot;
-        ti->ncur = 0;
-        if (g_nt < MAXV)
-            g_tp[g_nt++] = ti;
-        else
-            free(ti);
-    }
-    {
-        int32_t ncap = (int32_t)g_nt * 40;
-        g_slots = NULL;
-        g_slots_cap = 0;
-        if (ncap > 0) {
-            g_slots = (Slot *)calloc((size_t)ncap, sizeof(Slot));
-            if (!g_slots)
-                return 2;
-            g_slots_cap = ncap;
-        }
-    }
+    if (load_teams(pre, &g_maj) != 0)
+        return 2;
     for (k = 0; k < HASH_BUCKETS; k++)
         g_hhead[k] = -1;
     {
