@@ -920,7 +920,8 @@ Browser endpoints (reads need _allowed(); every POST/DELETE needs _allowed(write
   2 + 2700 * c0 bytes or has c0 > 400: 500.
 - Housekeeping on every studio request: a job older than 24 h (created) is removed with its files; a running job
   claimed more than 10 min ago goes back to queued.
-Worker endpoints: _allowed() AND header `Authorization: Bearer <token>` where token is the first line of the file
+Worker endpoints: _allowed() AND header `X-Studio-Token: <token>` (nginx basic auth owns `Authorization`) where
+token is the first line of the file
 named by env TLRB2_STUDIO_TOKEN_FILE, compared with hmac.compare_digest; no env, unreadable or empty file, or a
 mismatch: 403. They do not need X-TLRB2 or Origin.
 - POST /studio/worker/claim: oldest queued job -> running (claimed = now); 200 {"id", "prompt", "image": base64 or
