@@ -1,7 +1,8 @@
-"""menu_patch (C10): the DYNASTY menu-bar patch for MAIN, BACK, MANAGE, UTIL and CONTROL.EXE.
+"""menu_patch (C10 menu bar, C12.2 DIV3): the DYNASTY menu-bar patch for MAIN, BACK, MANAGE, UTIL and CONTROL.EXE,
+and the DIV3 byte edits in MAIN and UTIL.
 
-Layout tests run anywhere; the byte tests copy the five EXEs from the pristine install and skip
-when /mnt/nvme/tlrb2/pristine/TONY2 is missing.
+Layout tests and the synthetic-file DIV3 tests run anywhere; the byte tests copy the five EXEs from the pristine
+install and skip when /mnt/nvme/tlrb2/pristine/TONY2 is missing.
 """
 import os
 import shutil
@@ -19,6 +20,7 @@ needs_game = pytest.mark.skipif(not os.path.isfile(os.path.join(PRISTINE, 'MAIN.
                                 reason='pristine install missing')
 MENU_EXES = sorted(mp.EXES)
 ALL_EXES = MENU_EXES + ['CONTROL.EXE']
+DIV3_JOBS = [f'{name} div3' for name in mp.DIV3_SITES]
 
 
 def test_hook_replaces_stock_decode_exactly():
@@ -83,6 +85,93 @@ def test_control_patch_bounds_and_exit():
     assert len(old) == len(new)
 
 
+@pytest.mark.parametrize('exe,site,stock,patched', [
+    ('MAIN.EXE', 0, '26 80 bf 0d 02 03 74 03 e9 e5 00 26 c6 87 0d 02 02',
+     '26 80 bf 0d 02 03 90 90 e9 e5 00 26 c6 87 0d 02 02'),
+    ('UTIL.EXE', 0, '80 3e 02 a1 03 75 12 c4 1e 26 b5 26 c6 87 0d 02 02',
+     '80 3e 02 a1 03 eb 12 c4 1e 26 b5 26 c6 87 0d 02 02'),
+    ('UTIL.EXE', 1, '80 3e 02 a1 03 74 03 e9 9b 00 c4 1e 26 b5 26 c6 87 0d 02 02',
+     '80 3e 02 a1 03 90 90 e9 9b 00 c4 1e 26 b5 26 c6 87 0d 02 02'),
+])
+def test_div3_site_patterns_and_bytes(exe, site, stock, patched):
+    pat, off, new = mp.DIV3_SITES[exe][site]
+    assert pat.hex(' ') == stock
+    assert mp._patched_pattern(pat, off, new).hex(' ') == patched
+
+
+def test_div3_sites_change_exactly_their_bytes():
+    assert mp.DIV3_SITES['MAIN.EXE'][0][1] == 6                  # the 74 03 at +6..+7
+    assert [off for pat, off, new in mp.DIV3_SITES['UTIL.EXE']] == [5, 5]
+    for sites in mp.DIV3_SITES.values():
+        for pat, off, new in sites:
+            p2 = mp._patched_pattern(pat, off, new)
+            assert len(p2) == len(pat)
+            assert {i for i in range(len(pat)) if pat[i] != p2[i]} == set(range(off, off + len(new)))
+
+
+def _body(*pats):
+    """A fake EXE: each stock pattern between filler, no other copy of it."""
+    return b''.join(b'\x11' * 32 + p for p in pats) + b'\x11' * 32
+
+
+def _util_pats():
+    return [pat for pat, _off, _new in mp.DIV3_SITES['UTIL.EXE']]
+
+
+def test_div3_roundtrip_on_a_fake_file(tmp_path):
+    p = tmp_path / 'UTIL.EXE'
+    p.write_bytes(_body(*_util_pats()))
+    before = p.read_bytes()
+    assert mp.div3_patch(str(p), 'UTIL.EXE') == 'patched'
+    after = p.read_bytes()
+    assert len(after) == len(before) and after != before
+    assert mp.div3_patch(str(p), 'UTIL.EXE') == 'already'
+    assert mp.div3_patch(str(p), 'UTIL.EXE', revert=True) == 'reverted'
+    assert p.read_bytes() == before
+    assert mp.div3_patch(str(p), 'UTIL.EXE', revert=True) == 'stock'
+
+
+def test_div3_check_only_writes_nothing(tmp_path):
+    p = tmp_path / 'UTIL.EXE'
+    p.write_bytes(_body(*_util_pats()))
+    before = p.read_bytes()
+    assert mp.div3_patch(str(p), 'UTIL.EXE', check_only=True) == 'stock'
+    assert p.read_bytes() == before
+
+
+def test_div3_corrupt_site_refuses_and_writes_nothing(tmp_path):
+    pats = _util_pats()
+    body = bytearray(_body(*pats))
+    body[body.find(pats[1]) + 5] ^= 0xff                        # the second site's 74 is not stock or patched
+    p = tmp_path / 'UTIL.EXE'
+    p.write_bytes(bytes(body))
+    with pytest.raises(SystemExit, match='UTIL.EXE'):
+        mp.div3_patch(str(p), 'UTIL.EXE')
+    assert p.read_bytes() == bytes(body)
+
+
+def test_div3_mixed_sites_refused_and_nothing_written(tmp_path):
+    pats = _util_pats()
+    body = bytearray(_body(*pats))
+    body[body.find(pats[0]) + 5] = 0xeb                         # site 1 patched by hand, site 2 stock
+    p = tmp_path / 'UTIL.EXE'
+    p.write_bytes(bytes(body))
+    with pytest.raises(SystemExit):
+        mp.div3_patch(str(p), 'UTIL.EXE')
+    assert p.read_bytes() == bytes(body)
+
+
+def test_div3_pattern_must_occur_exactly_once(tmp_path):
+    pat = mp.DIV3_SITES['MAIN.EXE'][0][0]
+    p = tmp_path / 'MAIN.EXE'
+    p.write_bytes(_body(pat, pat))
+    with pytest.raises(SystemExit, match='MAIN.EXE.*occurs 2 times'):
+        mp.div3_patch(str(p), 'MAIN.EXE', check_only=True)
+    p.write_bytes(_body())
+    with pytest.raises(SystemExit, match='MAIN.EXE'):
+        mp.div3_patch(str(p), 'MAIN.EXE', check_only=True)
+
+
 def _copy(tmp_path):
     d = tmp_path / 'TONY2'
     d.mkdir()
@@ -95,14 +184,60 @@ def _copy(tmp_path):
 def test_patch_already_revert_roundtrip(tmp_path):
     d = _copy(tmp_path)
     stock = {n: (d / n).read_bytes() for n in ALL_EXES}
-    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES, 'patched')
+    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES + DIV3_JOBS, 'patched')
     patched = {n: (d / n).read_bytes() for n in stock}
     assert all(patched[n] != stock[n] and len(patched[n]) == len(stock[n]) for n in stock)
-    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES, 'already')
+    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES + DIV3_JOBS, 'already')
     assert {n: (d / n).read_bytes() for n in stock} == patched
-    assert mp.patch(str(d), revert=True) == dict.fromkeys(ALL_EXES, 'reverted')
+    assert mp.patch(str(d), revert=True) == dict.fromkeys(ALL_EXES + DIV3_JOBS, 'reverted')
     assert {n: (d / n).read_bytes() for n in stock} == stock
     assert not [f for f in os.listdir(d) if f.endswith('.bak')]
+
+
+@needs_game
+def test_c10_only_install_upgrades_in_place(tmp_path):
+    d = _copy(tmp_path)
+    stock = {n: (d / n).read_bytes() for n in ALL_EXES}
+    mp.patch(str(d))
+    full = {n: (d / n).read_bytes() for n in ALL_EXES}
+    for name in mp.DIV3_SITES:                  # back to a C10-only install: stock bytes at the DIV3 sites
+        p = d / name
+        b = bytearray(p.read_bytes())
+        for fo, old, new in mp.div3_sites(str(p), name):
+            b[fo:fo + len(old)] = old
+        p.write_bytes(bytes(b))
+    assert mp.patch(str(d)) == {**dict.fromkeys(ALL_EXES, 'already'), **dict.fromkeys(DIV3_JOBS, 'patched')}
+    assert {n: (d / n).read_bytes() for n in ALL_EXES} == full
+    assert mp.patch(str(d), revert=True) == dict.fromkeys(ALL_EXES + DIV3_JOBS, 'reverted')
+    assert {n: (d / n).read_bytes() for n in ALL_EXES} == stock
+
+
+@needs_game
+def test_corrupt_div3_site_refuses_and_writes_nothing(tmp_path):
+    d = _copy(tmp_path)
+    p = d / 'UTIL.EXE'
+    fo, _old, _new = mp.div3_sites(str(p), 'UTIL.EXE')[1]
+    b = bytearray(p.read_bytes())
+    b[fo] ^= 0xff
+    p.write_bytes(bytes(b))
+    before = {n: (d / n).read_bytes() for n in ALL_EXES}
+    with pytest.raises(SystemExit):
+        mp.patch(str(d))
+    assert {n: (d / n).read_bytes() for n in ALL_EXES} == before
+
+
+@needs_game
+def test_mixed_div3_sites_refused_and_nothing_written(tmp_path):
+    d = _copy(tmp_path)
+    p = d / 'UTIL.EXE'
+    fo, _old, new = mp.div3_sites(str(p), 'UTIL.EXE')[0]
+    b = bytearray(p.read_bytes())
+    b[fo:fo + len(new)] = new
+    p.write_bytes(bytes(b))
+    before = {n: (d / n).read_bytes() for n in ALL_EXES}
+    with pytest.raises(SystemExit):
+        mp.patch(str(d))
+    assert {n: (d / n).read_bytes() for n in ALL_EXES} == before
 
 
 @needs_game
@@ -128,6 +263,9 @@ def test_patched_header_and_bytes(tmp_path, exe):
     named = set()
     for fo, old, new in mp._resolve(str(d / exe), mp.main_patches(exe), mp.main_header_patches(exe)):
         named.update(range(fo, fo + len(old)))
+    if exe in mp.DIV3_SITES:
+        for fo, old, new in mp.div3_sites(str(d / exe), exe):
+            named.update(range(fo, fo + len(old)))
     assert {i for i in range(len(s)) if s[i] != b[i]} <= named
 
 

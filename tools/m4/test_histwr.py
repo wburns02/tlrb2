@@ -15,6 +15,8 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 
 import history
+import realign
+import teamids
 import war                                   # noqa: F401
 from v20 import Team, HDR, REC, N, F, _set, _get
 from v20 import SIZE as V20_SIZE
@@ -1281,3 +1283,171 @@ def test_box_no_playoffs_host_empty_file(tmp_path):
     history.record_season(py, os.path.join(py, 'H.DAT'), 1, None)
     for d in (host, py):
         assert open(os.path.join(d, 'BOXSCORE.DAT'), 'rb').read() == b''
+
+
+# ---------------- C12.3 / C12.7: 3 divisions, TEAMID.DAT and stable ids ----------------
+
+def classic_maj():
+    """make_maj() moved to the 2-division CLASSIC slots (C12.1: East 0..6, West 8..14). A team's
+    stable id (its 2-division slot) is then not its 3-division engine id, so the TEAMID.DAT
+    cases are not vacuous. Returns the bytes."""
+    d = bytearray(make_maj().d)
+    for base in (S_AL, S_NL):
+        for slot in range(13, 6, -1):
+            for off, size in ((maj.O_NAMES, 16), (maj.O_ABBR, 3), (maj.O_STEM, 8)):
+                src = base + off + size * slot
+                d[src + size:src + 2 * size] = d[src:src + size]
+                d[src:src + size] = bytes(size)
+    return bytes(d)
+
+
+def id_of(d, table, stem):
+    """The id (table, or the engine id when table is None) of the one team with this stem."""
+    ids = [k for k, _L, _slot, st in teamids.teams(d, table) if st.rstrip(b'\0') == stem]
+    assert len(ids) == 1, ids
+    return ids[0]
+
+
+def playoff_patch(d, champ, runner):
+    """The playoff bytes in engine ids (C2 amended, C12.1): the AL pennant winner champ beats the
+    NL pennant winner runner 4-2 in the World Series; runner is also the NL block's pennant."""
+    ec, er = id_of(d, None, champ), id_of(d, None, runner)
+    d = bytearray(d)
+    d[S_AL + 0x3d9] = ec
+    d[S_AL + 0x3da] = er
+    d[S_AL + 0x3e1], d[S_AL + 0x3e2] = 4, 2
+    d[S_NL + 0x3d9] = er
+    return bytes(d)
+
+
+def park_games(d, a, b):
+    """Day 0 of the AL block, engine ids a and b: a at b (runs 2-7) and b at a (runs 9-1). Park
+    factors: a 1100 (clamped from 1111), b 900 (war.park_factor1000)."""
+    d = bytearray(d)
+    o = S_AL + maj.O_SCHED
+    d[o:o + 4] = bytes([a, b, b, a])
+    d[S_AL + maj.O_PLAYED:S_AL + maj.O_PLAYED + 2] = bytes([0xc0, 0])
+    r = S_AL + maj.O_RUNS
+    d[r:r + 4] = bytes([2, 7, 9, 1])
+    return bytes(d)
+
+
+def league_with(tmp_path, tag, maj_bytes, table=None):
+    """full_award_league (AL clasale1, NL01 V20s), with the MAJ maj_bytes, TEAMID.DAT table when
+    given, and the PLAYOFFS.AL of box_seven_games. Returns the league dir."""
+    ldir = str(tmp_path / tag)
+    os.makedirs(ldir)
+    full_award_league(ldir)
+    # ALA13 (a Central team after realignment, engine id 13 but slot 19) has a V20 too, so its
+    # park factor (from the schedule) reaches its own batter's WAR
+    ta = Team(make_team_v20(name=b'ALA13', abbr=b'A13'))
+    set_player(ta, 1, 'SOLO', 'ALA', 27, 6, 150)
+    ta.players[1]['exp'] = 1
+    statbat(ta, 1, 500, 150, d2=30, hr=20, bb=50, runs=90, games=150)
+    fielding(ta, 1, 200, 120, 4)
+    ta.save(os.path.join(ldir, 'ALA13.V20'))
+    open(os.path.join(ldir, 'CLASSIC.MAJ'), 'wb').write(maj_bytes)
+    if table is not None:
+        open(os.path.join(ldir, 'TEAMID.DAT'), 'wb').write(table)
+    open(os.path.join(ldir, 'PLAYOFFS.AL'), 'wb').write(box_seven_games())
+    return ldir
+
+
+def history_parity(tmp_path, ldir):
+    """HISTWR and history.record_season on ldir: HISTORY.DAT, MILESTON.DAT and BOXSCORE.DAT equal
+    byte for byte (BOXSCORE non-empty). Returns the Python HISTORY.DAT path."""
+    host, py = str(tmp_path / 'host'), str(tmp_path / 'py')
+    os.makedirs(host)
+    os.makedirs(py)
+    hp = os.path.join(host, 'H.DAT')
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    rc = HISTWR(ldir, hp, ret)
+    assert rc.returncode == 0, rc.stderr
+    hp2 = os.path.join(py, 'H.DAT')
+    history.record_season(ldir, hp2, 1, None)
+    off, ent = first_diff(open(hp, 'rb').read(), open(hp2, 'rb').read())
+    assert off < 0, f'HISTORY.DAT off {off} (entry {ent})'
+    for name in (MS_NAME, 'BOXSCORE.DAT'):
+        assert open(os.path.join(host, name), 'rb').read() == \
+            open(os.path.join(py, name), 'rb').read(), f'{name} differs'
+    assert len(open(os.path.join(py, 'BOXSCORE.DAT'), 'rb').read()) > 0
+    return hp2
+
+
+def realigned3(pre):
+    """The 3-division realignment of pre with the park games and the playoff bytes (ALA13 champion,
+    NL07 runner-up) on engine ids."""
+    new, why = realign.realign(pre, 3)
+    assert new is not None, why
+    new = park_games(new, id_of(new, None, b'clasale1'), id_of(new, None, b'ALA13'))
+    return playoff_patch(new, b'ALA13', b'NL07')
+
+
+def test_div3_no_table_engine_ids_host_parity(tmp_path):
+    """3 divisions, no TEAMID.DAT (C12.7 legacy ids): the ids are the engine ids (ALA13 = engine 13
+    in Central slot 19, NL07 = engine 23), byte 22 = 3 and the division map is set; HISTWR matches
+    the Python reference, and the park factors are 1100 (clasale1) and 900 (ALA13)."""
+    _build()
+    new = realigned3(classic_maj())
+    ldir = league_with(tmp_path, 'lg', new)
+    hp = history_parity(tmp_path, ldir)
+    e = history.History.load(hp).read_season_entry(1)
+    assert e['ndiv'] == 3 and e['divmap'] != bytes(16)
+    assert (e['champion'], e['champion_stem']) == (13, b'ALA13')
+    assert (e['runner_up'], e['runner_up_stem']) == (23, b'NL07')
+    pf = war.park_factors(os.path.join(ldir, 'CLASSIC.MAJ'), None)
+    assert pf[id_of(new, None, b'clasale1')] == 1100
+    assert pf[id_of(new, None, b'ALA13')] == 900
+
+
+def test_div3_table_gives_the_pre_realignment_ids_host_parity(tmp_path):
+    """3 divisions with TEAMID.DAT = make_table of the pre-realignment MAJ (C12.3 case b): the
+    champion and runner-up are the pre-realignment teams (ALA13 = 14, NL07 = 24) with their stems,
+    and the park factors key the same ids; HISTWR matches the Python reference."""
+    _build()
+    pre = classic_maj()
+    table = teamids.make_table(pre)
+    ldir = league_with(tmp_path, 'lg', realigned3(pre), table)
+    hp = history_parity(tmp_path, ldir)
+    e = history.History.load(hp).read_season_entry(1)
+    assert e['ndiv'] == 3 and e['divmap'] != bytes(16)
+    assert (e['champion'], e['champion_stem']) == (14, b'ALA13')
+    assert (e['runner_up'], e['runner_up_stem']) == (24, b'NL07')
+    pf = war.park_factors(os.path.join(ldir, 'CLASSIC.MAJ'), table)
+    assert pf[0] == 1100 and pf[14] == 900
+
+
+def test_div3_short_table_is_missing_host_parity(tmp_path):
+    """A TEAMID.DAT of 255 B counts as missing (C12.3): the ids are the engine ids again, byte 22 is
+    3, and HISTWR matches the Python reference."""
+    _build()
+    pre = classic_maj()
+    ldir = league_with(tmp_path, 'lg', realigned3(pre), teamids.make_table(pre)[:255])
+    hp = history_parity(tmp_path, ldir)
+    e = history.History.load(hp).read_season_entry(1)
+    assert e['ndiv'] == 3
+    assert (e['champion'], e['runner_up']) == (13, 23)
+
+
+def test_two_division_shuffled_table_host_parity(tmp_path):
+    """A 2-division MAJ with a TEAMID.DAT shuffled within each league (entry k = the pre-table entry
+    (k + 5) % 16 of its league, so ids differ from slots and no team changes league): byte 22 = 2
+    with the division map (a table is present), the champion and runner-up are the shuffled ids
+    (9 and 19), and HISTWR matches the Python reference."""
+    _build()
+    pre = classic_maj()
+    pre = park_games(pre, id_of(pre, None, b'clasale1'), id_of(pre, None, b'ALA13'))
+    pre = playoff_patch(pre, b'ALA13', b'NL07')
+    base = teamids.make_table(pre)
+    ents = [base[8 * k:8 * k + 8] for k in range(32)]
+    table = b''.join(ents[(k + 5) % 16] for k in range(16)) \
+        + b''.join(ents[16 + (k + 5) % 16] for k in range(16))
+    ldir = league_with(tmp_path, 'lg', pre, table)
+    hp = history_parity(tmp_path, ldir)
+    e = history.History.load(hp).read_season_entry(1)
+    assert e['ndiv'] == 2 and e['divmap'] != bytes(16)
+    assert (e['champion'], e['champion_stem']) == (9, b'ALA13')
+    assert (e['runner_up'], e['runner_up_stem']) == (19, b'NL07')
+    pf = war.park_factors(os.path.join(ldir, 'CLASSIC.MAJ'), table)
+    assert pf[id_of(pre, table, b'clasale1')] == 1100 and pf[9] == 900

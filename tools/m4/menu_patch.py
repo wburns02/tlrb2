@@ -38,6 +38,11 @@ Menu data (MAIN, verified 2026-10-08, notes/RE_NOTES.md "Menu bar"):
 CONTROL.EXE (seg 1228): the 1..6 bounds check becomes 1..11 and the 6-way table jump becomes
 `inc ax; jmp exit(ax)`, which is what every table handler did (errorlevel == state[1]).
 
+DIV3 (contract C12.2): a league with 3 divisions (MAJ 0x20d == 3) is downgraded to 2 at every MAJ load by MAIN
+(5000:473e, auto_convert_team_maj_file_v3_to_v2) and by two copies in UTIL. Three file-offset byte edits (DIV3_SITES)
+let it stand. They are their own jobs, 'MAIN.EXE div3' and 'UTIL.EXE div3', each with its own stock or patched
+state; every pattern must occur exactly once in its file.
+
 usage: menu_patch.py INSTALL_DIR [--revert]   (INSTALL_DIR holds MAIN, BACK, MANAGE, UTIL and CONTROL.EXE)
 Idempotent; checks every file is stock or patched before writing any; refuses the pristine tree.
 """
@@ -204,10 +209,53 @@ def control_patches():
              bytes.fromhex('83fb0a772c40eb0790909090'))]
 
 
+# DIV3 sites (C12.2): (stock pattern, offset in it, new bytes). The new bytes replace the stock bytes at the offset.
+DIV3_SITES = {
+    'MAIN.EXE': [(bytes.fromhex('26 80 bf 0d 02 03 74 03 e9 e5 00 26 c6 87 0d 02 02'), 6, b'\x90\x90')],
+    'UTIL.EXE': [(bytes.fromhex('80 3e 02 a1 03 75 12 c4 1e 26 b5 26 c6 87 0d 02 02'), 5, b'\xeb'),
+                 (bytes.fromhex('80 3e 02 a1 03 74 03 e9 9b 00 c4 1e 26 b5 26 c6 87 0d 02 02'), 5, b'\x90\x90')],
+}
+
+
+def _patched_pattern(pat, off, new):
+    return pat[:off] + new + pat[off + len(new):]
+
+
+def _find_once(data, pat, name):
+    """File offset of the only occurrence of pat in data; None when absent; SystemExit when it occurs twice."""
+    hits, i = [], data.find(pat)
+    while i >= 0:
+        hits.append(i)
+        i = data.find(pat, i + 1)
+    if len(hits) > 1:
+        raise SystemExit(f'{name}: pattern {pat.hex(" ")} occurs {len(hits)} times, expected once')
+    return hits[0] if hits else None
+
+
+def div3_sites(exe, name):
+    """[(file_off, old, new)] of one DIV3 job, located by pattern search: each pattern occurs exactly once in
+    its stock form or, when that is absent, in its patched form."""
+    data = open(exe, 'rb').read()
+    out = []
+    for pat, off, new in DIV3_SITES[name]:
+        fo = _find_once(data, pat, name)
+        if fo is None:
+            fo = _find_once(data, _patched_pattern(pat, off, new), name)
+        if fo is None:
+            raise SystemExit(f'{name}: pattern {pat.hex(" ")} not found in stock or patched form')
+        out.append((fo + off, pat[off:off + len(new)], new))
+    return out
+
+
+def div3_patch(exe, name, revert=False, check_only=False):
+    """Patch (or revert) one DIV3 job's file; same return values as patch_file."""
+    return patch_file(exe, [], revert, div3_sites(exe, name), check_only=check_only)
+
+
 def _resolve(exe, patches, header=()):
     """-> [(file_off, old, new)]; segment words of repointed far pointers are MZ-relocated,
     which is fine: the file holds the pre-relocation value we compare and write."""
-    ctx = Ctx(exe)
+    ctx = Ctx(exe) if patches else None
     out = []
     for seg, off, old, new in patches:
         fo = ctx.flat_to_file(seg, off)
@@ -249,15 +297,19 @@ def find_exe(root, name):
 
 
 def patch(install, revert=False):
-    """Patch (or revert) MAIN, BACK, MANAGE, UTIL and CONTROL in install; -> {name: state}."""
+    """Patch (or revert) MAIN, BACK, MANAGE, UTIL and CONTROL in install, and the DIV3 jobs; -> {job: state}."""
     root = os.path.abspath(install)
     if 'pristine' in root.split(os.sep):
         raise SystemExit('refusing to patch the pristine tree')
     jobs = [(name, main_patches(name), main_header_patches(name)) for name in EXES]
     jobs.append(('CONTROL.EXE', control_patches(), ()))
-    for name, pats, hdr in jobs:            # every file is stock or patched before any is written
+    for name, pats, hdr in jobs:            # every file of both groups is stock or patched before any is written
         patch_file(find_exe(root, name), pats, revert, hdr, check_only=True)
-    return {name: patch_file(find_exe(root, name), pats, revert, hdr) for name, pats, hdr in jobs}
+    for name in DIV3_SITES:
+        div3_patch(find_exe(root, name), name, revert, check_only=True)
+    out = {name: patch_file(find_exe(root, name), pats, revert, hdr) for name, pats, hdr in jobs}
+    out.update({f'{name} div3': div3_patch(find_exe(root, name), name, revert) for name in DIV3_SITES})
+    return out
 
 
 def main(argv):

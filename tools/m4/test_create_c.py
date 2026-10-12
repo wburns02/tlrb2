@@ -22,9 +22,9 @@ import pytest
 
 import create as cr
 import dynview
-from m4.test_create import (make_league, make_anms, typed, need_fonts, frame_px, FILES,
-                            HAVE_FONTS, ENTER, ESC, UP, DOWN, LEFT, RIGHT, PGUP, PGDN,
-                            BACK)
+from m4.test_create import (make_league, make_anms, make_v20, named_rec, typed, need_fonts,
+                            frame_px, FILES, HAVE_FONTS, ENTER, ESC, UP, DOWN, LEFT, RIGHT,
+                            PGUP, PGDN, BACK)
 
 HERE_C = os.path.join(HERE, 'create_c')
 HOST = os.path.join(HERE_C, 'create_host')
@@ -82,9 +82,10 @@ def first_diff(a, b):
     return min(len(a), len(b))
 
 
-def parity(tmp_path, keys, base=None, anms=True, control=None, anms_path=None):
-    """Run both sides on the same keys in a fresh work dir under tmp_path. Returns
-    (python state, work cwd): the cwd is where the host ran (CONTROL lives there)."""
+def parity(tmp_path, keys, base=None, anms=True, control=None, anms_path=None, fonts=FILES):
+    """Run both sides on the same keys in a fresh work dir under tmp_path. fonts is the font dir
+    of both sides. Returns (python state, work cwd): the cwd is where the host ran (CONTROL lives
+    there)."""
     work = tempfile.mkdtemp(dir=str(tmp_path))
     base = base or make_league(os.path.join(work, 'base'))
     pl = os.path.join(work, 'py_league')
@@ -99,7 +100,7 @@ def parity(tmp_path, keys, base=None, anms=True, control=None, anms_path=None):
         anms_dir = make_anms(os.path.join(work, 'anms'))
     else:
         anms_dir = os.path.join(work, 'no_anms')
-    ctx = cr.load_ctx(pl, FILES, anms_dir)
+    ctx = cr.load_ctx(pl, fonts, anms_dir)
     st = cr.start_state()
     for k in keys:
         st, _ = cr.step(st, k, ctx)
@@ -108,7 +109,7 @@ def parity(tmp_path, keys, base=None, anms=True, control=None, anms_path=None):
         with open(os.path.join(cwd, 'CONTROL'), 'wb') as fh:
             fh.write(control)
     raw = os.path.join(work, 'out.raw')
-    r = run_host(cwd, cl, raw, keys, anms_dir)
+    r = run_host(cwd, cl, raw, keys, anms_dir, font_dir=fonts)
     assert r.returncode == 0, 'host rc %d: %s' % (r.returncode, r.stderr[:400])
     fb_c = open(raw, 'rb').read()
     assert len(fb_c) == FB_SIZE
@@ -459,3 +460,85 @@ def test_dos_parity(tmp_path):
     fb_py = bytes(cr.render(st, ctx))
     fb_dos = open(os.path.join(d, 'OUT.RAW'), 'rb').read()
     assert fb_dos == fb_py, 'DOS framebuffer differs at %d' % first_diff(fb_dos, fb_py)
+
+
+# ---------------------------------------------------------------- 3 divisions: team list (C12.3)
+# These run without the game fonts: synthetic MAIN.FNT / BOLD.FNT of the same layout (glyph
+# shapes do not matter, both sides draw the same ones), so the host team list is always checked.
+MAJ_SIZE = 59771
+# (league, MAJ slot, stem, V20 name, record index of one named batter or None); 3 divisions use
+# slots 0..4, 8..12, 16..20. The NL slot 20 team (PIT) is the last team listed.
+TEAM3_SPEC = [(0, 0, b'BOS', b'BOSTON', None), (0, 2, b'DET', b'DETROIT', None),
+              (0, 8, b'OAK', b'OAKLAND', None), (1, 16, b'CHI', b'CUBS', None),
+              (1, 17, b'SLN', b'', None), (1, 20, b'PIT', b'PITTSBURGH', 0)]
+# TEAMID.DAT ids (C12.3): AL teams 0..15, NL teams 16..31. PIT (NL slot 20) is engine id 30 without
+# the table; with it the NL order differs (PIT 16, SLN 17, CHI 21), so the team list shows it.
+TEAMID3 = {b'BOS': 0, b'DET': 1, b'OAK': 2, b'PIT': 16, b'SLN': 17, b'CHI': 21}
+TEAMS3_NO_TABLE = [(0, 'BOS', 'BOSTON'), (2, 'DET', 'DETROIT'), (5, 'OAK', 'OAKLAND'),
+                   (26, 'CHI', 'CUBS'), (27, 'SLN', 'SLN'), (30, 'PIT', 'PITTSBURGH')]
+TEAMS3_TABLE = [(0, 'BOS', 'BOSTON'), (1, 'DET', 'DETROIT'), (2, 'OAK', 'OAKLAND'),
+                (16, 'PIT', 'PITTSBURGH'), (17, 'SLN', 'SLN'), (21, 'CHI', 'CUBS')]
+
+
+def synth_fonts(d):
+    """MAIN.FNT (7 rows) and BOLD.FNT (8 rows), 95 glyphs each in the assets.parse_fnt layout."""
+    os.makedirs(d, exist_ok=True)
+    for leaf, rows in (('MAIN.FNT', 7), ('BOLD.FNT', 8)):
+        buf = bytearray(struct.pack('<H', 95))
+        for g in range(95):
+            buf += bytes((rows, 7, 7))
+            buf += bytes(((g * 29 + r * 13) % 127) << 1 for r in range(rows))
+        with open(os.path.join(d, leaf), 'wb') as fh:
+            fh.write(buf)
+    return d
+
+
+def make_league3(d, table=None):
+    """A 3-division league: the MAJ with 0x20d = 3 and the TEAM3_SPEC stems, a V20 per team, and
+    TEAMID.DAT = table (bytes) when given."""
+    os.makedirs(d, exist_ok=True)
+    maj = bytearray(MAJ_SIZE)
+    maj[0x20c], maj[0x20d] = 2, 3
+    for lg, slot, stem, name, batter in TEAM3_SPEC:
+        base = cr.AL_BASE if lg == 0 else cr.NL_BASE
+        off = base + cr.MAJ_STEM_OFF + 8 * slot
+        maj[off:off + 8] = stem.ljust(8, b'\0')
+        recs = {} if batter is None else {batter: named_rec('Ruiz', 'Tom', 25, 0, 100)}
+        with open(os.path.join(d, stem.decode('latin-1') + '.V20'), 'wb') as fh:
+            fh.write(make_v20(name, recs))
+    with open(os.path.join(d, 'LEAGUE.MAJ'), 'wb') as fh:
+        fh.write(bytes(maj))
+    if table is not None:
+        with open(os.path.join(d, 'TEAMID.DAT'), 'wb') as fh:
+            fh.write(table)
+    return d
+
+
+def table3():
+    t = bytearray(256)
+    for stem, k in TEAMID3.items():
+        t[8 * k:8 * k + len(stem)] = stem
+    return bytes(t)
+
+
+def test_3div_team_list_no_table_parity(tmp_path):
+    """3 divisions without TEAMID.DAT: cr.teams lists the NL slot 20 team as id 30 (its engine id),
+    and the host team screen and slot screen match the Python render."""
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    base = make_league3(os.path.join(work, 'base'))
+    assert cr.teams(base) == TEAMS3_NO_TABLE
+    fonts = synth_fonts(os.path.join(work, 'fonts'))
+    parity(tmp_path, [], base=base, fonts=fonts)
+    parity(tmp_path, [DOWN] * 5 + [ENTER], base=base, fonts=fonts)
+
+
+def test_3div_team_list_table_parity(tmp_path):
+    """3 divisions with TEAMID.DAT: the stable ids come from the table (PIT 16, SLN 17, CHI 21), so
+    the NL order differs from the engine ids, and the host team and slot screens match the Python
+    render."""
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    base = make_league3(os.path.join(work, 'base'), table=table3())
+    assert cr.teams(base) == TEAMS3_TABLE
+    fonts = synth_fonts(os.path.join(work, 'fonts'))
+    parity(tmp_path, [], base=base, fonts=fonts)
+    parity(tmp_path, [DOWN] * 5 + [ENTER], base=base, fonts=fonts)

@@ -24,6 +24,16 @@
 
 #include "../statline.h"
 
+/* teamids.h has helpers this file does not call; gcc -Werror would stop on them */
+#if defined(__GNUC__) && !defined(__WATCOMC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
+#include "../teamids.h"
+#if defined(__GNUC__) && !defined(__WATCOMC__)
+#pragma GCC diagnostic pop
+#endif
+
 #define FB_W   320
 #define FB_H   200
 #define FB_SIZE 64000
@@ -72,11 +82,12 @@
 #define SALARY_PITCHER 255
 #define SALARY_BATTER 109
 
-/* *.MAJ: AL stems at 0x21d, NL stems at 0x758c, 8 bytes per slot after 0x1d7 */
-#define AL_BASE 0x21d
+/* *.MAJ: AL stems at 0x21d, NL stems at 0x758c, 8 bytes per slot after 0x1d7 (3 divisions
+ * use slots 16..23, so the last stem is NL slot 23) */
 #define NL_BASE 0x758c
 #define MAJ_STEM_OFF 0x1d7
-#define MAJ_MIN_LEN (NL_BASE + MAJ_STEM_OFF + 8 * 15 + 8)
+#define MAJ_MIN_LEN (NL_BASE + MAJ_STEM_OFF + 8 * 24)
+#define MAJ_SIZE 59771
 #define MAXV 64
 
 #define LAST_MAX 11
@@ -158,6 +169,7 @@ static Font *g_main, *g_bold;
 static uint8_t FARDATA g_fb[FB_SIZE];
 static uint8_t FARDATA g_pal[768];
 static uint8_t FARDATA g_image[IMAGE_LEN];   /* team V20 image, in place saves */
+static uint8_t FARDATA g_maj[MAJ_SIZE];      /* the league's first MAJ (team ids and stems) */
 static Team g_teams[32];
 static int g_nteams;
 static char g_lgdir[260];        /* LEAGUE_DIR, for the team V20 files */
@@ -524,15 +536,45 @@ static int team_file(const uint8_t *s, int n)
     return 1;
 }
 
-/* teams(league_dir): the first sorted *.MAJ; a file shorter than MAJ_MIN_LEN has no
- * teams. A stem is the 8 bytes at the team's name slot cut at the first NUL; an
- * empty stem or one without a team file is skipped. Teams come lg 0..31 ascending. */
-static void load_teams(const char *league)
+/* TEAMID.DAT of league (any case in the listing, C12.3) into tab when it is exactly 256 B:
+ * 1 when loaded, else 0 */
+static int load_table(const char *league, uint8_t *tab)
 {
     static char names[MAXV][16];
     char path[300];
     FILE *f;
-    int n, lg;
+    int n, i, ok = 0;
+    n = scan_dir(league, ".DAT", names);
+    for (i = 0; i < n; i++)
+        if (strcmp(names[i], "TEAMID.DAT") == 0)
+            break;
+    if (i == n)
+        return 0;
+    path_join(path, league, names[i]);
+    f = fopen(path, "rb");
+    if (!f)
+        return 0;
+    if (fseek(f, 0L, SEEK_END) == 0 && ftell(f) == TI_TABLE_SIZE
+        && fseek(f, 0L, SEEK_SET) == 0
+        && fread(tab, 1, TI_TABLE_SIZE, f) == TI_TABLE_SIZE)
+        ok = 1;
+    fclose(f);
+    return ok;
+}
+
+/* teams(league_dir): the first sorted *.MAJ, read whole (MAJ_SIZE B at most); a file shorter
+ * than MAJ_MIN_LEN has no teams. The ids are the stable ids of teamids.teams with the
+ * league's TEAMID.DAT (C12.3; none: the engine ids), listed by id ascending. A stem is cut
+ * at its first NUL; an empty stem or one without a team file is skipped. */
+static void load_teams(const char *league)
+{
+    static char names[MAXV][16];
+    static uint8_t tab[TI_TABLE_SIZE];
+    TiTeam t[TI_MAX_TEAMS];
+    char path[300];
+    FILE *f;
+    long got;
+    int n, i, nt, len, have_tab;
     g_nteams = 0;
     n = scan_dir(league, ".MAJ", names);
     if (n < 1)
@@ -541,31 +583,24 @@ static void load_teams(const char *league)
     f = fopen(path, "rb");
     if (!f)
         return;
-    if (fseek(f, 0L, SEEK_END) != 0 || ftell(f) < (long)MAJ_MIN_LEN) {
-        fclose(f);
+    got = (long)fread(g_maj, 1, MAJ_SIZE, f);
+    fclose(f);
+    if (got < (long)MAJ_MIN_LEN)
         return;
-    }
-    for (lg = 0; lg < 32; lg++) {
-        uint8_t stem[8];
-        int base = lg < 16 ? AL_BASE : NL_BASE;
-        int slot = lg < 16 ? lg : lg - 16;
-        int off = base + MAJ_STEM_OFF + 8 * slot;
-        int len = 0;
-        memset(stem, 0, sizeof stem);
-        if (fseek(f, (long)off, SEEK_SET) != 0)
-            break;
-        (void)fread(stem, 1, sizeof stem, f);
-        while (len < 8 && stem[len])
+    have_tab = load_table(league, tab);
+    nt = ti_teams(g_maj, got, have_tab ? tab : NULL, t);
+    for (i = 0; i < nt && g_nteams < 32; i++) {
+        len = 0;
+        while (len < 8 && t[i].stem[len])
             len++;
-        if (len == 0 || !team_file(stem, len))
+        if (len == 0 || !team_file(t[i].stem, len))
             continue;
-        g_teams[g_nteams].lg = lg;
-        memcpy(g_teams[g_nteams].stem, stem, (size_t)len);
+        g_teams[g_nteams].lg = t[i].id;
+        memcpy(g_teams[g_nteams].stem, t[i].stem, (size_t)len);
         g_teams[g_nteams].stem[len] = 0;
-        team_disp(stem, len, g_teams[g_nteams].disp);
+        team_disp(t[i].stem, len, g_teams[g_nteams].disp);
         g_nteams++;
     }
-    fclose(f);
 }
 
 /* the team image: header plus 80 records, zero padded when the file is shorter or
@@ -1433,8 +1468,11 @@ static void load_palette_file(const char *dir)
     int i;
     for (i = 0; i < 768; i++)
         g_pal[i] = 0;
-    path_join(path, dir, "DEFAULT.PAL");
-    f = fopen(path, "rb");
+    f = NULL;
+    if (strlen(dir) + 13 < sizeof path) {     /* the separator, DEFAULT.PAL and its NUL fit */
+        path_join(path, dir, "DEFAULT.PAL");
+        f = fopen(path, "rb");
+    }
     if (!f) {
         /* load_palette fallback: deterministic gray ramp (i & 63) */
         for (i = 0; i < 256; i++)

@@ -21,6 +21,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 import dynview
 import history
 import pytest
+import realign
+import teamids
 from m4.test_dynview import (make_data, write_player, write_season,
                              write_mileston, st, make_offseason, ROSTER_BODY,
                              big_league, make_awards, make_standings,
@@ -28,7 +30,8 @@ from m4.test_dynview import (make_data, write_player, write_season,
                              FULL_SEASON, award_recs, award_league_ms,
                              lead_league_ms, LEAD_3, make_series, series_recs,
                              SERIES6, SERIES7, UNFINISHED5, TIED4, box_rec, write_box,
-                             BOX_G0)
+                             BOX_G0, write_team, write_standings)
+from test_teamids import build_maj, CLASSIC
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_C = os.path.join(HERE, 'dynview_c')
@@ -1487,3 +1490,149 @@ def test_dos_series_parity(tmp_path):
                  if dos_raw[k] != py[k])
         pytest.fail(f'dos series: first diff at pixel ({i % 320}, {i // 320}): '
                     f'python {py[i]} c {dos_raw[i]}')
+
+
+# ---------------- three divisions: DYNASTY SETTINGS, PLAYOFF FORMAT, SEASON STANDINGS ----------------
+# D2 is the synthetic CLASSIC league (2 divisions, test_teamids.build_maj); D3 the same teams realigned
+# to 3 divisions by realign.realign (C12.5); TABLE3 is the TEAMID.DAT the realignment writes (C12.3)
+
+D2 = build_maj(CLASSIC, divs=2, day=0x07)
+D3 = realign.realign(D2, 3)[0]
+TABLE3 = teamids.make_table(D2)
+STAND_3 = ['AL WEST', 'AL CENTRAL', 'AL EAST', 'NL WEST', 'NL CENTRAL', 'NL EAST']
+
+
+def with_day(maj, day):
+    d = bytearray(maj)
+    d[0x20a] = day
+    return bytes(d)
+
+
+def league_files(d):
+    """{name: bytes} of every file of the league dir d"""
+    return {f: open(os.path.join(d, f), 'rb').read() for f in sorted(os.listdir(d))}
+
+
+def three_div_league(tmp_path, tag, maj, table=None, byte0=0, byte11=0):
+    """A league dir (make_data: 3 seasons, MILESTON.DAT) with the MAJ as CLASSIC.MAJ, a V20 per MAJ
+    team named TEAM <STEM> (upper case stems, the form the C port opens), HISTORY bytes 0 and 11 set,
+    and TEAMID.DAT when table is given"""
+    (tmp_path / tag).mkdir()
+    ldir = make_data(tmp_path / tag)[0]
+    (ldir / 'CLASSIC.MAJ').write_bytes(maj)
+    for _k, _L, _s, st_ in teamids.teams(maj, None):
+        stem = st_.rstrip(b'\0').decode('latin-1').upper()
+        write_team(ldir, stem, 'TEAM ' + stem)
+    hp = ldir / 'HISTORY.DAT'
+    d = bytearray(hp.read_bytes())
+    d[0], d[11] = byte0, byte11
+    hp.write_bytes(bytes(d))
+    if table is not None:
+        (ldir / 'TEAMID.DAT').write_bytes(table)
+    return ldir
+
+
+def run_pair(ldir, tmp_path, tag, keys):
+    """host and Python on twin copies of the league after keys: (host dir, python dir, host frame,
+    python frame)"""
+    h, p = twin_league(ldir, tmp_path, tag)
+    raw = str(tmp_path / (tag + '.RAW'))
+    a = run_host(h, raw, keys=keys, font_dir=FILES)
+    b = fb_python(p, keys=keys, font_dir=FILES)
+    return h, p, a, b
+
+
+def assert_same(h, p, a, b, tag):
+    """the frames and every league file (MAJ, TEAMID.DAT, HISTORY.DAT) match Python"""
+    if a != b:
+        i = next((k for k in range(min(len(a), len(b))) if a[k] != b[k]),
+                 min(len(a), len(b)))
+        pytest.fail(f'{tag}: first diff at pixel ({i % 320}, {i // 320}): '
+                    f'python {b[i] if i < len(b) else "?"} '
+                    f'c {a[i] if i < len(a) else "?"}')
+    assert league_files(h) == league_files(p), f'{tag}: league files after the keys differ'
+
+
+def test_three_division_settings_rows_parity(tmp_path):
+    """DYNASTY SETTINGS of a 3 division MAJ: PLAYOFF FORMAT reads 3 DIV + WILDCARD and the NL slot 20
+    team (SL, the last Central team) is listed under its stable id: 21 with TEAMID.DAT, else 30 (its
+    engine id); the pages match Python with and without the table"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    for tag, table, sid in (('set_nt', None, 30), ('set_wt', TABLE3, 21)):
+        ldir = three_div_league(tmp_path, tag, D3, table)
+        data = dynview.load_data(str(ldir))
+        assert dynview.settings_rows(data)[1] == ('PLAYOFF FORMAT', '3 DIV + WILDCARD')
+        assert (sid, 'TEAM NSL') in data['teams']
+        for n, keys in enumerate(([55], [55, PGDN], [55, PGDN, PGDN])):
+            check_parity(ldir, tmp_path, '%s_%d' % (tag, n), keys=keys)
+
+
+def test_playoff_enter_applies_at_once_parity(tmp_path):
+    """ENTER on PLAYOFF FORMAT of a 2 division league on day 0xf3 with HISTORY byte 0 = 1, and on day 7
+    (which sets byte 0 = 1 after the apply): the MAJ becomes the 3 division MAJ, TEAMID.DAT is written
+    from the 2 division MAJ, byte 11 = 3, and the files and the screen match Python"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    for tag, day, byte0 in (('pf_rolled', 0xf3, 1), ('pf_setup', 7, 0)):
+        ldir = three_div_league(tmp_path, tag, with_day(D2, day), byte0=byte0)
+        h, p, a, b = run_pair(ldir, tmp_path, tag, [55, DOWN, ENTER])
+        assert_same(h, p, a, b, tag)
+        got = league_files(h)
+        assert got['CLASSIC.MAJ'] == D3
+        assert got['TEAMID.DAT'] == TABLE3
+        assert got['HISTORY.DAT'][0] == 1 and got['HISTORY.DAT'][11] == 3
+        assert dynview.settings_rows(dynview.load_data(str(h)))[1] == \
+            ('PLAYOFF FORMAT', '3 DIV + WILDCARD')
+
+
+def test_playoff_enter_mid_season_writes_byte_11_only_parity(tmp_path):
+    """Day 1 (mid season): ENTER writes HISTORY byte 11 only (row 3 DIV NEXT YEAR), the second ENTER
+    writes 2 (5 - 3): the MAJ and TEAMID.DAT stay as they are"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    maj = with_day(D2, 1)
+    ldir = three_div_league(tmp_path, 'pf_mid', maj)
+    hist0 = (ldir / 'HISTORY.DAT').read_bytes()
+    h, p, a, b = run_pair(ldir, tmp_path, 'pf_mid1', [55, DOWN, ENTER])
+    assert_same(h, p, a, b, 'pf_mid1')
+    got = league_files(h)
+    assert got['HISTORY.DAT'] == hist0[:11] + b'\x03' + hist0[12:]
+    assert got['CLASSIC.MAJ'] == maj and 'TEAMID.DAT' not in got
+    assert dynview.settings_rows(dynview.load_data(str(h)))[1] == \
+        ('PLAYOFF FORMAT', '3 DIV NEXT YEAR')
+    h, p, a, b = run_pair(ldir, tmp_path, 'pf_mid2', [55, DOWN, ENTER, ENTER])
+    assert_same(h, p, a, b, 'pf_mid2')
+    got = league_files(h)
+    assert got['HISTORY.DAT'] == hist0[:11] + b'\x02' + hist0[12:]
+    assert got['CLASSIC.MAJ'] == maj and 'TEAMID.DAT' not in got
+
+
+def test_standings_three_divisions_parity(tmp_path):
+    """SEASON STANDINGS of a 3 division entry (ndiv 3 and the C12.7 map of the realigned league), with
+    and without the table: six blocks in AL WEST, AL CENTRAL, AL EAST, NL WEST, NL CENTRAL, NL EAST
+    order, a blank row ahead of the AL EAST header (the page padding), and every page matches Python"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    for tag, table in (('stand_wt', TABLE3), ('stand_nt', None)):
+        ldir = three_div_league(tmp_path, tag, D3, table)
+        ids = sorted(k for k, *_ in teamids.teams(D3, table))
+        wl = {k: (50 + (5 * k) % 31, 70 + k % 9) for k in ids}
+        hp = ldir / 'HISTORY.DAT'
+        d = bytearray(hp.read_bytes())
+        write_standings(d, 3, wl, champ=2, al_p=8, nl_p=16)
+        o = 32 + 2 * 128
+        d[o + 22] = 3
+        d[o + 100:o + 116] = history.divmap_of(D3, table)
+        hp.write_bytes(bytes(d))
+        data = dynview.load_data(str(ldir))
+        n = dynview.total_rows((dynview.SCREEN_STANDINGS, 0, 0), data)
+        rows = [r for pg in range((n + 11) // 12)
+                for r in dynview.rows((dynview.SCREEN_STANDINGS, pg, 0), data)]
+        heads = [i for i, r in enumerate(rows) if r[0] and r[1:] == ('', '', '', '', '')]
+        assert [rows[i][0] for i in heads] == STAND_3
+        assert all(i % 12 != 11 for i in heads)
+        assert ('', '', '', '', '', '') in rows
+        assert sum(1 for r in rows if r[0] and r[1]) == len(ids)
+        for k in range((n + 11) // 12):
+            check_parity(ldir, tmp_path, '%s_p%d' % (tag, k), keys=[48] + [PGDN] * k)

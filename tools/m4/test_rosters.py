@@ -20,6 +20,7 @@ import rosters                                    # noqa: E402
 import statline                                   # noqa: E402
 from m4.rollover import Rng                       # noqa: E402
 from m4 import dynasty_ref                        # noqa: E402
+from m4 import teamids                            # noqa: E402
 from v20 import HDR, REC, F, _get, _set           # noqa: E402
 from v20 import SIZE as V20_SIZE                  # noqa: E402
 import test_history                               # noqa: E402  (fixture helpers)
@@ -1562,3 +1563,175 @@ def test_run_repairs_placeholder_rookies(tmp_path):
         for slot in range(40):
             rec = bytes(img[HDR + REC * slot:HDR + REC * (slot + 1)])
             assert not statline.is_placeholder(rec), (name, slot)
+
+
+# ---------------------------------------------------------------------------
+# 13. Stable ids (C12.3) and the playoff format step (C12.6 step 9): the
+# 2-division and legacy (no TEAMID.DAT) rules only
+# ---------------------------------------------------------------------------
+
+LEGACY_IDS = set(range(14)) | set(range(16, 30))      # make_maj: 14 AL + 14 NL teams
+
+
+def _wl_maj():
+    m = make_maj()
+    for t in range(14):
+        m.set_wl('AL', t, 10 + t, 20 + t)
+        m.set_wl('NL', t, 40 + t, 50 + t)
+    return m
+
+
+def _write_hist(path, byte11=0):
+    hh = bytearray(32)
+    hh[10] = 1
+    hh[11] = byte11
+    open(path, 'wb').write(bytes(hh))
+
+
+def _read(path):
+    return open(path, 'rb').read()
+
+
+def test_league_standings_engine_ids_two_div():
+    m = _wl_maj()
+    st = rosters.league_standings(m)
+    assert set(st) == LEGACY_IDS
+    assert st[0] == (10, 20) and st[13] == (23, 33)
+    assert st[16] == (40, 50) and st[29] == (53, 63)
+    assert rosters.league_standings(m, None) == st
+
+
+def test_league_standings_follow_the_table():
+    """A TEAMID.DAT that swaps the stems of ids 1 and 19: each team keeps its own W/L under
+    its stable id."""
+    m = _wl_maj()
+    tab = bytearray(teamids.make_table(m))
+    a, b = 8 * 1, 8 * 19
+    tab[a:a + 8], tab[b:b + 8] = bytes(tab[b:b + 8]), bytes(tab[a:a + 8])
+    st = rosters.league_standings(m, bytes(tab))
+    assert set(st) == LEGACY_IDS
+    assert st[1] == m.wl('NL', 3) and st[19] == m.wl('AL', 1)
+    assert st[0] == m.wl('AL', 0) and st[16] == m.wl('NL', 0)
+
+
+def test_league_standings_skips_a_team_without_an_id():
+    m = _wl_maj()
+    tab = bytearray(teamids.make_table(m))
+    tab[8 * 19:8 * 19 + 8] = bytes(8)               # NL slot 3 has no entry
+    st = rosters.league_standings(m, bytes(tab))
+    assert set(st) == LEGACY_IDS - {19}
+
+
+def test_format_lines_text():
+    assert rosters.rosters_txt([('FORMAT', ['2'])]) == b'FORMAT 2\r\n'
+    assert rosters.rosters_txt([('FORMAT', ['REFUSED', 'AL ODD COUNT'])]) == \
+        b'FORMAT REFUSED AL ODD COUNT\r\n'
+    assert rosters.rosters_txt([]) == b''
+
+
+def test_two_div_legacy_run_has_no_format_line_and_no_table(tmp_path):
+    """Byte 11 = 0 (follow the MAJ) or 2 (stock) on a 2-division MAJ: nothing to do, so no
+    FORMAT line, the MAJ and every file untouched, and no TEAMID.DAT."""
+    for byte11 in (0, 2):
+        league, snap, hist, retired = rookie_league(str(tmp_path / ('h%d' % byte11)))
+        _write_hist(hist, byte11)
+        maj_path = os.path.join(league, 'CLASSIC.MAJ')
+        maj_before = _read(maj_path)
+        assert rosters.run(league, snap, hist, retired) == 0
+        assert _read(maj_path) == maj_before
+        assert not [n for n in os.listdir(league) if n.upper() == 'TEAMID.DAT']
+        assert b'FORMAT' not in _read(os.path.join(league, 'ROSTERS.TXT'))
+
+
+def test_two_div_table_equal_to_engine_ids_changes_nothing(tmp_path):
+    """A 2-division league with a TEAMID.DAT naming the engine ids gives the same run as a
+    league with no table: every league file and HISTORY.DAT byte-identical."""
+    la, sa, ha, ra = rookie_league(str(tmp_path / 'a'))
+    lb, sb, hb, rb = rookie_league(str(tmp_path / 'b'))
+    open(os.path.join(lb, 'TEAMID.DAT'), 'wb').write(teamids.make_table(make_maj()))
+    assert rosters.run(la, sa, ha, ra) == 0
+    assert rosters.run(lb, sb, hb, rb) == 0
+    names = sorted(os.listdir(la))
+    assert sorted(n for n in os.listdir(lb) if n != 'TEAMID.DAT') == names
+    for n in names:
+        assert _read(os.path.join(la, n)) == _read(os.path.join(lb, n)), n
+    assert _read(ha) == _read(hb)
+
+
+def test_run_hands_the_file_bytes_to_the_plan(tmp_path, monkeypatch):
+    """realign.plan gets the same MAJ bytes run() loaded, the HISTORY.DAT bytes and the
+    TEAMID.DAT bytes (any case on disk)."""
+    league, snap, hist, retired = rookie_league(str(tmp_path))
+    tbl = teamids.make_table(make_maj())
+    open(os.path.join(league, 'teamid.dat'), 'wb').write(tbl)
+    calls = []
+
+    def spy(maj_bytes, hist_bytes, table_bytes):
+        calls.append((bytes(maj_bytes), bytes(hist_bytes), table_bytes))
+        return 1, None, None, None
+
+    maj_before = _read(os.path.join(league, 'CLASSIC.MAJ'))
+    hist_before = _read(hist)                       # run() rewrites bytes 1..2 after the plan
+    monkeypatch.setattr(rosters.realign, 'plan', spy)
+    assert rosters.run(league, snap, hist, retired) == 0
+    assert calls == [(maj_before, hist_before, tbl)]
+
+
+def test_format_refused_line(tmp_path, monkeypatch):
+    league, snap, hist, retired = rookie_league(str(tmp_path))
+    maj_path = os.path.join(league, 'CLASSIC.MAJ')
+    maj_before = _read(maj_path)
+    monkeypatch.setattr(rosters.realign, 'plan',
+                        lambda maj_bytes, hist_bytes, table_bytes: (2, None, None, 'AL ODD COUNT'))
+    assert rosters.run(league, snap, hist, retired) == 0
+    assert _read(os.path.join(league, 'ROSTERS.TXT')).endswith(b'FORMAT REFUSED AL ODD COUNT\r\n')
+    assert _read(maj_path) == maj_before
+    assert not [n for n in os.listdir(league) if n.upper() == 'TEAMID.DAT']
+
+
+def test_format_applied_writes_maj_and_table_with_the_run(tmp_path, monkeypatch):
+    """A code 0 plan: the MAJ and the new table are written, the FORMAT line is the last
+    ROSTERS.TXT line, and the table goes to the file's existing name (any case)."""
+    league, snap, hist, retired = rookie_league(str(tmp_path))
+    maj_path = os.path.join(league, 'CLASSIC.MAJ')
+    new_maj = bytearray(_read(maj_path))
+    new_maj[0x20a] = 0xf3                           # the day, as realign writes it
+    new_tbl = teamids.make_table(make_maj())
+    open(os.path.join(league, 'teamid.dat'), 'wb').write(b'\0' * 100)   # not 256 B
+    monkeypatch.setattr(rosters.realign, 'plan',
+                        lambda maj_bytes, hist_bytes, table_bytes: (0, bytes(new_maj), new_tbl, None))
+    assert rosters.run(league, snap, hist, retired) == 0
+    assert _read(maj_path) == bytes(new_maj)
+    assert [n for n in os.listdir(league) if n.upper() == 'TEAMID.DAT'] == ['teamid.dat']
+    assert _read(os.path.join(league, 'teamid.dat')) == new_tbl
+    assert _read(os.path.join(league, 'ROSTERS.TXT')).endswith(b'FORMAT 2\r\n')
+    assert not [n for n in os.listdir(league) if n.endswith('.TMP')]
+
+
+def test_format_writes_are_atomic(tmp_path, monkeypatch):
+    """A failed write of the MAJ or of TEAMID.DAT (either TMP) -> rc 2, every league file
+    byte-identical, no TEAMID.DAT and no .TMP left."""
+    new_tbl = teamids.make_table(make_maj())
+    for bad in ('CLASSIC.MAJ.TMP', 'TEAMID.DAT.TMP'):
+        league, snap, hist, retired = rookie_league(str(tmp_path / bad.replace('.', '_')))
+        maj_path = os.path.join(league, 'CLASSIC.MAJ')
+        new_maj = bytearray(_read(maj_path))
+        new_maj[0x20a] = 0xf3
+        before = {n: _read(os.path.join(league, n)) for n in os.listdir(league)}
+        monkeypatch.setattr(rosters.realign, 'plan',
+                            lambda maj_bytes, hist_bytes, table_bytes:
+                            (0, bytes(new_maj), new_tbl, None))
+        real_open = open
+
+        def fake_open(file, mode='r', *a, **kw):
+            if 'w' in mode and str(file).endswith(bad):
+                raise IOError('disk full')
+            return real_open(file, mode, *a, **kw)
+
+        monkeypatch.setattr('builtins.open', fake_open)
+        code = rosters.run(league, snap, hist, retired)
+        monkeypatch.undo()
+        assert code == 2, bad
+        after = {n: _read(os.path.join(league, n)) for n in os.listdir(league)}
+        assert after == before, bad
+        assert not [n for n in os.listdir(league) if n.endswith('.TMP')], bad

@@ -572,7 +572,7 @@ DYNASTY SETTINGS edits the C2 header fields that had no UI: byte 10 era mode (EN
 RESERVE CLAUSE (1) -> FREE AGENCY (2) -> REAL CALENDAR; any other value shows RESERVE CLAUSE and goes to FREE AGENCY)
 and the u32 managed-team mask at 12..15 (one row per team of the league's MAJ, YOU MANAGE / AI MANAGES). Each ENTER
 writes only those bytes; a missing HISTORY.DAT is created as 32 zero bytes first, a shorter one zero-extended to 32.
-The next roll reads them (C6). ABOUT THE MODS is three fixed pages describing every mod.
+The next roll reads them (C6). ABOUT THE MODS is fixed pages (12 rows each, four since C12) describing every mod.
 
 CREATE A PLAYER (CREATE.EXE, Python reference tools/m4/create.py): TEAM list (MAJ order, AL then NL), SLOT list (the
 team's 40 roster slots, P1..P16 pitchers, B1..B24 batters), EDIT form (names, position, hands, age, ratings, face with
@@ -619,3 +619,135 @@ ratings. fill(rec) replaces it with a line whose tools/ratings.py ratings equal 
   blend it with real seasons as C1 merges them in. HISTORY totals, leaders, awards and WAR read season halves, so
   they never include it.
 
+
+## C12. Playoff format: 3 divisions and a wild card (added 2026-10-12)
+
+Found 2026-10-12 on the rig: the engine plays a 3-division league natively, a 4-team field per league (the 3 division
+winners plus the best second place by W) through a division series, LCS and World Series, once MAIN's load-time
+downgrade is patched out and the season is started with the GENERATED schedule. Proof season (1994 alignment): AL
+field CLE NYA OAK DET (DET the wild card), NL SL SF PHI LA (LA); World Series SL over CLE 4-0, every team 162 G.
+
+### C12.1 Engine facts (MAJ)
+- Global 0x20c = leagues (2), 0x20d = divisions per league (1, 2 or 3), 0x20a = day (7 new season set up, 0xf3
+  season over). Team counts: global 0x20e + 3 * L + d and per league S + 0x298 + d (L 0 AL, 1 NL; d 0 East, 1 West,
+  2 Central). S = 0x21d (AL), 0x758c (NL).
+- Slot = d * 8 + i. With 1 or 2 divisions i < 8 (CLASSIC East 0..6, West 8..14). With 3 divisions i < 5: BACK
+  compacts a slot to 0..14 (slot < 8 same, 8..15 minus 3, 16..23 minus 6).
+- Engine id: the team byte in schedule pairs, playoff bytes and the MAJ header stem table. L * 16 + c, c = the slot
+  (1 or 2 divisions) or the compacted slot (3 divisions). Inverse: L = (e >> 4) & 1, i = e & 15; slot = i (divisions
+  != 3), else i if i < 5, i + 3 if i < 10, else i + 6.
+- Per league, slot-indexed (24 entries): names S + 0x0f (16 B), abbreviations S + 0x18f (3 B), stems S + 0x1d7 (8 B),
+  standings order S + 0x2b3 (24 B), W S + 0x2cb, L S + 0x2e3, GB S + 0x2fb (u16).
+- Playoff bytes per league block (engine ids): S + 0x3d3..0x3d6 division-series field (3 divisions only), S + 0x3d7/
+  0x3d8 LCS pair, S + 0x3d9 the league's pennant winner (AL block 0x3da = NL pennant winner), S + 0x3db..0x3de DS wins,
+  S + 0x3df/0x3e0 LCS wins, AL S + 0x3e1/0x3e2 WS wins. The C2 champion decode is unchanged once ids are converted.
+- MAJ file header: 0..7 league name, 8..9 league code, then 8 B stems at 10 + 8 * k: the shipped CLASSIC holds each
+  team at its 2-division engine id and ALLSTAR1 / ALLSTAR2 at k = 30 / 31. The 3-division gate season ran with this
+  table left stale (old engine ids) and every team played its own schedule, so the engine does not load teams through
+  it; k = 30 is a team's engine id in a 3-division NL of 15 compacted ids, so the table is never rewritten (C12.5).
+- Series lengths 0x219 DS, 0x21a LCS, 0x21b WS come from Start New Season (PLAYOFF 1 LENGTH, PLAYOFF 2 LENGTH, SERIES
+  LENGTH; defaults 5, 7, 7). Stock UI, not a mod setting.
+- Start New Season with 3 divisions: only GENERATED (the last schedule row, after ROUND ROBIN) works; the four shipped
+  .SCH templates are 2-division. GENERATED needs an even team count per league and at most 8 teams a division.
+
+### C12.2 MAIN and UTIL patch (tools/m4/menu_patch.py)
+MAIN 5000:473e (auto_convert_team_maj_file_v3_to_v2, run at every MAJ load) turns a 0x20d == 3 league into a
+2-division one and wipes the slots 16..23 teams. UTIL holds the same downgrade twice. File-offset patches, each
+pattern asserted to occur exactly once:
+- MAIN.EXE: `26 80 bf 0d 02 03 74 03 e9 e5 00 26 c6 87 0d 02 02`, bytes +6..+7 `74 03` -> `90 90`.
+- UTIL.EXE: `80 3e 02 a1 03 75 12 c4 1e 26 b5 26 c6 87 0d 02 02`, byte +5 `75` -> `eb`; and
+  `80 3e 02 a1 03 74 03 e9 9b 00 c4 1e 26 b5 26 c6 87 0d 02 02`, bytes +5..+6 `74 03` -> `90 90`.
+They are a separate job group ('MAIN.EXE div3', 'UTIL.EXE div3') with its own stock / patched state, so an install
+that already carries the C10 menu patch upgrades in place; --revert restores them; all files of both groups are
+checked before any is written. UTIL's Setup Leagues "# OF DIVISIONS 3" stays a dead widget; the mod setting below is
+the only way in.
+
+### C12.3 Stable team ids (TEAMID.DAT)
+The league-global id of C2 (HISTORY w_l, champion, runner-up and pennant ids, the managed-team mask, MILESTON and
+BOXSCORE team ids, park factors, ROSTERS and ALLSTAR team ids, DYNVIEW and CREATE team lists) is the team's stable id,
+which a realignment never changes:
+- TEAMID.DAT in the league dir: exactly 256 B, 32 x 8 B stems (NUL padded). Entry k = the stem of the team whose id is
+  k; an entry whose first byte is NUL is unused. Any other size counts as missing.
+- MAJ teams: every L in 0..1 and slot s the division count uses (s < 16 with 1 or 2 divisions, s % 8 < 5 with 3)
+  whose stem's first byte is not NUL (unused slots and the all-star entry in slot 15 start with NUL; other slots can
+  hold stale bytes and never count).
+- With no TEAMID.DAT the id of a MAJ team is its engine id (C12.1), which is the C2 rule (AL slot s, NL s + 16) for
+  every 2-division league: a dynasty that never changes format never gets the file and every output is unchanged.
+- With TEAMID.DAT the id of a MAJ team is the k whose entry equals its stem, compared case-insensitively (ASCII);
+  the lowest such k; a MAJ team whose stem is in no entry has no id and is skipped wherever ALLSTAR files are.
+- Only the realignment (C12.5) creates TEAMID.DAT, from the pre-realignment MAJ by the no-file rule, and only when
+  it is missing. Nothing rewrites an existing one.
+- An id < 16 is AL (a realignment never moves a team between leagues).
+Helpers (Python tools/m4/teamids.py, C tools/m4/teamids.h; identical results):
+- `teams(maj, table)` -> [(id, L, slot, stem)] sorted by id (ties impossible: the lowest k rule, duplicates skipped
+  after the first in slot order L 0 then 1, slot ascending).
+- `id_of_slot`, `slot_of_id` (-> (L, slot) or none), `id_of_engine(e)` (0xff and any engine id whose slot holds no
+  team -> 0xff), `stem_of_id`.
+- `load_table(league_dir)` -> the 32 stems or none.
+
+### C12.4 The setting (HISTORY.DAT header byte 11)
+Byte 11 = playoff format: 0 follow the MAJ (default, no change), 2 two divisions with an LCS (stock), 3 three
+divisions and a wild card. Any other value counts as 0.
+- now = the MAJ's 0x20d (1 counts as 2; no MAJ: 2). wanted = byte 11 when 2 or 3, else now.
+- DYNASTY SETTINGS row 2 (after ERA RULES, before the team rows): `PLAYOFF FORMAT`, value `2 DIVISIONS` or
+  `3 DIV + WILDCARD` for wanted; when wanted != now the value is `2 DIV NEXT YEAR` or `3 DIV NEXT YEAR`.
+- ENTER on it writes byte 11 = 5 - wanted (only that byte; a missing or short HISTORY.DAT is created / zero-extended
+  to 32 B as for the other settings), then runs C12.6's immediate apply.
+
+### C12.5 Realignment (Python tools/m4/realign.py, C tools/m4/realign.h; byte-identical MAJ results)
+`realign(maj, target)`, target 2 or 3:
+- Refused (MAJ unchanged, a reason string) when: the MAJ is shorter than 59771 B; 0x20c != 2; 0x20d not in 1..3;
+  target == 0x20d (1 counts as 2); a league has more than 15 teams or an odd count (target 3); more than 14 teams
+  (target 2).
+- Team list per league: the MAJ teams (C12.3) of L in slot order, each carrying its 16 B name entry, 3 B
+  abbreviation and 8 B stem.
+- Division assignment:
+  - Known alignments, by abbreviation (NUL-stripped, compared exactly), used when the league's abbreviation set equals
+    the table's set for that league; teams inside a division in the table's order:
+    3 divisions (MLB 1994): AL East BAL BOS DET NYA TOR, West CAL OAK SEA TEX, Central CHA CLE KC MIL MIN;
+    NL East ATL MON NYN PHI, West LA SD SF, Central CHN CIN HOU PIT SL.
+    2 divisions (shipped CLASSIC, MLB 1993): AL East BAL BOS CLE DET MIL NYA TOR, West CAL CHA KC MIN OAK SEA TEX;
+    NL East CHN MON NYN PHI PIT SL, West ATL CIN HOU LA SD SF.
+  - Otherwise the generic rule over the team list: 3 divisions, n = 3q + r: East q + (1 if r > 0), West q + (1 if
+    r > 1), Central q, filled in list order East, West, Central; 2 divisions: East ceil(n / 2), West the rest.
+- Writes (nothing else changes):
+  - per league, slots 0..23: name, abbreviation and stem entries zeroed, except slot 15 whose entries are kept when its
+    stem starts with NUL; then team i of division d at slot d * 8 + i.
+  - S + 0x298 + d and 0x20e + 3 * L + d = the division counts (0 for an unused division).
+  - 0x20d = target; 0x20a = 0xf3.
+  - S + 0x2b3..0x2ca = 0xff; S + 0x2cb..0x32a = 0 (W, L, GB).
+  - the file header (bytes 0..281) is not changed (C12.1: ALLSTAR1 / ALLSTAR2 stay at k = 30 / 31).
+- `apply(league_dir, out=None)`: wanted (C12.4) == now -> 1 (nothing). Else: TEAMID.DAT (C12.3) if missing, then
+  realign; refused -> 2 (the reason in `out` when given), else write the MAJ in place -> 0. A missing MAJ -> 1.
+
+### C12.6 When it applies
+- ROSTERS, every roll: step 9, after C6 step 8: `apply`. ROSTERS.TXT gets `FORMAT n` (applied, n = target) or
+  `FORMAT REFUSED reason`; nothing when there was nothing to do.
+- DYNASTY SETTINGS ENTER on PLAYOFF FORMAT, after writing byte 11: `apply` at once when the MAJ day (0x20a) is 0xf3 and
+  HISTORY byte 0 == 1 (rolled, next season not started), or the day is 7 (set up, no game played). After an apply on
+  day 7, HISTORY byte 0 = 1 (the realigned MAJ is at 0xf3; byte 0 = 1 stops DYNASTY rolling the unplayed season, and
+  DYNASTY's own rule clears it when the next season starts). Otherwise the change waits for the next roll.
+- The player then takes SEASON > START NEW SEASON; with 3 divisions, GENERATED.
+
+### C12.7 HISTORY season entry (C2 amendment)
+- Byte 22 = the season's divisions per league (MAJ 0x20d at the roll; 0 in entries written before C12 = legacy).
+  Written only when the MAJ has 3 divisions or TEAMID.DAT exists; otherwise byte 22 and the map stay 0 (legacy),
+  which gives the same divisions there (id = slot), so a dynasty that never changes format stays byte-identical.
+- Bytes 100..115 = division map: id k's division + 1 (1 East, 2 West, 3 Central, 0 not a team) in the nibble
+  (byte[100 + k // 2] >> (4 * (k & 1))) & 15. Legacy entries (byte 22 == 0): an id with games is East when
+  (k & 15) < 8, else West. Bytes 116..127 stay zero.
+- Writing it (history.record_season and HISTWR): w_l[id] for every MAJ team from its slot's MAJ W/L; champion,
+  runner-up and pennant ids via id_of_engine; stems via stem_of_id; byte 22 and the map from the MAJ at the roll.
+- Every other C2/C7 id (league totals, player league, park factors from schedule pairs via id_of_engine, PLAYOFFS.AL
+  stems, MILESTON 192+/200+ ids, BOXSCORE team ids, ALLSTAR league ranges) uses the stable id.
+
+### C12.8 Displays
+- SEASON STANDINGS (C7 amendments): divisions from the entry's map (or the legacy rule). A league whose teams with
+  games fall in two or more divisions shows one block per division in the order WEST, CENTRAL, EAST (the stock
+  screens' column order); one division keeps the league's long-name block. Headers `AL WEST`, `AL CENTRAL`, `AL EAST`,
+  `NL WEST`, `NL CENTRAL`, `NL EAST`. Page padding unchanged (a header never on a page's last row), at most 48 rows.
+- Team names everywhere: the stable id -> stem (TEAMID.DAT or default) -> the team's display name as today.
+- ABOUT THE MODS: after the DYNASTY SETTINGS block's last line (`LINEUP IS REPAIRED, NOT REBUILT.`) six lines:
+  `PLAYOFF FORMAT: 2 DIVISIONS AND AN LCS,`, `OR 3 DIVISIONS AND A WILD CARD WITH A`, `DIVISION SERIES. IT TAKES EFFECT AT ONCE`,
+  `BEFORE A SEASON STARTS, ELSE AT THE ROLL.`, `THEN START THE NEW SEASON WITH THE`, `GENERATED SCHEDULE.`
+- ROSTERS.TXT readers ignore the FORMAT lines (the OFFSEASON screen's parser already skips unknown kinds).

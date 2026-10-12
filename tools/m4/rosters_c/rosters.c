@@ -18,6 +18,17 @@
 #define STATLINE_REPAIR
 #include "../statline.h"
 
+/* stable team ids and the playoff format (C12.3, C12.5, C12.6). The helpers this file does not call would
+ * fail the host build's -Werror (unused static function), so their warnings are off for the include */
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
+#include "../realign.h"
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
+
 #ifdef __WATCOMC__
 #include <dos.h>
 #define DIR_SEP '\\'
@@ -580,6 +591,11 @@ static int32_t g_npm, g_pcap, g_ntm, g_tcap;
 static uint8_t g_stand_w[32], g_stand_l[32];
 static char g_maj_stem[32][9];
 static uint8_t g_maj_cmp[32];      /* stem has no interior NUL */
+static uint8_t *g_maj;             /* the MAJ as read, kept for the run (step 9 works on a copy) */
+static char g_majpath[640];        /* its path: the final name of the realigned MAJ TMP */
+static uint8_t g_tab[TI_TABLE_SIZE];   /* TEAMID.DAT, when it is exactly 256 B (g_have_tab) */
+static int g_have_tab;
+static char g_tabpath[640];        /* TEAMID.DAT of the league, or <league>\TEAMID.DAT when none */
 static uint8_t g_hist32[HIST_HDR_SIZE];   /* working header (offseason) */
 static char g_lgdir[600], g_snapdir[600], g_histpath[600], g_retpath[600];
 static FILE *g_ev;
@@ -648,54 +664,93 @@ static void ev_p(const char *code, const char *p1, const char *p2,
 
 /* ---------------- MAJ: stems + standings ---------------- */
 
-static int load_maj(const char *dir)
+/* TEAMID.DAT of the league dir (C12.3): g_tabpath is the first file the scan lists as TEAMID.DAT, else
+ * <dir>\TEAMID.DAT. g_have_tab is 1 only for a file of exactly 256 B, whose bytes then go to g_tab. */
+static int load_table(const char *dir)
 {
-    int n, k;
-    char path[640];
+    int n = scan_dir(dir, ".DAT", g_scan);
+    int i;
     FILE *f;
     long sz;
-    uint8_t *buf;
+    g_have_tab = 0;
+    for (i = 0; i < n; i++)
+        if (strcmp(g_scan[i], "TEAMID.DAT") == 0)
+            break;
+    if (i == n)
+        return path_join(g_tabpath, sizeof g_tabpath, dir, "TEAMID.DAT") ? 0 : -1;
+    if (!path_join(g_tabpath, sizeof g_tabpath, dir, g_scan[i]))
+        return -1;
+    f = fopen(g_tabpath, "rb");
+    if (!f)
+        return -1;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    sz = ftell(f);
+    if (sz == TI_TABLE_SIZE) {
+        if (fseek(f, 0, SEEK_SET) != 0
+            || fread(g_tab, 1, TI_TABLE_SIZE, f) != TI_TABLE_SIZE) {
+            fclose(f);
+            return -1;
+        }
+        g_have_tab = 1;
+    }
+    fclose(f);
+    return 0;
+}
+
+/* the MAJ: its teams enter the stem and standings arrays at their stable ids (C12.3), so every entry
+ * k is the team whose id is k. g_maj stays allocated for the whole run (free_all). */
+static int load_maj(const char *dir)
+{
+    TiTeam t[TI_MAX_TEAMS];
+    int n, k, i;
+    FILE *f;
+    long sz;
     n = scan_dir(dir, ".MAJ", g_scan);
     if (n < 1)
         return -1;
-    if (!path_join(path, sizeof path, dir, g_scan[0]))
+    if (!path_join(g_majpath, sizeof g_majpath, dir, g_scan[0]))
         return -1;
-    f = fopen(path, "rb");
+    f = fopen(g_majpath, "rb");
     if (!f)
         return -1;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
     sz = ftell(f);
     if (sz != MAJ_SIZE) { fclose(f); return -1; }
     if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
-    buf = (uint8_t *)malloc(MAJ_SIZE);
-    if (!buf) { fclose(f); return -1; }
-    if (fread(buf, 1, MAJ_SIZE, f) != MAJ_SIZE) {
-        free(buf);
+    g_maj = (uint8_t *)malloc(MAJ_SIZE);
+    if (!g_maj) { fclose(f); return -1; }
+    if (fread(g_maj, 1, MAJ_SIZE, f) != MAJ_SIZE) {
+        free(g_maj);
+        g_maj = NULL;
         fclose(f);
         return -1;
     }
     fclose(f);
-    for (k = 0; k < 2; k++) {
-        int s0 = k ? MAJ_S_NL : MAJ_S_AL;
-        int slot, i;
-        for (slot = 0; slot < 16; slot++) {
-            int idx = k * 16 + slot;
-            const uint8_t *sp = buf + s0 + MAJ_O_STEM + 8 * slot;
-            int e = 8;
-            while (e > 0 && sp[e - 1] == 0)
-                e--;
-            for (i = 0; i < e; i++)
-                g_maj_stem[idx][i] = (char)sp[i];
-            g_maj_stem[idx][e] = 0;
-            to_lower_str(g_maj_stem[idx]);
-            for (i = 0; i < e && sp[i] != 0; i++)
-                ;
-            g_maj_cmp[idx] = (i == e) ? 1 : 0;    /* interior NUL */
-            g_stand_w[idx] = buf[s0 + MAJ_O_W + slot];
-            g_stand_l[idx] = buf[s0 + MAJ_O_L + slot];
-        }
+    if (load_table(dir) != 0)
+        return -1;
+    for (k = 0; k < 32; k++) {
+        g_maj_stem[k][0] = 0;
+        g_maj_cmp[k] = 0;
+        g_stand_w[k] = 0;
+        g_stand_l[k] = 0;
     }
-    free(buf);
+    n = ti_teams(g_maj, MAJ_SIZE, g_have_tab ? g_tab : NULL, t);
+    for (i = 0; i < n; i++) {
+        int e, j;
+        long s0;
+        k = t[i].id;
+        s0 = ti_league_s(t[i].L);
+        e = ti_trim(t[i].stem, 8);
+        for (j = 0; j < e; j++)
+            g_maj_stem[k][j] = (char)t[i].stem[j];
+        g_maj_stem[k][e] = 0;
+        to_lower_str(g_maj_stem[k]);
+        for (j = 0; j < e && t[i].stem[j] != 0; j++)
+            ;
+        g_maj_cmp[k] = (j == e) ? 1 : 0;    /* interior NUL */
+        g_stand_w[k] = g_maj[s0 + MAJ_O_W + t[i].slot];
+        g_stand_l[k] = g_maj[s0 + MAJ_O_L + t[i].slot];
+    }
     return 0;
 }
 
@@ -746,8 +801,8 @@ static int load_teams(const char *dir)
         memcpy(stem, g_scan[k], (size_t)l - 4);
         stem[l - 4] = 0;
         to_lower_str(stem);
-        /* mapped_teams: every matching MAJ slot, the last one wins (AL
-         * slots 0..15 then NL 16..31) */
+        /* mapped_teams: every matching MAJ team by its stable id, the last
+         * one wins (the highest id) */
         for (s = 0; s < 32; s++) {
             if (!g_maj_cmp[s])
                 continue;
@@ -2390,6 +2445,8 @@ static void free_all(void)
         free(g_star_img[i]);
         g_star_img[i] = NULL;
     }
+    free(g_maj);
+    g_maj = NULL;
     for (i = 0; i < 70; i++) {
         free(g_tmps[i]);
         g_tmps[i] = NULL;
@@ -2415,6 +2472,9 @@ static int do_run(void)
     int rc = 2, k, n, p, s;
     uint8_t hist0[HIST_HDR_SIZE];
     int32_t histlen;
+    uint8_t *newmaj = NULL;             /* step 9: the realigned MAJ */
+    uint8_t newtab[TI_TABLE_SIZE];      /* step 9: TEAMID.DAT, when the plan makes one */
+    int fcode = 1, tab_new = 0, maj_tmp = -1, tab_tmp = -1;
 
     for (s = 0; s < 2; s++) { g_star_img[s] = NULL; g_star_tmp[s] = -1; }
 
@@ -2588,6 +2648,44 @@ static int do_run(void)
             if (g_star_img[s])
                 (void)sl_repair_image(g_star_img[s]);
         }
+        /* C12.5 / C12.6 step 9: the playoff format (HISTORY byte 11) against the MAJ as read at the start. ra_plan
+         * rewrites its MAJ in place, so it works on a copy. A plan that does nothing adds no line; the FORMAT line
+         * is the last event (after the offseason's). */
+        {
+            const char *why = NULL;
+            char num[8];
+            int hlen = histlen < HIST_HDR_SIZE ? (int)histlen : HIST_HDR_SIZE;
+            newmaj = (uint8_t *)malloc(MAJ_SIZE);
+            if (!newmaj)
+                break;
+            memcpy(newmaj, g_maj, MAJ_SIZE);
+            fcode = ra_plan(newmaj, MAJ_SIZE, hist0, hlen, g_have_tab, newtab, &tab_new, &why);
+            if (fcode == 2) {
+                ev_p("FORMAT", "REFUSED", why, NULL, NULL);
+            } else if (fcode == 0) {
+                sprintf(num, "%d", (int)newmaj[0x20d]);
+                ev_p("FORMAT", num, NULL, NULL, NULL);
+            }
+        }
+        /* the realigned MAJ and TEAMID.DAT (when made) are TMPs too: 8.3 names in the league dir, registered
+         * after the star TMPs so every index above keeps its place. A team V20 named REALIGN or TEAMID would
+         * share its TMP (and BAK) name, so such a league is refused (exit 2, nothing changed) */
+        if (fcode == 0) {
+            char path[640];
+            for (k = 0; k < g_nt; k++)
+                if (strcmp(g_tp[k]->stem_up, "REALIGN") == 0 || strcmp(g_tp[k]->stem_up, "TEAMID") == 0)
+                    break;
+            if (k < g_nt)
+                break;
+            if (!path_join(path, sizeof path, g_lgdir, "REALIGN.TMP") || reg_tmp2(path, g_majpath) != 0)
+                break;
+            maj_tmp = g_ntmps - 1;
+            if (tab_new) {
+                if (!path_join(path, sizeof path, g_lgdir, "TEAMID.TMP") || reg_tmp2(path, g_tabpath) != 0)
+                    break;
+                tab_tmp = g_ntmps - 1;
+            }
+        }
         /* the TMP writes: team images, pools, HISTORY */
         {
             int wfail = 0;
@@ -2663,6 +2761,12 @@ static int do_run(void)
                 if (g_star_tmp[s] >= 0 && g_star_img[s])
                     wfail = !write_file(g_tmps[g_star_tmp[s]],
                                         g_star_img[s], V20_SIZE);
+            /* C12.6: the realigned MAJ, and TEAMID.DAT when the plan made one */
+            if (!wfail && fcode == 0) {
+                wfail = !write_file(g_tmps[maj_tmp], newmaj, MAJ_SIZE);
+                if (!wfail && tab_new)
+                    wfail = !write_file(g_tmps[tab_tmp], newtab, TI_TABLE_SIZE);
+            }
             if (wfail)
                 break;
         }
@@ -2681,6 +2785,7 @@ static int do_run(void)
         fclose(g_ev);
         g_ev = NULL;
     }
+    free(newmaj);
     free_all();
     return rc;
 }

@@ -47,6 +47,12 @@ def day(install):
         return f.read(1)[0]
 
 
+def divisions(install):
+    with open(os.path.join(league(install), 'CLASSIC.MAJ'), 'rb') as f:
+        f.seek(0x20d)
+        return f.read(1)[0]
+
+
 def hist0(install):
     p = os.path.join(league(install), 'HISTORY.DAT')
     if not os.path.exists(p):
@@ -112,6 +118,13 @@ class Driver:
     def new_season(self):
         self.act('SEASON > START NEW SEASON', rig.menu, 304, 209, 340, 320)
         self.wait_for('new_season', 30)
+        if divisions(self.install) == 3:
+            # 3 divisions: only the GENERATED schedule (the last row) works (C12.1)
+            self.log('schedule GENERATED')
+            for _ in range(3):
+                rig.press(491, 311)
+                time.sleep(1.0)
+            rig.press(345, 312)
         self.act('NEW SEASON', rig.press, 430, 592)
         # a press can be lost (s109 gate, 2026-10-07: still on the setup screen 20 s later)
         self.wait_for('destroy_dialog', 30, nudge=self.repress('new_season', 'NEW SEASON', 430, 592))

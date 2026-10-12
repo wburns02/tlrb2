@@ -975,7 +975,7 @@ def test_hub_keys_open_settings_and_about(tmp_path):
     assert dynview.step((SET, 0, 0), dynview.KEY_ESC, data) == (HUB, 0)
     assert dynview.step((ABOUT, 0, 0), dynview.KEY_ESC, data) == (HUB, 0)
     assert dynview.screen_title((SET, 0, 0), data) == 'DYNASTY SETTINGS'
-    assert dynview.screen_title((ABOUT, 0, 0), data) == 'ABOUT THE MODS 1/3'
+    assert dynview.screen_title((ABOUT, 0, 0), data) == 'ABOUT THE MODS 1/4'
     assert dynview.footer_text((SET, 0, 0)) == 'UP DOWN MOVE   ENTER CHANGE   ESC MENU'
     assert dynview.footer_text((ABOUT, 0, 0)) == 'PGUP PGDN   ESC MENU'
 
@@ -999,17 +999,19 @@ def test_settings_rows_from_maj_and_team_names(tmp_path):
     data = dynview.load_data(str(ldir))
     assert data['teams'] == [(0, 'PHILADELPHIA'), (16, 'SAN DIEGO')]
     assert dynview.settings_rows(data) == [('ERA RULES', 'REAL CALENDAR'),
+                                           ('PLAYOFF FORMAT', '2 DIVISIONS'),
                                            ('PHILADELPHIA', 'AI MANAGES'),
                                            ('SAN DIEGO', 'AI MANAGES')]
     # HISTORY.DAT: era 1, mask bits 0 and 16 (the two teams) managed by the user
     (ldir / 'HISTORY.DAT').write_bytes(bytes(10) + b'\x01\x00\x01\x00\x01\x00' + bytes(16))
     data = dynview.load_data(str(ldir))
     assert dynview.settings_rows(data) == [('ERA RULES', 'RESERVE CLAUSE'),
+                                           ('PLAYOFF FORMAT', '2 DIVISIONS'),
                                            ('PHILADELPHIA', 'YOU MANAGE'),
                                            ('SAN DIEGO', 'YOU MANAGE')]
-    # the lg id of a team is its bit, AL slot s is bit s and NL slot s is bit s + 16
+    # the id of a team is its bit, AL slot s is bit s and NL slot s is bit s + 16
     data['mask'] = 1 << 16
-    assert dynview.settings_rows(data)[1:] == [('PHILADELPHIA', 'AI MANAGES'),
+    assert dynview.settings_rows(data)[2:] == [('PHILADELPHIA', 'AI MANAGES'),
                                                ('SAN DIEGO', 'YOU MANAGE')]
 
 
@@ -1019,7 +1021,8 @@ def test_settings_no_maj_and_short_maj(tmp_path):
     write_team(ldir, 'ala01', 'PHILADELPHIA')
     data = dynview.load_data(str(ldir))
     assert data['teams'] == []
-    assert dynview.settings_rows(data) == [('ERA RULES', 'REAL CALENDAR')]
+    assert dynview.settings_rows(data) == [('ERA RULES', 'REAL CALENDAR'),
+                                           ('PLAYOFF FORMAT', '2 DIVISIONS')]
     # a MAJ one byte short of MAJ_MIN gives no teams, even with its stems present
     short = tmp_path / 'short'
     short.mkdir()
@@ -1027,9 +1030,9 @@ def test_settings_no_maj_and_short_maj(tmp_path):
     write_team(short, 'nl01', 'SAN DIEGO')
     write_maj(short, {0: b'ala01', 16: b'nl01'}, size=dynview.MAJ_MIN - 1)
     assert dynview.settings_rows(dynview.load_data(str(short))) == \
-        [('ERA RULES', 'REAL CALENDAR')]
+        [('ERA RULES', 'REAL CALENDAR'), ('PLAYOFF FORMAT', '2 DIVISIONS')]
     write_maj(short, {0: b'ala01', 16: b'nl01'}, size=dynview.MAJ_MIN)
-    assert len(dynview.settings_rows(dynview.load_data(str(short)))) == 3
+    assert len(dynview.settings_rows(dynview.load_data(str(short)))) == 4
 
 
 def test_settings_cursor_moves_and_clamps(tmp_path):
@@ -1037,7 +1040,7 @@ def test_settings_cursor_moves_and_clamps(tmp_path):
     ldir.mkdir()
     big_league(ldir, 20)
     data = dynview.load_data(str(ldir))
-    assert len(dynview.settings_rows(data)) == 21            # ERA + 20 teams: 2 pages
+    assert len(dynview.settings_rows(data)) == 22            # ERA, PLAYOFF + 20 teams: 2 pages
     s = (SET, 0, 0)
     assert press(s, dynview.KEY_UP, data) == (SET, 0, 0)
     assert press(s, dynview.KEY_PGUP, data) == (SET, 0, 0)
@@ -1046,20 +1049,20 @@ def test_settings_cursor_moves_and_clamps(tmp_path):
     assert s == (SET, 1, 12)                                 # page == cursor // 12
     for _ in range(12):
         s = press(s, dynview.KEY_DOWN, data)
-    assert s == (SET, 1, 20)
-    assert press(s, dynview.KEY_DOWN, data) == (SET, 1, 20)  # stops at the last row
+    assert s == (SET, 1, 21)
+    assert press(s, dynview.KEY_DOWN, data) == (SET, 1, 21)  # stops at the last row
     s = press(s, dynview.KEY_PGUP, data)
-    assert s == (SET, 0, 8)
+    assert s == (SET, 0, 9)
     s = press(s, dynview.KEY_PGUP, data)
     assert s == (SET, 0, 0)
     assert press(s, dynview.KEY_PGUP, data) == (SET, 0, 0)
     s = press(s, dynview.KEY_PGDN, data)
     assert s == (SET, 1, 12)
-    assert press(s, dynview.KEY_PGDN, data) == (SET, 1, 20)  # min(cursor + 12, n - 1)
+    assert press(s, dynview.KEY_PGDN, data) == (SET, 1, 21)  # min(cursor + 12, n - 1)
     # the page slices of settings_rows
-    s = (SET, 1, 20)
-    assert len(dynview.rows(s, data)) == 9
-    assert dynview.rows(s, data)[0] == ('TEAM 11', 'AI MANAGES')   # settings row 12
+    s = (SET, 1, 21)
+    assert len(dynview.rows(s, data)) == 10
+    assert dynview.rows(s, data)[0] == ('TEAM 10', 'AI MANAGES')   # settings row 12
     assert dynview.step(s, dynview.KEY_ESC, data) == (HUB, 0)
     assert press(s, ord('x'), data) == s
 
@@ -1082,11 +1085,12 @@ def test_settings_enter_toggles_and_era_cycle(tmp_path):
     assert data['era'] == 1 and hp.read_bytes()[10] == 1
     s = press(s, 13, data)                        # 1 -> 2
     assert data['era'] == 2
-    s = press(s, dynview.KEY_DOWN, data)          # onto PHILADELPHIA (lg 0)
+    s = press(s, dynview.KEY_DOWN, data)          # PLAYOFF FORMAT row (cat 1)
+    s = press(s, dynview.KEY_DOWN, data)          # onto PHILADELPHIA (id 0)
     s = press(s, 13, data)
-    assert data['mask'] == 1 and s == (SET, 0, 1)
+    assert data['mask'] == 1 and s == (SET, 0, 2)
     assert int.from_bytes(hp.read_bytes()[12:16], 'little') == 1
-    s = press(s, dynview.KEY_DOWN, data)          # SAN DIEGO (lg 16)
+    s = press(s, dynview.KEY_DOWN, data)          # SAN DIEGO (id 16)
     s = press(s, 13, data)
     assert data['mask'] == 0x10001
     assert int.from_bytes(hp.read_bytes()[12:16], 'little') == 0x10001
@@ -1137,7 +1141,8 @@ def test_settings_on_league_without_history(tmp_path):
     s = press((SET, 0, 0), 13, data)              # creates HISTORY.DAT (era 1)
     assert (ldir / 'HISTORY.DAT').read_bytes()[10] == 1
     assert len((ldir / 'HISTORY.DAT').read_bytes()) == 32
-    s = press(s, dynview.KEY_DOWN, data)
+    s = press(s, dynview.KEY_DOWN, data)          # PLAYOFF FORMAT row (cat 1)
+    s = press(s, dynview.KEY_DOWN, data)          # the first team (cat 2)
     press(s, 13, data)
     assert (ldir / 'HISTORY.DAT').read_bytes()[12] == 1
 
@@ -1146,21 +1151,24 @@ def test_about_paging(tmp_path):
     ldir = tmp_path / 'empty'
     ldir.mkdir()
     data = dynview.load_data(str(ldir))
-    assert len(dynview.ABOUT_ROWS) == 36
+    assert len(dynview.ABOUT_ROWS) == 42
     s = (ABOUT, 0, 0)
     assert dynview.rows(s, data)[0] == ('DYNASTY MODE',)
     assert len(dynview.rows(s, data)) == 12
-    assert dynview.total_rows(s, data) == 36
+    assert dynview.total_rows(s, data) == 42
     assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
     s = press(s, dynview.KEY_PGDN, data)
-    assert s == (ABOUT, 1, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 2/3'
+    assert s == (ABOUT, 1, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 2/4'
     assert dynview.rows(s, data)[0] == (dynview.ABOUT_ROWS[12],)
     s = press(s, dynview.KEY_PGDN, data)
-    assert s == (ABOUT, 2, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 3/3'
+    assert s == (ABOUT, 2, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 3/4'
     assert len(dynview.rows(s, data)) == 12
-    assert press(s, dynview.KEY_PGDN, data) == (ABOUT, 2, 0)   # last page stays
+    s = press(s, dynview.KEY_PGDN, data)
+    assert s == (ABOUT, 3, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 4/4'
+    assert len(dynview.rows(s, data)) == 6
+    assert press(s, dynview.KEY_PGDN, data) == (ABOUT, 3, 0)   # last page stays
     s = press(s, dynview.KEY_PGUP, data)
-    assert s == (ABOUT, 1, 0)
+    assert s == (ABOUT, 2, 0)
     assert press(press(s, dynview.KEY_PGUP, data), dynview.KEY_PGUP, data) == (ABOUT, 0, 0)
     # ABOUT shows its rows with a season recorded too; ENTER does nothing there
     (tmp_path / 'hist').mkdir()
@@ -2038,7 +2046,7 @@ def test_standings_full_36_rows(tmp_path):
 
 
 def test_standings_about_rows_and_columns_fit():
-    assert len(dynview.ABOUT_ROWS) == 36
+    assert len(dynview.ABOUT_ROWS) == 42
     assert dynview.ABOUT_ROWS[11:13] == ['MILESTONES, SEASON AWARDS, STANDINGS',
                                          'AND THE LAST OFFSEASON.']
     assert dynview.FOOTERS[SS] == STAND_FOOTER
@@ -2571,3 +2579,236 @@ def test_box_cap_112_records(tmp_path):
     assert rows_all[0] == ('BOSTON',) + HDR_AB
     assert [r[1] for r in rows_all[1:113]] == ['%d' % k for k in range(112)]
     assert rows_all[113:] == [PIT_HDR, ('ATLANTA',) + HDR_AB, PIT_HDR]
+
+
+# ---------------------------------------------------------------- C12 playoff format (2 divisions)
+def write_maj2(ldir, stems, day=0x10):
+    """write_maj with the C12.1 counts of a 2 division league: leagues 2, divisions 2, MAJ
+    day at 0x20a"""
+    write_maj(ldir, stems)
+    p = ldir / 'TEST.MAJ'
+    d = bytearray(p.read_bytes())
+    d[0x20c], d[0x20d], d[0x20a] = 2, 2, day
+    p.write_bytes(bytes(d))
+
+
+def set_season_map(d, season_no, divs):
+    """HISTORY bytes d: season_no gets ndiv 2 and the C12.7 division map divs {id: division}"""
+    o = 32 + (season_no - 1) * 128
+    d[o + 22] = 2
+    for k, div in divs.items():
+        d[o + 100 + k // 2] |= div << (4 * (k & 1))
+
+
+def standings_blocks(rows):
+    """{header: [team names]} of standings rows; blank rows are skipped"""
+    out, cur = {}, None
+    for r in rows:
+        if r[0] and r[1:] == ('', '', '', '', ''):
+            cur = out.setdefault(r[0], [])
+        elif r[0]:
+            cur.append(r[0])
+    return out
+
+
+def all_standings(data, cat=0):
+    n = dynview.total_rows((SS, 0, cat), data)
+    return [r for p in range((n + 11) // 12) for r in dynview.rows((SS, p, cat), data)]
+
+
+def test_playoff_label_values():
+    assert dynview.playoff_label((2, 2)) == '2 DIVISIONS'
+    assert dynview.playoff_label((3, 3)) == '3 DIV + WILDCARD'
+    assert dynview.playoff_label((3, 2)) == '3 DIV NEXT YEAR'
+    assert dynview.playoff_label((2, 3)) == '2 DIV NEXT YEAR'
+    assert all(len(v) <= 16 for v in ('2 DIVISIONS', '3 DIV + WILDCARD',
+                                      '3 DIV NEXT YEAR', '2 DIV NEXT YEAR'))
+
+
+def test_playoff_row_follows_maj_and_byte_11(tmp_path):
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    write_maj2(ldir, {0: b'ala01', 16: b'nl01'})
+    write_team(ldir, 'ala01', 'PHILADELPHIA')
+    write_team(ldir, 'nl01', 'SAN DIEGO')
+    hp = ldir / 'HISTORY.DAT'
+    data = dynview.load_data(str(ldir))                     # no HISTORY.DAT: follow the MAJ
+    assert data['fmt'] == (2, 2)
+    assert dynview.settings_rows(data)[1] == ('PLAYOFF FORMAT', '2 DIVISIONS')
+    hp.write_bytes(bytes(11) + b'\x03' + bytes(20))         # byte 11 = 3 wants 3 divisions
+    data = dynview.load_data(str(ldir))
+    assert data['fmt'] == (3, 2)
+    assert dynview.settings_rows(data)[1] == ('PLAYOFF FORMAT', '3 DIV NEXT YEAR')
+    hp.write_bytes(bytes(11) + b'\x07' + bytes(20))         # any other value counts as 0
+    assert dynview.settings_rows(dynview.load_data(str(ldir)))[1] == \
+        ('PLAYOFF FORMAT', '2 DIVISIONS')
+
+
+def test_playoff_enter_writes_byte_11_only(tmp_path):
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    write_maj2(ldir, {0: b'ala01', 16: b'nl01'}, day=0x10)  # mid season: no apply
+    write_team(ldir, 'ala01', 'PHILADELPHIA')
+    write_team(ldir, 'nl01', 'SAN DIEGO')
+    hp = ldir / 'HISTORY.DAT'
+    before = bytes(range(32))
+    hp.write_bytes(before)
+    data = dynview.load_data(str(ldir))
+    s = press((SET, 0, 0), dynview.KEY_DOWN, data)           # the PLAYOFF FORMAT row
+    assert s == (SET, 0, 1)
+    s = press(s, 13, data)
+    assert s == (SET, 0, 1)
+    assert data['fmt'] == (3, 2)
+    assert hp.read_bytes() == before[:11] + b'\x03' + before[12:]
+    assert dynview.settings_rows(data)[1] == ('PLAYOFF FORMAT', '3 DIV NEXT YEAR')
+    press(s, 13, data)                                       # 5 - 3 = 2: stock again
+    assert hp.read_bytes() == before[:11] + b'\x02' + before[12:]
+    assert dynview.settings_rows(data)[1] == ('PLAYOFF FORMAT', '2 DIVISIONS')
+
+
+def test_playoff_enter_without_files(tmp_path):
+    """no MAJ and no HISTORY.DAT: ENTER creates the 32 byte HISTORY.DAT with byte 11 only and
+    writes no other file"""
+    ldir = tmp_path / 'bare'
+    ldir.mkdir()
+    data = dynview.load_data(str(ldir))
+    assert data['fmt'] == (2, 2)
+    press((SET, 0, 1), 13, data)
+    assert (ldir / 'HISTORY.DAT').read_bytes() == bytes(11) + b'\x03' + bytes(20)
+    assert os.listdir(str(ldir)) == ['HISTORY.DAT']
+    assert data['fmt'] == (3, 2)
+
+
+def test_playoff_enter_apply_rules(tmp_path, monkeypatch):
+    """C12.6: the apply at once runs on day 7, or on day 0xf3 with HISTORY byte 0 == 1; after
+    an apply on day 7 that returns 0, byte 0 becomes 1. realign.apply is stubbed here (its own
+    rules are in test_realign.py); the wanted format is 3 (byte 11 = 3 is the result)"""
+    calls, rc = [], [1]
+
+    def fake_apply(league_dir, out=None):
+        calls.append(league_dir)
+        return rc[0]
+
+    monkeypatch.setattr(dynview.realign, 'apply', fake_apply)
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    write_maj2(ldir, {0: b'ala01'}, day=0x10)
+    write_team(ldir, 'ala01', 'PHILADELPHIA')
+    maj = ldir / 'TEST.MAJ'
+    hp = ldir / 'HISTORY.DAT'
+
+    def enter(day, byte0, rc_value):
+        d = bytearray(maj.read_bytes())
+        d[0x20a] = day
+        maj.write_bytes(bytes(d))
+        hp.write_bytes(bytes([byte0]) + bytes(31))
+        rc[0] = rc_value
+        del calls[:]
+        press((SET, 0, 1), 13, dynview.load_data(str(ldir)))
+        return len(calls), hp.read_bytes()
+
+    def hist(byte0):
+        return bytes([byte0]) + bytes(10) + b'\x03' + bytes(20)
+
+    assert enter(0x10, 0, 0) == (0, hist(0))                 # in season: nothing
+    assert enter(0xf3, 0, 0) == (0, hist(0))                 # rolled but byte 0 not 1
+    assert enter(0xf3, 1, 0) == (1, hist(1))                 # rolled: apply, byte 0 kept
+    assert enter(7, 0, 1) == (1, hist(0))                    # set up, nothing to do
+    assert enter(7, 0, 2) == (1, hist(0))                    # refused: byte 0 stays 0
+    assert enter(7, 0, 0) == (1, hist(1))                    # applied on day 7: byte 0 = 1
+    # no MAJ: byte 11 only, no apply
+    maj.unlink()
+    hp.write_bytes(bytes([1]) + bytes(31))
+    del calls[:]
+    press((SET, 0, 1), 13, dynview.load_data(str(ldir)))
+    assert calls == [] and hp.read_bytes() == hist(1)
+
+
+def test_playoff_enter_back_to_now_changes_nothing(tmp_path):
+    """byte 11 = 3 on a 2 division MAJ on day 7; ENTER sets 2 (= now): realign has nothing to
+    do, so the MAJ and HISTORY byte 0 stay as they are"""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    write_maj2(ldir, {0: b'ala01', 16: b'nl01'}, day=7)
+    write_team(ldir, 'ala01', 'PHILADELPHIA')
+    write_team(ldir, 'nl01', 'SAN DIEGO')
+    hp = ldir / 'HISTORY.DAT'
+    hp.write_bytes(bytes(11) + b'\x03' + bytes(20))
+    maj_before = (ldir / 'TEST.MAJ').read_bytes()
+    data = dynview.load_data(str(ldir))
+    assert data['fmt'] == (3, 2)
+    press((SET, 0, 1), 13, data)
+    assert hp.read_bytes() == bytes(11) + b'\x02' + bytes(20)
+    assert (ldir / 'TEST.MAJ').read_bytes() == maj_before
+    assert data['fmt'] == (2, 2)
+    assert dynview.settings_rows(data)[1] == ('PLAYOFF FORMAT', '2 DIVISIONS')
+
+
+def test_settings_ids_from_team_table(tmp_path):
+    """C12.3: with TEAMID.DAT the team rows carry the stable ids (the entry holding the
+    stem), the managed bit of a team is its stable id, and a team in no entry is left out"""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    write_maj2(ldir, {0: b'ala01', 1: b'ala02', 2: b'ala03', 16: b'nl01'})
+    write_team(ldir, 'ala01', 'PHILADELPHIA')
+    write_team(ldir, 'ala02', 'OTTAWA')
+    write_team(ldir, 'ala03', 'NOT IN TABLE')
+    write_team(ldir, 'nl01', 'SAN DIEGO')
+    table = bytearray(256)
+    for k, stem in ((3, b'ala01'), (5, b'ala02'), (20, b'nl01')):
+        table[8 * k:8 * k + 8] = stem.ljust(8, b'\0')
+    (ldir / 'TEAMID.DAT').write_bytes(bytes(table))
+    data = dynview.load_data(str(ldir))
+    assert data['teams'] == [(3, 'PHILADELPHIA'), (5, 'OTTAWA'), (20, 'SAN DIEGO')]
+    s = (SET, 0, 0)
+    for _ in range(3):
+        s = press(s, dynview.KEY_DOWN, data)                 # OTTAWA: cat 2 + index 1
+    assert s == (SET, 0, 3)
+    s = press(s, 13, data)
+    assert data['mask'] == 1 << 5 and s == (SET, 0, 3)
+    assert dynview.settings_rows(data)[2:] == [('PHILADELPHIA', 'AI MANAGES'),
+                                               ('OTTAWA', 'YOU MANAGE'),
+                                               ('SAN DIEGO', 'AI MANAGES')]
+
+
+def test_standings_follow_the_division_map(tmp_path):
+    """C12.8 on a 2 division entry (ndiv 2): the AL teams are grouped by the entry's division
+    map, not by the id rule; WEST (2) is listed before EAST (1)"""
+    ldir = make_standings(tmp_path, seasons=[({t: (6, 4) for t in AL_NAMES}, 0xff, 0xff, 0xff)])
+    west = (3, 8, 9, 10, 11, 13)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    set_season_map(d, 1, {k: 2 if k in west else 1 for k in AL_NAMES})
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    names = dict(data['teams'])
+    blocks = standings_blocks(all_standings(data))
+    assert list(blocks) == ['AL WEST', 'AL EAST']
+    assert blocks['AL WEST'] == [names[t] for t in west]
+    assert blocks['AL EAST'] == [names[t] for t in AL_NAMES if t not in west]
+
+
+def test_standings_one_division_by_the_map(tmp_path):
+    """the AL teams with games all in one division (ndiv 2): one block under the league's
+    long name, no AL WEST or AL EAST header"""
+    ldir = make_standings(tmp_path, seasons=[({t: (6, 4) for t in AL_NAMES}, 0xff, 0xff, 0xff)])
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    set_season_map(d, 1, {k: 2 for k in AL_NAMES})
+    p.write_bytes(bytes(d))
+    rows = all_standings(dynview.load_data(str(ldir)))
+    assert rows[0][0] == 'AMERICAN LEAGUE'
+    assert len(rows) == 1 + len(AL_NAMES)
+    assert list(standings_blocks(rows)) == ['AMERICAN LEAGUE']
+
+
+def test_about_playoff_format_lines():
+    i = dynview.ABOUT_ROWS.index('LINEUP IS REPAIRED, NOT REBUILT.')
+    assert dynview.ABOUT_ROWS[i + 1:i + 7] == [
+        'PLAYOFF FORMAT: 2 DIVISIONS AND AN LCS,',
+        'OR 3 DIVISIONS AND A WILD CARD WITH A',
+        'DIVISION SERIES. IT TAKES EFFECT AT ONCE',
+        'BEFORE A SEASON STARTS, ELSE AT THE ROLL.',
+        'THEN START THE NEW SEASON WITH THE',
+        'GENERATED SCHEDULE.']
+    assert dynview.ABOUT_ROWS[i + 7] == ''
