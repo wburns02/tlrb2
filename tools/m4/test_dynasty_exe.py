@@ -19,6 +19,8 @@ import pytest
 
 from m4.dosemu import run_exe
 from m4.dynasty_ref import roll_league
+from test_history import make_team_v20, set_player
+from v20 import Team
 
 FIX = '/mnt/nvme/tlrb2/fixtures/t4'
 LEAGUES = [os.path.join(FIX, d) for d in ('m3_end', 's1_pre')]
@@ -357,3 +359,152 @@ def test_l_empty_pool_year_fallback(tmp_path):
     img = (tmp_path / 'root' / 'ref' / last_team).read_bytes()
     from m4.dynasty_ref import season_year
     assert len(years) == 1 and years.pop() == season_year(img)
+
+
+# --- C16: the current league (SYSTEM in the cwd names it) ---------------------
+MAJ_SIZE = 59771
+C16_SEED = 0x1234
+
+
+def synth_league(d, seed):
+    """A synthetic league dir (the sandbox has no t4 fixtures): three teams of mixed-age players
+    and a CLASSIC.MAJ at the season-over day (0xf3)."""
+    os.makedirs(d, exist_ok=True)
+    maj = bytearray(MAJ_SIZE)
+    maj[0x20a] = 0xf3
+    with open(os.path.join(d, 'CLASSIC.MAJ'), 'wb') as fh:
+        fh.write(bytes(maj))
+    for k, stem in enumerate(('CLASALE1', 'CLASBAL1', 'CLASNL01')):
+        t = Team(make_team_v20(stem.encode()))
+        for i in range(30):
+            set_player(t, i, 'L%s%02d' % (stem[-3:], i), 'F%d' % (i + seed + k),
+                       22 + (i * 7 + seed + k) % 16, 0 if i % 6 == 0 else i % 9 + 1,
+                       40 + (i * 11 + seed) % 120)
+        t.save(os.path.join(d, stem + '.V20'))
+    return str(d)
+
+
+def c16_sources(tmp_path):
+    """(CLASSIC source, other source): the t4 fixtures when both exist, else two synthetic leagues."""
+    if all(os.path.isdir(d) for d in LEAGUES):
+        return LEAGUES[0], LEAGUES[1]
+    return synth_league(str(tmp_path / 'syn_a'), 3), synth_league(str(tmp_path / 'syn_b'), 7)
+
+
+def game(tmp_root, teams, system=None, snaps=(), dynsnap=True):
+    """The game dir tmp_root/TONY2: TEAMS/<dir> per (dir, src, with_maj) (the src V20s, and its
+    CLASSIC.MAJ as <dir>.MAJ when with_maj), an optional SYSTEM, DYNSNAP, and DYNLG/<L>/SNAP for
+    each name in snaps. Returns the game dir."""
+    tony = tmp_root / 'TONY2'
+    for dname, src, with_maj in teams:
+        lg = tony / 'TEAMS' / dname
+        lg.mkdir(parents=True)
+        for f in league_files(src):
+            shutil.copy2(os.path.join(src, f), lg / f)
+        if with_maj:
+            shutil.copy2(os.path.join(src, 'CLASSIC.MAJ'), lg / (dname + '.MAJ'))
+    if system is not None:
+        (tony / 'SYSTEM').write_bytes(system)
+    if dynsnap:
+        (tmp_root / 'DYNSNAP').mkdir()
+    for name in snaps:
+        (tmp_root / 'DYNLG' / name / 'SNAP').mkdir(parents=True)
+    return tony
+
+
+def tree(d):
+    """{relative path: bytes} for every file under d."""
+    out = {}
+    for dirpath, _, names in os.walk(d):
+        for n in names:
+            p = os.path.join(dirpath, n)
+            out[os.path.relpath(p, d)] = open(p, 'rb').read()
+    return out
+
+
+def check_retired(path, src, r):
+    """RETIRED.DAT at path: the league's V20s in sorted order, with the retirees of roll r."""
+    names, flags = parse_retired(path)
+    teams = sorted(league_files(src))
+    assert [n.upper() for n in names] == teams
+    for i, fn in enumerate(teams):
+        assert flags[i] == [1 if k in r['retirees'][fn] else 0 for k in range(40)], fn
+    assert any(any(f) for f in flags), 'no retirees: flags check is vacuous'
+
+
+@pytest.mark.parametrize('system', [None, b'CLASSIC', b'classic', b'CLASSIC\x00junk'])
+def test_c16_classic(tmp_path, system):
+    """No SYSTEM, or one naming CLASSIC (any case; bytes after the NUL ignored): the CLASSIC roll
+    with the paths it always had (RETIRED.DAT in C:\\DYNSNAP)."""
+    src, _ = c16_sources(tmp_path)
+    root = tmp_path / 'root'
+    game(root, [('CLASSIC', src, True)], system=system)
+    r = roll_league(src, str(tmp_path / 'ref'), C16_SEED)
+    assert run(str(root), C16_SEED) == 1
+    lg = root / 'TONY2' / 'TEAMS' / 'CLASSIC'
+    check_v20s(lg, tmp_path / 'ref')
+    assert (lg / 'HISTORY.DAT').read_bytes() == hist_bytes(r)
+    check_retired(root / 'DYNSNAP' / 'RETIRED.DAT', src, r)
+
+
+@pytest.mark.parametrize('system, dname', [
+    (b'NEWLG', 'NEWLG'), (b"NEGRO'LG", "NEGRO'LG"), (b'newlg', 'NEWLG'),
+    (b'LONGNAMEX', 'LONGNAME'), (b'NEWLG\x00zz', 'NEWLG')])
+def test_c16_other_league(tmp_path, system, dname):
+    """SYSTEM names another league: its roll happens in TEAMS\\<L> exactly as roll_league predicts,
+    TEAMS\\CLASSIC (another copy) is untouched, and RETIRED.DAT goes to DYNLG\\<L>\\SNAP. The name is
+    uppercased, cut at 8 bytes and at the NUL."""
+    classic, other = c16_sources(tmp_path)
+    root = tmp_path / 'root'
+    tony = game(root, [('CLASSIC', classic, True), (dname, other, True)], system=system,
+                snaps=[dname])
+    classic_before = tree(tony / 'TEAMS' / 'CLASSIC')
+    r = roll_league(other, str(tmp_path / 'ref'), C16_SEED)
+    assert run(str(root), C16_SEED) == 1
+    lg = tony / 'TEAMS' / dname
+    check_v20s(lg, tmp_path / 'ref')
+    assert (lg / 'HISTORY.DAT').read_bytes() == hist_bytes(r)
+    assert tree(tony / 'TEAMS' / 'CLASSIC') == classic_before
+    check_retired(root / 'DYNLG' / dname / 'SNAP' / 'RETIRED.DAT', other, r)
+    assert not (root / 'DYNSNAP' / 'RETIRED.DAT').exists()
+
+
+def test_c16_no_snap_dir(tmp_path):
+    """SYSTEM names a league with no DYNLG\\<L>\\SNAP: the roll runs and RETIRED.DAT is written nowhere."""
+    _, other = c16_sources(tmp_path)
+    root = tmp_path / 'root'
+    game(root, [('NEWLG', other, True)], system=b'NEWLG')
+    roll_league(other, str(tmp_path / 'ref'), C16_SEED)
+    assert run(str(root), C16_SEED) == 1
+    check_v20s(root / 'TONY2' / 'TEAMS' / 'NEWLG', tmp_path / 'ref')
+    assert not any('RETIRED.DAT' in files for _, _, files in os.walk(root))
+
+
+@pytest.mark.parametrize('system, dname, with_maj', [
+    (b'', 'NEWLG', True),              # empty SYSTEM
+    (b'\x00NEWLG', 'NEWLG', True),     # empty name: the NUL comes first
+    (b'NEW.LG', 'NEW.LG', True),       # '.' is not a name byte
+    (b'NEW LG', 'NEW LG', True),       # a space is not a name byte
+    (b'NEW*LG', 'NEW*LG', True),       # '*' is in the bad-char list
+    (b'GHOST', 'GHOST', False),        # the league's MAJ is missing
+    (b'NOPE', None, None),             # no such league at all
+])
+def test_c16_bad_system_is_classic(tmp_path, system, dname, with_maj):
+    """A SYSTEM with no valid name, or naming a league whose MAJ is missing, rolls CLASSIC
+    (C16.1). A complete league under the rejected name is left alone."""
+    classic, other = c16_sources(tmp_path)
+    root = tmp_path / 'root'
+    teams = [('CLASSIC', classic, True)]
+    if dname:
+        teams.append((dname, other, with_maj))
+    tony = game(root, teams, system=system, snaps=[dname] if dname else [])
+    decoy_before = tree(tony / 'TEAMS' / dname) if dname else None
+    r = roll_league(classic, str(tmp_path / 'ref'), C16_SEED)
+    assert run(str(root), C16_SEED) == 1
+    lg = tony / 'TEAMS' / 'CLASSIC'
+    check_v20s(lg, tmp_path / 'ref')
+    assert (lg / 'HISTORY.DAT').read_bytes() == hist_bytes(r)
+    check_retired(root / 'DYNSNAP' / 'RETIRED.DAT', classic, r)
+    if dname:
+        assert tree(tony / 'TEAMS' / dname) == decoy_before
+        assert not (root / 'DYNLG' / dname / 'SNAP' / 'RETIRED.DAT').exists()
