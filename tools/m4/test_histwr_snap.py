@@ -10,6 +10,8 @@ The host binary tools/m4/histwr/histwr_host is built at import (build_histwr.py)
 """
 import os
 import random
+
+import pytest
 import subprocess
 import sys
 from pathlib import Path
@@ -113,6 +115,33 @@ def test_snap_same_dir_copies_nothing_and_keeps_bytes(tmp_path):
     before = files(ldir)
     assert run('/SNAP', str(ldir), str(ldir)).returncode == 0
     assert files(ldir) == before
+
+
+@pytest.mark.parametrize('alias', ['{d}/', '{d}//', '{d}/../{n}', '{d}/./', 'link'])
+def test_snap_same_dir_under_another_spelling_keeps_bytes(tmp_path, alias):
+    """the same directory spelled differently (trailing separators, . and .., a symlink) keeps every byte:
+    each file already is its destination"""
+    ldir = league(tmp_path)
+    before = files(ldir)
+    if alias == 'link':
+        other = tmp_path / 'link'
+        other.symlink_to(ldir, target_is_directory=True)
+        other = str(other)
+    else:
+        other = alias.format(d=str(ldir), n=ldir.name)
+    assert run('/SNAP', str(ldir), other).returncode == 0
+    assert files(ldir) == before
+    assert run('/SNAP', other, str(ldir)).returncode == 0
+    assert files(ldir) == before
+
+
+def test_archive_into_its_own_snap_keeps_bytes(tmp_path):
+    """SEASONS_DIR/S01 that is SNAP_DIR itself (via ..): every byte stays"""
+    seasons = tmp_path / 'SEAS'
+    snap = fill(seasons / 'S01', {'X.DAT': blob(3000, 9)})
+    before = files(snap)
+    assert run('/ARCHIVE', str(seasons / 'S01' / '..' / 'S01'), str(seasons)).returncode == 0
+    assert files(snap) == before
 
 
 def test_snap_exit_1_when_league_dir_missing(tmp_path):

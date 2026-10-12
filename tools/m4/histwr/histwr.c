@@ -2670,6 +2670,8 @@ static char FARDATA g_p_from[PATH_BUF];
 static char FARDATA g_p_to[PATH_BUF];
 static char FARDATA g_p_mk[PATH_BUF];      /* make_dirs scratch */
 static char FARDATA g_p_arch[PATH_BUF];    /* the Snn dir of /ARCHIVE */
+static char FARDATA g_p_fa[PATH_BUF];      /* same_file scratch */
+static char FARDATA g_p_fb[PATH_BUF];
 static char FARDATA g_cpnames[CP_MAX][CP_NAME];
 static uint8_t FARDATA g_cpbuf[2048];
 static char FARDATA g_d_dir[PATH_BUF];     /* the current league's paths (lg_default) */
@@ -2724,7 +2726,7 @@ static int list_files(const char *dir)
     int n = 0;
     if (!is_dir(dir) || !path_join(g_p_scan, PATH_BUF, dir, "*.*"))
         return -1;
-    if (_dos_findfirst(g_p_scan, _A_NORMAL, &ft) != 0)
+    if (_dos_findfirst(g_p_scan, _A_NORMAL | _A_RDONLY | _A_HIDDEN | _A_SYSTEM | _A_ARCH, &ft) != 0)
         return 0;
     do {
         if (ft.attrib & (_A_SUBDIR | _A_VOLID))
@@ -2768,6 +2770,38 @@ static int list_files(const char *dir)
 
 #endif
 
+#ifdef __WATCOMC__
+/* INT 21h AH=60h (TRUENAME): path canonicalized by DOS into out (128 B: drive, upper case, no . or ..
+ * segments, single separators). 0 on failure */
+static int truename(const char *path, char *out)
+{
+    union REGS r;
+    struct SREGS sr;
+    segread(&sr);
+    r.h.ah = 0x60;
+    sr.ds = FP_SEG(path);
+    r.x.si = FP_OFF(path);
+    sr.es = FP_SEG(out);
+    r.x.di = FP_OFF(out);
+    intdosx(&r, &r, &sr);
+    return !r.x.cflag;
+}
+#endif
+
+/* 1 when a and b name the same existing file under any spelling (a trailing separator, . and .. segments,
+ * case on DOS, a symlink on the host): opening the destination "wb" would empty the source before the read */
+static int same_file(const char *a, const char *b)
+{
+#ifdef __WATCOMC__
+    return truename(a, g_p_fa) && truename(b, g_p_fb) && strcmp(g_p_fa, g_p_fb) == 0;
+#else
+    struct stat sa, sb;
+    (void)g_p_fa;
+    (void)g_p_fb;
+    return stat(a, &sa) == 0 && stat(b, &sb) == 0 && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+#endif
+}
+
 /* src copied byte for byte over dst (dst is overwritten): 0 on any failure */
 static int copy_file(const char *src, const char *dst)
 {
@@ -2796,18 +2830,20 @@ static int copy_file(const char *src, const char *dst)
 }
 
 /* every regular file directly in src copied into dst, overwriting: 0 on success, 1 when src cannot be listed
- * or a copy fails. The same directory copies nothing (a file copied onto itself would be truncated first) */
+ * or a copy fails. A file that already is its destination (the same directory under any spelling) is left as
+ * it is */
 static int copy_files(const char *src, const char *dst)
 {
     int i, n = list_files(src);
     if (n < 0)
         return 1;
-    if (strcmp(src, dst) == 0)
-        return 0;
     for (i = 0; i < n; i++) {
         if (!path_join(g_p_from, PATH_BUF, src, g_cpnames[i])
-            || !path_join(g_p_to, PATH_BUF, dst, g_cpnames[i])
-            || !copy_file(g_p_from, g_p_to))
+            || !path_join(g_p_to, PATH_BUF, dst, g_cpnames[i]))
+            return 1;
+        if (same_file(g_p_from, g_p_to))
+            continue;
+        if (!copy_file(g_p_from, g_p_to))
             return 1;
     }
     return 0;

@@ -1770,16 +1770,11 @@ static void start_state(void)
 int main(int argc, char **argv)
 {
     char deflg[LG_PATH_MAX], lg[9];
-    const char *league = deflg;
+    const char *league = NULL;
     const char *anms = DEF_ANMS;
     const char *font_dir = NULL;
     const uint8_t *keys = NULL, *raw_path = NULL;
     int have_fonts, raw_mode = 0, i, npos = 0;
-
-    /* the default league is the current one (C16.1) */
-    lg_current(".", lg);
-    if (!lg_path(deflg, LG_PATH_MAX, LG_DIR, lg, DIR_SEP))
-        return 2;
 
 #ifdef __WATCOMC__
     _harderr(_hard_err_handler);
@@ -1807,6 +1802,13 @@ int main(int argc, char **argv)
         } else {
             return usage();
         }
+    }
+    if (league == NULL) {
+        /* no LEAGUE_DIR: the current league's dir (C16.3) */
+        lg_current(".", lg);
+        if (!lg_path(deflg, LG_PATH_MAX, LG_DIR, lg, DIR_SEP))
+            return 2;
+        league = deflg;
     }
 
 #ifndef __WATCOMC__
