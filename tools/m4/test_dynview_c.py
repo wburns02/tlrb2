@@ -889,6 +889,9 @@ def test_standings_no_history_parity(tmp_path):
     check_parity(empty, tmp_path, 'st_nh_open', keys=[48])
     check_parity(empty, tmp_path, 'st_nh_left', keys=[48, LEFT, RIGHT, PGDN])
     check_parity(empty, tmp_path, 'st_nh_title', title=True, keys=[48])
+    # every season screen's title on a league with no recorded season (no SEASON 0)
+    check_parity(empty, tmp_path, 'rv_nh_open', keys=[53])
+    check_parity(empty, tmp_path, 'rv_nh_title', title=True, keys=[53])
 
 
 # ---------------- test 6: errors ----------------

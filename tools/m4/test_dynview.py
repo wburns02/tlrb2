@@ -1475,6 +1475,18 @@ def test_awards_no_history(tmp_path):
     assert dynview.step(s, dynview.KEY_RIGHT, data) == (s, 0)
 
 
+
+def test_no_history_titles_have_no_season_zero(tmp_path):
+    """a league with no recorded season: no SEASON 0 in the season screens' titles"""
+    ldir = tmp_path / 'empty'
+    ldir.mkdir()
+    data = dynview.load_data(str(ldir))
+    assert dynview.screen_title((SA, 0, 0), data) == 'SEASON AWARDS'
+    assert dynview.screen_title((dynview.SCREEN_STANDINGS, 0, 0), data) == 'SEASON STANDINGS'
+    assert dynview.screen_title(st(dynview.SCREEN_REVIEW, 0, 1), data) == 'LAST SEASON REVIEW'
+    for screen in (SA, dynview.SCREEN_STANDINGS, dynview.SCREEN_REVIEW):
+        assert 'SEASON 0' not in dynview.screen_title((screen, 0, 0), data)
+
 def test_awards_label_strings_per_league():
     """all 20 kinds of one league: the label strings"""
     pos = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']

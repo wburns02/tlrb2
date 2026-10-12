@@ -1188,11 +1188,13 @@ def screen_title(state, data):
     if screen == SCREEN_ABOUT:
         return 'ABOUT THE MODS %d/%d' % (page + 1, (len(ABOUT_ROWS) + ROWS_PER_PAGE - 1)
                                          // ROWS_PER_PAGE)
+    n = data['hist'].seasons_recorded
+    # A league with no recorded season has no season number to show (it would read SEASON 0).
     if screen == SCREEN_AWARDS:
-        return 'SEASON %d AWARDS' % (data['hist'].seasons_recorded - cat)
+        return 'SEASON %d AWARDS' % (n - cat) if n else 'SEASON AWARDS'
     if screen == SCREEN_STANDINGS:
-        return 'SEASON %d STANDINGS' % (data['hist'].seasons_recorded - cat)
-    return 'SEASON %d IN REVIEW' % data['hist'].seasons_recorded
+        return 'SEASON %d STANDINGS' % (n - cat) if n else 'SEASON STANDINGS'
+    return 'SEASON %d IN REVIEW' % n if n else 'LAST SEASON REVIEW'
 
 
 def draw_panel(fb):

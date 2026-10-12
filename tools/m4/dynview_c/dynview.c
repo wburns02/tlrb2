@@ -2408,10 +2408,18 @@ static void screen_title(State st, char *dst)
     else if (st.screen == SCREEN_ABOUT)
         sprintf(dst, "ABOUT THE MODS %d/%d", st.page + 1,
                 (N_ABOUT_ROWS + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE);
-    else if (st.screen == SCREEN_AWARDS)
-        sprintf(dst, "SEASON %ld AWARDS", (long)g_hdr_seasons - st.cat);
-    else if (st.screen == SCREEN_STANDINGS)
-        sprintf(dst, "SEASON %ld STANDINGS", (long)g_hdr_seasons - st.cat);
+    else if (st.screen == SCREEN_AWARDS) {
+        /* no recorded season: no season number to show (it would read SEASON 0) */
+        if (g_hdr_seasons)
+            sprintf(dst, "SEASON %ld AWARDS", (long)g_hdr_seasons - st.cat);
+        else
+            strcpy(dst, "SEASON AWARDS");
+    } else if (st.screen == SCREEN_STANDINGS) {
+        if (g_hdr_seasons)
+            sprintf(dst, "SEASON %ld STANDINGS", (long)g_hdr_seasons - st.cat);
+        else
+            strcpy(dst, "SEASON STANDINGS");
+    }
     else if (st.screen == SCREEN_OFFSEASON) {
         int phase = st.cat & 15;
         unsigned long n = (unsigned long)g_hdr_seasons;
@@ -2427,8 +2435,10 @@ static void screen_title(State st, char *dst)
             strcpy(dst, "5/6 FREE AGENT SIGNINGS");
         else
             sprintf(dst, "6/6 SEASON %lu IS READY", n + 1);
-    } else
+    } else if (g_hdr_seasons)
         sprintf(dst, "SEASON %u IN REVIEW", (unsigned)g_hdr_seasons);
+    else
+        strcpy(dst, "LAST SEASON REVIEW");
 }
 
 static void draw_panel(void)
