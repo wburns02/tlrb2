@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-r"""Patch TONY2.BAT to run the dynasty programs before control (contract C7).
+r"""Patch TONY2.BAT to run the dynasty programs before control (contract C7, C16.4).
 
 Replaces the stock `:start` / `control` with:
   :start
-  copy TEAMS\CLASSIC\*.* C:\DYNSNAP > NUL
+  histwr /snap
   dynasty
   if errorlevel 1 goto rolled
   goto ctl
   :rolled
-  call archive
+  histwr /archive
   histwr
   rosters
   dynview /offseason
   :ctl
   control
+(C16.4: `histwr /snap` copies the current league's dir (SYSTEM, league.h) into its snap dir, which is
+C:\DYNSNAP for CLASSIC; `histwr /archive` replaces `call archive`, the same copy into the first free slot.)
 
 and, when the stock `:frontend` / `play` is present, runs the DYNASTY MODE screen at boot:
   :frontend
@@ -31,10 +33,11 @@ with `:dynmenu` / `histwr /lines` / `dynview /menu` / `goto start` and `:create`
 from C:\SEASONS once, before any DYNVIEW screen reads it.
 
 Every earlier patched form (C5 with and without the histwr line, C7 with
-dynview /review, any form without the boot screen, the C10/C12 frontend and menu labels without
-`histwr /lines`) upgrades in place. CRLF line endings, idempotent, asserts stock content, refuses
+dynview /review, the C7 form with the copy line and `call archive` (before C16.4), any form without the boot
+screen, the C10/C12 frontend and menu labels without `histwr /lines`) upgrades in place. CRLF line endings, idempotent, asserts stock content, refuses
 live/pristine paths. Also writes ARCHIVE.BAT next to TONY2.BAT: it copies the finished season (the
 pre-roll snapshot in C:\DYNSNAP) to the first free C:\SEASONS\Snn, so a new season never destroys the old one.
+Unused since C16.4 (`histwr /archive` does the copy); it stays so a revert to an older bundle keeps working.
 Usage:
   bat_patch.py INSTALL_ROOT [--revert]
 """
@@ -49,12 +52,12 @@ STOCK_START = (
 
 PATCHED_START = (
     ':start\r\n'
-    'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
+    'histwr /snap\r\n'
     'dynasty\r\n'
     'if errorlevel 1 goto rolled\r\n'
     'goto ctl\r\n'
     ':rolled\r\n'
-    'call archive\r\n'
+    'histwr /archive\r\n'
     'histwr\r\n'
     'rosters\r\n'
     'dynview /offseason\r\n'
@@ -85,6 +88,18 @@ PATCHED_LABELS_C10 = ('goto frontend\r\n\r\n'          # before C13: upgraded in
 
 # earlier patched forms, newest first: upgraded in place by patch()
 EARLIER_FORMS = (
+    (':start\r\n'                       # C7 to C16.3: the copy line and `call archive`
+     'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
+     'dynasty\r\n'
+     'if errorlevel 1 goto rolled\r\n'
+     'goto ctl\r\n'
+     ':rolled\r\n'
+     'call archive\r\n'
+     'histwr\r\n'
+     'rosters\r\n'
+     'dynview /offseason\r\n'
+     ':ctl\r\n'
+     'control\r\n'),
     (':start\r\n'
      'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
      'dynasty\r\n'
