@@ -491,6 +491,11 @@ has eight rows (7 DYNASTY SETTINGS, 8 ABOUT THE MODS) with or without a recorded
 season back, RIGHT one forward (page reset), PGUP/PGDN page by 12, ESC to the hub. Title `SEASON N AWARDS`. Rows are
 that season's C7 award records in kind order (AWARD, NAME, VALUE: `7.4 WAR`, `.992 FLD`, `45.2 RUNS`); a season with no
 award records shows the season entry's six winners and `GG SS  NOT RECORDED` (seasons past 64: `NO AWARDS RECORDED`).
+Second amendment 2026-10-11: a tenth row `0  SEASON STANDINGS` (screen 10, key `0`, footers `0-9 SELECT ...`), same
+season browsing as SEASON AWARDS, title `SEASON N STANDINGS`. Rows come from the C2 season entry's w_l pairs: per league
+with any games, a header row (`AMERICAN LEAGUE`, `NATIONAL LEAGUE`) then its teams by PCT desc, W desc, id asc (TEAM, W,
+L, PCT, GB as `-`, `4`, `4.5`, mark `WS` for the champion, `P` for the other pennant winner). A team with no MAJ stem
+shows `TEAM n`. No games in either league, or a season past 64: `NO STANDINGS RECORDED`.
 
 DYNASTY SETTINGS edits the C2 header fields that had no UI: byte 10 era mode (ENTER cycles REAL CALENDAR (0) ->
 RESERVE CLAUSE (1) -> FREE AGENCY (2) -> REAL CALENDAR; any other value shows RESERVE CLAUSE and goes to FREE AGENCY)
