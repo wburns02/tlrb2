@@ -3600,13 +3600,13 @@ static const ColDef COLS_SEASON_LEADERS[] = {
 
 /* PLAYER CARD season tables (C13.5): batters and pitchers */
 static const ColDef COLS_CARD_BAT[] = {
-    { "YEAR", CX(0), 4, 0 }, { "TEAM", CX(4), 4, 0 }, { "G", CX(8), 4, 1 },
+    { "YEAR", CX(0), 4, 0 }, { "TM", CX(4), 4, 1 }, { "G", CX(8), 4, 1 },
     { "AB", CX(12), 5, 1 }, { "H", CX(17), 4, 1 }, { "HR", CX(21), 4, 1 },
     { "RBI", CX(25), 4, 1 }, { "SB", CX(29), 4, 1 }, { "AVG", CX(33), 5, 1 },
     { "WAR", CX(38), 5, 1 } };
 
 static const ColDef COLS_CARD_PIT[] = {
-    { "YEAR", CX(0), 4, 0 }, { "TEAM", CX(4), 4, 0 }, { "G", CX(8), 4, 1 },
+    { "YEAR", CX(0), 4, 0 }, { "TM", CX(4), 4, 1 }, { "G", CX(8), 4, 1 },
     { "W", CX(12), 3, 1 }, { "L", CX(15), 3, 1 }, { "SV", CX(18), 4, 1 },
     { "IP", CX(22), 6, 1 }, { "SO", CX(28), 4, 1 }, { "ERA", CX(32), 5, 1 },
     { "WAR", CX(37), 5, 1 } };

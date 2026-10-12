@@ -847,8 +847,8 @@ highest season).
   4 ratings of the latest line, batters `POW p  H&R h  SPD s` and line 5 `RNG r  ARM a  BUNT b`; pitchers
   `CTL c  VEL v  END e` and line 5 empty. No line: `NO RATINGS RECORDED`. The dev grade is never shown.
 - Season table: header row at y 84 (C_HEADER_GOLD, as the list header), up to 7 season rows from y 95 (ROW_H 11),
-  then a CAREER row with the HISTORY entry totals (always the entry, not the sum of lines). Batters: YEAR (4), TEAM
-  (4), G (4), AB (5), H (4), HR (4), RBI (4), SB (4), AVG (5), WAR (5). Pitchers: YEAR, TEAM, G, W (3), L (3), SV (4),
+  then a CAREER row with the HISTORY entry totals (always the entry, not the sum of lines). Batters: YEAR (4), TM
+  (4, right-aligned so the abbreviation never touches the year; amended 2026-10-12, was TEAM left-aligned), G (4), AB (5), H (4), HR (4), RBI (4), SB (4), AVG (5), WAR (5). Pitchers: YEAR, TM, G, W (3), L (3), SV (4),
   IP (6), SO (4), ERA (5), WAR (5). AVG / ERA / IP / WAR formatted as the leader values. Rows newest season first.
   No lines: one row `NO SEASON LINES RECORDED` above CAREER.
 - Footer `PGUP PGDN SEASONS   ESC BACK`.

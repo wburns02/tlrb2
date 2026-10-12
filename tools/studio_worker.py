@@ -75,9 +75,13 @@ def load_cfg():
             'comfy': os.environ.get('TLRB2_COMFY') or faces.COMFY}
 
 
+USER_AGENT = 'tlrb2-studio-worker/1'
+
+
 def _site(cfg, path, body=None):
-    """Worker call to the site: nginx basic auth in Authorization, the worker token in X-Studio-Token."""
-    headers = {'Authorization': cfg['auth'], 'X-Studio-Token': cfg['token']}
+    """Worker call to the site: nginx basic auth in Authorization, the worker token in X-Studio-Token. The site sits
+    behind Cloudflare, which answers 403 to urllib's default Python-urllib agent, so the worker names itself"""
+    headers = {'Authorization': cfg['auth'], 'X-Studio-Token': cfg['token'], 'User-Agent': USER_AGENT}
     data = b''
     if body is not None:
         data = json.dumps(body).encode()

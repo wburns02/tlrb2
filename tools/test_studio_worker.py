@@ -99,7 +99,8 @@ class _Site(http.server.BaseHTTPRequestHandler):
         rec = self.server.rec
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         rec['log'].append({'path': self.path, 'auth': self.headers.get('Authorization'),
-                           'token': self.headers.get('X-Studio-Token'), 'body': body})
+                           'token': self.headers.get('X-Studio-Token'), 'ua': self.headers.get('User-Agent'),
+                           'body': body})
         if self.path == '/studio/worker/claim':
             if rec['queue']:
                 _reply(self, 200, json.dumps(rec['queue'].pop(0)).encode())
@@ -233,6 +234,7 @@ def test_auth_headers_sent_and_token_never_printed(rig, capsys):
     for c in calls:
         assert c['auth'] == AUTH
         assert c['token'] == TOKEN
+        assert not c['ua'].startswith('Python-urllib')   # Cloudflare in front of the site 403s that agent
     assert all(a is None for a in rig['comfy']['auth'])
     out = capsys.readouterr()
     assert TOKEN not in out.out + out.err
