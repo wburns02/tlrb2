@@ -470,7 +470,7 @@ def test_release_median_halving_protects_high_v():
 # 5. Market
 # ---------------------------------------------------------------------------
 
-def market_events(era, year, exp=6):
+def market_events(era, year, exp=6, start=0, seasons=0):
     timg = full_image('BAL')
     # 24 veterans with exp >= 6 -> market draws; the season year goes to every
     # record (the first named record's byte 21 drives the era rule)
@@ -488,6 +488,8 @@ def market_events(era, year, exp=6):
     hist_hdr = bytearray(32)
     hist_hdr[10] = era
     struct.pack_into('<I', hist_hdr, 12, 0)
+    struct.pack_into('<H', hist_hdr, 4, seasons)
+    struct.pack_into('<H', hist_hdr, 18, start)
     teams = [('bal', 0, timg)]
     ev = rosters.offseason(teams, {'bal': bytes(timg)}, {}, pool, {0: (80, 82)},
                            hist_hdr, Rng(5))
@@ -499,6 +501,19 @@ def test_market_only_when_free_agency_on():
     assert len(market_events(0, 1976)) > 0       # calendar year 1976 -> on
     assert market_events(1, 1975) == []          # reserve clause always
     assert market_events(2, 1975)                # free agency always
+
+
+def test_market_start_year_runs_the_real_calendar():
+    # C13.1: a set start year (1871..2100) replaces the record-byte-21 year with
+    # start + seasons recorded; outside that range the old rule stands
+    assert len(market_events(0, 1975, start=1975, seasons=1)) > 0   # 1976
+    assert market_events(0, 1990, start=1974, seasons=1) == []      # 1975
+    assert len(market_events(0, 1960, start=1980, seasons=0)) > 0   # 1980
+    assert market_events(0, 1990, start=1950, seasons=3) == []      # 1953
+    assert len(market_events(0, 1990, start=1870, seasons=3)) > 0   # invalid: 1990
+    assert market_events(0, 1975, start=2101, seasons=3) == []      # invalid: 1975
+    assert market_events(1, 1990, start=1990, seasons=5) == []      # era 1 ignores it
+    assert market_events(2, 1950, start=1950, seasons=1)            # era 2 ignores it
 
 
 # ---------------------------------------------------------------------------

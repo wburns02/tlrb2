@@ -100,7 +100,7 @@ class TestBatPatch:
                  + '\r\n' + bat_patch.STOCK_START + 'goto frontend\r\n')
         patched = stock.replace(bat_patch.STOCK_FRONTEND, bat_patch.PATCHED_FRONTEND).replace(
             bat_patch.STOCK_START, bat_patch.PATCHED_START)
-        assert bat_patch.PATCHED_FRONTEND == ':frontend\r\ndynview /title\r\nplay\r\n'
+        assert bat_patch.PATCHED_FRONTEND == ':frontend\r\nhistwr /lines\r\ndynview /title\r\nplay\r\n'
         for start in (bat_patch.STOCK_START, bat_patch.PATCHED_START) + bat_patch.EARLIER_FORMS:
             with tempfile.TemporaryDirectory() as tmpdir:
                 install = Path(tmpdir) / 'TONY2'
@@ -145,7 +145,7 @@ class TestBatPatch:
             assert lines[at:at + 4] == ['if errorlevel 10 goto dynmenu', 'if errorlevel 9 goto create',
                                         'if errorlevel 8 goto dynmenu', 'if errorlevel 7 goto end']
             d = lines.index(':dynmenu')
-            assert lines[d:d + 3] == [':dynmenu', 'dynview /menu', 'goto start']
+            assert lines[d:d + 4] == [':dynmenu', 'histwr /lines', 'dynview /menu', 'goto start']
             c = lines.index(':create')
             assert lines[c:c + 3] == [':create', 'create', 'goto start']
             assert d > lines.index('goto frontend') and c < lines.index(':draft')
@@ -166,6 +166,37 @@ class TestBatPatch:
                 assert bat_patch.PATCHED_ROUTES in text and bat_patch.PATCHED_LABELS in text
                 assert bat_patch.patch(str(install), revert=True)
                 assert (install / 'TONY2.BAT').read_bytes() == real.read_bytes()
+
+    def test_c13_histwr_lines_before_every_dynview_screen(self):
+        """C13.2: `histwr /lines` sits directly before every `dynview /menu` and `dynview /title` line and
+        nowhere else; a C10/C12-patched BAT (no histwr /lines) upgrades in place, idempotent, and reverts
+        to the stock bytes."""
+        stock = ('echo off\r\n\r\n' + bat_patch.STOCK_FRONTEND + '\r\n' + bat_patch.STOCK_START
+                 + 'if errorlevel 8 goto x\r\n' + bat_patch.STOCK_ROUTES
+                 + 'goto frontend\r\n\r\n:draft\r\ndraft\r\n')
+        c12 = (stock.replace(bat_patch.STOCK_FRONTEND, bat_patch.PATCHED_FRONTEND_C12)
+               .replace(bat_patch.STOCK_START, bat_patch.PATCHED_START)
+               .replace(bat_patch.STOCK_ROUTES, bat_patch.PATCHED_ROUTES)
+               .replace(bat_patch.STOCK_LABELS, bat_patch.PATCHED_LABELS_C10))
+        assert 'histwr /lines' not in c12
+        for src in (stock, c12):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                install = Path(tmpdir) / 'TONY2'
+                install.mkdir()
+                bat = install / 'TONY2.BAT'
+                bat.write_bytes(src.encode('cp437'))
+                assert bat_patch.patch(str(install), revert=False)
+                text = bat.read_bytes().decode('cp437')
+                lines = text.split('\r\n')
+                dyn = [i for i, ln in enumerate(lines) if ln in ('dynview /menu', 'dynview /title')]
+                hw = [i for i, ln in enumerate(lines) if ln == 'histwr /lines']
+                assert len(dyn) == 2 and hw == [i - 1 for i in dyn]
+                # removing the two lines gives back exactly the C10/C12 form
+                assert text.replace('histwr /lines\r\n', '') == c12
+                assert bat_patch.patch(str(install), revert=False)
+                assert bat.read_bytes().decode('cp437') == text
+                assert bat_patch.patch(str(install), revert=True)
+                assert bat.read_bytes().decode('cp437') == stock
 
     def test_archive_bat_written_and_reverted(self):
         """patch() writes ARCHIVE.BAT (first free C:\\SEASONS\\Snn gets the DYNSNAP copy); revert removes it."""

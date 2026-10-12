@@ -166,7 +166,7 @@ def setup_case(root, pre, seed, era, mask):
     return league, snap, hist, retired
 
 
-def run_case(root, tag, seed, era, mask, fmt=None):
+def run_case(root, tag, seed, era, mask, fmt=None, start=None):
     """Run both implementations on identical copies; file-by-file parity.
     fmt, when given, is HISTORY byte 11 (the playoff format, C12.4) on both
     copies. Returns the Python league dir."""
@@ -179,6 +179,11 @@ def run_case(root, tag, seed, era, mask, fmt=None):
         for hist in (lh, rh):
             raw = bytearray(open(hist, 'rb').read())
             raw[11] = fmt
+            open(hist, 'wb').write(bytes(raw))
+    if start is not None:
+        for hist in (lh, rh):
+            raw = bytearray(open(hist, 'rb').read())
+            struct.pack_into('<H', raw, 18, start)
             open(hist, 'wb').write(bytes(raw))
     pyc = rosters_py.run(lc, ls, lh, lr)
     assert pyc == 0, f'py rc {pyc}'
@@ -226,6 +231,16 @@ def test_real_era2_mask0(tmp_path):
         import pytest
         pytest.skip('fixtures missing')
     run_case(tmp_path, 'e2_', 0x1236, 2, 0)
+
+
+def test_real_era0_start_year_parity(tmp_path):
+    # C13.1: start 1950 puts the season being started before 1976 (no market),
+    # start 1990 after it; both ports must agree byte for byte on each
+    if not os.path.isdir(S1_PRE):
+        import pytest
+        pytest.skip('fixtures missing')
+    run_case(tmp_path, 'y50_', 0x1237, 0, 0, start=1950)
+    run_case(tmp_path, 'y90_', 0x1237, 0, 0, start=1990)
 
 
 def test_real_era0_managed_repair(tmp_path):
