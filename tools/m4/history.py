@@ -3,7 +3,7 @@
 
 Layout, little endian (TEAMS/<LEAGUE>/HISTORY.DAT):
   header 32 B: 0 u8 done flag, 1 u16 rng word, 3 u8 version, 4 u16 seasons recorded,
-               6 u16 player entries, 8..31 zero
+               6 u16 player entries, 8..17 zero, 18 u16 start year (C13.1), 20..31 zero
   season table at 32: 64 x 128 B. Entry for season n (1-based) at 32 + (n-1)*128:
     0 u16 season_no, 2 u8 champion id, 3 u8 runner-up id (0xff unknown),
     4 8 B champion stem, 12 8 B runner-up stem, 20 u8 al_pennant, 21 u8 nl_pennant,
@@ -20,9 +20,11 @@ Layout, little endian (TEAMS/<LEAGUE>/HISTORY.DAT):
 
 Identity: same entry iff name bytes 0..19 AND birth match.
 Careers count dynasty seasons only (the shipped half-0 lines are NOT imported).
+SEASLINE.DAT (C13.2, next to HISTORY.DAT): one 80 B line per active record per season (season_line).
 usage: python3 tools/m4/history.py dump HISTORY.DAT
+       python3 tools/m4/history.py lines HISTORY.DAT SEASONS_DIR   (backfill_lines, prints the count)
 """
-import os, sys, struct, glob
+import os, sys, struct, glob, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import war
@@ -79,6 +81,15 @@ MILESTONE_IDX = {'H': 2, 'HR': 5, 'RBI': 7, 'SB': 10, 'W': 13, 'SV': 15, 'PSO': 
 # season-half milestone stats, as collected keys (H/HR/SB = L+R; W/SV/PSO as in C2;
 # the collection step flattens the C2 inputs to these names)
 MS_H, MS_HR, MS_SB, MS_W, MS_SV, MS_PSO = 'ms_H', 'ms_HR', 'ms_SB', 'ms_W', 'ms_SV', 'ms_PSO'
+# C13.1 start year (header bytes 18..19): a value outside START_MIN..START_MAX counts as START_DEFAULT
+START_MIN, START_MAX, START_DEFAULT = 1871, 2100, 1993
+# C13.2 SEASLINE.DAT: 16 B header (S L, version 1, 0, line size, highest season written in 6..7, 8 zero),
+# then 80 B lines. LINE_FMT = bytes 0..11 of a line (entry, season, team, flags, age, pos1, face, b29, dev)
+SEASLINE_NAME = 'SEASLINE.DAT'
+LINE_SIZE, LINE_HDR = 80, 16
+LINE_FMT = '<HHBBBBHBB'
+B29_OFF, DEV_OFF = 29, 142              # roster half byte 29 (speed, throws, bats, face group), dev grade
+RATING_FIELDS = ('power', 'bunt', 'hit_run', 'speed', 'range', 'arm', 'control', 'velocity', 'endurance')
 
 
 def idiv(a, b):
@@ -141,6 +152,15 @@ class History:
     @seasons_recorded.setter
     def seasons_recorded(self, v):
         self.d[4], self.d[5] = v & 255, (v >> 8) & 255
+
+    # C13.1 start year, u16 LE at 18..19 (raw; year_of applies the 1871..2100 rule)
+    @property
+    def start_year(self):
+        return self.d[18] | self.d[19] << 8
+
+    @start_year.setter
+    def start_year(self, v):
+        self.d[18], self.d[19] = v & 255, (v >> 8) & 255
 
     def _parse_players(self):
         out = []
@@ -259,6 +279,13 @@ class History:
         return e
 
 
+def year_of(hist, n):
+    """C13.1 calendar year of season n (1-based): start + n - 1, start = header bytes 18..19 when they
+    hold 1871..2100, else 1993."""
+    v = hist.start_year
+    return (v if START_MIN <= v <= START_MAX else START_DEFAULT) + n - 1
+
+
 def upgrade_legacy(path):
     """A legacy 4-byte P1 file (done flag + rng word, no byte 3): upgrade in place
     keeping bytes 0..2, writing version 1 and the full 32 B header."""
@@ -347,6 +374,39 @@ def mapped_teams(league_dir, m):
     return teams
 
 
+def league_wl(m, table):
+    """C2 step 1 W-L: 32 (W, L) pairs by stable id (C12.3), (0, 0) for a team with no games."""
+    wl = [(0, 0)] * 32
+    for k, L, slot, _st in teamids.teams(m.d, table):
+        w, l = m.wl('AL' if L == 0 else 'NL', slot)
+        if w or l:
+            wl[k] = (w, l)
+    return wl
+
+
+def line_bytes(idx, season_no, team_id, roster, rec, w10, totals):
+    """One 80 B SEASLINE.DAT line (C13.2). Bio, dev grade and ratings come from the roster half, stats from
+    the season half: totals = war.season_stats_inputs(rec) in TOTALS order, each min(v, 0xffff). w10 is
+    the season WAR10 as an s16 (clamped)."""
+    pos1 = _get(roster, *F['pos1']) & 15
+    b = bytearray(LINE_SIZE)
+    struct.pack_into(LINE_FMT, b, 0, idx & 0xffff, season_no & 0xffff, team_id & 255,
+                     1 if pos1 == 0 else 0, _get(roster, *F['age']), pos1,
+                     _get(roster, *F['portrait']), roster[B29_OFF], roster[DEV_OFF])
+    b[12:21] = bytes(_get(roster, *F[k]) for k in RATING_FIELDS)
+    struct.pack_into('<25H', b, 22, *(min(totals[k], 0xffff) for k in TOTALS))
+    struct.pack_into('<h', b, 72, max(-32768, min(32767, w10)))
+    return bytes(b)
+
+
+def season_line(idx, season_no, lg_id, roster, rec, lg_totals, team_pf):
+    """C2 step 3 season WAR10 of one active record and its C13.2 line: returns (w10, line bytes).
+    lg_totals and team_pf (the record's team park factor) come from the league pass."""
+    pos1 = _get(roster, *F['pos1']) & 15
+    w10 = season_war10(rec, roster, _get(rec, *F['games']), lg_totals, team_pf, pos1)
+    return w10, line_bytes(idx, season_no, lg_id, roster, rec, w10, war.season_stats_inputs(rec))
+
+
 def record_season(league_dir, hist_path, season_no, retirees=None):
     """C2 update order, run BEFORE the P1 rollover mutates anything:
     1. read MAJ standings, champion; write the season entry.
@@ -361,7 +421,8 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     NL leader records: leader_records, and the World Series records of PLAYOFFS.AL:
     series_records). C7 fourth amendment: BOXSCORE.DAT next to HISTORY.DAT (old
     records with season < current kept only when HISTORY.DAT existed, then
-    box_records of the kept games).
+    box_records of the kept games). C13.2: SEASLINE.DAT next to HISTORY.DAT gets this season's
+    step 3 lines (season_line), after the records of earlier seasons (season_no >= current dropped).
     retirees = {v20 basename: [record indexes]} from rollover(); applied later
     by mark_retired() (step 4 runs after the P1 rollover)."""
     had_hist = os.path.isfile(hist_path) and os.path.getsize(hist_path) > 0
@@ -374,15 +435,11 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     ws, runner, al_p, nl_p = decode_champion(m, table)
     entry = {'season_no': season_no, 'champion': ws, 'runner_up': runner,
              'champion_stem': team_stem(m, ws, table), 'runner_up_stem': team_stem(m, runner, table),
-             'al_pennant': al_p, 'nl_pennant': nl_p, 'w_l': [(0, 0)] * 32,
+             'al_pennant': al_p, 'nl_pennant': nl_p, 'w_l': league_wl(m, table),
              'ndiv': 0, 'divmap': bytes(16)}
     if teamids.ndiv(m.d) == 3 or table is not None:
         # C12.7: a 2-division league with no TEAMID.DAT keeps the legacy zeros (same divisions, byte-identical)
         entry['ndiv'], entry['divmap'] = teamids.ndiv(m.d), divmap_of(m.d, table)
-    for k, L, slot, _st in teamids.teams(m.d, table):
-        w, l = m.wl('AL' if L == 0 else 'NL', slot)
-        if w or l:
-            entry['w_l'][k] = (w, l)
     if season_no <= SEASON_COUNT:      # the table holds 64 seasons; later ones keep careers only
         hist.write_season_entry(season_no, entry)
     if season_no > hist.seasons_recorded:
@@ -393,6 +450,7 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     pf = war.park_factors(mp, table) if mp else {}
     # 3. per player; collect the C7 inputs per named record
     collected = []
+    lines = []                          # C13.2 SEASLINE.DAT lines, in step 3 visiting order
     table_season = season_no <= SEASON_COUNT
     rec_idx = {}                        # C7 box: (team id, V20 record number) -> entry index
     for p, lg_id in teams:
@@ -433,7 +491,8 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
             e['pos1'] = pos1
             e['pitcher'] = 1 if pos1 == 0 else 0
             team_pf = pf.get(lg_id, 1000)
-            w10 = season_war10(rec, roster, season_games, lg_totals, team_pf, pos1)
+            w10, line = season_line(idx, season_no, lg_id, roster, rec, lg_totals, team_pf)
+            lines.append(line)
             e['WAR10'] += w10
             e['top7'] = sorted(e['top7'] + [w10], reverse=True)[:7]
             e['JAWS10'] = war.jaws10(e['WAR10'], e['top7'])
@@ -511,6 +570,10 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     ms_new += series_records(season_no, playoffs, stem_ids)
     write_milestones(hist_path, ms_old + ms_new)
     write_box(hist_path, box_old + box_records(season_no, playoffs, stem_ids, rec_idx))
+    # C13.2 SEASLINE.DAT: drop season_no >= current (a missing or bad file starts empty), append this season
+    sl_path = os.path.join(os.path.dirname(hist_path), SEASLINE_NAME)
+    kept = [b for b in read_line_bytes(sl_path) if struct.unpack_from('<H', b, 2)[0] < season_no]
+    write_lines(sl_path, kept + lines, season_no)
     hist.done = 1
     hist.flush()
     hist.save(hist_path)
@@ -862,6 +925,105 @@ def season_milestones(collected, exps_after):
     return out
 
 
+def read_line_bytes(path):
+    """The 80 B lines of a SEASLINE.DAT in file order; [] for a missing file or a bad header (S L, version 1,
+    reserved 0, line size 80). A short tail is dropped."""
+    if not os.path.exists(path):
+        return []
+    raw = open(path, 'rb').read()
+    if len(raw) < LINE_HDR or raw[0:2] != b'SL' or raw[2] != 1 or raw[3] != 0 \
+            or struct.unpack_from('<H', raw, 4)[0] != LINE_SIZE:
+        return []
+    return [raw[o:o + LINE_SIZE] for o in range(LINE_HDR, len(raw) - LINE_SIZE + 1, LINE_SIZE)]
+
+
+def decode_line(b):
+    """One SEASLINE.DAT line as the dict read_lines returns (C13.2 fields)."""
+    idx, season, team, flags, age, pos1, face, b29, dev = struct.unpack_from(LINE_FMT, b, 0)
+    return {'entry': idx, 'season': season, 'team': team, 'flags': flags, 'age': age, 'pos1': pos1,
+            'face': face, 'b29': b29, 'dev': dev, 'ratings': list(b[12:21]),
+            'stats': list(struct.unpack_from('<25H', b, 22)), 'war10': struct.unpack_from('<h', b, 72)[0]}
+
+
+def read_lines(path):
+    """SEASLINE.DAT as dicts (entry, season, team, flags, age, pos1, face, b29, dev, ratings[9], stats[25],
+    war10) in file order; [] for a missing file or a bad header."""
+    return [decode_line(b) for b in read_line_bytes(path)]
+
+
+def write_lines(path, lines, highest):
+    """Write SEASLINE.DAT: the 16 B header (highest season written in 6..7), then the 80 B lines in order."""
+    assert all(len(b) == LINE_SIZE for b in lines)
+    hdr = b'SL' + bytes([1, 0]) + struct.pack('<HH', LINE_SIZE, min(highest, 0xffff)) + bytes(8)
+    open(path, 'wb').write(hdr + b''.join(lines))
+
+
+def archive_dirs(seasons_dir):
+    """The Snn subdirs (nn 01..99) of seasons_dir that hold a *.MAJ, in nn order."""
+    if not os.path.isdir(seasons_dir):
+        return []
+    out = []
+    for name in sorted(os.listdir(seasons_dir)):
+        p = os.path.join(seasons_dir, name)
+        if re.fullmatch(r'S(0[1-9]|[1-9][0-9])', name) and os.path.isdir(p) and maj_or_none(p):
+            out.append(p)
+    return out
+
+
+def archive_lines(archive, season_no, hist):
+    """The lines record_season would write for an archive dir as league dir and season_no. Entry indexes
+    come from find_entry on hist (a record with no entry gets no line). Reads only; hist is not saved."""
+    mp = maj_or_none(archive)
+    m = maj.Maj.load(mp)
+    table = teamids.load_table(archive)
+    teams = mapped_teams(archive, m)
+    _per, lg_totals = war.season_league(teams)
+    pf = war.park_factors(mp, table)
+    out = []
+    for p, lg_id in teams:
+        t = Team.load(p)
+        for i in range(40):
+            if not t.players[i].active:
+                continue
+            roster = t.players[i].raw
+            rec = t.players[i + 40].raw
+            idx = find_entry(hist, bytes(roster[0:20]), 1000 + season_no - _get(roster, *F['age']))
+            if idx >= 0:
+                out.append(season_line(idx, season_no, lg_id, roster, rec, lg_totals,
+                                       pf.get(lg_id, 1000))[1])
+    return out
+
+
+def backfill_lines(hist_path, seasons_dir):
+    """C13.2 backfill: SEASLINE.DAT next to hist_path from the season archives (Snn subdirs of seasons_dir
+    with a *.MAJ). Runs only when SEASLINE.DAT is missing and HISTORY.DAT has seasons recorded; then it
+    writes the file (even when nothing matched) and returns the number of archives matched. An archive
+    matches the lowest unmatched season s whose stored W-L equals its own (with a game played). Never
+    writes HISTORY.DAT, MILESTON.DAT or BOXSCORE.DAT."""
+    sl_path = os.path.join(os.path.dirname(hist_path), SEASLINE_NAME)
+    if os.path.exists(sl_path):
+        return 0
+    hist = History.load(hist_path)
+    if hist.seasons_recorded == 0:
+        return 0
+    limit = min(hist.seasons_recorded, SEASON_COUNT)
+    stored = {s: hist.read_season_entry(s)['w_l'] for s in range(1, limit + 1)}
+    matched = {}                        # season -> archive dir
+    for archive in archive_dirs(seasons_dir):
+        wl = league_wl(maj.Maj.load(maj_or_none(archive)), teamids.load_table(archive))
+        if not any(w or l for w, l in wl):
+            continue
+        for s in range(1, limit + 1):
+            if s not in matched and wl == stored[s]:
+                matched[s] = archive
+                break
+    lines = []
+    for s in sorted(matched):
+        lines += archive_lines(matched[s], s, hist)
+    write_lines(sl_path, lines, max(matched, default=0))
+    return len(matched)
+
+
 def dump(hist_path):
     h = History.load(hist_path)
     print(f'seasons recorded {h.seasons_recorded}  version {h.version}  done {h.done}')
@@ -887,6 +1049,8 @@ def dump(hist_path):
 def main(argv):
     if len(argv) >= 3 and argv[1] == 'dump':
         dump(argv[2])
+    elif len(argv) >= 4 and argv[1] == 'lines':
+        print(backfill_lines(argv[2], argv[3]))
     else:
         raise SystemExit(__doc__)
 
