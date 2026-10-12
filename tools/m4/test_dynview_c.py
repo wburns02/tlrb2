@@ -23,7 +23,9 @@ import history
 import pytest
 from m4.test_dynview import (make_data, write_player, write_season,
                              write_mileston, st, make_offseason, ROSTER_BODY,
-                             big_league, make_awards, make_standings)
+                             big_league, make_awards, make_standings,
+                             STAND_SEASONS, CLASSIC_SEASON, HALF_EAST, HALF_WEST,
+                             FULL_SEASON)
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_C = os.path.join(HERE, 'dynview_c')
@@ -840,7 +842,7 @@ STAND_SEQS = [
     ('left2', [48, LEFT, LEFT]),                        # season 1
     ('left_stays', [48, LEFT, LEFT, LEFT, LEFT]),       # season 1 stays
     ('back', [48, LEFT, LEFT, RIGHT, RIGHT, RIGHT]),    # RIGHT at the newest stays
-    ('pages', [48, LEFT, LEFT, PGDN, PGDN, PGDN, PGUP]),   # 28 rows: 3 pages
+    ('pages', [48, LEFT, LEFT, PGDN, PGDN, PGDN, PGUP]),   # 30 rows: 3 pages
     ('left_stays_page', [48, LEFT, LEFT, PGDN, LEFT, PGDN]),
     ('page_then_left', [48, LEFT, PGDN, LEFT, PGDN]),   # LEFT resets the page
     ('season2_pgdn', [48, LEFT, PGDN]),                 # season 2: one page
@@ -892,6 +894,40 @@ def test_standings_no_history_parity(tmp_path):
     # every season screen's title on a league with no recorded season (no SEASON 0)
     check_parity(empty, tmp_path, 'rv_nh_open', keys=[53])
     check_parity(empty, tmp_path, 'rv_nh_title', title=True, keys=[53])
+
+
+def test_standings_classic_parity(tmp_path):
+    """the CLASSIC shape as the newest season: four division blocks on 3 pages"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_standings(tmp_path, seasons=STAND_SEASONS[:2] + [CLASSIC_SEASON])
+    check_parity(ldir, tmp_path, 'st_cl_p1', keys=[48])
+    check_parity(ldir, tmp_path, 'st_cl_p2', keys=[48, PGDN])
+    check_parity(ldir, tmp_path, 'st_cl_p3', keys=[48, PGDN, PGDN])
+    check_parity(ldir, tmp_path, 'st_cl_p3_end', keys=[48, PGDN, PGDN, PGDN])
+    check_parity(ldir, tmp_path, 'st_cl_pgup', keys=[48, PGDN, PGDN, PGUP])
+    check_parity(ldir, tmp_path, 'st_cl_s2_pgdn', keys=[48, LEFT, PGDN])
+
+
+def test_standings_one_division_parity(tmp_path):
+    """a league with games in one division only (AL WEST as the newest season, AL EAST
+    the one before) next to a split NL: one block under the league name"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_standings(tmp_path, seasons=[HALF_EAST, HALF_WEST])
+    check_parity(ldir, tmp_path, 'st_half_west', keys=[48])
+    check_parity(ldir, tmp_path, 'st_half_east', keys=[48, LEFT])
+
+
+def test_standings_full_36_parity(tmp_path):
+    """all 32 ids played: 4 headers and 32 teams, 36 rows on 3 full pages"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_standings(tmp_path, seasons=[FULL_SEASON])
+    check_parity(ldir, tmp_path, 'st_full_p1', keys=[48])
+    check_parity(ldir, tmp_path, 'st_full_p2', keys=[48, PGDN])
+    check_parity(ldir, tmp_path, 'st_full_p3', keys=[48, PGDN, PGDN])
+    check_parity(ldir, tmp_path, 'st_full_p3_end', keys=[48, PGDN, PGDN, PGDN])
 
 
 # ---------------- test 6: errors ----------------
@@ -1194,12 +1230,14 @@ def test_dos_awards_parity(tmp_path):
 
 def test_dos_standings_parity(tmp_path):
     """Headless DOSBox-X: DYNVIEW.EXE /RAW:OUT.RAW /KEYS:48,0x5100 LEAGUE FONTS (open
-    SEASON STANDINGS, PGDN) on the standings league, compared with Python"""
+    SEASON STANDINGS, PGDN) compared with Python. The newest season is the CLASSIC shape
+    (3 pages), so the PGDN lands on page 2 (the newest season of make_standings has no
+    games, one message row)"""
     if not _dos_ready():
         pytest.skip('DYNVIEW.EXE or dosbox-x missing')
     if not _fonts_ready():
         pytest.skip('fonts missing')
-    ldir = make_standings(tmp_path)
+    ldir = make_standings(tmp_path, seasons=STAND_SEASONS[:2] + [CLASSIC_SEASON])
     d = str(tmp_path / 'dosst')
     os.makedirs(os.path.join(d, 'LEAGUE'))
     os.makedirs(os.path.join(d, 'FONTS'))

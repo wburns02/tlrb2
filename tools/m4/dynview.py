@@ -775,47 +775,64 @@ def awards_body(state, data):
 
 
 # ---------------------------------------------------------------- standings
-# SEASON STANDINGS (C2 season entry w_l): AL ids 0..15, NL ids 16..31
-STAND_LEAGUES = [('AMERICAN LEAGUE', 0), ('NATIONAL LEAGUE', 16)]
+# SEASON STANDINGS (C2 season entry w_l): AL ids 0..15, NL ids 16..31. Each league is two
+# divisions of 8 slots: EAST = slots 0..7 (ids base..base+7), WEST = slots 8..15
+STAND_LEAGUES = [('AL', 'AMERICAN LEAGUE', 0), ('NL', 'NATIONAL LEAGUE', 16)]
 
 
 def gb_text(d):
-    """games behind from d = (leader W - W) + (L - leader L): '-', '4', '4.5', '-1.5'."""
+    """games behind from d = (leader W - W) + (L - leader L): '-', '4.0', '4.5', '-2.0'."""
     if d == 0:
         return '-'
     a = abs(d)
-    s = '%d.5' % (a // 2) if a % 2 else '%d' % (a // 2)
+    s = '%d.5' % (a // 2) if a % 2 else '%d.0' % (a // 2)
     return '-' + s if d < 0 else s
 
 
+def standings_block(se, names, head, ids):
+    """header row head, then the teams ids (all with games) by (PCT desc, W desc, id asc):
+    TEAM, W, L, PCT, GB from the block's first row, and the mark (WS champion, P a pennant
+    winner)."""
+    wl = se['w_l']
+    pct = {t: wl[t][0] * 1000 // (wl[t][0] + wl[t][1]) for t in ids}
+    ids = sorted(ids, key=lambda t: (-pct[t], -wl[t][0], t))
+    lw, ll = wl[ids[0]]
+    out = [(head, '', '', '', '', '')]
+    for t in ids:
+        w, l = wl[t]
+        if t == se['champion']:
+            mark = 'WS'
+        elif t in (se['al_pennant'], se['nl_pennant']):
+            mark = 'P'
+        else:
+            mark = ''
+        out.append((names.get(t, 'TEAM %d' % t), '%d' % w, '%d' % l, fmt_avg(pct[t]),
+                    gb_text((lw - w) + (l - ll)), mark))
+    return out
+
+
 def standings_rows(hist, teams, season):
-    """SEASON STANDINGS rows of season: per league with any games a header row, then its
-    teams that played (W + L > 0) by (PCT desc, W desc, id asc): TEAM, W, L, PCT, GB from
-    the league's first row, and the mark (WS champion, P a pennant winner). Past the
-    history table, or with no games in either league, one message row."""
+    """SEASON STANDINGS rows of season. Per league: its WEST then EAST block (a header row
+    and the division's teams that played, W + L > 0) when both divisions have games; one
+    block under the league's long name when only one division has games; none otherwise.
+    Past the history table, or with no games in either league, one message row."""
     if season > history.SEASON_COUNT:
         return [('NO STANDINGS RECORDED',)]
     se = hist.read_season_entry(season)
     names = dict(teams)
+    played = {t for t, (w, l) in enumerate(se['w_l']) if w + l > 0}
     out = []
-    for header, base in STAND_LEAGUES:
-        played = [(t, w, l) for t, (w, l) in enumerate(se['w_l'])
-                  if base <= t < base + 16 and w + l > 0]
-        if not played:
-            continue
-        played.sort(key=lambda r: (-(r[1] * 1000 // (r[1] + r[2])), -r[1], r[0]))
-        lw, ll = played[0][1], played[0][2]
-        out.append((header, '', '', '', '', ''))
-        for t, w, l in played:
-            pct = w * 1000 // (w + l)
-            if t == se['champion']:
-                mark = 'WS'
-            elif t in (se['al_pennant'], se['nl_pennant']):
-                mark = 'P'
-            else:
-                mark = ''
-            out.append((names.get(t, 'TEAM %d' % t), '%d' % w, '%d' % l, fmt_avg(pct),
-                        gb_text((lw - w) + (l - ll)), mark))
+    for short, long_name, base in STAND_LEAGUES:
+        west = [t for t in range(base + 8, base + 16) if t in played]
+        east = [t for t in range(base, base + 8) if t in played]
+        if west and east:
+            blocks = [(short + ' WEST', west), (short + ' EAST', east)]
+        elif west or east:
+            blocks = [(long_name, west or east)]
+        else:
+            blocks = []
+        for head, ids in blocks:
+            out += standings_block(se, names, head, ids)
     return out or [('NO STANDINGS RECORDED',)]
 
 
