@@ -9,31 +9,39 @@
   html, body { margin: 0; height: 100%; background: #000; }
   #dos { width: 100%; height: 100%; }
   #status { position: fixed; right: 8px; bottom: 6px; font: 12px monospace; color: #9a9; pointer-events: none; }
-  #saves-toggle { font: 12px monospace; background: #111e; color: #ddd; border: 1px solid #444; padding: 3px 8px; cursor: pointer; }
-  #saves-panel { margin-top: 4px; width: 300px; max-height: 80vh; overflow: auto; box-sizing: border-box; padding: 8px;
-                 font: 12px monospace; background: #111e; color: #ddd; border: 1px solid #444; }
+  #saves-toggle, #studio-toggle { font: 12px monospace; background: #111e; color: #ddd; border: 1px solid #444; padding: 3px 8px; cursor: pointer; }
+  .panel { margin-top: 4px; width: 300px; max-height: 80vh; overflow: auto; box-sizing: border-box; padding: 8px;
+           font: 12px monospace; background: #111e; color: #ddd; border: 1px solid #444; }
   #saves-top { position: fixed; top: 8px; right: 8px; z-index: 10000; }
-  #saves-panel [hidden] { display: none !important; }
+  #saves-bar { display: flex; justify-content: flex-end; gap: 4px; }
+  .panel [hidden] { display: none !important; }
   #saves-top [hidden] { display: none !important; }
-  #saves-panel button { font: 12px monospace; background: #222; color: #ddd; border: 1px solid #444; padding: 2px 6px; margin: 2px 0; cursor: pointer; }
-  #saves-panel input[type=text] { font: 12px monospace; background: #000; color: #ddd; border: 1px solid #444; width: 100%; box-sizing: border-box; padding: 2px 4px; margin: 2px 0; }
-  #saves-panel select { font: 12px monospace; background: #000; color: #ddd; border: 1px solid #444; }
-  #saves-panel .sec { margin-top: 8px; padding-top: 6px; border-top: 1px solid #333; }
-  #saves-panel ul { list-style: none; margin: 4px 0; padding: 0; }
-  #saves-panel li { border-top: 1px solid #333; padding: 4px 0; }
-  #saves-panel .muted { color: #888; }
-  #saves-err { color: #e88; min-height: 1em; }
-  #saves-msg { color: #9c9; min-height: 1em; }
-  #saves-panel details { margin-left: 8px; }
-  #saves-panel details li { border-top: 1px dotted #333; }
+  .panel button { font: 12px monospace; background: #222; color: #ddd; border: 1px solid #444; padding: 2px 6px; margin: 2px 0; cursor: pointer; }
+  .panel input[type=text] { font: 12px monospace; background: #000; color: #ddd; border: 1px solid #444; width: 100%; box-sizing: border-box; padding: 2px 4px; margin: 2px 0; }
+  .panel input[type=file] { font: 12px monospace; color: #ddd; max-width: 100%; margin: 2px 0; }
+  .panel textarea { font: 12px monospace; background: #000; color: #ddd; border: 1px solid #444; width: 100%; box-sizing: border-box; padding: 2px 4px; margin: 2px 0; resize: vertical; }
+  .panel select { font: 12px monospace; background: #000; color: #ddd; border: 1px solid #444; }
+  .panel .sec { margin-top: 8px; padding-top: 6px; border-top: 1px solid #333; }
+  .panel ul { list-style: none; margin: 4px 0; padding: 0; }
+  .panel li { border-top: 1px solid #333; padding: 4px 0; }
+  .panel .muted { color: #888; }
+  #saves-err, #studio-err { color: #e88; min-height: 1em; }
+  #saves-msg, #studio-status { color: #9c9; min-height: 1em; }
+  .panel details { margin-left: 8px; }
+  .panel details li { border-top: 1px dotted #333; }
+  #studio-previews { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .studio-cell img { display: block; width: 96px; height: 112px; image-rendering: pixelated; background: #000; border: 1px solid #333; }
 </style>
 </head>
 <body>
 <div id="dos"></div>
 <div id="status"></div>
 <div id="saves-top">
-  <button id="saves-toggle" type="button">SAVES</button>
-  <div id="saves-panel" hidden>
+  <div id="saves-bar">
+    <button id="studio-toggle" type="button">STUDIO</button>
+    <button id="saves-toggle" type="button">SAVES</button>
+  </div>
+  <div id="saves-panel" class="panel" hidden>
     <div><b id="saves-slot"></b></div>
     <div class="muted" id="saves-last"></div>
     <div class="sec">
@@ -64,6 +72,20 @@
         <option value="10">10 min</option>
       </select>
     </div>
+  </div>
+  <div id="studio-panel" class="panel" hidden>
+    <div><b>portrait studio</b></div>
+    <div class="sec">
+      <div class="muted">Describe a face (300 characters, plain ASCII) and/or pick a picture (PNG or JPEG, 4 MB max)</div>
+      <textarea id="studio-prompt" maxlength="300" rows="3" spellcheck="false"></textarea>
+      <input type="file" id="studio-file" accept="image/png,image/jpeg">
+      <button id="studio-go" type="button">GENERATE</button>
+    </div>
+    <div class="sec">
+      <div id="studio-status"></div>
+      <div id="studio-err"></div>
+    </div>
+    <div class="sec" id="studio-previews"></div>
   </div>
 </div>
 <script src="js-dos.js"></script>
@@ -140,12 +162,12 @@ function makeFs(name) {
   };
 }
 
-function boot(name) {
+async function boot(name) {
   const old = byId('dos');
   const host = document.createElement('div');
   host.id = 'dos';
   old.replaceWith(host);
-  return Dos(host, {
+  const opts = {
     url: 'tlrb2.jsdos',
     pathPrefix: 'emulators/',
     backend: 'dosboxX',
@@ -153,7 +175,15 @@ function boot(name) {
     autoSave: true,
     noCloud: true,
     fsChanges: makeFs(name),
-  });
+  };
+  // The portrait studio customs overlay the bundle's PORTRAIT.ANM. No file (404) or any error: boot as today.
+  try {
+    const r = await fetch('studio/PORTRAIT.ANM', { cache: 'no-store' });
+    if (r.status === 200) {
+      opts.initFs = [{ path: 'TONY2/ANMS/PORTRAIT.ANM', contents: new Uint8Array(await r.arrayBuffer()) }];
+    }
+  } catch (e) { /* boot without the overlay */ }
+  return Dos(host, opts);
 }
 
 async function saveNow() {
@@ -367,6 +397,141 @@ function loadAutosavePrefs() {
   byId('saves-every').value = every;
 }
 
+// Portrait studio. A job is queued by POST, polled every 3 s while queued or running, and its four previews can be
+// added as customs. Customs take effect after SAVE AND RELOAD, because boot() reads them.
+const JOB_ID_RE = /^[0-9a-f]{16}$/;
+const STUDIO_TYPES = ['image/png', 'image/jpeg'];
+const STUDIO_MAX_PIC = 4 * 1024 * 1024;
+const studio = { job: null, state: null, shown: null, timer: null };
+
+function studioMsg(m) { byId('studio-status').textContent = m; }
+function studioErr(m) { byId('studio-err').textContent = m; }
+function studioStatus(j) {
+  if (j.state === 'queued') return 'GPU busy: queued, position ' + j.position;
+  if (j.state === 'running') return 'rendering';
+  if (j.state === 'done') return 'done';
+  return 'failed' + (j.error ? ': ' + j.error : '');
+}
+
+function readPicture(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).replace(/^data:[^,]*,/, ''));
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(file);
+  });
+}
+
+function studioSchedule() {
+  clearTimeout(studio.timer);
+  studio.timer = null;
+  if (!byId('studio-panel').hidden) studio.timer = setTimeout(studioPoll, 3000);
+}
+
+async function studioPoll() {
+  clearTimeout(studio.timer);
+  studio.timer = null;
+  const id = studio.job;
+  if (!id) return;
+  let j;
+  try {
+    const r = await fetch('studio/jobs/' + id, { cache: 'no-store' });
+    if (!r.ok) throw new Error('status ' + r.status);
+    j = await r.json();
+  } catch (e) {
+    if (id === studio.job) { studioErr('status failed: ' + e.message); studioSchedule(); }
+    return;
+  }
+  if (id !== studio.job) return;
+  studio.state = j.state;
+  studioMsg(studioStatus(j));
+  if (j.state === 'done') showPreviews(j);
+  if (j.state === 'queued' || j.state === 'running') studioSchedule();
+}
+
+function showPreviews(j) {
+  if (studio.shown === j.id) return;
+  studio.shown = j.id;
+  const box = byId('studio-previews');
+  box.textContent = '';
+  for (let k = 0; k < j.variants; k++) box.appendChild(previewCell(j.id, k));
+}
+
+function previewCell(id, k) {
+  const cell = el('div', null, 'studio-cell');
+  const img = el('img');
+  img.alt = 'variant ' + k;
+  img.src = 'studio/jobs/' + id + '/v' + k + '.png';
+  const note = el('div', null, 'muted');
+  const again = button('SAVE AND RELOAD', () => switchTo(slot));
+  again.hidden = true;
+  const add = button('ADD TO GAME', async () => {
+    add.disabled = true;
+    try {
+      const r = await fetch('studio/jobs/' + id + '/accept?pick=' + k, { method: 'POST', headers: WRITE });
+      if (!r.ok) throw new Error('status ' + r.status);
+      const j = await r.json();
+      note.textContent = 'ADDED AS CUSTOM ' + j.custom + ': SAVE AND RELOAD, THEN PICK IT IN CREATE A PLAYER (FACE FIELD).';
+      again.hidden = false;
+    } catch (e) {
+      add.disabled = false;
+      note.textContent = 'add failed: ' + e.message;
+    }
+  });
+  cell.append(img, add, note, again);
+  return cell;
+}
+
+async function studioGenerate() {
+  studioErr('');
+  const prompt = byId('studio-prompt').value.trim();
+  const file = byId('studio-file').files[0];
+  if (!prompt && !file) { studioErr('describe a face or pick a picture'); return; }
+  if (file && STUDIO_TYPES.indexOf(file.type) < 0) { studioErr('the picture must be PNG or JPEG'); return; }
+  if (file && file.size > STUDIO_MAX_PIC) { studioErr('the picture is over 4 MB'); return; }
+  const go = byId('studio-go');
+  go.disabled = true;
+  try {
+    const body = { prompt };
+    if (file) body.image = await readPicture(file);
+    const r = await fetch('studio/jobs', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, WRITE),
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      studioErr(r.status === 429 ? 'the GPU queue is full, try again later'
+        : r.status === 400 ? 'refused: plain ASCII up to 300 characters, and a PNG or JPEG picture'
+        : 'could not start: ' + r.status);
+      return;
+    }
+    const { id } = await r.json();
+    if (!JOB_ID_RE.test(id)) throw new Error('bad job id');
+    studio.job = id;
+    studio.state = 'queued';
+    studio.shown = null;
+    byId('studio-previews').textContent = '';
+    studioMsg('queued');
+    studioPoll();
+  } catch (e) {
+    studioErr('could not start: ' + e.message);
+  } finally {
+    go.disabled = false;
+  }
+}
+
+byId('studio-toggle').addEventListener('click', () => {
+  const panel = byId('studio-panel');
+  panel.hidden = !panel.hidden;
+  if (panel.hidden) {
+    clearTimeout(studio.timer);
+    studio.timer = null;
+  } else if (studio.state === 'queued' || studio.state === 'running') {
+    studioPoll();
+  }
+});
+byId('studio-go').addEventListener('click', () => studioGenerate());
+
 // Wire the panel.
 byId('saves-toggle').addEventListener('click', () => {
   const panel = byId('saves-panel');
@@ -392,7 +557,7 @@ byId('saves-every').addEventListener('change', () => {
 
 // First boot.
 setStatus('slot ' + slot + ': loading');
-dos = window.tlrb2 = boot(slot);
+boot(slot).then((d) => { dos = window.tlrb2 = d; }, (e) => setStatus('boot failed: ' + e.message));
 writePrefs({ slot: slot });
 loadAutosavePrefs();
 applyAutosave();
