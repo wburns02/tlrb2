@@ -33,7 +33,13 @@
 #define MS_NAME        "MILESTON.DAT"
 #define MS_TMP_NAME    "MILESTON.TMP"
 #define MS_BAK_NAME    "MILESTON.BAK"
+#define BOX_NAME       "BOXSCORE.DAT"
+#define BOX_TMP_NAME   "BOXSCORE.TMP"
+#define BOX_BAK_NAME   "BOXSCORE.BAK"
+#define BOX_REC        16
 #define NO_AWARD       0xffff
+#define NO_ENTRY       0xffff
+#define PATH_CAP       600
 #define STATUS_ACTIVE  1
 #define STATUS_RETIRED 2
 #define STATUS_HOF     3
@@ -144,6 +150,8 @@ typedef struct {
     int32_t bat100;                 /* batters only: lw100 - (L_lw*pa)/L_pa - park100 */
     uint8_t rng, arm;
     uint16_t po1, a1, e1;
+    uint8_t rec_no;                 /* V20 record number (the box rows key) */
+    int32_t entry_index;            /* player entry index of its slot (box rows) */
 } CurPlayer;
 
 typedef struct {
@@ -806,6 +814,8 @@ static int player_pass(const char *pre_dir)
             cp->po1 = rd16(rec + R_PO1);
             cp->a1 = rd16(rec + R_A1);
             cp->e1 = rec[R_E1];
+            cp->rec_no = (uint8_t)i;
+            cp->entry_index = NO_ENTRY;
             cp->outs = (uint32_t)outs_of(rd16(rec + R_IP10));
             cp->ab = bat_l(rec, R_AB_L, R_AB_R);
             cp->bat100 = (pos1 == 0)
@@ -1487,15 +1497,133 @@ static int sum80(FILE *p, long off, int32_t *out)
     return 0;
 }
 
+/* C7 box score rows (history.box_records). Team block offsets of the stats: singles are the
+ * u8 at OFF + i, pairs the sum of OFF + 2i and OFF + 2i + 1 capped at 255. The span
+ * BOX_LO .. BOX_LO + BOX_SPAN - 1 of a team block is read in one go. */
+#define BOX_B_OFF  6975L            /* b bytes: r + BOX_B_OFF + 40 * t + i */
+#define BOX_TEAM   0x8e8L           /* team block stride */
+#define BOX_LO     0xf0L
+#define BOX_SPAN   0x898            /* 0x988 - 0xf0 */
+
+typedef struct {
+    uint16_t off;
+    uint8_t pair;
+} BoxStat;
+
+/* AB R H RBI HR BB SO SB */
+static const BoxStat box_bat[8] = {
+    { 0x1b8, 1 }, { 0xf0, 0 }, { 0x208, 1 }, { 0x118, 0 },
+    { 0x2f8, 1 }, { 0x348, 1 }, { 0x398, 1 }, { 0x168, 0 } };
+/* IP10 H R ER HR BB SO BF */
+static const BoxStat box_pit[8] = {
+    { 0x6e0, 0 }, { 0x7a8, 1 }, { 0x730, 0 }, { 0x708, 0 },
+    { 0x898, 1 }, { 0x8e8, 1 }, { 0x938, 1 }, { 0x758, 1 } };
+
+/* the player entry index of V20 record i on team id tid: the last team in g_tp order with that id
+ * whose record i is active (rec_idx of history.record_season); NO_ENTRY when none */
+static int32_t box_idx(int32_t tid, int i)
+{
+    int32_t k, idx = NO_ENTRY;
+    int j;
+    for (k = 0; k < g_nt; k++) {
+        const TeamInfo *ti = g_tp[k];
+        if (ti->lg_slot != tid)
+            continue;
+        for (j = 0; j < ti->ncur; j++)
+            if (ti->cur[j].rec_no == i)
+                idx = ti->cur[j].entry_index;
+    }
+    return idx;
+}
+
+/* every current record takes its slot's player entry index (phase B has set them all) */
+static void cur_entries(void)
+{
+    int32_t s, c;
+    for (s = 0; s < g_nslots; s++)
+        for (c = g_slots[s].first_cur; c >= 0; c = cur_of(c)->next_dup)
+            ((CurPlayer *)cur_of(c))->entry_index = g_slots[s].entry_index;
+}
+
+/* one box stat of id i from the span of a team block */
+static uint8_t box_val(const uint8_t *span, const BoxStat *bs, int i)
+{
+    const uint8_t *p = span + (bs->off - BOX_LO);
+    uint32_t s;
+    if (!bs->pair)
+        return p[i];
+    s = (uint32_t)p[2 * i] + p[2 * i + 1];
+    return (uint8_t)(s > 255 ? 255 : s);
+}
+
+/* one 16 B box record: season, g, flags, entry index, b, i, 8 stats */
+static int box_put(FILE *f, uint16_t season_no, uint8_t g, uint8_t flags, int32_t idx,
+                   uint8_t b, uint8_t i, const uint8_t *st)
+{
+    uint8_t rec[BOX_REC];
+    int k;
+    wr16(rec, season_no);
+    rec[2] = g;
+    rec[3] = flags;
+    wr16(rec + 4, (uint16_t)idx);
+    rec[6] = b;
+    rec[7] = i;
+    for (k = 0; k < 8; k++)
+        rec[8 + k] = st[k];
+    return fwrite(rec, 1, BOX_REC, f) == BOX_REC ? 0 : -1;
+}
+
+/* the box rows of one team side of the game at r (side t, team id tid): the 40 b bytes, then
+ * the stats span. Batting rows by (slot, entry order, id), then pitching rows by (entry order,
+ * id); the span buffer is span[BOX_SPAN]. */
+static int box_side(FILE *p, FILE *bx, long r, int t, uint16_t season_no, uint8_t g,
+                    int32_t tid, uint8_t *span)
+{
+    uint8_t b[40], st[8];
+    int slot, ord, i, k;
+    if (fseek(p, r + BOX_B_OFF + 40L * t, SEEK_SET) != 0
+        || fread(b, 1, 40, p) != 40)
+        return -1;
+    if (fseek(p, r + BOX_TEAM * t + BOX_LO, SEEK_SET) != 0
+        || fread(span, 1, BOX_SPAN, p) != BOX_SPAN)
+        return -1;
+    for (slot = 0; slot <= 8; slot++)
+        for (ord = 0; ord < 16; ord++)
+            for (i = 0; i < 40; i++) {
+                if (b[i] == 0 || (b[i] & 15) != slot || (b[i] >> 4) != ord)
+                    continue;
+                for (k = 0; k < 8; k++)
+                    st[k] = box_val(span, &box_bat[k], i);
+                if (box_put(bx, season_no, g, (uint8_t)t, box_idx(tid, i),
+                            b[i], (uint8_t)i, st) != 0)
+                    return -1;
+            }
+    for (ord = 0; ord < 16; ord++)
+        for (i = 0; i < 16; i++) {
+            if (b[i] == 0 || (b[i] >> 4) != ord)
+                continue;
+            for (k = 0; k < 8; k++)
+                st[k] = box_val(span, &box_pit[k], i);
+            if ((b[i] & 15) != 9 && st[0] == 0 && st[7] == 0)
+                continue;             /* IP10 and BF both 0, not the slot 9 pitcher */
+            if (box_put(bx, season_no, g, (uint8_t)(t | 2), box_idx(tid, i),
+                        b[i], (uint8_t)i, st) != 0)
+                return -1;
+        }
+    return 0;
+}
+
 /* the season's World Series records, appended to the open milestone temp ms after the
- * leader records. A missing, short or out-of-range PLAYOFFS.AL writes nothing. Returns
- * -1 on a read or write error; the file is closed on every path. */
-static int series_pass(const char *pre_dir, FILE *ms, uint16_t season_no)
+ * leader records; the kept games' box rows go to the open box temp bx. A missing, short
+ * or out-of-range PLAYOFFS.AL writes nothing. Returns -1 on a read or write error; the
+ * file is closed on every path. */
+static int series_pass(const char *pre_dir, FILE *ms, FILE *bx, uint16_t season_no)
 {
     char *path = g_path;
     FILE *p;
     long len, r;
     int n, g;
+    uint8_t *span = NULL;
     path_join(path, 600, pre_dir, PO_NAME);
     p = fopen(path, "rb");
     if (!p)
@@ -1512,6 +1640,9 @@ static int series_pass(const char *pre_dir, FILE *ms, uint16_t season_no)
     n = fgetc(p);
     if (n < 1 || n > GAME_MAX || len < 1 + GAME_REC * n)
         goto none;
+    span = (uint8_t *)malloc(BOX_SPAN);
+    if (!span)
+        goto bad;
     for (g = 0; g < n; g++) {
         uint8_t runs[2], st[16], rec[8];
         int32_t hits[2], errs[2];
@@ -1539,35 +1670,103 @@ static int series_pass(const char *pre_dir, FILE *ms, uint16_t season_no)
                (uint8_t)(SER_HE_KIND + g), errs[0] * 256 + errs[1]);
         if (fwrite(rec, 1, 8, ms) != 8)
             goto bad;
+        if (box_side(p, bx, r, 0, season_no, (uint8_t)g, vid, span) != 0
+            || box_side(p, bx, r, 1, season_no, (uint8_t)g, hid, span) != 0)
+            goto bad;
     }
 none:
+    free(span);
     fclose(p);
     return 0;
 bad:
+    free(span);
     fclose(p);
     return -1;
 }
 
+/* MILESTON.DAT / BOXSCORE.DAT keep rule (C7): copy the rec-byte records of the file at path
+ * whose u16 season (bytes 0..1) is below season_no to out; a short tail is dropped and a
+ * missing file copies nothing. Returns -1 on a read or write error. */
+static int keep_old(const char *path, int rec, uint16_t season_no, FILE *out)
+{
+    FILE *mo = fopen(path, "rb");
+    uint8_t r[BOX_REC];
+    long msz, kept;
+    if (!mo)
+        return 0;
+    if (fseek(mo, 0, SEEK_END) != 0 || (msz = ftell(mo)) < 0
+        || fseek(mo, 0, SEEK_SET) != 0)
+        goto bad;
+    for (kept = 0; kept + rec <= msz; kept += rec) {
+        if (fread(r, 1, (size_t)rec, mo) != (size_t)rec)
+            goto bad;
+        if (rd16(r) >= season_no)
+            continue;                 /* drop-then-append */
+        if (fwrite(r, 1, (size_t)rec, out) != (size_t)rec)
+            goto bad;
+    }
+    fclose(mo);
+    return 0;
+bad:
+    fclose(mo);
+    return -1;
+}
+
+/* one file of the three-file swap: fin is replaced by tmp; bak keeps the original */
+typedef struct {
+    const char *fin;
+    char *tmp, *bak;
+    int moved, landed;
+} Swap;
+
+/* put one file back as it was: the new file goes (when it landed), the original comes back
+ * from its bak (when it was moved aside), and the temp never outlives the swap */
+static void swap_undo(Swap *s)
+{
+    if (s->landed)
+        remove(s->fin);
+    if (s->moved)
+        rename(s->bak, s->fin);
+    remove(s->tmp);
+    s->landed = 0;
+    s->moved = 0;
+}
+
 static int do_run(const char *pre_dir, const char *hpath)
 {
-    FILE *f = NULL, *g = NULL, *ms = NULL;
+    FILE *f = NULL, *g = NULL, *ms = NULL, *bx = NULL;
     long old_len = 0, remaining = 0;
     uint16_t sr_raw, season_no, sr_new;
-    static char tmp[600], bak[600];
-    char *mstmp, *msbak, *msname;
     uint32_t out_index = 0;
     static uint8_t eb[PLAYER_ENTRY];
     int32_t s;
     int nrt;
     int k;
     RetTeam *rt = NULL;
-    int swapped = 0, ms_swapped = 0;
+    /* every path of the run in one block: history temp and backup, milestone and box
+     * temps, backups and finals */
+    char *paths, *tmp, *bak, *mstmp, *msbak, *msname, *boxtmp, *boxbak, *boxname;
+    Swap sw[3];
 
-    mstmp = (char *)malloc(600);
-    msbak = (char *)malloc(600);
-    msname = (char *)malloc(600);
-    if (!mstmp || !msbak || !msname)
-        goto fail;
+    paths = (char *)malloc(8 * PATH_CAP);
+    if (!paths)
+        return 2;
+    tmp = paths;
+    bak = paths + PATH_CAP;
+    mstmp = paths + 2 * PATH_CAP;
+    msbak = paths + 3 * PATH_CAP;
+    msname = paths + 4 * PATH_CAP;
+    boxtmp = paths + 5 * PATH_CAP;
+    boxbak = paths + 6 * PATH_CAP;
+    boxname = paths + 7 * PATH_CAP;
+    tmp_of(hpath, tmp, PATH_CAP, TMP_NAME);
+    bak_of(hpath, bak, PATH_CAP);
+    tmp_of(hpath, mstmp, PATH_CAP, MS_TMP_NAME);
+    tmp_of(hpath, msbak, PATH_CAP, MS_BAK_NAME);
+    tmp_of(hpath, msname, PATH_CAP, MS_NAME);
+    tmp_of(hpath, boxtmp, PATH_CAP, BOX_TMP_NAME);
+    tmp_of(hpath, boxbak, PATH_CAP, BOX_BAK_NAME);
+    tmp_of(hpath, boxname, PATH_CAP, BOX_NAME);
     f = fopen(hpath, "rb");
     if (f) {
         if (fseek(f, 0, SEEK_END) != 0)
@@ -1611,42 +1810,23 @@ static int do_run(const char *pre_dir, const char *hpath)
 
     /* MILESTON.TMP: old records with season_no < current, then this season's
      * appended in entry order during phase B (drop-then-append) */
-    tmp_of(hpath, mstmp, 600, MS_TMP_NAME);
     ms = fopen(mstmp, "wb");
     if (!ms)
         goto fail;
-    tmp_of(hpath, msname, 600, MS_NAME);
-    if (f && old_len > 0) {
-        FILE *mo = fopen(msname, "rb");
-        static uint8_t mrec[8];
-        long kept = 0;
-        if (mo) {
-            long msz;
-            if (fseek(mo, 0, SEEK_END) != 0)
-                goto fail;
-            msz = ftell(mo);
-            if (msz < 0)
-                goto fail;
-            if (fseek(mo, 0, SEEK_SET) != 0)
-                goto fail;
-            while (kept + 8 <= msz) {
-                if (fread(mrec, 1, 8, mo) != 8)
-                    goto fail;
-                kept += 8;
-                if (rd16(mrec) >= season_no)
-                    continue;             /* drop-then-append */
-                if (fwrite(mrec, 1, 8, ms) != 8)
-                    goto fail;
-            }
-            fclose(mo);
-        }
-        (void)kept;
-    }
+    if (f && old_len > 0 && keep_old(msname, 8, season_no, ms) != 0)
+        goto fail;
+
+    /* BOXSCORE.TMP (C7 fourth amendment): the same keep rule over 16 B records; this
+     * season's box rows are appended by series_pass */
+    bx = fopen(boxtmp, "wb");
+    if (!bx)
+        goto fail;
+    if (f && old_len > 0 && keep_old(boxname, BOX_REC, season_no, bx) != 0)
+        goto fail;
 
     /* milestone records for this season were accumulated on the candidates by
      * apply_chain during phase B; they are appended below by entry index */
 
-    tmp_of(hpath, tmp, 600, TMP_NAME);
     g = fopen(tmp, "wb");
     if (!g)
         goto fail;
@@ -1691,6 +1871,7 @@ static int do_run(const char *pre_dir, const char *hpath)
             goto fail;
         out_index++;
     }
+    cur_entries();
 
     sr_new = (sr_raw > season_no) ? sr_raw : season_no;
     wr16(g_tab + 4, sr_new);
@@ -1845,8 +2026,9 @@ racc:
             }
         }
     }
-    /* C7 World Series records after the leader records (PLAYOFFS.AL in the pre dir) */
-    if (series_pass(pre_dir, ms, season_no) != 0)
+    /* C7 World Series records after the leader records (PLAYOFFS.AL in the pre dir), and
+     * the kept games' box rows into BOXSCORE.TMP */
+    if (series_pass(pre_dir, ms, bx, season_no) != 0)
         goto fail;
     if (ms != NULL) {
         if (fclose(ms) != 0) {
@@ -1855,107 +2037,87 @@ racc:
         }
         ms = NULL;
     }
+    if (bx != NULL) {
+        if (fclose(bx) != 0) {
+            bx = NULL;
+            goto fail;
+        }
+        bx = NULL;
+    }
 
     nrt = load_retired(g_retpath, &rt);
     if (nrt < 0)
         goto fail;
     if (nrt > 0 && do_marks(pre_dir, tmp, rt, nrt) != 0)
         goto fail;
-    if (rt)
-        free(rt);
-    if (f)
+    free(rt);
+    rt = NULL;
+    if (f) {
         fclose(f);
-    /* swap both temp files in, each with the C5 BAK scheme; both renames
-     * happen only after both temps are complete, and a second-rename failure
-     * restores BOTH originals (exit 2 leaves both files unchanged) */
-    swapped = 0;
-    bak[0] = 0;
-    {
-        FILE *probe = fopen(hpath, "rb");
-        if (probe) {
-            fclose(probe);
-            bak_of(hpath, bak, sizeof bak);
-            remove(bak);
-            if (rename(hpath, bak) == 0)
-                swapped = 1;
-            else
-                bak[0] = 0;           /* no backup: hpath still in place */
-        }
+        f = NULL;
     }
-    ms_swapped = 0;
-    msbak[0] = 0;
-    {
-        FILE *probe2 = fopen(msname, "rb");
-        if (probe2) {
-            fclose(probe2);
-            tmp_of(hpath, msbak, 600, MS_BAK_NAME);
-            remove(msbak);
-            if (rename(msname, msbak) == 0)
-                ms_swapped = 1;
-            else
-                msbak[0] = 0;
-        }
+    /* swap the three temp files in: each original moves to its BAK first (a failed move
+     * counts as a failed rename), then each temp lands in the order HISTORY, MILESTON,
+     * BOXSCORE. All three temps are complete before the first rename; a failure at any
+     * step restores all three originals, removes the new files and leaves no TMP or BAK
+     * behind (exit 2) */
+    sw[0].fin = hpath;
+    sw[0].tmp = tmp;
+    sw[0].bak = bak;
+    sw[1].fin = msname;
+    sw[1].tmp = mstmp;
+    sw[1].bak = msbak;
+    sw[2].fin = boxname;
+    sw[2].tmp = boxtmp;
+    sw[2].bak = boxbak;
+    for (k = 0; k < 3; k++) {
+        sw[k].moved = 0;
+        sw[k].landed = 0;
     }
-    if (rename(tmp, hpath) != 0) {
-        remove(tmp);
-        if (swapped)
-            rename(bak, hpath);       /* put the old file back */
-        free(msname);
-        free(msbak);
-        free(mstmp);
-        return 2;
+    for (k = 0; k < 3; k++) {
+        FILE *probe = fopen(sw[k].fin, "rb");
+        if (!probe)
+            continue;
+        fclose(probe);
+        remove(sw[k].bak);
+        if (rename(sw[k].fin, sw[k].bak) != 0)
+            goto restore;
+        sw[k].moved = 1;
     }
-#ifndef TEST_FAIL_RENAME
-    if (rename(mstmp, msname) != 0) {
-        remove(mstmp);
-        /* restore BOTH: the new history too */
-        remove(hpath);
-        if (swapped)
-            rename(bak, hpath);
-        if (ms_swapped)
-            rename(msbak, msname);
-        free(msname);
-        free(msbak);
-        free(mstmp);
-        return 2;
-    }
-#else
-    /* host-only test build: the second rename behaves as if it failed after
-     * both temps landed: restore BOTH originals, leave no TMP/BAK */
-    remove(mstmp);
-    remove(tmp);
-    remove(hpath);
-    if (swapped)
-        rename(bak, hpath);
-    if (ms_swapped)
-        rename(msbak, msname);
-    free(msname);
-    free(msbak);
-    free(mstmp);
-    return 2;
+    for (k = 0; k < 3; k++) {
+        if (rename(sw[k].tmp, sw[k].fin) != 0)
+            goto restore;
+        sw[k].landed = 1;
+#ifdef TEST_FAIL_RENAME
+        /* host-only test build: the last rename counts as failed after all temps landed */
+        if (k == 2)
+            goto restore;
 #endif
-    if (swapped)
-        remove(bak);
-    if (ms_swapped)
-        remove(msbak);
-    free(msname);
-    free(msbak);
-    free(mstmp);
+    }
+    for (k = 0; k < 3; k++)
+        if (sw[k].moved)
+            remove(sw[k].bak);
+    free(paths);
     return 0;
+restore:
+    for (k = 0; k < 3; k++)
+        swap_undo(&sw[k]);
+    free(paths);
+    return 2;
 fail:
     if (ms)
         fclose(ms);
+    if (bx)
+        fclose(bx);
     if (g)
         fclose(g);
     if (f)
         fclose(f);
-    tmp_of(hpath, tmp, 600, TMP_NAME);
     remove(tmp);
-    tmp_of(hpath, mstmp, 600, MS_TMP_NAME);
     remove(mstmp);
-    free(msname);
-    free(msbak);
-    free(mstmp);
+    remove(boxtmp);
+    free(rt);
+    free(paths);
     return 2;
 }
 
