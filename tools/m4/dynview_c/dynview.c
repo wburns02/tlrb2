@@ -71,10 +71,11 @@
 
 /* MILESTON.DAT kinds from AWARD_KIND_MIN up are award and leader records (C7), not
  * milestones; SEASON AWARDS keeps at most AWARD_MAX rows; SEASON STANDINGS at most
- * STAND_MAX (four header rows, one per division, and 32 teams) */
+ * STAND_MAX (four header rows, one per division, 32 teams and up to four blank rows that
+ * keep a header off a page's last row) */
 #define AWARD_KIND_MIN 64
 #define AWARD_MAX 64
-#define STAND_MAX 36
+#define STAND_MAX 40
 
 /* offseason phases: cat & 15 is the phase, cat >> 4 the launched flag */
 #define OFF_REVIEW 0
@@ -1623,8 +1624,9 @@ static int stand_division(const SeasonEntry *se, int first, int *ids)
     return m;
 }
 
-/* one block of g_stnd from row n: the header row head, then the m teams ids (all
- * played) in stand_before order with GB from the first; returns the next row index */
+/* one block of g_stnd from row n: a blank row when the header would be a page's last
+ * row, the header row head, then the m teams ids (all played) in stand_before order with
+ * GB from the first; returns the next row index */
 static int stand_block(const SeasonEntry *se, int n, const char *head, int *ids, int m)
 {
     Row *row;
@@ -1638,6 +1640,13 @@ static int stand_block(const SeasonEntry *se, int n, const char *head, int *ids,
     }
     lw = se->wl[ids[0]][0];
     ll = se->wl[ids[0]][1];
+    if (n % ROWS_PER_PAGE == ROWS_PER_PAGE - 1) {
+        /* no header alone on a page's last row: a blank row first */
+        row = &g_stnd[n++];
+        for (i = 0; i < 6; i++)
+            row->cells[i][0] = 0;
+        row->ncells = 6;
+    }
     row = &g_stnd[n++];
     strcpy(row->cells[0], head);
     for (i = 1; i < 6; i++)

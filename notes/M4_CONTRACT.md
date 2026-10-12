@@ -514,6 +514,8 @@ screen's order), each sorted and GB-measured on its own. A league with games in 
 `AMERICAN LEAGUE` / `NATIONAL LEAGUE` block. GB is written the stock way: `-` for 0, else `N.0` or `N.5` (`9.0`, `1.5`,
 `-2.0`). With no recorded season the season screens' titles carry no number: `SEASON AWARDS`, `SEASON STANDINGS`,
 `LAST SEASON REVIEW` (a954686).
+A header that would land on a page's last row (row 12 of 12) gets one blank row before it, so it opens the next
+page with its teams (CLASSIC: NL EAST moves from page 2's foot to the top of page 3); at most four, 40 rows.
 
 DYNASTY SETTINGS edits the C2 header fields that had no UI: byte 10 era mode (ENTER cycles REAL CALENDAR (0) ->
 RESERVE CLAUSE (1) -> FREE AGENCY (2) -> REAL CALENDAR; any other value shows RESERVE CLAUSE and goes to FREE AGENCY)

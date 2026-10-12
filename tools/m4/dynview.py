@@ -848,7 +848,7 @@ def standings_rows(hist, teams, season):
     """SEASON STANDINGS rows of season. Per league: its WEST then EAST block (a header row
     and the division's teams that played, W + L > 0) when both divisions have games; one
     block under the league's long name when only one division has games; none otherwise.
-    Past the history table, or with no games in either league, one message row."""
+    A header that would fall on a page's last row gets a blank row before it. Past the history table, or with no games in either league, one message row."""
     if season > history.SEASON_COUNT:
         return [('NO STANDINGS RECORDED',)]
     se = hist.read_season_entry(season)
@@ -865,6 +865,8 @@ def standings_rows(hist, teams, season):
         else:
             blocks = []
         for head, ids in blocks:
+            if len(out) % ROWS_PER_PAGE == ROWS_PER_PAGE - 1:
+                out.append(('', '', '', '', '', ''))     # no header alone on a page's last row
             out += standings_block(se, names, head, ids)
     return out or [('NO STANDINGS RECORDED',)]
 

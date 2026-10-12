@@ -1968,20 +1968,46 @@ def test_standings_gb_text():
 
 def test_standings_classic_divisions(tmp_path):
     """CLASSIC shape, the newest season: four blocks in the order AL WEST, AL EAST, NL WEST,
-    NL EAST, 30 rows on 3 pages; each block's GB from its own leader, so MILWAUKEE (the
-    league's second best record) shows '-' in AL WEST; WS and P marks in the blocks"""
+    NL EAST, 31 rows on 3 pages (the NL EAST header would be page 2's last row, so a blank
+    row comes first and the header opens page 3); each block's GB from its own leader, so
+    MILWAUKEE (the league's second best record) shows '-' in AL WEST; WS and P marks in
+    the blocks"""
     ldir = make_standings(tmp_path, seasons=STAND_SEASONS[:2] + [CLASSIC_SEASON])
     data = dynview.load_data(str(ldir))
     assert dynview.screen_title((SS, 0, 0), data) == 'SEASON 3 STANDINGS'
-    assert dynview.total_rows((SS, 0, 0), data) == 30 == len(CLASSIC_ROWS)
+    blank = ('', '', '', '', '', '')
+    want = CLASSIC_ROWS[:23] + [blank] + CLASSIC_ROWS[23:]
+    assert CLASSIC_ROWS[23][0] == 'NL EAST'
+    assert dynview.total_rows((SS, 0, 0), data) == 31 == len(want)
     got = [r for p in range(3) for r in dynview.rows((SS, p, 0), data)]
-    assert got == CLASSIC_ROWS
-    assert [len(dynview.rows((SS, p, 0), data)) for p in range(3)] == [12, 12, 6]
-    heads = [r[0] for r in got if r[1:] == ('', '', '', '', '')]
+    assert got == want
+    assert [len(dynview.rows((SS, p, 0), data)) for p in range(3)] == [12, 12, 7]
+    assert dynview.rows((SS, 1, 0), data)[11] == blank
+    assert dynview.rows((SS, 2, 0), data)[0][0] == 'NL EAST'
+    heads = [r[0] for r in got if r[0] and r[1:] == ('', '', '', '', '')]
     assert heads == ['AL WEST', 'AL EAST', 'NL WEST', 'NL EAST']
     assert ('MILWAUKEE', '10', '4', '.714', '-', 'P') in got
     assert ('BOSTON', '12', '2', '.857', '-', 'WS') in got
     assert ('LOS ANGELES', '7', '5', '.583', '-', 'P') in got
+
+
+def test_standings_no_header_on_a_page_last_row(tmp_path):
+    """over every standings fixture: no header row (a name and five empty cells) is the
+    last row of a page, and a blank row appears only right before a header"""
+    for seasons in (STAND_SEASONS, STAND_SEASONS[:2] + [CLASSIC_SEASON], [HALF_EAST, HALF_WEST],
+                    [FULL_SEASON]):
+        d = tmp_path / ('s%d' % len(list(tmp_path.iterdir())))
+        d.mkdir()
+        data = dynview.load_data(str(make_standings(d, seasons=seasons)))
+        for cat in range(len(seasons)):
+            n = dynview.total_rows((SS, 0, cat), data)
+            got = [r for p in range((n + 11) // 12) for r in dynview.rows((SS, p, cat), data)]
+            for i, r in enumerate(got):
+                if len(r) == 6 and r[1:] == ('', '', '', '', ''):
+                    if r[0]:
+                        assert i % 12 != 11, (cat, i, r)
+                    else:
+                        assert got[i + 1][0] and got[i + 1][1:] == ('', '', '', '', '')
 
 
 def test_standings_one_division_per_league(tmp_path):
