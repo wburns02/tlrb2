@@ -134,13 +134,15 @@ class Driver:
         self.wait_for('injury_dialog', 20)
         self.act('injuries YES', rig.press, 514, 456)
         self.wait_for('play_std', 60)
+        # the stock .SCH templates start at day 7; the GENERATED schedule (3 divisions) at day 0
+        want = 0x00 if divisions(self.install) == 3 else 0x07
         t0 = time.time()
-        while day(self.install) != 0x07 and time.time() - t0 < 30:
+        while day(self.install) != want and time.time() - t0 < 30:
             time.sleep(2)
         d = day(self.install)
-        if d != 0x07:
-            raise SimError(f'new season started but day byte is 0x{d:02x}, expected 0x07')
-        self.log('new season on disk: day 0x07')
+        if d != want:
+            raise SimError(f'new season started but day byte is 0x{d:02x}, expected 0x{want:02x}')
+        self.log(f'new season on disk: day 0x{want:02x}')
 
     def play(self):
         st, _ = self.state()
