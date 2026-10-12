@@ -52,6 +52,7 @@ SCREEN_LEADERS, SCREEN_MILESTONES, SCREEN_REVIEW = 3, 4, 5
 SCREEN_OFFSEASON = 6
 SCREEN_SETTINGS, SCREEN_ABOUT = 7, 8
 SCREEN_AWARDS = 9
+SCREEN_STANDINGS = 10
 N_CATS = 12
 
 # MILESTON.DAT kinds from this one up are award records (C7), not milestones
@@ -59,10 +60,11 @@ AWARD_KIND_MIN = 64
 # SEASON AWARDS keeps at most this many rows (the DOS port's fixed buffer)
 AWARD_MAX = 48
 
-# the hub (SCREEN_MENU) rows: key 1..9 opens screen key - 48
+# the hub (SCREEN_MENU) rows: key 1..9 opens screen key - 48, key 0 SEASON STANDINGS
 MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  CAREER LEADERS',
              '4  MILESTONES', '5  LAST SEASON REVIEW', '6  OFFSEASON',
-             '7  DYNASTY SETTINGS', '8  ABOUT THE MODS', '9  SEASON AWARDS']
+             '7  DYNASTY SETTINGS', '8  ABOUT THE MODS', '9  SEASON AWARDS',
+             '0  SEASON STANDINGS']
 
 # HISTORY.DAT header fields used by DYNASTY SETTINGS: byte 10 era, bytes 12..15 mask
 HDR_SIZE = 32
@@ -108,8 +110,8 @@ ABOUT_ROWS = ['DYNASTY MODE',
               '',
               'DYNASTY > DYNASTY MODE ON THE MENU BAR',
               'SHOWS HISTORY, HALL OF FAME, LEADERS,',
-              'MILESTONES, SEASON AWARDS AND THE LAST',
-              'OFFSEASON.',
+              'MILESTONES, SEASON AWARDS, STANDINGS',
+              'AND THE LAST OFFSEASON.',
               'CREATE A PLAYER',
               'DYNASTY > CREATE A PLAYER PUTS A NEW',
               'PLAYER ON ANY TEAM: NAME, POSITION,',
@@ -772,6 +774,63 @@ def awards_body(state, data):
     return COLS_AWARDS, rows
 
 
+# ---------------------------------------------------------------- standings
+# SEASON STANDINGS (C2 season entry w_l): AL ids 0..15, NL ids 16..31
+STAND_LEAGUES = [('AMERICAN LEAGUE', 0), ('NATIONAL LEAGUE', 16)]
+
+
+def gb_text(d):
+    """games behind from d = (leader W - W) + (L - leader L): '-', '4', '4.5', '-1.5'."""
+    if d == 0:
+        return '-'
+    a = abs(d)
+    s = '%d.5' % (a // 2) if a % 2 else '%d' % (a // 2)
+    return '-' + s if d < 0 else s
+
+
+def standings_rows(hist, teams, season):
+    """SEASON STANDINGS rows of season: per league with any games a header row, then its
+    teams that played (W + L > 0) by (PCT desc, W desc, id asc): TEAM, W, L, PCT, GB from
+    the league's first row, and the mark (WS champion, P a pennant winner). Past the
+    history table, or with no games in either league, one message row."""
+    if season > history.SEASON_COUNT:
+        return [('NO STANDINGS RECORDED',)]
+    se = hist.read_season_entry(season)
+    names = dict(teams)
+    out = []
+    for header, base in STAND_LEAGUES:
+        played = [(t, w, l) for t, (w, l) in enumerate(se['w_l'])
+                  if base <= t < base + 16 and w + l > 0]
+        if not played:
+            continue
+        played.sort(key=lambda r: (-(r[1] * 1000 // (r[1] + r[2])), -r[1], r[0]))
+        lw, ll = played[0][1], played[0][2]
+        out.append((header, '', '', '', '', ''))
+        for t, w, l in played:
+            pct = w * 1000 // (w + l)
+            if t == se['champion']:
+                mark = 'WS'
+            elif t in (se['al_pennant'], se['nl_pennant']):
+                mark = 'P'
+            else:
+                mark = ''
+            out.append((names.get(t, 'TEAM %d' % t), '%d' % w, '%d' % l, fmt_avg(pct),
+                        gb_text((lw - w) + (l - ll)), mark))
+    return out or [('NO STANDINGS RECORDED',)]
+
+
+def standings_body(state, data):
+    """(cols, rows) of SEASON STANDINGS: the season cat seasons back from the newest. A
+    lone message row uses COLS_SINGLE (as SEASON AWARDS'); no history gives no rows."""
+    hist = data['hist']
+    if hist.seasons_recorded == 0:
+        return COLS_SINGLE, []
+    rows = standings_rows(hist, data['teams'], hist.seasons_recorded - state[2])
+    if len(rows) == 1 and len(rows[0]) == 1:
+        return COLS_SINGLE, rows
+    return COLS_STANDINGS, rows
+
+
 # ---------------------------------------------------------------- offseason
 def retire_entries(hist):
     """(index, entry) of the players who retired with the season just recorded (status
@@ -918,6 +977,8 @@ def total_rows(state, data):
         n = offseason_body(state, data)[1]
     elif screen == SCREEN_AWARDS:
         n = awards_body(state, data)[1]
+    elif screen == SCREEN_STANDINGS:
+        n = standings_body(state, data)[1]
     elif screen == SCREEN_SETTINGS:
         n = settings_rows(data)
     elif screen == SCREEN_ABOUT:
@@ -949,6 +1010,9 @@ def rows(state, data):
     if screen == SCREEN_AWARDS:
         body = awards_body(state, data)[1]
         return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
+    if screen == SCREEN_STANDINGS:
+        body = standings_body(state, data)[1]
+        return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_HISTORY:
         all_rows = history_rows(hist, data.get('league_dir'))
     elif screen == SCREEN_HOF:
@@ -965,16 +1029,18 @@ def rows(state, data):
 def step(state, key, data):
     """(state, exit_flag). ESC exits from MENU; from any other screen it goes back
     to MENU. PGUP/PGDN page by 12; LEFT/RIGHT cycle the LEADERS category or step the
-    SEASON AWARDS season. ENTER on
+    SEASON AWARDS or SEASON STANDINGS season. ENTER on
     REVIEW goes to MENU. ENTER walks the offseason phases; past the last one it exits
     when the offseason was launched (cat >> 4) and goes to MENU otherwise. ENTER on the
-    /TITLE menu (cat >> 4) exits."""
+    /TITLE menu (cat >> 4) exits. Key 0 on the hub opens SEASON STANDINGS."""
     screen, page, cat = state
     if key == KEY_ESC:
         if screen == SCREEN_MENU:
             return (SCREEN_MENU, 0, 0), 1
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_MENU:
+        if key == 48:
+            return (SCREEN_STANDINGS, 0, 0), 0
         if 49 <= key <= 57:
             return (key - 48, 0, 0), 0
         if key == KEY_ENTER and cat >> 4:
@@ -1021,12 +1087,12 @@ def step(state, key, data):
     if screen == SCREEN_LEADERS and key in (KEY_LEFT, KEY_RIGHT):
         d = -1 if key == KEY_LEFT else 1
         return (SCREEN_LEADERS, 0, (cat + d) % N_CATS), 0
-    if screen == SCREEN_AWARDS and key in (KEY_LEFT, KEY_RIGHT):
+    if screen in (SCREEN_AWARDS, SCREEN_STANDINGS) and key in (KEY_LEFT, KEY_RIGHT):
         # LEFT goes back a season while one is left (shown season > 1), RIGHT forward
         if key == KEY_LEFT and data['hist'].seasons_recorded - cat > 1:
-            return (SCREEN_AWARDS, 0, cat + 1), 0
+            return (screen, 0, cat + 1), 0
         if key == KEY_RIGHT and cat > 0:
-            return (SCREEN_AWARDS, 0, cat - 1), 0
+            return (screen, 0, cat - 1), 0
     return state, 0
 
 
@@ -1057,10 +1123,13 @@ COLS_DRAFT = [('#', _cx(0), 4, 'L'), ('TEAM', _cx(4), 15, 'L'), ('PLAYER', _cx(1
 COLS_MOVE = [('TEAM', _cx(0), 13, 'L'), ('PLAYER', _cx(14), 15, 'L'), ('FROM', _cx(30), 12, 'L')]
 COLS_AWARDS = [('AWARD', _cx(0), 13, 'L'), ('NAME', _cx(14), 16, 'L'),
                ('VALUE', _cx(30), 12, 'R')]
+COLS_STANDINGS = [('TEAM', _cx(0), 17, 'L'), ('W', _cx(17), 5, 'R'),
+                  ('L', _cx(22), 5, 'R'), ('PCT', _cx(27), 6, 'R'),
+                  ('GB', _cx(33), 6, 'R'), (' ', _cx(39), 3, 'R')]
 COLS_SETTINGS = [('SETTING', _cx(0), 24, 'L'), ('VALUE', _cx(26), 16, 'L')]
 OFF_COLS = [COLS_SINGLE, COLS_RETIRE, COLS_DRAFT, COLS_MOVE, COLS_MOVE, COLS_SINGLE]
 
-FOOTERS = {SCREEN_MENU: '1-9 SELECT   ESC EXIT',
+FOOTERS = {SCREEN_MENU: '0-9 SELECT   ESC EXIT',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT CATEGORY   ESC MENU',
@@ -1068,10 +1137,11 @@ FOOTERS = {SCREEN_MENU: '1-9 SELECT   ESC EXIT',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU',
            SCREEN_SETTINGS: 'UP DOWN MOVE   ENTER CHANGE   ESC MENU',
            SCREEN_ABOUT: 'PGUP PGDN   ESC MENU',
-           SCREEN_AWARDS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'}
+           SCREEN_AWARDS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU',
+           SCREEN_STANDINGS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'}
 
 
-TITLE_FOOTER = '1-9 SELECT   ENTER PLAY BALL'
+TITLE_FOOTER = '0-9 SELECT   ENTER PLAY BALL'
 TITLE_FOOTER_NEW = 'ENTER PLAY BALL'
 
 
@@ -1120,6 +1190,8 @@ def screen_title(state, data):
                                          // ROWS_PER_PAGE)
     if screen == SCREEN_AWARDS:
         return 'SEASON %d AWARDS' % (data['hist'].seasons_recorded - cat)
+    if screen == SCREEN_STANDINGS:
+        return 'SEASON %d STANDINGS' % (data['hist'].seasons_recorded - cat)
     return 'SEASON %d IN REVIEW' % data['hist'].seasons_recorded
 
 
@@ -1146,6 +1218,8 @@ def body_cols(state, data):
         return offseason_body(state, data)[0]
     if state[0] == SCREEN_AWARDS:
         return awards_body(state, data)[0]
+    if state[0] == SCREEN_STANDINGS:
+        return standings_body(state, data)[0]
     return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
             SCREEN_HOF: COLS_HOF, SCREEN_LEADERS: COLS_LEADERS,
             SCREEN_MILESTONES: COLS_MILESTONES, SCREEN_REVIEW: COLS_SINGLE}[state[0]]

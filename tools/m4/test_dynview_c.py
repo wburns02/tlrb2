@@ -23,7 +23,7 @@ import history
 import pytest
 from m4.test_dynview import (make_data, write_player, write_season,
                              write_mileston, st, make_offseason, ROSTER_BODY,
-                             big_league, make_awards)
+                             big_league, make_awards, make_standings)
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_C = os.path.join(HERE, 'dynview_c')
@@ -312,7 +312,7 @@ def test_synthetic_nav_sequences(tmp_path):
 
 # ---------------- test 2: 300 random key sequences ----------------
 
-KEYS = [dynview.KEY_ESC, dynview.KEY_ENTER, ord('1'), ord('2'), ord('3'),
+KEYS = [dynview.KEY_ESC, dynview.KEY_ENTER, ord('0'), ord('1'), ord('2'), ord('3'),
         ord('4'), ord('5'), ord('9'), dynview.KEY_LEFT, dynview.KEY_RIGHT,
         dynview.KEY_UP, dynview.KEY_DOWN, dynview.KEY_PGUP, dynview.KEY_PGDN]
 
@@ -325,6 +325,18 @@ def test_random_keys(tmp_path):
         seq = [rng.choice(KEYS) for _ in range(ln)]
         review = n % 2 == 1
         check_parity(ldir, tmp_path, 'rnd%03d' % n, keys=seq, review=review)
+
+
+def test_random_keys_standings_league(tmp_path):
+    """random navigation on the league with games: standings tables under the keys"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_standings(tmp_path)
+    rng = random.Random(0x5a7d)
+    for n in range(60):
+        ln = rng.randrange(1, 12)
+        seq = [rng.choice(KEYS) for _ in range(ln)]
+        check_parity(ldir, tmp_path, 'srnd%03d' % n, keys=seq)
 
 
 # ---------------- test 3: big synthetic history ----------------
@@ -819,6 +831,66 @@ def test_awards_no_history_parity(tmp_path):
     check_parity(empty, tmp_path, 'aw_nh_left', keys=[57, LEFT, RIGHT, PGDN])
 
 
+# ---------------- test 5e: SEASON STANDINGS (hub key 0) ----------------
+
+STAND_SEQS = [
+    ('hub', []),                                        # the ten hub rows
+    ('open', [48]),
+    ('left1', [48, LEFT]),
+    ('left2', [48, LEFT, LEFT]),                        # season 1
+    ('left_stays', [48, LEFT, LEFT, LEFT, LEFT]),       # season 1 stays
+    ('back', [48, LEFT, LEFT, RIGHT, RIGHT, RIGHT]),    # RIGHT at the newest stays
+    ('pages', [48, LEFT, LEFT, PGDN, PGDN, PGDN, PGUP]),   # 28 rows: 3 pages
+    ('left_stays_page', [48, LEFT, LEFT, PGDN, LEFT, PGDN]),
+    ('page_then_left', [48, LEFT, PGDN, LEFT, PGDN]),   # LEFT resets the page
+    ('season2_pgdn', [48, LEFT, PGDN]),                 # season 2: one page
+    ('season3_pgdn', [48, PGDN]),                       # the message row: one page
+    ('esc', [48, ESC]),
+    ('enter', [48, ENTER]),
+    ('esc_back_in', [48, ESC, 48, LEFT]),
+    ('hub_then_standings', [48, ESC, 57, ESC, 48]),
+    ('awards_then_standings', [57, LEFT, ESC, 48, LEFT]),
+]
+
+
+def test_standings_key_sequences_parity(tmp_path):
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_standings(tmp_path)
+    for tag, keys in STAND_SEQS:
+        check_parity(ldir, tmp_path, 'st_' + tag, keys=keys)
+    check_parity(ldir, tmp_path, 'st_review', review=True)
+    check_parity(ldir, tmp_path, 'st_title', title=True)
+    check_parity(ldir, tmp_path, 'st_title_0', title=True, keys=[48])
+    check_parity(ldir, tmp_path, 'st_title_0_left', title=True, keys=[48, LEFT])
+    check_parity(ldir, tmp_path, 'st_about', keys=[56, PGDN, PGDN])
+
+
+def test_standings_past_history_table_parity(tmp_path):
+    """a header of 70 recorded seasons: cat 0 shows season 70, past the table; cat 5
+    season 65 and cat 6 season 64 (no games in its entry): one message row each"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_standings(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[4], d[5] = 70, 0
+    p.write_bytes(bytes(d))
+    check_parity(ldir, tmp_path, 'st_p70_open', keys=[48])
+    check_parity(ldir, tmp_path, 'st_p70_s65', keys=[48] + [LEFT] * 5)
+    check_parity(ldir, tmp_path, 'st_p70_s64_pg', keys=[48] + [LEFT] * 6 + [PGDN])
+
+
+def test_standings_no_history_parity(tmp_path):
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    check_parity(empty, tmp_path, 'st_nh_open', keys=[48])
+    check_parity(empty, tmp_path, 'st_nh_left', keys=[48, LEFT, RIGHT, PGDN])
+    check_parity(empty, tmp_path, 'st_nh_title', title=True, keys=[48])
+
+
 # ---------------- test 6: errors ----------------
 
 def test_errors_no_fonts(tmp_path):
@@ -1114,4 +1186,30 @@ def test_dos_awards_parity(tmp_path):
         i = next(k for k in range(min(len(dos_raw), len(py)))
                  if dos_raw[k] != py[k])
         pytest.fail(f'dos awards: first diff at pixel ({i % 320}, {i // 320}): '
+                    f'python {py[i]} c {dos_raw[i]}')
+
+
+def test_dos_standings_parity(tmp_path):
+    """Headless DOSBox-X: DYNVIEW.EXE /RAW:OUT.RAW /KEYS:48,0x5100 LEAGUE FONTS (open
+    SEASON STANDINGS, PGDN) on the standings league, compared with Python"""
+    if not _dos_ready():
+        pytest.skip('DYNVIEW.EXE or dosbox-x missing')
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_standings(tmp_path)
+    d = str(tmp_path / 'dosst')
+    os.makedirs(os.path.join(d, 'LEAGUE'))
+    os.makedirs(os.path.join(d, 'FONTS'))
+    for f in os.listdir(str(ldir)):
+        shutil.copy2(os.path.join(str(ldir), f), os.path.join(d, 'LEAGUE', f))
+    for f in ('MAIN.FNT', 'BOLD.FNT', 'DEFAULT.PAL'):
+        shutil.copy2(os.path.join(FILES, f), os.path.join(d, 'FONTS', f))
+    rc = run_dos(d, ['DYNVIEW.EXE /RAW:OUT.RAW /KEYS:48,0x5100 LEAGUE FONTS'])
+    assert rc == 0, f'dos rc {rc}'
+    dos_raw = open(os.path.join(d, 'OUT.RAW'), 'rb').read()
+    py = fb_python(ldir, keys=[48, dynview.KEY_PGDN], font_dir=FILES)
+    if dos_raw != py:
+        i = next(k for k in range(min(len(dos_raw), len(py)))
+                 if dos_raw[k] != py[k])
+        pytest.fail(f'dos standings: first diff at pixel ({i % 320}, {i // 320}): '
                     f'python {py[i]} c {dos_raw[i]}')
