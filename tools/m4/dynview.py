@@ -54,6 +54,7 @@ SCREEN_SETTINGS, SCREEN_ABOUT = 7, 8
 SCREEN_AWARDS = 9
 SCREEN_STANDINGS = 10
 SCREEN_SERIES = 11
+SCREEN_BOX = 12
 N_CATS = 12
 
 # MILESTON.DAT kinds from this one up are award and leader records (C7), not milestones
@@ -198,7 +199,23 @@ def load_data(league_dir, font_dir=None):
     era, mask = load_settings(league_dir)
     return {'hist': hist, 'ms': ms, 'fonts': fonts, 'league_dir': league_dir,
             'events': parse_rosters(league_dir), 'era': era, 'mask': mask,
-            'teams': settings_teams(league_dir)}
+            'teams': settings_teams(league_dir), 'box': load_box(league_dir)}
+
+
+def load_box(league_dir):
+    """BOXSCORE.DAT records as (season, g, flags, idx, b, i, stats) in file order, stats a
+    tuple of 8 ints; a short tail is dropped. [] when the file is missing or unreadable."""
+    try:
+        with open(os.path.join(league_dir, BOX_FILE), 'rb') as fh:
+            raw = fh.read()
+    except OSError:
+        return []
+    out = []
+    for off in range(0, len(raw) - BOX_REC + 1, BOX_REC):
+        r = raw[off:off + BOX_REC]
+        out.append((int.from_bytes(r[0:2], 'little'), r[2], r[3],
+                    int.from_bytes(r[4:6], 'little'), r[6], r[7], tuple(r[8:16])))
+    return out
 
 
 def find_upper(league_dir, want):
@@ -891,6 +908,11 @@ def standings_body(state, data):
 # same game's hits and errors, idx = visitor hits * 256 + home hits, value = visitor errors
 # * 256 + home errors. Team ids are league-global (AL 0..15, NL 16..31).
 SERIES_GAME_KIND, SERIES_HE_KIND, SERIES_GAMES = 192, 200, 7
+# BOXSCORE.DAT (C7 fourth amendment, next to HISTORY.DAT): 16 B records, u16 season, u8 game
+# g, u8 flags (bit0 side: 0 visitor, 1 home; bit1 pitching row), u16 player entry index
+# (0xffff none), u8 batting-slot byte b, u8 player id i, 8 u8 stats. Batting stats AB R H
+# RBI HR BB SO SB; pitching stats IP10 (innings x 10), H, R, ER, HR, BB, SO, BF
+BOX_FILE, BOX_REC, BOX_RECS_MAX = 'BOXSCORE.DAT', 16, 112
 
 
 def first_record(ms, season, kind):
@@ -958,6 +980,63 @@ def series_body(state, data):
     if len(rows) == 1 and len(rows[0]) == 1:
         return COLS_SINGLE, rows
     return COLS_SERIES, rows
+
+
+def box_line(hist, rec):
+    """one BOXSCORE.DAT record as a row: NAME, then the batting numbers AB R H RBI BB SO, or
+    for a pitching row IP (d.d), H R ER BB SO"""
+    _season, _g, flags, idx, _b, _i, s = rec
+    name = '?' if idx == history.NO_AWARD else entry_name(hist, idx, 18)
+    if flags & 2:
+        ip = '%d.%d' % (s[0] // 10, s[0] % 10)
+        return (name, ip) + tuple('%d' % v for v in (s[1], s[2], s[3], s[5], s[6]))
+    return (name,) + tuple('%d' % v for v in (s[0], s[1], s[2], s[3], s[5], s[6]))
+
+
+def box_rows(hist, ms, box, teams, season, g):
+    """BOX SCORE rows of game g of season: the visitor, then the home side. Each side is a
+    team row (AB R H RBI BB SO), its batting rows, a PITCHING row (IP H R ER BB SO) and
+    its pitching rows; box records of (season, g) in file order, at most BOX_RECS_MAX.
+    One message row past the history table, without the game's kind 192 + g record or
+    without any box record of it."""
+    msg = [('NO BOX SCORE RECORDED',)]
+    if season > history.SEASON_COUNT:
+        return msg
+    game = first_record(ms, season, SERIES_GAME_KIND + g)
+    if game is None:
+        return msg
+    recs = [r for r in box if r[0] == season and r[1] == g][:BOX_RECS_MAX]
+    if not recs:
+        return msg
+    v, h = game[0] >> 8, game[0] & 255
+    names = dict(teams)
+    out = []
+    for t, tid in ((0, v), (1, h)):
+        out.append((names.get(tid, 'TEAM %d' % tid), 'AB', 'R', 'H', 'RBI', 'BB', 'SO'))
+        side = [r for r in recs if (r[2] & 1) == t]
+        out += [box_line(hist, r) for r in side if not (r[2] & 2)]
+        out.append(('PITCHING', 'IP', 'H', 'R', 'ER', 'BB', 'SO'))
+        out += [box_line(hist, r) for r in side if r[2] & 2]
+    return out
+
+
+def box_body(state, data):
+    """(cols, rows) of the BOX SCORE in state: game cat & 7 of the season cat >> 3 seasons
+    back from the newest. A lone message row uses COLS_SINGLE; no history gives no rows."""
+    hist = data['hist']
+    if hist.seasons_recorded == 0:
+        return COLS_SINGLE, []
+    cat = state[2]
+    rows = box_rows(hist, data['ms'], data['box'], data['teams'],
+                    hist.seasons_recorded - (cat >> 3), cat & 7)
+    if len(rows) == 1 and len(rows[0]) == 1:
+        return COLS_SINGLE, rows
+    return COLS_BOX, rows
+
+
+def series_game(ms, season, g):
+    """True when season has its WORLD SERIES game g (kind 192 + g record)."""
+    return first_record(ms, season, SERIES_GAME_KIND + g) is not None
 
 
 # ---------------------------------------------------------------- offseason
@@ -1110,6 +1189,8 @@ def total_rows(state, data):
         n = standings_body(state, data)[1]
     elif screen == SCREEN_SERIES:
         n = series_body(state, data)[1]
+    elif screen == SCREEN_BOX:
+        n = box_body(state, data)[1]
     elif screen == SCREEN_SETTINGS:
         n = settings_rows(data)
     elif screen == SCREEN_ABOUT:
@@ -1147,6 +1228,9 @@ def rows(state, data):
     if screen == SCREEN_SERIES:
         body = series_body(state, data)[1]
         return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
+    if screen == SCREEN_BOX:
+        body = box_body(state, data)[1]
+        return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_HISTORY:
         all_rows = history_rows(hist, data.get('league_dir'))
     elif screen == SCREEN_HOF:
@@ -1167,11 +1251,14 @@ def step(state, key, data):
     REVIEW goes to MENU. ENTER walks the offseason phases; past the last one it exits
     when the offseason was launched (cat >> 4) and goes to MENU otherwise. ENTER on the
     /TITLE menu (cat >> 4) exits. Key 0 on the hub opens SEASON STANDINGS, W or w
-    WORLD SERIES."""
+    WORLD SERIES. On WORLD SERIES keys 1..7 open the BOX SCORE of that game; ESC there
+    goes back to the series, LEFT and RIGHT step between the season's games."""
     screen, page, cat = state
     if key == KEY_ESC:
         if screen == SCREEN_MENU:
             return (SCREEN_MENU, 0, 0), 1
+        if screen == SCREEN_BOX:
+            return (SCREEN_SERIES, 0, cat >> 3), 0
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_MENU:
         if key == 48:
@@ -1212,6 +1299,25 @@ def step(state, key, data):
         else:
             return state, 0
         return (SCREEN_SETTINGS, cat // ROWS_PER_PAGE, cat), 0
+    if screen == SCREEN_SERIES and 49 <= key <= 55:
+        # game key - 49 of the season (cat seasons back), when the season is 1..64 and has it
+        g = key - 49
+        season = data['hist'].seasons_recorded - cat
+        if 1 <= season <= history.SEASON_COUNT and series_game(data['ms'], season, g):
+            return (SCREEN_BOX, 0, cat * 8 + g), 0
+        return state, 0
+    if screen == SCREEN_BOX and key in (KEY_LEFT, KEY_RIGHT):
+        # to the previous (LEFT) or next (RIGHT) game of the season that has a record
+        bcat, g = cat >> 3, cat & 7
+        season = data['hist'].seasons_recorded - bcat
+        have = [k for k in range(SERIES_GAMES) if series_game(data['ms'], season, k)]
+        if key == KEY_LEFT:
+            to = [k for k in have if k < g][-1:]
+        else:
+            to = [k for k in have if k > g][:1]
+        if to:
+            return (SCREEN_BOX, 0, bcat * 8 + to[0]), 0
+        return state, 0
     if key == KEY_PGDN:
         n = total_rows(state, data)
         if page * ROWS_PER_PAGE + ROWS_PER_PAGE < n:
@@ -1266,6 +1372,7 @@ COLS_STANDINGS = [('TEAM', _cx(0), 17, 'L'), ('W', _cx(17), 5, 'R'),
                   ('GB', _cx(33), 6, 'R'), (' ', _cx(39), 3, 'R')]
 COLS_SERIES = [('TEAM', _cx(0), 17, 'L'), ('R', _cx(17), 5, 'R'), ('H', _cx(22), 5, 'R'),
                ('E', _cx(27), 5, 'R'), (' ', _cx(32), 10, 'R')]
+COLS_BOX = [(' ', _cx(0), 18, 'L')] + [(' ', _cx(18 + 4 * k), 4, 'R') for k in range(6)]
 COLS_SETTINGS = [('SETTING', _cx(0), 24, 'L'), ('VALUE', _cx(26), 16, 'L')]
 OFF_COLS = [COLS_SINGLE, COLS_RETIRE, COLS_DRAFT, COLS_MOVE, COLS_MOVE, COLS_SINGLE]
 
@@ -1279,7 +1386,8 @@ FOOTERS = {SCREEN_MENU: '0-9 W SELECT   ESC EXIT',
            SCREEN_ABOUT: 'PGUP PGDN   ESC MENU',
            SCREEN_AWARDS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU',
            SCREEN_STANDINGS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU',
-           SCREEN_SERIES: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'}
+           SCREEN_SERIES: '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
+           SCREEN_BOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC SERIES'}
 
 
 TITLE_FOOTER = '0-9 W SELECT   ENTER PLAY BALL'
@@ -1331,6 +1439,8 @@ def screen_title(state, data):
                                          // ROWS_PER_PAGE)
     n = data['hist'].seasons_recorded
     # A league with no recorded season has no season number to show (it would read SEASON 0).
+    if screen == SCREEN_BOX:
+        return 'SEASON %d WS GAME %d' % (n - (cat >> 3), (cat & 7) + 1) if n else 'WS BOX SCORE'
     if screen == SCREEN_AWARDS:
         return 'SEASON %d AWARDS' % (n - cat) if n else 'SEASON AWARDS'
     if screen == SCREEN_STANDINGS:
@@ -1367,6 +1477,8 @@ def body_cols(state, data):
         return standings_body(state, data)[0]
     if state[0] == SCREEN_SERIES:
         return series_body(state, data)[0]
+    if state[0] == SCREEN_BOX:
+        return box_body(state, data)[0]
     return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
             SCREEN_HOF: COLS_HOF, SCREEN_LEADERS: COLS_LEADERS,
             SCREEN_MILESTONES: COLS_MILESTONES, SCREEN_REVIEW: COLS_SINGLE}[state[0]]

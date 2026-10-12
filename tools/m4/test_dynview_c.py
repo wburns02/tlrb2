@@ -27,7 +27,8 @@ from m4.test_dynview import (make_data, write_player, write_season,
                              STAND_SEASONS, CLASSIC_SEASON, HALF_EAST, HALF_WEST,
                              FULL_SEASON, award_recs, award_league_ms,
                              lead_league_ms, LEAD_3, make_series, series_recs,
-                             SERIES6, SERIES7, UNFINISHED5, TIED4)
+                             SERIES6, SERIES7, UNFINISHED5, TIED4, box_rec, write_box,
+                             BOX_G0)
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_C = os.path.join(HERE, 'dynview_c')
@@ -1081,6 +1082,59 @@ def test_series_kinds_off_other_screens_parity(tmp_path):
     check_parity(ldir, tmp_path, 'koff_aw', keys=[57])
     check_parity(ldir, tmp_path, 'koff_aw_s2', keys=[57, LEFT, PGDN])
     check_parity(ldir, tmp_path, 'koff_aw_s3', keys=[57, LEFT, LEFT])
+
+
+# ---------------- test 5g: BOX SCORE (WORLD SERIES keys 1..7) ----------------
+
+def box_ws_league(tmp_path):
+    """season 3 with 7 games (SERIES7) and season 2 with 6 (SERIES6); the box records: game 1
+    (BOX_G0, 9 rows), game 3 (36 batting records, 40 rows); game 2 has none"""
+    (tmp_path / 'box').mkdir()
+    ldir = make_series(tmp_path / 'box', series_recs(3, SERIES7) + series_recs(2, SERIES6))
+    write_box(ldir, BOX_G0 + [box_rec(3, 2, 0, k % 30, (k + 1, 0, 0, 0, 0, 0, 0, 0))
+                              for k in range(36)])
+    return ldir
+
+
+def test_box_pages_parity(tmp_path):
+    """the 40 row box of game 3 on pages 0 and 2 (and PGDN past its last page), the 9 row
+    box of game 1 on page 0"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = box_ws_league(tmp_path)
+    check_parity(ldir, tmp_path, 'box_g3_p0', keys=[87, 51])
+    check_parity(ldir, tmp_path, 'box_g3_p2', keys=[87, 51, PGDN, PGDN])
+    check_parity(ldir, tmp_path, 'box_g3_p3', keys=[87, 51, PGDN, PGDN, PGDN, PGDN])
+    check_parity(ldir, tmp_path, 'box_g1_p0', keys=[87, 49])
+    check_parity(ldir, tmp_path, 'box_g1_pgdn', keys=[87, 49, PGDN])
+
+
+def test_box_ws_footer_and_message_parity(tmp_path):
+    """WORLD SERIES with its new footer, the message row (game 2 has no box records, nor
+    does a league whose BOXSCORE.DAT is missing), ESC back to the series of a box, and the
+    keys that are not game keys"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = box_ws_league(tmp_path)
+    check_parity(ldir, tmp_path, 'box_ws', keys=[87])
+    check_parity(ldir, tmp_path, 'box_ws_left', keys=[87, LEFT])
+    check_parity(ldir, tmp_path, 'box_msg', keys=[87, 50])
+    check_parity(ldir, tmp_path, 'box_msg_esc', keys=[87, 50, ESC])
+    check_parity(ldir, tmp_path, 'box_left_esc', keys=[87, LEFT, 49, ESC])
+    check_parity(ldir, tmp_path, 'box_not_game', keys=[87, 56, 48])
+    (tmp_path / 'nofile').mkdir()
+    ldir = make_series(tmp_path / 'nofile', series_recs(3, SERIES7))
+    check_parity(ldir, tmp_path, 'box_nofile', keys=[87, 49, PGDN])
+
+
+def test_box_key_walk_parity(tmp_path):
+    """W, 3, RIGHT, LEFT, PGDN, ESC: game 3's box, the next game (a message row), back to
+    game 3, its page 1, then the series"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = box_ws_league(tmp_path)
+    check_parity(ldir, tmp_path, 'box_walk', keys=[87, 51, RIGHT, LEFT, PGDN, ESC])
+    check_parity(ldir, tmp_path, 'box_walk_back', keys=[87, 51, RIGHT, LEFT, PGDN, ESC, 119])
 
 
 # ---------------- test 6: errors ----------------
