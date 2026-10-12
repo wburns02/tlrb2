@@ -952,8 +952,12 @@ built from client text except a validated id and k.
   (queued with position / GPU busy / rendering / failed with the error), then the 4 previews; each preview has ADD
   TO GAME (accept) which shows `ADDED AS CUSTOM n: SAVE AND RELOAD, THEN PICK IT IN CREATE A PLAYER (FACE FIELD).`
   and a SAVE AND RELOAD button (the existing save-then-reload slot switch to the current slot).
-- Boot: fetch studio/PORTRAIT.ANM (no-store); on 200 pass js-dos initFs [{path: 'TONY2/ANMS/PORTRAIT.ANM',
-  contents}] so the customs overlay the bundle and the save; 404 or an error boots as today.
+- Boot: fetch studio/PORTRAIT.ANM (no-store); on 200 pass js-dos initFs [zip] where zip is a one-entry stored zip
+  holding it as `TONY2/ANMS/PORTRAIT.ANM`, so the customs overlay the bundle and the save; 404 or an error boots as
+  today. (Amended 2026-10-12, was a {path, contents} file entry: js-dos 8.5.3 writes file entries before it unpacks
+  the bundles, so the stock file won; zip entries unpack in order after the bundle and the slot's changes. The
+  overlay then counts as a changed file, so a slot saved after a boot with customs carries that PORTRAIT.ANM, about
+  1 MB; the next boot's overlay still wins, and customs are append-only.)
 - Writes send the existing WRITE headers.
 
 

@@ -162,6 +162,58 @@ function makeFs(name) {
   };
 }
 
+let crcTable = null;
+function crc32(data) {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+      crcTable[n] = c >>> 0;
+    }
+  }
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < data.length; i++) c = crcTable[(c ^ data[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+// A zip holding one stored (uncompressed) entry: local header, data, central directory, end record.
+function storedZip(path, data) {
+  const name = new TextEncoder().encode(path);
+  const crc = crc32(data);
+  const out = new Uint8Array(30 + name.length + data.length + 46 + name.length + 22);
+  const v = new DataView(out.buffer);
+  const entry = (at, central) => {
+    let o = at;
+    v.setUint32(o, central ? 0x02014b50 : 0x04034b50, true); o += 4;
+    if (central) { v.setUint16(o, 20, true); o += 2; }
+    v.setUint16(o, 20, true);                 // version needed
+    v.setUint16(o + 2, 0, true);              // flags
+    v.setUint16(o + 4, 0, true);              // method: stored
+    v.setUint16(o + 6, 0, true);              // time
+    v.setUint16(o + 8, 0x21, true);           // date 1980-01-01
+    v.setUint32(o + 10, crc, true);
+    v.setUint32(o + 14, data.length, true);
+    v.setUint32(o + 18, data.length, true);
+    v.setUint16(o + 22, name.length, true);
+    o += 26;                                  // extra length 0 (and, central, comment, disk, attributes, offset 0)
+    if (central) o += 14;
+    out.set(name, o);
+    return o + name.length;
+  };
+  let o = entry(0, false);
+  out.set(data, o);
+  o += data.length;
+  const cd = o;
+  o = entry(cd, true);
+  v.setUint32(o, 0x06054b50, true);
+  v.setUint16(o + 8, 1, true);
+  v.setUint16(o + 10, 1, true);
+  v.setUint32(o + 12, o - cd, true);
+  v.setUint32(o + 16, cd, true);
+  return out;
+}
+
 async function boot(name) {
   const old = byId('dos');
   const host = document.createElement('div');
@@ -177,10 +229,12 @@ async function boot(name) {
     fsChanges: makeFs(name),
   };
   // The portrait studio customs overlay the bundle's PORTRAIT.ANM. No file (404) or any error: boot as today.
+  // js-dos writes plain initFs files before it unpacks the bundles (which would put the stock file back), but
+  // unpacks zip entries in order after the bundle and the slot's changes, so the overlay goes in as a zip.
   try {
     const r = await fetch('studio/PORTRAIT.ANM', { cache: 'no-store' });
     if (r.status === 200) {
-      opts.initFs = [{ path: 'TONY2/ANMS/PORTRAIT.ANM', contents: new Uint8Array(await r.arrayBuffer()) }];
+      opts.initFs = [storedZip('TONY2/ANMS/PORTRAIT.ANM', new Uint8Array(await r.arrayBuffer()))];
     }
   } catch (e) { /* boot without the overlay */ }
   return Dos(host, opts);
