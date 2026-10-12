@@ -14,12 +14,14 @@ Display primitives (decor per notes/M4_CONTRACT.md integer rules):
 
 usage: python3 tools/m4/dynview.py [--review | --offseason | --title | --menu N]
        [--control CONTROL] [--keys K,K,...] [--png OUT.png] [--raw OUT.RAW]
-       LEAGUE_DIR FONT_DIR
+       [--game-dir DIR] [--anms-dir DIR] LEAGUE_DIR FONT_DIR
 (precedence --offseason, --review, --title, --menu; --menu 2 opens DYNASTY SETTINGS,
 --menu 3 ABOUT THE MODS; --control reads the menu item from CONTROL and writes
 CONTROL[1] = CONTROL[0] when the session ends)
+--keys takes key codes (numbers), Lx.y = a left click at (x, y) and R = a right click (C13.6);
+--game-dir holds OLDPORT.ANM (default .), --anms-dir PORTRAIT.ANM (default ANMS).
 """
-import os, sys
+import os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from collections import Counter
@@ -48,6 +50,13 @@ KEY_ESC, KEY_ENTER = 27, 13
 KEY_LEFT, KEY_RIGHT = 0x4b00, 0x4d00
 KEY_PGUP, KEY_PGDN = 0x4900, 0x5100
 KEY_UP, KEY_DOWN = 0x4800, 0x5000
+# ASCII keys of the screens: TAB cycles the LEADERS mode, '-' '+' '=' step the BY YEAR season
+# and the START YEAR setting, C / c open the PLAYER CARD from the offseason RETIREMENTS phase
+KEY_TAB = 9
+KEY_MINUS, KEY_PLUS, KEY_EQUALS = 45, 43, 61
+KEY_CARD = (67, 99)
+CURSOR_KEYS = (KEY_UP, KEY_DOWN, KEY_PGUP, KEY_PGDN)
+YEAR_KEYS = (KEY_MINUS, KEY_PLUS, KEY_EQUALS)
 
 SCREEN_MENU, SCREEN_HISTORY, SCREEN_HOF = 0, 1, 2
 SCREEN_LEADERS, SCREEN_MILESTONES, SCREEN_REVIEW = 3, 4, 5
@@ -57,7 +66,25 @@ SCREEN_AWARDS = 9
 SCREEN_STANDINGS = 10
 SCREEN_SERIES = 11
 SCREEN_BOX = 12
-N_CATS = 12
+SCREEN_CARD = 13
+# LEADERS modes (C13.3): cat = mode * 32 + category index
+MODE_CAREER, MODE_SEASON, MODE_BYYEAR = 0, 1, 2
+MODE_SHIFT = 32
+# rows of a list page; the cursor (C13.4) is the absolute row index, page = row // ROWS_PER_PAGE
+# PLAYER CARD season table: CARD_SEASON_ROWS season rows, then the CAREER row at CARD_CAREER_Y
+CARD_SEASON_ROWS = 7
+CARD_HDR_Y, CARD_ROW_Y0, CARD_CAREER_Y = 84, 95, 95 + 7 * 11
+# SEASON and BY YEAR leaders keep the top SEASON_MAX lines
+SEASON_MAX = 50
+NO_LINES_TEXT = 'NO SEASON LINES RECORDED YET.'
+# click bands (C13.6): hub and list body rows start at y 35, title band 8..20, footer from y 183
+BODY_Y0, TITLE_Y0, TITLE_Y1, FOOTER_Y0 = 35, 8, 20, 183
+# SETTINGS: START YEAR is the third row (cursor 2)
+SET_START = 2
+# the screens where LEFT and RIGHT step something (a title click there is LEFT or RIGHT)
+LEFT_RIGHT_SCREENS = (SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_STANDINGS, SCREEN_SERIES,
+                      SCREEN_BOX)
+N_CATS = 18
 
 # MILESTON.DAT kinds from this one up are award and leader records (C7), not milestones
 AWARD_KIND_MIN = 64
@@ -66,7 +93,7 @@ AWARD_MAX = 64
 
 # the hub (SCREEN_MENU) rows: key 1..9 opens screen key - 48, key 0 SEASON STANDINGS,
 # key W (87 or 119) WORLD SERIES
-MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  CAREER LEADERS',
+MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  LEADERS',
              '4  MILESTONES', '5  LAST SEASON REVIEW', '6  OFFSEASON',
              '7  DYNASTY SETTINGS', '8  ABOUT THE MODS', '9  SEASON AWARDS',
              '0  SEASON STANDINGS', 'W  WORLD SERIES']
@@ -75,6 +102,15 @@ MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  CAREER LEADERS',
 HDR_SIZE = 32
 # playoff format (C12.4): HISTORY byte 11; byte 0 is the rolled flag (C12.6)
 HDR_FORMAT, HDR_ROLLED = 11, 0
+# start year (C13.1): u16 LE at bytes 18..19; 0 or outside START_MIN..START_MAX counts as START_DEFAULT
+HDR_START = 18
+START_MIN, START_MAX, START_DEFAULT = 1871, 2100, 1993
+START_STEP_SMALL, START_STEP_BIG = 1, 10
+# START YEAR step per key (C13.1): LEFT / RIGHT = -1 / +1, '-' = -10, '+' and '=' = +10
+START_STEPS = {KEY_LEFT: -START_STEP_SMALL, KEY_RIGHT: START_STEP_SMALL,
+               KEY_MINUS: -START_STEP_BIG, KEY_PLUS: START_STEP_BIG, KEY_EQUALS: START_STEP_BIG}
+# SEASLINE.DAT (C13.2): 16 B header, 80 B lines, version 1
+SEASLINE_FILE, SEASLINE_HDR, SEASLINE_REC, SEASLINE_VERSION = 'SEASLINE.DAT', 16, 80, 1
 # MAJ day (C12.1, byte 0x20a): 7 new season set up, 0xf3 season over
 MAJ_DAY = 0x20a
 DAY_SETUP, DAY_OVER = 7, 0xf3
@@ -91,9 +127,9 @@ CONTROL_FILE = 'CONTROL'
 
 # offseason phases: cat & 15 is the phase, cat >> 4 the launched flag
 OFF_REVIEW, OFF_RETIRE, OFF_DRAFT, OFF_TRADES, OFF_FA, OFF_READY = range(6)
-OFF_TITLES = ['1/6 SEASON %d IN REVIEW', '2/6 RETIREMENTS', '3/6 ROOKIE DRAFT',
-              '4/6 TRADES', '5/6 FREE AGENT SIGNINGS', '6/6 SEASON %d IS READY']
-OFF_LAUNCH_TEXT = 'ENTER: ON TO SEASON %d'
+OFF_TITLES = ['1/6 %d IN REVIEW', '2/6 RETIREMENTS', '3/6 ROOKIE DRAFT',
+              '4/6 TRADES', '5/6 FREE AGENT SIGNINGS', '6/6 %d IS READY']
+OFF_LAUNCH_TEXT = 'ENTER: ON TO %d'
 OFF_STAY_TEXT = 'ENTER: BACK TO THE MENU'
 
 # /TITLE (run by TONY2.BAT at boot): the MENU with cat 16. ENTER or ESC goes on to the
@@ -147,6 +183,11 @@ ABOUT_ROWS = ['DYNASTY MODE',
               'THEN START THE NEW SEASON WITH THE',
               'GENERATED SCHEDULE.',
               '',
+              'LEADERS: CAREER, SINGLE SEASON AND BY',
+              'YEAR. TAB SWITCHES. ENTER OR A CLICK ON A',
+              'PLAYER OPENS HIS CARD.',
+              'START YEAR: DYNASTY SETTINGS, LEFT RIGHT.',
+              '',
               'NEW FACES',
               '67 NEW PORTRAITS JOIN THE 30 STOCK ONES.',
               'ROOKIES AND CREATED PLAYERS USE THEM.',
@@ -155,12 +196,34 @@ ABOUT_ROWS = ['DYNASTY MODE',
               'UTILITIES > ASSIGN STADIUMS LETS ANY TEAM',
               'PLAY IN A NEW PARK.']
 
-# career leader categories: (title label, kind, TOTALS index)
-# kind: 'count' | 'avg' | 'era' | 'war' | 'aw0' (MVP awards) | 'aw3' (GG awards)
-CATS = [('H', 'count', 2), ('HR', 'count', 5), ('RBI', 'count', 7),
-        ('SB', 'count', 10), ('AVG', 'avg', 0), ('WAR', 'war', 0),
-        ('W', 'count', 13), ('SV', 'count', 15), ('PSO', 'count', 23),
-        ('ERA', 'era', 0), ('MVP AWARDS', 'aw0', 0), ('GG AWARDS', 'aw3', 0)]
+# career leader categories (C13.3): (title label, kind, TOTALS index)
+# kind: 'count' | 'ip' (OUTS, shown as innings) | 'avg' | 'era' | 'war' | 'aw0' (MVP awards) |
+# 'aw3' (GG awards)
+CATS = [('H', 'count', 2), ('HR', 'count', 5), ('RBI', 'count', 7), ('R', 'count', 6),
+        ('2B', 'count', 3), ('3B', 'count', 4), ('SB', 'count', 10), ('BB', 'count', 8),
+        ('AVG', 'avg', 0), ('WAR', 'war', 0), ('W', 'count', 13), ('SV', 'count', 15),
+        ('SO', 'count', 23), ('ERA', 'era', 0), ('IP', 'ip', 19), ('SHO', 'count', 18),
+        ('MVP AWARDS', 'aw0', 0), ('GG AWARDS', 'aw3', 0)]
+# SEASON and BY YEAR leader categories (C13.3), over SEASLINE.DAT lines
+SEASON_CATS = [('AVG', 'avg', 0), ('HR', 'count', 5), ('RBI', 'count', 7), ('H', 'count', 2),
+               ('R', 'count', 6), ('2B', 'count', 3), ('3B', 'count', 4), ('SB', 'count', 10),
+               ('BB', 'count', 8), ('WAR', 'war', 0), ('W', 'count', 13), ('ERA', 'era', 0),
+               ('SO', 'count', 23), ('SV', 'count', 15), ('IP', 'ip', 19), ('CG', 'count', 17),
+               ('SHO', 'count', 18)]
+# TOTALS indexes used by the SEASON qualifiers
+T_G, T_AB, T_BB, T_OUTS, T_ER = 0, 1, 8, 19, 20
+# SEASLINE ratings (C13.2 bytes 12..20) in order, and the position names as the game shows them
+RATING_NAMES = ['POW', 'BUNT', 'H&R', 'SPD', 'RNG', 'ARM', 'CTL', 'VEL', 'END']
+POS_NAMES = ['P', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH', 'OF', 'IF',
+             'OI', 'CO', 'CI', 'C3']
+BATS_NAMES = 'LRS?'                           # bats code (byte 29 bits 2..1): 0 L, 1 R, 2 S
+# portrait frames (CREATE's portrait() rules): stock PORTRAIT.ANM below OLD_FACE, OLDPORT.ANM
+# from OLD_FACE to OLD_FACE_END - 1
+PORTRAIT_W, PORTRAIT_H = 48, 56
+PORTRAIT_X, PORTRAIT_Y = 12, 24
+OLD_FACE, OLD_FACE_END = 981, 1509
+OLD_FRAME = 12 + PORTRAIT_W * PORTRAIT_H      # 12 B header + 2688 B pixels, no count word
+INFO_X, INFO_Y = 70, (26, 37, 48, 59, 70)
 
 # milestone kinds (C7): one fixed phrase per kind
 CAREER_EVENTS = {1: '2000 HITS', 2: '3000 HITS',
@@ -205,9 +268,10 @@ def write_png(path, fb, pal6):
 
 
 # ---------------------------------------------------------------- data loading
-def load_data(league_dir, font_dir=None):
+def load_data(league_dir, font_dir=None, game_dir='.', anms_dir='ANMS'):
     """data dict shared by step/render/rows. A missing HISTORY.DAT loads as a
-    brand-new file (0 seasons): every screen then shows 'NO DYNASTY HISTORY YET'."""
+    brand-new file (0 seasons): every screen then shows 'NO DYNASTY HISTORY YET'.
+    game_dir holds OLDPORT.ANM and anms_dir PORTRAIT.ANM (PLAYER CARD portraits)."""
     hp = os.path.join(league_dir, 'HISTORY.DAT')
     hist = history.History.load(hp)
     ms = history.milestone_entries(hp)
@@ -216,7 +280,64 @@ def load_data(league_dir, font_dir=None):
     return {'hist': hist, 'ms': ms, 'fonts': fonts, 'league_dir': league_dir,
             'events': parse_rosters(league_dir), 'era': era, 'mask': mask,
             'teams': settings_teams(league_dir), 'box': load_box(league_dir),
-            'fmt': realign.wanted_for_dir(league_dir)}
+            'fmt': realign.wanted_for_dir(league_dir),
+            'lines': load_lines(league_dir), 'abbrs': team_abbrs(league_dir),
+            'game_dir': game_dir, 'anms_dir': anms_dir}
+
+
+def load_lines(league_dir):
+    """SEASLINE.DAT lines (C13.2) in file order, as read_line dicts. A missing file, a bad
+    header (not 'SL', version 1, byte 3 zero, line size 80) or a short header gives []; a short tail line
+    is dropped."""
+    try:
+        with open(os.path.join(league_dir, SEASLINE_FILE), 'rb') as fh:
+            raw = fh.read()
+    except OSError:
+        return []
+    if len(raw) < SEASLINE_HDR or raw[0:2] != b'SL' or raw[2] != SEASLINE_VERSION \
+            or raw[3] != 0 or int.from_bytes(raw[4:6], 'little') != SEASLINE_REC:
+        return []
+    out = []
+    for off in range(SEASLINE_HDR, len(raw) - SEASLINE_REC + 1, SEASLINE_REC):
+        out.append(read_line(raw[off:off + SEASLINE_REC]))
+    return out
+
+
+def read_line(r):
+    """One 80 B SEASLINE.DAT line (C13.2) as a dict: entry, season, team (stable id), pitcher
+    (flags bit0), age, pos1, face, hand (roster byte 29 raw), dev, ratings (9 nibbles in
+    RATING_NAMES order), totals (25 season stats in TOTALS order) and WAR10."""
+    return {'entry': int.from_bytes(r[0:2], 'little'),
+            'season': int.from_bytes(r[2:4], 'little'),
+            'team': r[4], 'pitcher': r[5] & 1, 'age': r[6], 'pos1': r[7],
+            'face': int.from_bytes(r[8:10], 'little'), 'hand': r[10], 'dev': r[11],
+            'ratings': list(r[12:21]),
+            'totals': list(struct.unpack_from('<25H', r, 22)),
+            'WAR10': struct.unpack_from('<h', r, 72)[0]}
+
+
+def team_abbrs(league_dir):
+    """{stable team id: 3-letter MAJ abbreviation} of the current league (C13.3 TEAM column);
+    {} with no MAJ or an unreadable one. A blank abbreviation is '?' (not in the map)."""
+    mp = history.maj_or_none(league_dir)
+    if mp is None:
+        return {}
+    try:
+        with open(mp, 'rb') as fh:
+            d = fh.read()
+        table = teamids.load_table(league_dir)
+    except OSError:
+        return {}
+    if len(d) < MAJ_MIN:
+        return {}
+    d = d.ljust(TEAM_SPAN, b'\0')
+    out = {}
+    for tid, L, slot, _st in teamids.teams(d, table):
+        a = teamids.S[L] + teamids.O_ABBR + 3 * slot
+        ab = one_field(d[a:a + 3])
+        if ab:
+            out[tid] = ab
+    return out
 
 
 def load_box(league_dir):
@@ -386,14 +507,37 @@ def playoff_label(fmt):
     return '3 DIV NEXT YEAR' if three else '2 DIV NEXT YEAR'
 
 
+def start_year(hist):
+    """The start year (C13.1): HISTORY bytes 18..19 as u16 LE, START_DEFAULT when it is 0 or
+    outside START_MIN..START_MAX."""
+    v = hist.d[HDR_START] | hist.d[HDR_START + 1] << 8
+    return v if START_MIN <= v <= START_MAX else START_DEFAULT
+
+
+def year_of(hist, n):
+    """The calendar year shown for season n (1-based): start year + n - 1 (C13.1)."""
+    return start_year(hist) + n - 1
+
+
 def settings_rows(data):
-    """ERA RULES, PLAYOFF FORMAT, then one row per team of data['teams'] (YOU MANAGE / AI
-    MANAGES); the cursor categories are 0, 1 and 2 + the team index."""
+    """ERA RULES, PLAYOFF FORMAT, START YEAR (C13.1), then one row per team of data['teams']
+    (YOU MANAGE / AI MANAGES); the cursor categories are 0, 1, 2 and 3 + the team index."""
     mask = data['mask']
     return [('ERA RULES', era_label(data['era'])),
-            ('PLAYOFF FORMAT', playoff_label(data['fmt']))] + \
+            ('PLAYOFF FORMAT', playoff_label(data['fmt'])),
+            ('START YEAR', '%d' % start_year(data['hist']))] + \
         [(disp, 'YOU MANAGE' if (mask >> tid) & 1 else 'AI MANAGES')
          for tid, disp in data['teams']]
+
+
+def start_year_step(data, delta):
+    """LEFT / RIGHT / '-' / '+' / '=' on START YEAR (C13.1): the start year moves by delta,
+    clamped to START_MIN..START_MAX, and bytes 18..19 of HISTORY.DAT are written (the rest of
+    the file is untouched). The in-memory header follows, so every season label relabels."""
+    hist = data['hist']
+    new = min(max(start_year(hist) + delta, START_MIN), START_MAX)
+    put_hist_u16(data['league_dir'], HDR_START, new)
+    hist.d[HDR_START], hist.d[HDR_START + 1] = new & 255, new >> 8
 
 
 def save_settings(league_dir, era, mask):
@@ -428,6 +572,24 @@ def put_hist_byte(league_dir, pos, value):
             d = bytearray()
         d += bytes(max(0, HDR_SIZE - len(d)))
         d[pos] = value & 255
+        with open(path, 'wb') as fh:
+            fh.write(d)
+    except OSError:
+        pass
+
+
+def put_hist_u16(league_dir, pos, value):
+    """Write the u16 LE at pos, pos + 1 of HISTORY.DAT with the put_hist_byte rules: a missing
+    file is created, a short one zero-extended to 32 bytes, no other byte changes."""
+    path = os.path.join(league_dir, 'HISTORY.DAT')
+    try:
+        try:
+            with open(path, 'rb') as fh:
+                d = bytearray(fh.read())
+        except FileNotFoundError:
+            d = bytearray()
+        d += bytes(max(0, HDR_SIZE - len(d)))
+        d[pos], d[pos + 1] = value & 255, (value >> 8) & 255
         with open(path, 'wb') as fh:
             fh.write(d)
     except OSError:
@@ -501,6 +663,81 @@ def control_return(path):
             fh.write(d[:1])
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------- portraits (C13.5)
+def portrait_stock(anms_dir, k):
+    """(w, h, pixels) of PORTRAIT.ANM frame k, or None. A copy of create.portrait (create imports
+    dynview, so it cannot be imported here): frame k must be stored (clen 0) at 48 x 56 and fit
+    the file; frames before it are skipped by their 12 B headers (flags, h, w, yo, xo, clen)."""
+    path = find_upper(anms_dir, 'PORTRAIT.ANM')
+    if path is None:
+        return None
+    try:
+        with open(path, 'rb') as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(0)
+            head = fh.read(2)
+            if len(head) < 2:
+                return None
+            count = struct.unpack('<H', head)[0]
+            if k >= count:
+                return None
+            p = 2
+            for i in range(k + 1):
+                fh.seek(p)
+                hdr = fh.read(12)
+                if len(hdr) < 12:
+                    return None
+                _flags, h, w, _yo, _xo, clen = struct.unpack('<6H', hdr)
+                if i < k:
+                    p += 12 + (h * w if clen == 0 else clen)
+                    continue
+                if clen != 0 or w != PORTRAIT_W or h != PORTRAIT_H \
+                        or p + 12 + h * w > size:
+                    return None
+                fh.seek(p + 12)
+                px = fh.read(h * w)
+                if len(px) != h * w:
+                    return None
+                return (w, h, px)
+    except OSError:
+        return None
+    return None
+
+
+def portrait_old(game_dir, k):
+    """(w, h, pixels) of OLDPORT.ANM frame k, or None: no count word, frame k at k * OLD_FRAME,
+    a 12 B header with clen 0 and 48 x 56, then 2688 B of pixels."""
+    path = find_upper(game_dir, 'OLDPORT.ANM')
+    if path is None:
+        return None
+    try:
+        with open(path, 'rb') as fh:
+            fh.seek(k * OLD_FRAME)
+            hdr = fh.read(12)
+            if len(hdr) < 12:
+                return None
+            _flags, h, w, _yo, _xo, clen = struct.unpack('<6H', hdr)
+            if clen != 0 or w != PORTRAIT_W or h != PORTRAIT_H:
+                return None
+            px = fh.read(h * w)
+            if len(px) != h * w:
+                return None
+            return (w, h, px)
+    except OSError:
+        return None
+
+
+def portrait_of(data, face):
+    """The portrait of a face (C13.5): stock frames below OLD_FACE, OLDPORT frames up to
+    OLD_FACE_END; None when the frame is missing or the face is out of range."""
+    if face < OLD_FACE:
+        return portrait_stock(data.get('anms_dir', 'ANMS'), face)
+    if face < OLD_FACE_END:
+        return portrait_old(data.get('game_dir', '.'), face - OLD_FACE)
+    return None
 
 
 # ---------------------------------------------------------------- primitives
@@ -604,6 +841,11 @@ def fmt_war10(v):
     return ('-' + s) if neg else s
 
 
+def fmt_ip(outs):
+    """outs = OUTS: whole innings and thirds, '1234.2'."""
+    return '%d.%d' % (outs // 3, outs % 3)
+
+
 def avg_of(t):
     return t[2] * 1000 // t[1] if t[1] else 0
 
@@ -636,9 +878,11 @@ def event_text(kind, value):
 
 
 # ---------------------------------------------------------------- categories
+# cat_value / season_qualifies take a career entry or a SEASLINE line: both carry 'totals'
+# (TOTALS order) and 'WAR10'; only career entries carry 'awards'
 def cat_value(e, cat):
     _label, kind, idx = cat
-    if kind == 'count':
+    if kind == 'count' or kind == 'ip':
         return e['totals'][idx]
     if kind == 'avg':
         return avg_of(e['totals'])
@@ -652,9 +896,10 @@ def cat_value(e, cat):
 
 
 def cat_qualifies(e, cat):
+    """Career qualifiers (C7 and C13.3)."""
     _label, kind, idx = cat
     t = e['totals']
-    if kind == 'count':
+    if kind == 'count' or kind == 'ip':
         return t[idx] > 0
     if kind == 'avg':
         return t[1] >= 3000
@@ -665,6 +910,20 @@ def cat_qualifies(e, cat):
     return True                               # WAR: no qualifier
 
 
+def season_qualifies(ln, cat):
+    """SEASON and BY YEAR qualifiers (C13.3) over one SEASLINE line: AVG needs AB > 0 and
+    pa = AB + BB >= 502; ERA needs OUTS >= 486; WAR needs G > 0; counts and IP need value > 0."""
+    kind = cat[1]
+    t = ln['totals']
+    if kind == 'avg':
+        return t[T_AB] > 0 and t[T_AB] + t[T_BB] >= 502
+    if kind == 'era':
+        return t[T_OUTS] >= 486
+    if kind == 'war':
+        return t[T_G] > 0
+    return cat_value(ln, cat) > 0
+
+
 def cat_format(cat, value):
     kind = cat[1]
     if kind == 'avg':
@@ -673,6 +932,8 @@ def cat_format(cat, value):
         return fmt_era100(value)
     if kind == 'war':
         return fmt_war10(value)
+    if kind == 'ip':
+        return fmt_ip(value)
     return fmt_count(value)
 
 
@@ -704,54 +965,67 @@ def history_rows(hist, league_dir=None):
     items.sort(key=lambda t: (t[0], t[1]))
     out = []
     for _s, _p, se in items:
-        out.append(('%d' % se['season_no'],
+        out.append((year_text(hist, se['season_no']),
                     stem_display(se['champion_stem'], league_dir),
                     entry_name(hist, se['awards'][0], 11),
                     entry_name(hist, se['awards'][3], 11)))
     return out
 
 
-def hof_rows(hist):
-    """Status 3 entries by (HoF season descending, index ascending):
-    NAME, IND, YRS, H/W, HR/SO(PSO), AVG/ERA, WAR."""
+def year_text(hist, n):
+    return '%d' % year_of(hist, n)
+
+
+def hof_order(hist):
+    """[(entry index, entry)] of status 3 entries by (HoF season descending, index ascending),
+    at most LIST_MAX (the HALL OF FAME rows and their cursor entries)."""
     items = []
     for i in range(n_entries(hist)):
         e = hist.read_entry(i)
         if e['status'] == history.STATUS_HOF:
             items.append((-e['hof_season'], i, e))
     items.sort(key=lambda t: (t[0], t[1]))
+    return [(i, e) for _s, i, e in items[:LIST_MAX]]
+
+
+def hof_rows(hist):
+    """Status 3 entries by (HoF season descending, index ascending):
+    NAME, IND, YRS, H/W, HR/SO(PSO), AVG/ERA, WAR."""
     out = []
-    for _s, _i, e in items[:LIST_MAX]:
+    for _i, e in hof_order(hist):
         t = e['totals']
         if e['pitcher']:
             s1, s2, s3 = fmt_count(t[13]), fmt_count(t[23]), fmt_era100(era100_of(t))
         else:
             s1, s2, s3 = fmt_count(t[2]), fmt_count(t[5]), fmt_avg(avg_of(t))
         out.append((name_display(e['name'], 12) or '?',
-                    '%d' % e['hof_season'], '%d' % e['seasons_played'],
+                    year_text(hist, e['hof_season']), '%d' % e['seasons_played'],
                     s1, s2, s3, fmt_war10(e['WAR10'])))
     return out
 
 
-def leaders_rows(hist, cat_index, page=0):
-    """Career leaders, top 12 (rank restarted per page): rank, NAME, status mark,
-    YRS, value."""
+def career_order(hist, cat_index):
+    """[(value, entry index, entry)] of the career qualifiers of CATS[cat_index] in leader order
+    (value descending, the ERA ascending; then entry index ascending), at most LIST_MAX."""
     cat = CATS[cat_index]
-    kind = cat[1]
     cands = []
     for i in range(n_entries(hist)):
         e = hist.read_entry(i)
         if cat_qualifies(e, cat):
             cands.append((cat_value(e, cat), i, e))
-    if kind == 'era':
+    if cat[1] == 'era':
         cands.sort(key=lambda t: (t[0], t[1]))
     else:
         cands.sort(key=lambda t: (-t[0], t[1]))
-    cands = cands[:LIST_MAX]
+    return cands[:LIST_MAX]
+
+
+def career_leader_cells(hist, cat_index):
+    """Every career leader row (rank counted from the top of the list): rank, NAME, status
+    mark, YRS, value."""
+    cat = CATS[cat_index]
     out = []
-    for rank in range(page * ROWS_PER_PAGE, min((page + 1) * ROWS_PER_PAGE,
-                                                len(cands))):
-        val, _i, e = cands[rank]
+    for rank, (val, _i, e) in enumerate(career_order(hist, cat_index)):
         status = e['status']
         if status == history.STATUS_RETIRED:
             mark = 'R'
@@ -762,6 +1036,34 @@ def leaders_rows(hist, cat_index, page=0):
         out.append(('#%d' % (rank + 1), name_display(e['name'], 16) or '?', mark,
                     '%d' % e['seasons_played'], cat_format(cat, val)))
     return out
+
+
+def leaders_rows(hist, cat_index, page=0):
+    """Career leaders, the rows of one page: see career_leader_cells."""
+    return career_leader_cells(hist, cat_index)[page * ROWS_PER_PAGE:
+                                                (page + 1) * ROWS_PER_PAGE]
+
+
+def season_order(lines, cat, season=None):
+    """[(value, season, entry index, line)] of the SEASON leader order over lines (or only
+    the lines of one season): value descending (ERA ascending), then season ascending, then
+    entry index ascending; the top SEASON_MAX. Qualifiers as season_qualifies."""
+    items = []
+    for ln in lines:
+        if season is not None and ln['season'] != season:
+            continue
+        if season_qualifies(ln, cat):
+            items.append((cat_value(ln, cat), ln['season'], ln['entry'], ln))
+    if cat[1] == 'era':
+        items.sort(key=lambda t: (t[0], t[1], t[2]))
+    else:
+        items.sort(key=lambda t: (-t[0], t[1], t[2]))
+    return items[:SEASON_MAX]
+
+
+def line_seasons(lines):
+    """Distinct season numbers with lines, ascending."""
+    return sorted({ln['season'] for ln in lines})
 
 
 def milestone_rows(hist, ms):
@@ -775,7 +1077,7 @@ def milestone_rows(hist, ms):
     items.sort(key=lambda t: (t[0], t[1]))
     out = []
     for _s, _p, (season, idx, kind, value) in items[:LIST_MAX]:
-        out.append(('%d' % season, entry_name(hist, idx, 16),
+        out.append((year_text(hist, season), entry_name(hist, idx, 16),
                     event_text(kind, value)))
     return out
 
@@ -879,11 +1181,10 @@ def leader_value(kind, value):
     return '%d %s' % (value, cat)
 
 
-def awards_rows(hist, ms, season):
-    """SEASON AWARDS rows of season: its award and leader records of ms in (kind, file
-    position) order (AL and NL awards, then AL and NL leaders); a season recorded before
-    the award records shows its six winners and a GG SS row; past the history table one
-    message row. At most AWARD_MAX rows."""
+def awards_items(hist, ms, season):
+    """[(row cells, entry index or None)] of SEASON AWARDS rows of season (see awards_rows);
+    the entry index is the row's player entry for the PLAYER CARD, None for a message row, the
+    GG SS row, an empty slot (NO_AWARD) or an index past the entry table."""
     recs = [(kind, pos, idx, value) for pos, (s, idx, kind, value) in enumerate(ms)
             if s == season and (award_kind(kind) or leader_kind(kind))]
     if recs:
@@ -894,14 +1195,30 @@ def awards_rows(hist, ms, season):
                 label, text = leader_label(kind), leader_value(kind, value)
             else:
                 label, text = award_label(kind), award_value(kind, value)
-            out.append((label, entry_name(hist, idx, 16), text))
+            out.append(((label, entry_name(hist, idx, 16), text), idx))
         return out
     if season <= history.SEASON_COUNT:
         aw = hist.read_season_entry(season)['awards']
-        out = [(label, entry_name(hist, aw[k], 16), '')
+        out = [((label, entry_name(hist, aw[k], 16), ''), aw[k])
                for k, label in enumerate(AWARD_FALLBACK)]
-        return out + [('GG SS', 'NOT RECORDED', '')]
-    return [('NO AWARDS RECORDED',)]
+        return out + [(('GG SS', 'NOT RECORDED', ''), None)]
+    return [(('NO AWARDS RECORDED',), None)]
+
+
+def awards_rows(hist, ms, season):
+    """SEASON AWARDS rows of season: its award and leader records of ms in (kind, file
+    position) order (AL and NL awards, then AL and NL leaders); a season recorded before
+    the award records shows its six winners and a GG SS row; past the history table one
+    message row. At most AWARD_MAX rows."""
+    return [cells for cells, _idx in awards_items(hist, ms, season)]
+
+
+def award_entry(hist, idx):
+    """idx as a player entry for the PLAYER CARD: a valid entry index, else None (NO_AWARD, a
+    message row or an index past the entry table)."""
+    if idx is None or idx == history.NO_AWARD or idx >= n_entries(hist):
+        return None
+    return idx
 
 
 def awards_body(state, data):
@@ -1196,7 +1513,7 @@ def ready_lines(data, launched):
             'FREE AGENT SIGNINGS: %d' % len(fa),
             'PLAYERS RELEASED: %d' % sum(1 for e in ev if e[0] == 'REL'),
             'EVERY PLAYER AGED A YEAR AND DEVELOPED',
-            (OFF_LAUNCH_TEXT % (hist.seasons_recorded + 1)) if launched
+            (OFF_LAUNCH_TEXT % year_of(hist, hist.seasons_recorded + 1)) if launched
             else OFF_STAY_TEXT]
 
 
@@ -1207,7 +1524,7 @@ def offseason_body(state, data):
     hist = data['hist']
     if hist.seasons_recorded == 0:
         return COLS_SINGLE, []
-    _screen, _page, cat = state
+    cat = state[2]
     phase = cat & 15
     ld = data.get('league_dir')
     ev = data['events']
@@ -1254,6 +1571,227 @@ def offseason_body(state, data):
     return cols, rows
 
 
+# ---------------------------------------------------------------- state helpers (C13)
+NO_CARD_TEXT = 'NO SEASON LINES RECORDED'
+NO_RATINGS_TEXT = 'NO RATINGS RECORDED'
+
+
+def pack(screen, page, cat, row=0, year=0):
+    """The state tuple (screen, page, cat, row, year). Row and year are left out while they
+    are 0, so the tuples of the screens without a cursor stay (screen, page, cat)."""
+    if year:
+        return (screen, page, cat, row, year)
+    if row:
+        return (screen, page, cat, row)
+    return (screen, page, cat)
+
+
+def unpack(state):
+    """The five fields of a state tuple of 3 to 5 items; a missing row or year is 0."""
+    t = tuple(state)
+    return (t[0], t[1], t[2], t[3] if len(t) > 3 else 0, t[4] if len(t) > 4 else 0)
+
+
+def cursor_screen(s):
+    """True on the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode),
+    SEASON AWARDS and the offseason RETIREMENTS phase."""
+    if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS):
+        return True
+    return s[0] == SCREEN_OFFSEASON and (s[2] & 15) == OFF_RETIRE
+
+
+def cursor_state(s, row):
+    """s with the cursor on row; the page follows (page = row // ROWS_PER_PAGE)."""
+    return pack(s[0], row // ROWS_PER_PAGE, s[2], row, s[4])
+
+
+def cursor_move(state, s, key, data):
+    """UP / DOWN move the cursor one row within the list; PGUP / PGDN move the page and put the
+    cursor on its first row, only when the page changes. state comes back as it was when
+    nothing moves."""
+    page, row = s[1], s[3]
+    n = total_rows(s, data)
+    if key == KEY_UP and row > 0:
+        row -= 1
+    elif key == KEY_DOWN and row < n - 1:
+        row += 1
+    elif key == KEY_PGDN and page * ROWS_PER_PAGE + ROWS_PER_PAGE < n:
+        row = (page + 1) * ROWS_PER_PAGE
+    elif key == KEY_PGUP and page > 0:
+        row = (page - 1) * ROWS_PER_PAGE
+    else:
+        return state
+    return cursor_state(s, row)
+
+
+def leader_cats(mode):
+    """The category list of a LEADERS mode (C13.3): CAREER, or the SEASON list for both season
+    modes."""
+    return CATS if mode == MODE_CAREER else SEASON_CATS
+
+
+def default_year(data):
+    """The BY YEAR season used when none is selected: the newest season with lines, else the
+    newest season recorded (0 with no history)."""
+    seasons = line_seasons(data['lines'])
+    return seasons[-1] if seasons else data['hist'].seasons_recorded
+
+
+def leaders_year(s, data):
+    """The BY YEAR season of s: its year field, or the default season when that is 0."""
+    return s[4] or default_year(data)
+
+
+def season_items(s, data):
+    """season_order over the lines of the SEASON mode (every line) or of the BY YEAR season."""
+    mode, idx = s[2] >> 5, s[2] & 31
+    season = leaders_year(s, data) if mode == MODE_BYYEAR else None
+    return season_order(data['lines'], SEASON_CATS[idx], season)
+
+
+def leaders_body(state, data):
+    """(cols, rows) of LEADERS, every row (the caller pages them). CAREER: the career leader
+    cells. SEASON and BY YEAR: TEAM from the MAJ abbreviations, the YEAR column blank in BY
+    YEAR; a season mode with no line (of the season) shows NO_LINES_TEXT as one message row."""
+    s = unpack(state)
+    hist = data['hist']
+    mode, idx = s[2] >> 5, s[2] & 31
+    if mode == MODE_CAREER:
+        return COLS_LEADERS, career_leader_cells(hist, idx)
+    season = leaders_year(s, data) if mode == MODE_BYYEAR else None
+    if not any(season is None or ln['season'] == season for ln in data['lines']):
+        return COLS_SINGLE, [(NO_LINES_TEXT,)]
+    cat = SEASON_CATS[idx]
+    out = []
+    for k, (val, _season, entry, ln) in enumerate(season_items(s, data), 1):
+        year = '' if mode == MODE_BYYEAR else year_text(hist, ln['season'])
+        out.append(('#%d' % k, entry_name(hist, entry, 16), year,
+                    data['abbrs'].get(ln['team'], '?'), cat_format(cat, val)))
+    return COLS_SEASON_LEADERS, out
+
+
+def row_entry(s, data):
+    """The player entry named by the cursor row of s (C13.4), or None: a message row, an award
+    with no player, an empty list, or no history."""
+    hist = data['hist']
+    if hist.seasons_recorded == 0:
+        return None
+    row = s[3]
+    if s[0] == SCREEN_HOF:
+        order = hof_order(hist)
+        return order[row][0] if row < len(order) else None
+    if s[0] == SCREEN_LEADERS:
+        if s[2] >> 5 == MODE_CAREER:
+            cands = career_order(hist, s[2] & 31)
+            return cands[row][1] if row < len(cands) else None
+        items = season_items(s, data)
+        return items[row][2] if row < len(items) else None
+    if s[0] == SCREEN_AWARDS:
+        items = awards_items(hist, data['ms'], hist.seasons_recorded - s[2])
+        return award_entry(hist, items[row][1]) if row < len(items) else None
+    if s[0] == SCREEN_OFFSEASON:
+        ret = retire_entries(hist)
+        return ret[row][0] if row < len(ret) else None
+    return None
+
+
+def open_card(s, entry, data):
+    """(PLAYER CARD state, 0) for entry. The list state s is kept in data (one level, C13.5) so
+    ESC returns to it exactly."""
+    data['card_back'] = pack(s[0], s[1], s[2], s[3], s[4])
+    return (SCREEN_CARD, 0, entry), 0
+
+
+def card_lines(s, data):
+    """The SEASLINE lines of the card's entry (s[2]) in season order, the latest last (C13.5)."""
+    return sorted((ln for ln in data['lines'] if ln['entry'] == s[2]),
+                  key=lambda ln: ln['season'])
+
+
+def pos_name(p):
+    return POS_NAMES[p] if 0 <= p < len(POS_NAMES) else '?'
+
+
+def card_name(e):
+    """The player's name, first then last, upper case (C13.5)."""
+    first = one_field(e['name'][12:20])
+    last = one_field(e['name'][0:12])
+    return ascii_upper(' '.join(p for p in (first, last) if p)) or '?'
+
+
+def card_cells(t, war10, pitcher, first, team):
+    """One PLAYER CARD season row from the stats t (TOTALS order): the batter columns, or the
+    pitcher columns when pitcher."""
+    if pitcher:
+        return (first, team, '%d' % t[0], '%d' % t[13], '%d' % t[14], '%d' % t[15],
+                fmt_ip(t[19]), '%d' % t[23], fmt_era100(era100_of(t)), fmt_war10(war10))
+    return (first, team, '%d' % t[0], '%d' % t[1], '%d' % t[2], '%d' % t[5],
+            '%d' % t[7], '%d' % t[10], fmt_avg(avg_of(t)), fmt_war10(war10))
+
+
+def card_table(s, data):
+    """(season rows of the page, CAREER row) of the PLAYER CARD (C13.5): the entry's lines newest
+    first, CARD_SEASON_ROWS to a page; one NO_CARD_TEXT row with no lines. CAREER is the
+    entry's totals, not the sum of the lines."""
+    hist = data['hist']
+    if not 0 <= s[2] < n_entries(hist):
+        return [(NO_CARD_TEXT,)], ('CAREER',)
+    e = hist.read_entry(s[2])
+    lines = card_lines(s, data)
+    if not lines:
+        season = [(NO_CARD_TEXT,)]
+    else:
+        newest = lines[::-1][s[1] * CARD_SEASON_ROWS:(s[1] + 1) * CARD_SEASON_ROWS]
+        season = [card_cells(ln['totals'], ln['WAR10'], e['pitcher'],
+                             year_text(hist, ln['season']),
+                             data['abbrs'].get(ln['team'], '?')) for ln in newest]
+    return season, card_cells(e['totals'], e['WAR10'], e['pitcher'], 'CAREER', '')
+
+
+def card_info(s, data):
+    """(the five info lines (C13.5), the latest SEASLINE line or None) of the PLAYER CARD."""
+    hist = data['hist']
+    if not 0 <= s[2] < n_entries(hist):
+        return ['?', '', '', NO_RATINGS_TEXT, ''], None
+    e = hist.read_entry(s[2])
+    lines = card_lines(s, data)
+    last = lines[-1] if lines else None
+    if last is None:
+        head = pos_name(e['pos1'])
+    else:
+        hand = last['hand']
+        head = '%s  BATS %s  THROWS %s' % (pos_name(last['pos1']), BATS_NAMES[(hand >> 1) & 3],
+                                           'R' if hand & 8 else 'L')
+    st = e['status']
+    if st == history.STATUS_ACTIVE:
+        status = 'ACTIVE, AGE %d' % (e['age'] + 1)
+    elif st == history.STATUS_RETIRED:
+        status = 'RETIRED %d' % year_of(hist, e['last_season'])
+    elif st == history.STATUS_HOF:
+        status = 'HALL OF FAME %d' % year_of(hist, e['hof_season'])
+    else:
+        status = ''
+    span = '%d-%d  %d SEASONS' % (year_of(hist, e['first_season']),
+                                  year_of(hist, e['last_season']), e['seasons_played'])
+    if last is None:
+        r4, r5 = NO_RATINGS_TEXT, ''
+    elif e['pitcher']:
+        r = last['ratings']
+        r4, r5 = 'CTL %d  VEL %d  END %d' % (r[6], r[7], r[8]), ''
+    else:
+        r = last['ratings']
+        r4 = 'POW %d  H&R %d  SPD %d' % (r[0], r[2], r[3])
+        r5 = 'RNG %d  ARM %d  BUNT %d' % (r[4], r[5], r[1])
+    return [head, status, span, r4, r5], last
+
+
+def card_title(s, data):
+    hist = data['hist']
+    if not 0 <= s[2] < n_entries(hist):
+        return '?'
+    return card_name(hist.read_entry(s[2]))
+
+
 # ---------------------------------------------------------------- state machine
 def leaders_count(hist, cat_index):
     """Number of qualifying candidates (paging bound), not the on-screen 12."""
@@ -1267,40 +1805,48 @@ def leaders_count(hist, cat_index):
 
 def total_rows(state, data):
     hist = data['hist']
-    screen, _page, cat = state
+    s = unpack(state)
+    screen = s[0]
     if screen == SCREEN_HISTORY:
         n = history_rows(hist) if hist.seasons_recorded else []
     elif screen == SCREEN_HOF:
         n = hof_rows(hist) if hist.seasons_recorded else []
     elif screen == SCREEN_LEADERS:
-        n = range(leaders_count(hist, cat))
+        n = leaders_body(s, data)[1]
     elif screen == SCREEN_MILESTONES:
         n = milestone_rows(hist, data['ms']) if hist.seasons_recorded else []
     elif screen == SCREEN_REVIEW:
         n = review_rows(hist, data['ms']) or []
     elif screen == SCREEN_OFFSEASON:
-        n = offseason_body(state, data)[1]
+        n = offseason_body(s, data)[1]
     elif screen == SCREEN_AWARDS:
-        n = awards_body(state, data)[1]
+        n = awards_body(s, data)[1]
     elif screen == SCREEN_STANDINGS:
-        n = standings_body(state, data)[1]
+        n = standings_body(s, data)[1]
     elif screen == SCREEN_SERIES:
-        n = series_body(state, data)[1]
+        n = series_body(s, data)[1]
     elif screen == SCREEN_BOX:
-        n = box_body(state, data)[1]
+        n = box_body(s, data)[1]
     elif screen == SCREEN_SETTINGS:
         n = settings_rows(data)
     elif screen == SCREEN_ABOUT:
         n = ABOUT_ROWS
+    elif screen == SCREEN_CARD:
+        n = card_lines(s, data)
     else:
         n = MENU_ROWS
     return len(n)
 
 
 def rows(state, data):
-    """Model rows of the current page as cell tuples (no fonts needed)."""
+    """Model rows of the current page as cell tuples (no fonts needed). On the PLAYER CARD:
+    the page's season rows, then the CAREER row (see card_table)."""
     hist = data['hist']
-    screen, page, cat = state
+    s = unpack(state)
+    screen, page, cat = s[0], s[1], s[2]
+    if screen == SCREEN_CARD:
+        season, career = card_table(s, data)
+        return season + [career]
     if screen == SCREEN_SETTINGS:
         return settings_rows(data)[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_ABOUT:
@@ -1312,7 +1858,7 @@ def rows(state, data):
     if hist is None or hist.seasons_recorded == 0:
         return [('NO DYNASTY HISTORY YET',)]
     if screen == SCREEN_LEADERS:
-        return leaders_rows(hist, cat, page)
+        return leaders_body(s, data)[1][page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_OFFSEASON:
         body = offseason_body(state, data)[1]
         return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
@@ -1342,20 +1888,34 @@ def rows(state, data):
 
 
 def step(state, key, data):
-    """(state, exit_flag). ESC exits from MENU; from any other screen it goes back
-    to MENU. PGUP/PGDN page by 12; LEFT/RIGHT cycle the LEADERS category or step the
-    SEASON AWARDS, SEASON STANDINGS or WORLD SERIES season. ENTER on
-    REVIEW goes to MENU. ENTER walks the offseason phases; past the last one it exits
-    when the offseason was launched (cat >> 4) and goes to MENU otherwise. ENTER on the
-    /TITLE menu (cat >> 4) exits. Key 0 on the hub opens SEASON STANDINGS, W or w
+    """(state, exit_flag). The state is (screen, page, cat, row, year), see pack: row is the
+    cursor (C13.4, the absolute row index on HALL OF FAME, LEADERS, SEASON AWARDS and the
+    offseason RETIREMENTS phase; page = row // 12 there), year the BY YEAR season (C13.3).
+    LEADERS: cat = mode * 32 + category, mode 0 CAREER, 1 SEASON, 2 BY YEAR; TAB (9) cycles
+    the mode, keeping the category by label; in BY YEAR '-' steps to the older season with
+    lines, '+' or '=' to the newer, nothing past either end. PLAYER CARD (13): cat = the entry
+    index, page = the season table page of 7 rows; ESC returns to data['card_back'], the list
+    state it was opened from. ESC exits from MENU; from any other screen it goes back
+    to MENU. PGUP/PGDN page by 12 (on a cursor screen the cursor goes to the new page's first
+    row when the page changes); UP/DOWN move the cursor; ENTER on a cursor row whose row
+    names a player entry opens the PLAYER CARD (the offseason RETIREMENTS phase: C or c).
+    LEFT/RIGHT cycle the LEADERS category or step the SEASON AWARDS, SEASON STANDINGS or
+    WORLD SERIES season. ENTER on REVIEW goes to MENU. ENTER walks the offseason phases;
+    past the last one it exits when the offseason was launched (cat >> 4) and goes to MENU
+    otherwise. ENTER on the /TITLE menu (cat >> 4) exits. Key 0 on the hub opens SEASON STANDINGS, W or w
     WORLD SERIES. On WORLD SERIES keys 1..7 open the BOX SCORE of that game; ESC there
-    goes back to the series, LEFT and RIGHT step between the season's games."""
-    screen, page, cat = state
+    goes back to the series, LEFT and RIGHT step between the season's games.
+    SETTINGS: cat is the cursor, 0 ERA RULES, 1 PLAYOFF FORMAT, 2 START YEAR (LEFT RIGHT
+    -1 +1, '-' -10, '+' or '=' +10), c >= 3 the team c - 3."""
+    s = unpack(state)
+    screen, page, cat = s[0], s[1], s[2]
     if key == KEY_ESC:
         if screen == SCREEN_MENU:
             return (SCREEN_MENU, 0, 0), 1
         if screen == SCREEN_BOX:
             return (SCREEN_SERIES, 0, cat >> 3), 0
+        if screen == SCREEN_CARD:
+            return data.get('card_back', (SCREEN_MENU, 0, 0)), 0
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_MENU:
         if key == 48:
@@ -1375,11 +1935,21 @@ def step(state, key, data):
         if cat >> 4:
             return state, 1
         return (SCREEN_MENU, 0, 0), 0
+    if screen == SCREEN_OFFSEASON and key in KEY_CARD and (cat & 15) == OFF_RETIRE:
+        # C opens the PLAYER CARD of the highlighted retiree (C13.4); ENTER keeps the walk
+        entry = row_entry(s, data)
+        if entry is not None:
+            return open_card(s, entry, data)
     if screen == SCREEN_SETTINGS:
-        # cat is the cursor: 0 the ERA RULES row, 1 the PLAYOFF FORMAT row, c >= 2 the team
-        # teams[c - 2]
+        # cat is the cursor: 0 the ERA RULES row, 1 the PLAYOFF FORMAT row, 2 the START YEAR
+        # row (C13.1), c >= 3 the team teams[c - 3]
         n = len(settings_rows(data))
+        if cat == SET_START and key in START_STEPS:
+            start_year_step(data, START_STEPS[key])
+            return state, 0
         if key == KEY_ENTER:
+            if cat == SET_START:
+                return state, 0
             if cat == 1:
                 set_playoff_format(data['league_dir'], data['fmt'][0])
                 data['teams'] = settings_teams(data['league_dir'])
@@ -1387,7 +1957,7 @@ def step(state, key, data):
                 if cat == 0:
                     data['era'] = era_next(data['era'])
                 else:
-                    data['mask'] ^= 1 << data['teams'][cat - 2][0]
+                    data['mask'] ^= 1 << data['teams'][cat - 3][0]
                 save_settings(data['league_dir'], data['era'], data['mask'])
             data['fmt'] = realign.wanted_for_dir(data['league_dir'])
             return state, 0
@@ -1402,6 +1972,20 @@ def step(state, key, data):
         else:
             return state, 0
         return (SCREEN_SETTINGS, cat // ROWS_PER_PAGE, cat), 0
+    if screen == SCREEN_CARD:
+        # PGUP/PGDN page the season table, CARD_SEASON_ROWS lines a page (C13.5)
+        if key == KEY_PGDN and (page + 1) * CARD_SEASON_ROWS < len(card_lines(s, data)):
+            return (SCREEN_CARD, page + 1, cat), 0
+        if key == KEY_PGUP and page > 0:
+            return (SCREEN_CARD, page - 1, cat), 0
+        return state, 0
+    if cursor_screen(s) and key in CURSOR_KEYS:
+        return cursor_move(state, s, key, data), 0
+    if cursor_screen(s) and key == KEY_ENTER:
+        entry = row_entry(s, data)
+        if entry is not None:
+            return open_card(s, entry, data)
+        return state, 0
     if screen == SCREEN_SERIES and 49 <= key <= 55:
         # game key - 49 of the season (cat seasons back), when the season is 1..64 and has it
         g = key - 49
@@ -1432,7 +2016,33 @@ def step(state, key, data):
         return (screen, page, cat), 0
     if screen == SCREEN_LEADERS and key in (KEY_LEFT, KEY_RIGHT):
         d = -1 if key == KEY_LEFT else 1
-        return (SCREEN_LEADERS, 0, (cat + d) % N_CATS), 0
+        mode, idx = cat >> 5, cat & 31
+        # BY YEAR keeps its season (s[4]) while the category changes
+        return pack(SCREEN_LEADERS, 0, mode * MODE_SHIFT + (idx + d) % len(leader_cats(mode)),
+                    0, s[4]), 0
+    if screen == SCREEN_LEADERS and key == KEY_TAB:
+        # the mode cycles CAREER -> SEASON -> BY YEAR; the category stays when the new mode has it
+        mode, idx = cat >> 5, cat & 31
+        new = (mode + 1) % 3
+        label = leader_cats(mode)[idx][0]
+        labels = [c[0] for c in leader_cats(new)]
+        year = default_year(data) if new == MODE_BYYEAR else 0
+        return pack(SCREEN_LEADERS, 0, new * MODE_SHIFT + (labels.index(label)
+                                                           if label in labels else 0),
+                    0, year), 0
+    if screen == SCREEN_LEADERS and cat >> 5 == MODE_BYYEAR and key in YEAR_KEYS:
+        # '-' steps to the older season with lines, '+' or '=' to the newer; nothing past the ends
+        seasons = line_seasons(data['lines'])
+        cur = leaders_year(s, data)
+        if key == KEY_MINUS:
+            older = [x for x in seasons if x < cur]
+            if not older:
+                return state, 0
+            return pack(SCREEN_LEADERS, 0, cat, 0, older[-1]), 0
+        newer = [x for x in seasons if x > cur]
+        if not newer:
+            return state, 0
+        return pack(SCREEN_LEADERS, 0, cat, 0, newer[0]), 0
     if screen in (SCREEN_AWARDS, SCREEN_STANDINGS, SCREEN_SERIES) \
             and key in (KEY_LEFT, KEY_RIGHT):
         # LEFT goes back a season while one is left (shown season > 1), RIGHT forward
@@ -1477,12 +2087,25 @@ COLS_SERIES = [('TEAM', _cx(0), 17, 'L'), ('R', _cx(17), 5, 'R'), ('H', _cx(22),
                ('E', _cx(27), 5, 'R'), (' ', _cx(32), 10, 'R')]
 COLS_BOX = [(' ', _cx(0), 18, 'L')] + [(' ', _cx(18 + 4 * k), 4, 'R') for k in range(6)]
 COLS_SETTINGS = [('SETTING', _cx(0), 24, 'L'), ('VALUE', _cx(26), 16, 'L')]
+COLS_SEASON_LEADERS = [('#', _cx(0), 4, 'L'), ('NAME', _cx(4), 16, 'L'),
+                       ('YEAR', _cx(20), 5, 'R'), ('TEAM', _cx(25), 4, 'R'),
+                       ('VALUE', _cx(29), 12, 'R')]
+# PLAYER CARD season table (C13.5): batters and pitchers; the widths run on from x 10
+COLS_CARD_BAT = [('YEAR', _cx(0), 4, 'L'), ('TEAM', _cx(4), 4, 'L'), ('G', _cx(8), 4, 'R'),
+                 ('AB', _cx(12), 5, 'R'), ('H', _cx(17), 4, 'R'), ('HR', _cx(21), 4, 'R'),
+                 ('RBI', _cx(25), 4, 'R'), ('SB', _cx(29), 4, 'R'), ('AVG', _cx(33), 5, 'R'),
+                 ('WAR', _cx(38), 5, 'R')]
+COLS_CARD_PIT = [('YEAR', _cx(0), 4, 'L'), ('TEAM', _cx(4), 4, 'L'), ('G', _cx(8), 4, 'R'),
+                 ('W', _cx(12), 3, 'R'), ('L', _cx(15), 3, 'R'), ('SV', _cx(18), 4, 'R'),
+                 ('IP', _cx(22), 6, 'R'), ('SO', _cx(28), 4, 'R'), ('ERA', _cx(32), 5, 'R'),
+                 ('WAR', _cx(37), 5, 'R')]
 OFF_COLS = [COLS_SINGLE, COLS_RETIRE, COLS_DRAFT, COLS_MOVE, COLS_MOVE, COLS_SINGLE]
 
 FOOTERS = {SCREEN_MENU: '0-9 W SELECT   ESC EXIT',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'PGUP PGDN   ESC MENU',
-           SCREEN_LEADERS: 'LEFT RIGHT CATEGORY   ESC MENU',
+           SCREEN_LEADERS: 'LEFT RIGHT STAT  TAB MODE  ENTER CARD',
+           SCREEN_CARD: 'PGUP PGDN SEASONS   ESC BACK',
            SCREEN_MILESTONES: 'PGUP PGDN   ESC MENU',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU',
            SCREEN_SETTINGS: 'UP DOWN MOVE   ENTER CHANGE   ESC MENU',
@@ -1500,7 +2123,10 @@ TITLE_FOOTER_NEW = 'ENTER PLAY BALL'
 def footer_text(state, data=None):
     """Footer line of state; the offseason's ENTER label follows its phase, the /TITLE
     menu's follows whether any season is recorded."""
-    screen, _page, cat = state
+    s = unpack(state)
+    screen, cat = s[0], s[2]
+    if screen == SCREEN_LEADERS and cat >> 5 == MODE_BYYEAR:
+        return 'LEFT RIGHT STAT  - + YEAR  TAB MODE'
     if screen == SCREEN_MENU and cat >> 4:
         hist = data['hist'] if data else None
         if hist is None or hist.seasons_recorded == 0:
@@ -1514,26 +2140,36 @@ def footer_text(state, data=None):
 
 
 def screen_title(state, data):
-    screen, page, cat = state
+    s = unpack(state)
+    screen, page, cat = s[0], s[1], s[2]
+    hist = data['hist']
     if screen == SCREEN_MENU:
         if cat >> 4:
-            return 'DYNASTY MODE: SEASON %d' % (data['hist'].seasons_recorded + 1)
+            return 'DYNASTY MODE: %d' % year_of(hist, hist.seasons_recorded + 1)
         return 'DYNASTY'
     if screen == SCREEN_HISTORY:
         return 'SEASON HISTORY'
     if screen == SCREEN_HOF:
         return 'HALL OF FAME'
     if screen == SCREEN_LEADERS:
-        return 'CAREER LEADERS: ' + CATS[cat][0]
+        mode = cat >> 5
+        label = leader_cats(mode)[cat & 31][0]
+        if mode == MODE_CAREER:
+            return 'CAREER LEADERS: ' + label
+        if mode == MODE_SEASON:
+            return 'SEASON LEADERS: ' + label
+        return '%d LEADERS: %s' % (year_of(hist, leaders_year(s, data)), label)
+    if screen == SCREEN_CARD:
+        return card_title(s, data)
     if screen == SCREEN_MILESTONES:
         return 'MILESTONES'
     if screen == SCREEN_OFFSEASON:
         n = data['hist'].seasons_recorded
         phase = cat & 15
         if phase == OFF_REVIEW:
-            return OFF_TITLES[OFF_REVIEW] % n
+            return OFF_TITLES[OFF_REVIEW] % year_of(hist, n)
         if phase == OFF_READY:
-            return OFF_TITLES[OFF_READY] % (n + 1)
+            return OFF_TITLES[OFF_READY] % year_of(hist, n + 1)
         return OFF_TITLES[phase]
     if screen == SCREEN_SETTINGS:
         return 'DYNASTY SETTINGS'
@@ -1543,14 +2179,15 @@ def screen_title(state, data):
     n = data['hist'].seasons_recorded
     # A league with no recorded season has no season number to show (it would read SEASON 0).
     if screen == SCREEN_BOX:
-        return 'SEASON %d WS GAME %d' % (n - (cat >> 3), (cat & 7) + 1) if n else 'WS BOX SCORE'
+        return '%d WS GAME %d' % (year_of(hist, n - (cat >> 3)), (cat & 7) + 1) if n \
+            else 'WS BOX SCORE'
     if screen == SCREEN_AWARDS:
-        return 'SEASON %d AWARDS' % (n - cat) if n else 'SEASON AWARDS'
+        return '%d AWARDS' % year_of(hist, n - cat) if n else 'SEASON AWARDS'
     if screen == SCREEN_STANDINGS:
-        return 'SEASON %d STANDINGS' % (n - cat) if n else 'SEASON STANDINGS'
+        return '%d STANDINGS' % year_of(hist, n - cat) if n else 'SEASON STANDINGS'
     if screen == SCREEN_SERIES:
-        return 'SEASON %d WORLD SERIES' % (n - cat) if n else 'WORLD SERIES'
-    return 'SEASON %d IN REVIEW' % n if n else 'LAST SEASON REVIEW'
+        return '%d WORLD SERIES' % year_of(hist, n - cat) if n else 'WORLD SERIES'
+    return '%d IN REVIEW' % year_of(hist, n) if n else 'LAST SEASON REVIEW'
 
 
 def draw_panel(fb):
@@ -1582,9 +2219,68 @@ def body_cols(state, data):
         return series_body(state, data)[0]
     if state[0] == SCREEN_BOX:
         return box_body(state, data)[0]
+    if state[0] == SCREEN_LEADERS:
+        return leaders_body(state, data)[0]
     return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
-            SCREEN_HOF: COLS_HOF, SCREEN_LEADERS: COLS_LEADERS,
-            SCREEN_MILESTONES: COLS_MILESTONES, SCREEN_REVIEW: COLS_SINGLE}[state[0]]
+            SCREEN_HOF: COLS_HOF, SCREEN_MILESTONES: COLS_MILESTONES,
+            SCREEN_REVIEW: COLS_SINGLE, SCREEN_CARD: COLS_SINGLE}[state[0]]
+
+
+def draw_row(fb, font, cols, cells, y0, color, band):
+    """One table row at y0 (band colour, grid line under it): a cell per column, text cut to
+    its column; a row of one text is drawn unclipped from the first column (a message)."""
+    rect(fb, 8, y0, 311, y0 + 9, band)
+    if len(cells) == 1:
+        draw_text(fb, font, cols[0][1], y0 + 2, cells[0], color)
+    else:
+        for ci, cell in enumerate(cells):
+            _h, x, w, align = cols[ci]
+            s = cell[:w]
+            if align == 'R':
+                draw_text(fb, font, x + w * CHAR_W - text_width(font, s), y0 + 2, s, color)
+            else:
+                draw_text(fb, font, x, y0 + 2, s, color)
+    rect(fb, 8, y0 + 10, 311, y0 + 10, C_GRID_GRAY)
+
+
+def card_pitcher(s, data):
+    hist = data['hist']
+    return 0 <= s[2] < n_entries(hist) and bool(hist.read_entry(s[2])['pitcher'])
+
+
+def draw_card(fb, s, data, main_ft):
+    """The PLAYER CARD body (C13.5): the portrait (or the gray box with a ?), the five info
+    lines, the season table header, its rows and the CAREER row at its fixed slot."""
+    info, last = card_info(s, data)
+    pic = portrait_of(data, last['face']) if last is not None else None
+    px, py = PORTRAIT_X, PORTRAIT_Y
+    if pic is None:
+        rect(fb, px, py, px + PORTRAIT_W - 1, py + PORTRAIT_H - 1, C_GRID_GRAY)
+        q = glyph_of(main_ft, '?')[0]
+        draw_text(fb, main_ft, px + (PORTRAIT_W - text_width(main_ft, '?')) // 2,
+                  py + (PORTRAIT_H - q) // 2, '?', C_WHITE)
+    else:
+        w, h, pixels = pic
+        for y in range(h):
+            base = (py + y) * FB_W + px
+            fb[base:base + w] = pixels[y * w:(y + 1) * w]
+    for y, text in zip(INFO_Y, info):
+        draw_text(fb, main_ft, INFO_X, y, text, C_WHITE)
+    cols = COLS_CARD_PIT if card_pitcher(s, data) else COLS_CARD_BAT
+    rect(fb, 8, CARD_HDR_Y, 311, CARD_HDR_Y + 9, C_HEADER_GOLD)
+    for header, x, w, align in cols:
+        h = header[:w]
+        if align == 'R':
+            draw_text(fb, main_ft, x + w * CHAR_W - text_width(main_ft, h), CARD_HDR_Y + 2,
+                      h, C_BLACK)
+        else:
+            draw_text(fb, main_ft, x, CARD_HDR_Y + 2, h, C_BLACK)
+    season, career = card_table(s, data)
+    for r, cells in enumerate(season):
+        draw_row(fb, main_ft, cols, cells, CARD_ROW_Y0 + r * ROW_H, C_BLACK, C_ROW_TAN)
+    # CAREER: the entry's totals at the fixed slot after the season rows; its label is not cut
+    draw_row(fb, main_ft, cols, ('',) + career[1:], CARD_CAREER_Y, C_BLACK, C_ROW_TAN)
+    draw_text(fb, main_ft, cols[0][1], CARD_CAREER_Y + 2, 'CAREER', C_BLACK)
 
 
 def render(state, data):
@@ -1596,10 +2292,21 @@ def render(state, data):
     tx = 8 + (304 - text_width(bold_ft, title)) // 2
     draw_text(fb, bold_ft, tx + 1, 11, title, C_BLACK)
     draw_text(fb, bold_ft, tx, 10, title, C_WHITE)
-    screen, page, cat = state
+    s = unpack(state)
+    screen, page, cat = s[0], s[1], s[2]
+    if screen == SCREEN_CARD:
+        draw_card(fb, s, data, main_ft)
+        draw_text(fb, main_ft, 10, 185, footer_text(state, data), C_WHITE)
+        return fb
     cols = body_cols(state, data)
-    # SETTINGS: the cursor (cat) row of the page is highlighted
-    hot = cat - page * ROWS_PER_PAGE if screen == SCREEN_SETTINGS else -1
+    # the highlighted row of the page: SETTINGS' cat row, the cursor row (C13.4) on the cursor
+    # screens
+    if screen == SCREEN_SETTINGS:
+        hot = cat - page * ROWS_PER_PAGE
+    elif cursor_screen(s):
+        hot = s[3] - page * ROWS_PER_PAGE
+    else:
+        hot = -1
     rect(fb, 8, 24, 311, 33, C_HEADER_GOLD)
     for header, x, w, align in cols:
         h = header[:w]
@@ -1627,7 +2334,71 @@ def render(state, data):
 
 # ---------------------------------------------------------------- main
 def parse_keys(s):
-    return [int(t, 0) for t in s.split(',') if t.strip()]
+    """The --keys list (C13.6): a number is a key code (int(t, 0)); Lx.y is a left click at
+    (x, y), returned as ('L', x, y); R is a right click, which is ESC."""
+    out = []
+    for t in s.split(','):
+        t = t.strip()
+        if not t:
+            continue
+        if t == 'R':
+            out.append(KEY_ESC)
+        elif t[0] == 'L':
+            x, y = t[1:].split('.')
+            out.append(('L', int(x), int(y)))
+        else:
+            out.append(int(t, 0))
+    return out
+
+
+def _band(y):
+    """The body row of the page (0..ROWS_PER_PAGE - 1) whose band (35 + 11r .. 35 + 11r + 9)
+    holds y, else None."""
+    if y < BODY_Y0:
+        return None
+    r, off = divmod(y - BODY_Y0, ROW_H)
+    return r if off <= 9 and r < ROWS_PER_PAGE else None
+
+
+def click_to_key(state, data, x, y):
+    """(key, row) of a left click at (x, y), by the rules of C13.6 in order: a hub row band is
+    that row's key; a SETTINGS row band is the row with ENTER (START YEAR: LEFT when x < 160,
+    else RIGHT); a list row band of a cursor screen is the row with ENTER (the offseason
+    RETIREMENTS phase: C, as ENTER walks there); a title band on a screen where LEFT and RIGHT
+    act is LEFT or RIGHT; a footer band is PGUP or PGDN. row is the cursor row to set before the
+    key (None when no cursor moves). (None, None) when the click does nothing."""
+    s = unpack(state)
+    screen, page = s[0], s[1]
+    r = _band(y)
+    hist = data['hist']
+    title_menu = (hist is None or hist.seasons_recorded == 0) and s[2] >> 4
+    if screen == SCREEN_MENU and r is not None and r < len(MENU_ROWS) and not title_menu:
+        return ord(MENU_ROWS[r][0]), None
+    if screen == SCREEN_SETTINGS and r is not None:
+        row = page * ROWS_PER_PAGE + r
+        if row < len(settings_rows(data)):
+            if row == SET_START:
+                return (KEY_LEFT if x < 160 else KEY_RIGHT), row
+            return KEY_ENTER, row
+    if cursor_screen(s) and r is not None:
+        row = page * ROWS_PER_PAGE + r
+        if row < total_rows(s, data):
+            return (KEY_CARD[0] if screen == SCREEN_OFFSEASON else KEY_ENTER), row
+    if TITLE_Y0 <= y <= TITLE_Y1 and (screen in LEFT_RIGHT_SCREENS or
+                                      (screen == SCREEN_SETTINGS and s[2] == SET_START)):
+        return (KEY_LEFT if x < 160 else KEY_RIGHT), None
+    if y >= FOOTER_Y0:
+        return (KEY_PGUP if x < 160 else KEY_PGDN), None
+    return None, None
+
+
+def cursor_to(state, row):
+    """state with the cursor on row: SETTINGS' cursor (its page follows), or the row cursor of a
+    cursor screen (C13.4)."""
+    s = unpack(state)
+    if s[0] == SCREEN_SETTINGS:
+        return pack(SCREEN_SETTINGS, row // ROWS_PER_PAGE, row)
+    return cursor_state(s, row)
 
 
 def main(argv):
@@ -1641,13 +2412,15 @@ def main(argv):
     ap.add_argument('--keys', default='')
     ap.add_argument('--png', default=None)
     ap.add_argument('--raw', default=None)
+    ap.add_argument('--game-dir', default='.')
+    ap.add_argument('--anms-dir', default='ANMS')
     ap.add_argument('league_dir')
     ap.add_argument('font_dir')
     a = ap.parse_args(argv)
     menu = a.menu
     if a.control is not None and menu is None:
         menu = control_item(a.control)
-    data = load_data(a.league_dir, a.font_dir)
+    data = load_data(a.league_dir, a.font_dir, a.game_dir, a.anms_dir)
     if a.offseason:
         state = (SCREEN_OFFSEASON, 0, 16)
     elif a.review:
@@ -1661,7 +2434,15 @@ def main(argv):
     else:
         state = (SCREEN_MENU, 0, 0)
     for k in parse_keys(a.keys):
-        state, _ex = step(state, k, data)
+        if isinstance(k, tuple):                  # ('L', x, y): a left click
+            key, row = click_to_key(state, data, k[1], k[2])
+            if key is None:
+                continue
+            if row is not None:
+                state = cursor_to(state, row)
+            state, _ex = step(state, key, data)
+        else:
+            state, _ex = step(state, k, data)
     fb = render(state, data)
     if a.png:
         pal = load_palette(os.path.join(a.font_dir, 'DEFAULT.PAL'))
