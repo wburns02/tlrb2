@@ -855,8 +855,9 @@ highest season).
 ### C13.6 Mouse
 DYNVIEW (C) polls INT 16h AH=1 and INT 33h AX=3; INT 33h AX=0 at start decides whether a mouse exists (no mouse:
 keyboard only, no other change). After the mode set DYNVIEW sets the range itself: AX=7 CX=0 DX=319, then AX=8
-CX=0 DX=199, so x = CX and y = DX (the browser build pins `int33 max x=320`, `int33 max y=200`, which only maps
-right when the guest range is the 320x200 screen; MAIN sets 0..304 x 0..195 and needs the same pin). The cursor is
+CX=0 DX=199, so x = CX and y = DX. The browser's DOSBox-X maps the host pointer as x_norm * the guest's max, so
+the pointer only lands true when the guest range is the whole 320x200 screen; the stock EXEs set 0..304 x 0..195,
+and menu_patch's MOUSE job widens MAIN, BACK, MANAGE, UTIL, BB and DRAFT to 0..319 x 0..199. The cursor is
 shown (AX=1) while waiting and hidden (AX=2) while drawing. A click fires on the release of a button.
 - Right click = ESC.
 - Left click at (x, y), in this order:

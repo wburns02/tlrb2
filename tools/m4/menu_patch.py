@@ -43,7 +43,14 @@ DIV3 (contract C12.2): a league with 3 divisions (MAJ 0x20d == 3) is downgraded 
 let it stand. They are their own jobs, 'MAIN.EXE div3' and 'UTIL.EXE div3', each with its own stock or patched
 state; every pattern must occur exactly once in its file.
 
-usage: menu_patch.py INSTALL_DIR [--revert]   (INSTALL_DIR holds MAIN, BACK, MANAGE, UTIL and CONTROL.EXE)
+MOUSE (2026-10-12): MAIN, BACK, MANAGE, UTIL, BB and DRAFT each call their INT 33h range routine once, with
+`push dword 0x00c30130; push dword 0; call far` (x 0..304, y 0..195, keeping the 16 px cursor on screen). The
+browser's DOSBox-X maps the host pointer as x_norm * max_x, so a click landed 5% short in x and 2.5% short in y
+and missed the small arrows (START NEW SEASON). The 'mouse' job makes the range the whole screen, 0..319 x
+0..199 (0x00c7013f), so the host pointer and the game cursor agree everywhere. Cost: in the last 15 px on the
+right the game's cursor sprite wraps a few pixels onto the next row's left edge (cosmetic, verified on the rig).
+
+usage: menu_patch.py INSTALL_DIR [--revert]   (INSTALL_DIR holds MAIN, BACK, MANAGE, UTIL, CONTROL, BB, DRAFT.EXE)
 Idempotent; checks every file is stock or patched before writing any; refuses the pristine tree.
 """
 import os
@@ -217,6 +224,11 @@ DIV3_SITES = {
 }
 
 
+MOUSE_PAT = bytes.fromhex('66 68 30 01 c3 00 66 6a 00 9a')     # push dword 0x00c30130; push dword 0; call far
+MOUSE_SITES = {name: [(MOUSE_PAT, 2, bytes.fromhex('3f 01 c7 00'))]
+               for name in ('MAIN.EXE', 'BACK.EXE', 'MANAGE.EXE', 'UTIL.EXE', 'BB.EXE', 'DRAFT.EXE')}
+
+
 def _patched_pattern(pat, off, new):
     return pat[:off] + new + pat[off + len(new):]
 
@@ -232,12 +244,12 @@ def _find_once(data, pat, name):
     return hits[0] if hits else None
 
 
-def div3_sites(exe, name):
-    """[(file_off, old, new)] of one DIV3 job, located by pattern search: each pattern occurs exactly once in
-    its stock form or, when that is absent, in its patched form."""
+def div3_sites(exe, name, table=None):
+    """[(file_off, old, new)] of one DIV3 (or MOUSE, table=MOUSE_SITES) job, located by pattern search: each
+    pattern occurs exactly once in its stock form or, when that is absent, in its patched form."""
     data = open(exe, 'rb').read()
     out = []
-    for pat, off, new in DIV3_SITES[name]:
+    for pat, off, new in (DIV3_SITES if table is None else table)[name]:
         fo = _find_once(data, pat, name)
         if fo is None:
             fo = _find_once(data, _patched_pattern(pat, off, new), name)
@@ -250,6 +262,11 @@ def div3_sites(exe, name):
 def div3_patch(exe, name, revert=False, check_only=False):
     """Patch (or revert) one DIV3 job's file; same return values as patch_file."""
     return patch_file(exe, [], revert, div3_sites(exe, name), check_only=check_only)
+
+
+def mouse_patch(exe, name, revert=False, check_only=False):
+    """Patch (or revert) one MOUSE job's file; same return values as patch_file."""
+    return patch_file(exe, [], revert, div3_sites(exe, name, MOUSE_SITES), check_only=check_only)
 
 
 def _resolve(exe, patches, header=()):
@@ -297,7 +314,8 @@ def find_exe(root, name):
 
 
 def patch(install, revert=False):
-    """Patch (or revert) MAIN, BACK, MANAGE, UTIL and CONTROL in install, and the DIV3 jobs; -> {job: state}."""
+    """Patch (or revert) MAIN, BACK, MANAGE, UTIL and CONTROL in install, and the DIV3 and MOUSE jobs;
+    -> {job: state}."""
     root = os.path.abspath(install)
     if 'pristine' in root.split(os.sep):
         raise SystemExit('refusing to patch the pristine tree')
@@ -307,8 +325,11 @@ def patch(install, revert=False):
         patch_file(find_exe(root, name), pats, revert, hdr, check_only=True)
     for name in DIV3_SITES:
         div3_patch(find_exe(root, name), name, revert, check_only=True)
+    for name in MOUSE_SITES:
+        mouse_patch(find_exe(root, name), name, revert, check_only=True)
     out = {name: patch_file(find_exe(root, name), pats, revert, hdr) for name, pats, hdr in jobs}
     out.update({f'{name} div3': div3_patch(find_exe(root, name), name, revert) for name in DIV3_SITES})
+    out.update({f'{name} mouse': mouse_patch(find_exe(root, name), name, revert) for name in MOUSE_SITES})
     return out
 
 

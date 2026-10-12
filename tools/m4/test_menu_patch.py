@@ -21,6 +21,8 @@ needs_game = pytest.mark.skipif(not os.path.isfile(os.path.join(PRISTINE, 'MAIN.
 MENU_EXES = sorted(mp.EXES)
 ALL_EXES = MENU_EXES + ['CONTROL.EXE']
 DIV3_JOBS = [f'{name} div3' for name in mp.DIV3_SITES]
+MOUSE_JOBS = [f'{name} mouse' for name in mp.MOUSE_SITES]
+MOUSE_ONLY = ['BB.EXE', 'DRAFT.EXE']             # carry a MOUSE job and nothing else
 
 
 def test_hook_replaces_stock_decode_exactly():
@@ -175,7 +177,7 @@ def test_div3_pattern_must_occur_exactly_once(tmp_path):
 def _copy(tmp_path):
     d = tmp_path / 'TONY2'
     d.mkdir()
-    for n in ALL_EXES:
+    for n in ALL_EXES + MOUSE_ONLY:
         shutil.copyfile(os.path.join(PRISTINE, n), d / n)   # pristine files are read-only
     return d
 
@@ -184,12 +186,12 @@ def _copy(tmp_path):
 def test_patch_already_revert_roundtrip(tmp_path):
     d = _copy(tmp_path)
     stock = {n: (d / n).read_bytes() for n in ALL_EXES}
-    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES + DIV3_JOBS, 'patched')
+    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS, 'patched')
     patched = {n: (d / n).read_bytes() for n in stock}
     assert all(patched[n] != stock[n] and len(patched[n]) == len(stock[n]) for n in stock)
-    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES + DIV3_JOBS, 'already')
+    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS, 'already')
     assert {n: (d / n).read_bytes() for n in stock} == patched
-    assert mp.patch(str(d), revert=True) == dict.fromkeys(ALL_EXES + DIV3_JOBS, 'reverted')
+    assert mp.patch(str(d), revert=True) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS, 'reverted')
     assert {n: (d / n).read_bytes() for n in stock} == stock
     assert not [f for f in os.listdir(d) if f.endswith('.bak')]
 
@@ -200,15 +202,16 @@ def test_c10_only_install_upgrades_in_place(tmp_path):
     stock = {n: (d / n).read_bytes() for n in ALL_EXES}
     mp.patch(str(d))
     full = {n: (d / n).read_bytes() for n in ALL_EXES}
-    for name in mp.DIV3_SITES:                  # back to a C10-only install: stock bytes at the DIV3 sites
-        p = d / name
-        b = bytearray(p.read_bytes())
-        for fo, old, new in mp.div3_sites(str(p), name):
-            b[fo:fo + len(old)] = old
-        p.write_bytes(bytes(b))
-    assert mp.patch(str(d)) == {**dict.fromkeys(ALL_EXES, 'already'), **dict.fromkeys(DIV3_JOBS, 'patched')}
+    for table in (mp.DIV3_SITES, mp.MOUSE_SITES):   # back to a C10-only install: stock bytes at the job sites
+        for name in table:
+            p = d / name
+            b = bytearray(p.read_bytes())
+            for fo, old, new in mp.div3_sites(str(p), name, table):
+                b[fo:fo + len(old)] = old
+            p.write_bytes(bytes(b))
+    assert mp.patch(str(d)) == {**dict.fromkeys(ALL_EXES, 'already'), **dict.fromkeys(DIV3_JOBS + MOUSE_JOBS, 'patched')}
     assert {n: (d / n).read_bytes() for n in ALL_EXES} == full
-    assert mp.patch(str(d), revert=True) == dict.fromkeys(ALL_EXES + DIV3_JOBS, 'reverted')
+    assert mp.patch(str(d), revert=True) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS, 'reverted')
     assert {n: (d / n).read_bytes() for n in ALL_EXES} == stock
 
 
@@ -266,6 +269,9 @@ def test_patched_header_and_bytes(tmp_path, exe):
     if exe in mp.DIV3_SITES:
         for fo, old, new in mp.div3_sites(str(d / exe), exe):
             named.update(range(fo, fo + len(old)))
+    if exe in mp.MOUSE_SITES:
+        for fo, old, new in mp.div3_sites(str(d / exe), exe, mp.MOUSE_SITES):
+            named.update(range(fo, fo + len(old)))
     assert {i for i in range(len(s)) if s[i] != b[i]} <= named
 
 
@@ -300,3 +306,36 @@ def test_refuses_pristine_path(tmp_path):
     d.mkdir(parents=True)
     with pytest.raises(SystemExit):
         mp.patch(str(d))
+
+
+def test_mouse_sites_change_exactly_the_range_maxima():
+    assert sorted(mp.MOUSE_SITES) == ['BACK.EXE', 'BB.EXE', 'DRAFT.EXE', 'MAIN.EXE', 'MANAGE.EXE', 'UTIL.EXE']
+    for sites in mp.MOUSE_SITES.values():
+        (pat, off, new), = sites
+        assert pat.hex(' ') == '66 68 30 01 c3 00 66 6a 00 9a'
+        assert mp._patched_pattern(pat, off, new).hex(' ') == '66 68 3f 01 c7 00 66 6a 00 9a'   # 319, 199
+
+
+def test_mouse_roundtrip_on_a_fake_file(tmp_path):
+    p = tmp_path / 'BB.EXE'
+    p.write_bytes(_body(mp.MOUSE_PAT))
+    before = p.read_bytes()
+    assert mp.mouse_patch(str(p), 'BB.EXE') == 'patched'
+    assert p.read_bytes() == before.replace(bytes.fromhex('30 01 c3 00'), bytes.fromhex('3f 01 c7 00'))
+    assert mp.mouse_patch(str(p), 'BB.EXE') == 'already'
+    assert mp.mouse_patch(str(p), 'BB.EXE', revert=True) == 'reverted'
+    assert p.read_bytes() == before
+
+
+def test_mouse_twice_refuses(tmp_path):
+    p = tmp_path / 'BB.EXE'
+    p.write_bytes(_body(mp.MOUSE_PAT, mp.MOUSE_PAT))
+    with pytest.raises(SystemExit):
+        mp.mouse_patch(str(p), 'BB.EXE', check_only=True)
+
+
+@needs_game
+@pytest.mark.parametrize('exe', sorted(mp.MOUSE_SITES))
+def test_mouse_site_once_in_each_pristine_exe(exe):
+    data = open(os.path.join(PRISTINE, exe), 'rb').read()
+    assert data.count(mp.MOUSE_PAT) == 1
