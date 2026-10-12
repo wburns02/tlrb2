@@ -670,7 +670,8 @@ which a realignment never changes:
   k; an entry whose first byte is NUL is unused. Any other size counts as missing.
 - MAJ teams: every L in 0..1 and slot s the division count uses (s < 16 with 1 or 2 divisions, s % 8 < 5 with 3)
   whose stem's first byte is not NUL (unused slots and the all-star entry in slot 15 start with NUL; other slots can
-  hold stale bytes and never count).
+  hold stale bytes and never count). A team's stem is its 8 B cut at the first NUL and NUL padded (amended
+  2026-10-12: UTIL's NEW LEAGUE leaves the old name's tail after the NUL, `TEST0\0e1`, and the game reads a C string).
 - With no TEAMID.DAT the id of a MAJ team is its engine id (C12.1), which is the C2 rule (AL slot s, NL s + 16) for
   every 2-division league: a dynasty that never changes format never gets the file and every output is unchanged.
 - With TEAMID.DAT the id of a MAJ team is the k whose entry equals its stem, compared case-insensitively (ASCII);

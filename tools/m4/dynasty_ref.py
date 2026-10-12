@@ -61,9 +61,8 @@ def roll_league(in_dir, out_dir, seed, fill=True, cfg=None, anms_dir=None):
         filled[name] = list(vac)
         with open(out, 'wb') as f:
             f.write(image)
-    maj = os.path.join(in_dir, 'CLASSIC.MAJ')
-    if os.path.exists(maj):
-        shutil.copy2(maj, os.path.join(out_dir, 'CLASSIC.MAJ'))
+    for maj in sorted(glob.glob(os.path.join(in_dir, '*.MAJ'))):
+        shutil.copy2(maj, os.path.join(out_dir, os.path.basename(maj)))
     return {'seed': seed, 'rng_end': rng.s, 'retirees': retirees, 'filled': filled, 'players': report}
 
 
