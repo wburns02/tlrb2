@@ -15,6 +15,9 @@
 #include <string.h>
 #include <stdint.h>
 
+#define STATLINE_REPAIR
+#include "../statline.h"
+
 #ifdef __WATCOMC__
 #include <dos.h>
 #define DIR_SEP '\\'
@@ -2574,6 +2577,16 @@ static int do_run(void)
             static const int32_t LG_BASE[2] = { 0, 16 };
             if (g_star_img[s])
                 allstar_refresh(g_star_img[s], LG_BASE[s]);
+        }
+        /* statline: a placeholder line (created or dynasty rookie) becomes the line its
+         * ratings imply, in every team, pool and ALLSTAR image */
+        for (k = 0; k < g_nt; k++)
+            (void)sl_repair_image(g_tp[k]->img);
+        for (p = 0; p < POOL_FILES; p++)
+            (void)sl_repair_image(g_pool[p]);
+        for (s = 0; s < 2; s++) {
+            if (g_star_img[s])
+                (void)sl_repair_image(g_star_img[s]);
         }
         /* the TMP writes: team images, pools, HISTORY */
         {
