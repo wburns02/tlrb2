@@ -16,5 +16,8 @@ Project: full reverse engineering of Tony La Russa Baseball II (1993 DOS) and in
   shell inherits DISPLAY=:0, so an ad-hoc launch opens on Will's desktop. Kill your session when the probe ends; a
   machine-level reaper (dosbox-reaper.timer) also kills agent-launched DOSBox after its Claude session exits or after
   2 hours (export DOSBOX_KEEP=1 for a longer season sim).
+- Team ids (C12): never map a MAJ slot or engine id to a team as L * 16 + slot. Go through tools/m4/teamids.py
+  (C: tools/m4/teamids.h) with the league's TEAMID.DAT. A 3-division league compacts engine ids and uses slots 16..23.
+- A new season on the GENERATED schedule (every 3-division league) starts at day byte 0x00, not 0x07.
 - Web deploy: web/deploy.sh (copies our EXEs into the stage, patches, builds, backs up, rsyncs, verifies the served sha).
 - Be terse in reports: what changed, test output tail, anything you could not do.
