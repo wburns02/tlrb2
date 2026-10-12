@@ -420,7 +420,7 @@ def test_title_mode(tmp_path):
     hdir, _ = make_data(tmp_path)
     data = dynview.load_data(str(hdir))
     assert dynview.rows(T, data)[0] == ('1  SEASON HISTORY',)
-    assert dynview.footer_text(T, data) == '0-9 SELECT   ENTER PLAY BALL'
+    assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
     assert dynview.screen_title(T, data) == 'DYNASTY MODE: SEASON 4'
     s, ex = dynview.step(T, ord('2'), data)
     assert s == (dynview.SCREEN_HOF, 0, 0) and ex == 0
@@ -782,12 +782,12 @@ def test_offseason_titles_footers_and_menu(tmp_path):
                 'ENTER NEXT   PGUP PGDN   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5))) == 'ENTER CONTINUE   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5, 0))) == 'ENTER MENU   ESC MENU'
-    assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '0-9 SELECT   ESC EXIT'
+    assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '0-9 W SELECT   ESC EXIT'
     assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == 'PGUP PGDN   ESC MENU'
     assert dynview.footer_text((dynview.SCREEN_REVIEW, 0, 0)) == 'ENTER MENU   ESC MENU'
     # the menu's sixth row and key 6; key 7 opens DYNASTY SETTINGS, 9 SEASON AWARDS
     assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data)[5] == ('6  OFFSEASON',)
-    assert dynview.total_rows((dynview.SCREEN_MENU, 0, 0), data) == 10
+    assert dynview.total_rows((dynview.SCREEN_MENU, 0, 0), data) == 11
     s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('6'), data)
     assert s == (SO, 0, 0) and ex == 0
     s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('9'), data)
@@ -943,13 +943,14 @@ def test_hub_rows_with_and_without_history(tmp_path):
     data = dynview.load_data(str(ldir))
     assert dynview.rows(HUB, data) == [(t,) for t in dynview.MENU_ROWS]
     assert dynview.MENU_ROWS[6:] == ['7  DYNASTY SETTINGS', '8  ABOUT THE MODS',
-                                     '9  SEASON AWARDS', '0  SEASON STANDINGS']
-    assert dynview.total_rows(HUB, data) == 10
+                                     '9  SEASON AWARDS', '0  SEASON STANDINGS',
+                                     'W  WORLD SERIES']
+    assert dynview.total_rows(HUB, data) == 11
     empty = tmp_path / 'empty'
     empty.mkdir()
     data = dynview.load_data(str(empty))
     assert dynview.rows(HUB, data) == [(t,) for t in dynview.MENU_ROWS]
-    assert dynview.footer_text(HUB, data) == '0-9 SELECT   ESC EXIT'
+    assert dynview.footer_text(HUB, data) == '0-9 W SELECT   ESC EXIT'
     # screens 1..6, SEASON AWARDS and SEASON STANDINGS with no history keep the one
     # NO DYNASTY row
     for scr in list(range(1, 7)) + [dynview.SCREEN_AWARDS, dynview.SCREEN_STANDINGS]:
@@ -1352,9 +1353,9 @@ def test_awards_hub_key_and_footers(tmp_path):
     assert dynview.step((SA, 0, 0), ESC, data) == (HUB, 0)
     assert dynview.screen_title((SA, 0, 0), data) == 'SEASON 3 AWARDS'
     assert dynview.footer_text((SA, 0, 0), data) == AWARDS_FOOTER
-    assert dynview.footer_text(HUB, data) == '0-9 SELECT   ESC EXIT'
-    assert dynview.footer_text(T, data) == '0-9 SELECT   ENTER PLAY BALL'
-    assert dynview.TITLE_FOOTER == '0-9 SELECT   ENTER PLAY BALL'
+    assert dynview.footer_text(HUB, data) == '0-9 W SELECT   ESC EXIT'
+    assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
+    assert dynview.TITLE_FOOTER == '0-9 W SELECT   ENTER PLAY BALL'
     # ENTER does nothing on SEASON AWARDS
     assert dynview.step((SA, 0, 0), ENTER, data) == ((SA, 0, 0), 0)
 
@@ -1851,7 +1852,7 @@ def test_standings_hub_key_and_footers(tmp_path):
     data = dynview.load_data(str(ldir))
     assert dynview.MENU_ROWS[9] == '0  SEASON STANDINGS'
     assert dynview.rows(HUB, data)[9] == ('0  SEASON STANDINGS',)
-    assert dynview.total_rows(HUB, data) == 10
+    assert dynview.total_rows(HUB, data) == 11
     assert dynview.step(HUB, ord('0'), data) == ((SS, 0, 0), 0)
     # from the /TITLE menu too; ESC goes back to the plain hub
     T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
@@ -1860,8 +1861,8 @@ def test_standings_hub_key_and_footers(tmp_path):
     assert dynview.screen_title((SS, 0, 0), data) == 'SEASON 3 STANDINGS'
     assert dynview.screen_title((SS, 0, 2), data) == 'SEASON 1 STANDINGS'
     assert dynview.footer_text((SS, 0, 0), data) == STAND_FOOTER
-    assert dynview.footer_text(HUB, data) == '0-9 SELECT   ESC EXIT'
-    assert dynview.footer_text(T, data) == '0-9 SELECT   ENTER PLAY BALL'
+    assert dynview.footer_text(HUB, data) == '0-9 W SELECT   ESC EXIT'
+    assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
     # ENTER does nothing on SEASON STANDINGS
     assert dynview.step((SS, 0, 0), ENTER, data) == ((SS, 0, 0), 0)
 
@@ -2044,3 +2045,283 @@ def test_standings_about_rows_and_columns_fit():
     # every column ends inside the 42 character row
     assert all(x + w * dynview.CHAR_W <= 10 + 42 * dynview.CHAR_W
                for _h, x, w, _a in dynview.COLS_STANDINGS)
+
+
+# ---------------------------------------------------------------- world series
+SW = dynview.SCREEN_SERIES
+SERIES_FOOTER = 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'
+# a game: (visitor id, home id, visitor runs, home runs, (visitor hits, home hits),
+# (visitor errors, home errors)). AL ids 0..15 (BOSTON 0), NL 16..31 (ATLANTA 16)
+SERIES6 = [(0, 16, 3, 5, (7, 9), (1, 0)), (0, 16, 6, 1, (9, 4), (0, 2)),
+           (16, 0, 2, 4, (5, 8), (2, 1)), (16, 0, 7, 1, (11, 3), (0, 0)),
+           (0, 16, 9, 8, (12, 10), (1, 1)), (16, 0, 2, 6, (6, 9), (3, 0))]
+SERIES7 = [(0, 16, 6, 2, (9, 5), (1, 0)), (16, 0, 5, 3, (8, 7), (0, 2)),
+           (0, 16, 4, 1, (10, 6), (0, 1)), (16, 0, 4, 2, (7, 9), (2, 0)),
+           (0, 16, 7, 3, (12, 8), (1, 1)), (0, 16, 1, 3, (6, 4), (0, 0)),
+           (16, 0, 2, 4, (5, 8), (2, 1))]
+# LEADS: ATLANTA (the first game's home) wins 3 games to 2
+UNFINISHED5 = [(0, 16, 4, 2, (8, 6), (0, 1)), (0, 16, 1, 3, (5, 9), (1, 0)),
+               (16, 0, 6, 2, (7, 4), (0, 1)), (16, 0, 3, 5, (6, 8), (1, 0)),
+               (0, 16, 2, 4, (6, 7), (0, 2))]
+# TIED: two wins each; game 2 has no kind 201 record
+TIED4 = [(0, 16, 4, 1, (8, 3), (0, 1)), (0, 16, 2, 5, (6, 9), (2, 2)),
+         (16, 0, 3, 1, (5, 4), (1, 0)), (16, 0, 1, 2, (4, 7), (0, 0))]
+SERIES6_ROWS = [
+    ('GAME 1', '', '', '', ''), ('BOSTON', '3', '7', '1', ''), ('ATLANTA', '5', '9', '0', 'W'),
+    ('GAME 2', '', '', '', ''), ('BOSTON', '6', '9', '0', 'W'), ('ATLANTA', '1', '4', '2', ''),
+    ('GAME 3', '', '', '', ''), ('ATLANTA', '2', '5', '2', ''), ('BOSTON', '4', '8', '1', 'W'),
+    ('GAME 4', '', '', '', ''), ('ATLANTA', '7', '11', '0', 'W'), ('BOSTON', '1', '3', '0', ''),
+    ('GAME 5', '', '', '', ''), ('BOSTON', '9', '12', '1', 'W'), ('ATLANTA', '8', '10', '1', ''),
+    ('GAME 6', '', '', '', ''), ('ATLANTA', '2', '6', '3', ''), ('BOSTON', '6', '9', '0', 'W'),
+    ('BOSTON', '', '', '', 'WINS 4-2')]
+SERIES7_ROWS = [
+    ('GAME 1', '', '', '', ''), ('BOSTON', '6', '9', '1', 'W'), ('ATLANTA', '2', '5', '0', ''),
+    ('GAME 2', '', '', '', ''), ('ATLANTA', '5', '8', '0', 'W'), ('BOSTON', '3', '7', '2', ''),
+    ('GAME 3', '', '', '', ''), ('BOSTON', '4', '10', '0', 'W'), ('ATLANTA', '1', '6', '1', ''),
+    ('GAME 4', '', '', '', ''), ('ATLANTA', '4', '7', '2', 'W'), ('BOSTON', '2', '9', '0', ''),
+    ('GAME 5', '', '', '', ''), ('BOSTON', '7', '12', '1', 'W'), ('ATLANTA', '3', '8', '1', ''),
+    ('GAME 6', '', '', '', ''), ('BOSTON', '1', '6', '0', ''), ('ATLANTA', '3', '4', '0', 'W'),
+    ('GAME 7', '', '', '', ''), ('ATLANTA', '2', '5', '2', ''), ('BOSTON', '4', '8', '1', 'W'),
+    ('BOSTON', '', '', '', 'WINS 4-3')]
+UNFINISHED5_ROWS = [
+    ('GAME 1', '', '', '', ''), ('BOSTON', '4', '8', '0', 'W'), ('ATLANTA', '2', '6', '1', ''),
+    ('GAME 2', '', '', '', ''), ('BOSTON', '1', '5', '1', ''), ('ATLANTA', '3', '9', '0', 'W'),
+    ('GAME 3', '', '', '', ''), ('ATLANTA', '6', '7', '0', 'W'), ('BOSTON', '2', '4', '1', ''),
+    ('GAME 4', '', '', '', ''), ('ATLANTA', '3', '6', '1', ''), ('BOSTON', '5', '8', '0', 'W'),
+    ('GAME 5', '', '', '', ''), ('BOSTON', '2', '6', '0', ''), ('ATLANTA', '4', '7', '2', 'W'),
+    ('ATLANTA', '', '', '', 'LEADS 3-2')]
+TIED4_ROWS = [
+    ('GAME 1', '', '', '', ''), ('BOSTON', '4', '8', '0', 'W'), ('ATLANTA', '1', '3', '1', ''),
+    ('GAME 2', '', '', '', ''), ('BOSTON', '2', '', '', ''), ('ATLANTA', '5', '', '', 'W'),
+    ('GAME 3', '', '', '', ''), ('ATLANTA', '3', '5', '1', 'W'), ('BOSTON', '1', '4', '0', ''),
+    ('GAME 4', '', '', '', ''), ('ATLANTA', '1', '4', '0', ''), ('BOSTON', '2', '7', '0', 'W'),
+    ('SERIES', '', '', '', 'TIED 2-2')]
+
+
+def series_recs(season, games, no_he=()):
+    """MILESTON.DAT records of one season's WORLD SERIES in file order: each game's kind
+    192 + g record, then its kind 200 + g record (none for a game index in no_he)"""
+    recs = []
+    for g, (v, h, vr, hr, (vh, hh), (ve, he)) in enumerate(games):
+        recs.append((season, v * 256 + h, 192 + g, vr * 256 + hr))
+        if g not in no_he:
+            recs.append((season, vh * 256 + hh, 200 + g, ve * 256 + he))
+    return recs
+
+
+def make_series(tmp_path, ms):
+    """make_standings league (team names, three seasons, no standings games) whose
+    MILESTON.DAT holds ms"""
+    ldir = make_standings(tmp_path)
+    write_mileston(str(ldir / 'MILESTON.DAT'), ms)
+    return ldir
+
+
+def series_all_rows(state, data):
+    """every row of the paged WORLD SERIES screen state's season"""
+    n = dynview.total_rows(state, data)
+    return [r for p in range((n + 11) // 12) for r in dynview.rows((SW, p, state[2]), data)]
+
+
+def test_series_hub_key_and_footers(tmp_path):
+    ldir = make_series(tmp_path, series_recs(3, SERIES6))
+    data = dynview.load_data(str(ldir))
+    assert dynview.MENU_ROWS[10] == 'W  WORLD SERIES'
+    assert dynview.rows(HUB, data)[10] == ('W  WORLD SERIES',)
+    assert dynview.total_rows(HUB, data) == 11
+    # W and w open WORLD SERIES from the hub and from the /TITLE menu
+    T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
+    for key in (ord('W'), ord('w')):
+        assert dynview.step(HUB, key, data) == ((SW, 0, 0), 0)
+        assert dynview.step(T, key, data) == ((SW, 0, 0), 0)
+    assert dynview.step((SW, 0, 0), ESC, data) == (HUB, 0)
+    assert dynview.screen_title((SW, 0, 0), data) == 'SEASON 3 WORLD SERIES'
+    assert dynview.screen_title((SW, 0, 2), data) == 'SEASON 1 WORLD SERIES'
+    assert dynview.footer_text((SW, 0, 0), data) == SERIES_FOOTER == STAND_FOOTER
+    assert dynview.FOOTERS[SW] == SERIES_FOOTER
+    assert dynview.footer_text(HUB, data) == '0-9 W SELECT   ESC EXIT'
+    assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
+    assert dynview.TITLE_FOOTER == '0-9 W SELECT   ENTER PLAY BALL'
+    # ENTER does nothing on WORLD SERIES
+    assert dynview.step((SW, 0, 0), ENTER, data) == ((SW, 0, 0), 0)
+
+
+def test_series_no_history(tmp_path):
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    data = dynview.load_data(str(empty))
+    s = (SW, 0, 0)
+    assert dynview.screen_title(s, data) == 'WORLD SERIES'
+    assert dynview.rows(s, data) == [('NO DYNASTY HISTORY YET',)]
+    assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
+    assert dynview.total_rows(s, data) == 0
+    assert dynview.step(HUB, ord('W'), data) == (s, 0)
+    for key in (dynview.KEY_LEFT, dynview.KEY_RIGHT, dynview.KEY_PGDN):
+        assert dynview.step(s, key, data) == (s, 0)
+    T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
+    assert dynview.footer_text(T, data) == 'ENTER PLAY BALL'
+
+
+def test_series_six_game_rows_exact(tmp_path):
+    """6 games: 19 rows on 2 pages (games 1..4; games 5..6 and the summary)"""
+    ldir = make_series(tmp_path, series_recs(3, SERIES6))
+    data = dynview.load_data(str(ldir))
+    assert dynview.screen_title((SW, 0, 0), data) == 'SEASON 3 WORLD SERIES'
+    assert dynview.total_rows((SW, 0, 0), data) == 19 == len(SERIES6_ROWS)
+    assert dynview.body_cols((SW, 0, 0), data) == dynview.COLS_SERIES
+    assert dynview.series_body((SW, 0, 0), data) == (dynview.COLS_SERIES, SERIES6_ROWS)
+    got = [r for p in range(2) for r in dynview.rows((SW, p, 0), data)]
+    assert got == SERIES6_ROWS
+    assert [len(dynview.rows((SW, p, 0), data)) for p in range(2)] == [12, 7]
+    # every row has five cells, each within its column
+    for row in got:
+        assert len(row) == len(dynview.COLS_SERIES), row
+        for cell, (_h, _x, w, _a) in zip(row, dynview.COLS_SERIES):
+            assert len(cell) <= w, cell
+    # PGDN stops on the last page, PGUP goes back
+    s = press((SW, 0, 0), dynview.KEY_PGDN, data)
+    assert s == (SW, 1, 0)
+    assert press(s, dynview.KEY_PGDN, data) == (SW, 1, 0)
+    assert dynview.rows(s, data)[-1] == ('BOSTON', '', '', '', 'WINS 4-2')
+    assert press(s, dynview.KEY_PGUP, data) == (SW, 0, 0)
+
+
+def test_series_seven_game_rows(tmp_path):
+    """7 games: 22 rows on 2 pages, the summary last"""
+    ldir = make_series(tmp_path, series_recs(3, SERIES7))
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((SW, 0, 0), data) == 22 == len(SERIES7_ROWS)
+    assert series_all_rows((SW, 0, 0), data) == SERIES7_ROWS
+    assert [len(dynview.rows((SW, p, 0), data)) for p in range(2)] == [12, 10]
+    assert dynview.step((SW, 1, 0), dynview.KEY_PGDN, data) == ((SW, 1, 0), 0)
+
+
+def test_series_unfinished_and_tied(tmp_path):
+    """season 3 is tied 2-2 (SERIES, TIED); season 2 is 3-2 for ATLANTA, the side that
+    is not the first game's visitor (LEADS)"""
+    ldir = make_series(tmp_path, series_recs(2, UNFINISHED5)
+                       + series_recs(3, TIED4, no_he=(1,)))
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((SW, 0, 0), data) == 13 == len(TIED4_ROWS)
+    assert series_all_rows((SW, 0, 0), data) == TIED4_ROWS
+    assert dynview.total_rows((SW, 0, 1), data) == 16 == len(UNFINISHED5_ROWS)
+    assert series_all_rows((SW, 0, 1), data) == UNFINISHED5_ROWS
+
+
+def test_series_first_record_of_a_kind_wins(tmp_path):
+    """a later duplicate of game 1's kind 192 and 200 records is ignored; a game without its
+    200 + g record shows empty H and E cells"""
+    dup = [(3, 0 * 256 + 16, 192, 1 * 256 + 9), (3, 1 * 256 + 1, 200, 0)]
+    ldir = make_series(tmp_path, series_recs(3, SERIES6) + dup)
+    data = dynview.load_data(str(ldir))
+    assert series_all_rows((SW, 0, 0), data) == SERIES6_ROWS
+    (tmp_path / 'nohe').mkdir()
+    ldir = make_series(tmp_path / 'nohe', series_recs(3, SERIES6, no_he=(1,)))
+    rows = series_all_rows((SW, 0, 0), dynview.load_data(str(ldir)))
+    assert rows[3:6] == [('GAME 2', '', '', '', ''), ('BOSTON', '6', '', '', 'W'),
+                         ('ATLANTA', '1', '', '', '')]
+    assert rows[:3] == SERIES6_ROWS[:3] and rows[6:] == SERIES6_ROWS[6:]
+
+
+def test_series_other_seasons_and_past_history_table(tmp_path):
+    """each season shows its own records only; past 64 (season 65 and 70) one message row,
+    season 64 its own records"""
+    ldir = make_series(tmp_path, series_recs(3, SERIES6) + series_recs(2, UNFINISHED5)
+                       + series_recs(64, UNFINISHED5) + series_recs(65, SERIES6)
+                       + series_recs(70, SERIES7))
+    data = dynview.load_data(str(ldir))
+    assert series_all_rows((SW, 0, 0), data) == SERIES6_ROWS
+    assert series_all_rows((SW, 0, 1), data) == UNFINISHED5_ROWS
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[4], d[5] = 70, 0
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    assert dynview.screen_title((SW, 0, 0), data) == 'SEASON 70 WORLD SERIES'
+    assert dynview.rows((SW, 0, 0), data) == [('NO WORLD SERIES RECORDED',)]
+    assert dynview.body_cols((SW, 0, 0), data) == dynview.COLS_SINGLE
+    assert dynview.total_rows((SW, 0, 0), data) == 1
+    assert dynview.rows((SW, 0, 5), data) == [('NO WORLD SERIES RECORDED',)]
+    assert dynview.screen_title((SW, 0, 5), data) == 'SEASON 65 WORLD SERIES'
+    assert series_all_rows((SW, 0, 6), data) == UNFINISHED5_ROWS
+
+
+def test_series_no_series_recorded(tmp_path):
+    """a season with no game record, with or without award records: one message row"""
+    (tmp_path / 'a').mkdir()
+    ldir = make_series(tmp_path / 'a', series_recs(2, SERIES6))
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows((SW, 0, 0), data) == [('NO WORLD SERIES RECORDED',)]
+    assert dynview.rows((SW, 0, 2), data) == [('NO WORLD SERIES RECORDED',)]
+    assert dynview.body_cols((SW, 0, 0), data) == dynview.COLS_SINGLE
+    (tmp_path / 'b').mkdir()
+    ldir = make_awards(tmp_path / 'b')
+    data = dynview.load_data(str(ldir))
+    assert len(dynview.rows((SA, 0, 0), data)) > 1
+    assert dynview.rows((SW, 0, 0), data) == [('NO WORLD SERIES RECORDED',)]
+
+
+def test_series_left_right_seasons(tmp_path):
+    ldir = make_series(tmp_path, series_recs(3, SERIES6) + series_recs(2, SERIES7))
+    data = dynview.load_data(str(ldir))
+    s, ex = dynview.step((SW, 0, 0), dynview.KEY_LEFT, data)
+    assert (s, ex) == ((SW, 0, 1), 0)
+    assert dynview.screen_title(s, data) == 'SEASON 2 WORLD SERIES'
+    assert dynview.total_rows(s, data) == 22
+    s = press(s, dynview.KEY_LEFT, data)
+    assert s == (SW, 0, 2)
+    assert dynview.screen_title(s, data) == 'SEASON 1 WORLD SERIES'
+    assert dynview.rows(s, data) == [('NO WORLD SERIES RECORDED',)]
+    # LEFT at season 1 stays, page included
+    assert dynview.step((SW, 0, 2), dynview.KEY_LEFT, data) == ((SW, 0, 2), 0)
+    assert dynview.step((SW, 1, 2), dynview.KEY_LEFT, data) == ((SW, 1, 2), 0)
+    # RIGHT goes forward again; RIGHT at the newest season stays
+    s = press(s, dynview.KEY_RIGHT, data)
+    assert s == (SW, 0, 1)
+    s = press(s, dynview.KEY_RIGHT, data)
+    assert s == (SW, 0, 0)
+    assert dynview.step((SW, 0, 0), dynview.KEY_RIGHT, data) == ((SW, 0, 0), 0)
+    assert dynview.step((SW, 2, 0), dynview.KEY_RIGHT, data) == ((SW, 2, 0), 0)
+    # ESC leaves the screen from any page
+    assert dynview.step((SW, 1, 1), dynview.KEY_ESC, data) == (HUB, 0)
+
+
+def test_series_team_name_fallback(tmp_path):
+    """TEAM 5 (AL id 5 has no MAJ stem) and SAN DIEGO; a one-game series leads 1-0 for its
+    first game's visitor"""
+    ldir = make_series(tmp_path, series_recs(3, [(5, 17, 4, 2, (7, 6), (0, 1))]))
+    data = dynview.load_data(str(ldir))
+    assert series_all_rows((SW, 0, 0), data) == [
+        ('GAME 1', '', '', '', ''), ('TEAM 5', '4', '7', '0', 'W'),
+        ('SAN DIEGO', '2', '6', '1', ''), ('TEAM 5', '', '', '', 'LEADS 1-0')]
+
+
+def test_series_kinds_never_on_other_screens(tmp_path):
+    """kinds 192..207 (game, hits and errors records) change nothing on MILESTONES,
+    LAST SEASON REVIEW or SEASON AWARDS"""
+    (tmp_path / 'a').mkdir()
+    (tmp_path / 'b').mkdir()
+    plain = make_awards(tmp_path / 'a', ms=award_league_ms())
+    kinds = [(3, 9, kind, 7) for kind in range(192, 208)]
+    with_series = make_awards(tmp_path / 'b', ms=award_league_ms() + series_recs(3, SERIES6)
+                              + kinds)
+    assert dynview.total_rows((SW, 0, 0), dynview.load_data(str(with_series))) > 19
+    assert shown_rows(with_series) == shown_rows(plain)
+
+
+def shown_rows(ldir):
+    """the rows of MILESTONES, LAST SEASON REVIEW and SEASON AWARDS (every page and season)"""
+    data = dynview.load_data(str(ldir))
+    out = [dynview.total_rows(st(dynview.SCREEN_MILESTONES), data),
+           dynview.total_rows(st(dynview.SCREEN_REVIEW), data)]
+    out += [dynview.rows(st(dynview.SCREEN_MILESTONES, p), data) for p in range(3)]
+    out += [dynview.rows(st(dynview.SCREEN_REVIEW), data)]
+    out += [dynview.rows((SA, p, c), data) for c in range(3) for p in range(2)]
+    return out
+
+
+def test_series_columns_fit():
+    assert dynview.COLS_SERIES[0][1:3] == (dynview._cx(0), 17)
+    assert all(x + w * dynview.CHAR_W <= 10 + 42 * dynview.CHAR_W
+               for _h, x, w, _a in dynview.COLS_SERIES)
+    assert [h for h, _x, _w, _a in dynview.COLS_SERIES] == ['TEAM', 'R', 'H', 'E', ' ']
