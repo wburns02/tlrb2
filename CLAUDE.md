@@ -12,4 +12,9 @@ Project: full reverse engineering of Tony La Russa Baseball II (1993 DOS) and in
 - Asm: nasm, BITS 16, CPU 386 (32-bit registers allowed). Build DYNASTY.EXE with python3 tools/m4/blob/build_dynasty.py.
 - Test command: python3 -m pytest -q tools/m4. Tests needing /mnt/nvme data skip in the sandbox; that is expected.
 - Do not run git commands that change history (no reset, rebase, clean, push). Commit only when the task says so.
+- DOSBox sessions: launch only through the rig scripts (Xvfb :98, SDL_VIDEODRIVER=x11, WAYLAND_DISPLAY unset). An agent
+  shell inherits DISPLAY=:0, so an ad-hoc launch opens on Will's desktop. Kill your session when the probe ends; a
+  machine-level reaper (dosbox-reaper.timer) also kills agent-launched DOSBox after its Claude session exits or after
+  2 hours (export DOSBOX_KEEP=1 for a longer season sim).
+- Web deploy: web/deploy.sh (copies our EXEs into the stage, patches, builds, backs up, rsyncs, verifies the served sha).
 - Be terse in reports: what changed, test output tail, anything you could not do.

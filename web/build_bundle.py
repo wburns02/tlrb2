@@ -68,7 +68,10 @@ def build(root, iso, out, overlays=()):
             dirs.update('/'.join(parts[:i]) + '/' for i in range(1, len(parts) + 1))
         for d in sorted(dirs, key=lambda d: (d.count('/'), d)):
             z.writestr(zipfile.ZipInfo(d), b'')
-        z.writestr('.jsdos/dosbox.conf', CONF)
+        # fixed date so the same inputs always give the same bundle (deploy.sh skips unchanged bundles by sha)
+        conf = zipfile.ZipInfo('.jsdos/dosbox.conf', date_time=(1993, 1, 1, 0, 0, 0))
+        conf.compress_type = zipfile.ZIP_DEFLATED
+        z.writestr(conf, CONF)
         for name in sorted(entries):
             z.write(entries[name], name)
         z.write(iso, 'CD.ISO')

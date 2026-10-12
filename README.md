@@ -77,6 +77,8 @@ HISTWR.EXE, ROSTERS.EXE, DYNVIEW.EXE and CREATE.EXE (built from tools/m4) into D
 - dosbox-staging under Xvfb needs `output=surface` for screenshots (OpenGL gives black frames).
 - Flathub DOSBox-X has no debugger and its LOG categories are compiled out; use the source build.
 - DOSBox-X file logging needs both `fileio = true` and the category `files = debug` in `[log]` (conf/tlrb2-x.conf).
+- Agent-launched DOSBox (CLAUDECODE=1 in its environment) is reaped by ~/bin/dosbox-reaper (user timer, every 5 min) once
+  its Claude session exits or after 2 hours; DOSBOX_KEEP=1 lifts the age cap. Sessions Will starts are never touched.
 - Run only one DOSBox at a time on :98; xc.sh targets the first window whose title contains `cycles/ms`.
 
 ## Rules (carried over from the BBPro98 work)
