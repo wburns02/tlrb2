@@ -236,3 +236,25 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
 - Reference fixes found while porting: mark_retired now skips ALLSTAR files (their records are copies of real
   players, so an All-Star copy retiring would have retired the real player), and seasons past 64 skip the
   season-table write instead of overwriting the first player entries.
+
+## Leagues run defaults (brain, 2026-10-12)
+
+- Season leaders are all-time single-season bests with the YEAR and TEAM, plus a BY YEAR view; top 50; AVG needs
+  PA >= 502 and ERA needs 162 IP, as C7 (C13).
+- The player card shows the last recorded season's ratings snapshot; retirees keep theirs (C13).
+- The SEASLINE backfill trusts an archive only when its MAJ W/L matches a season entry exactly (C13.2).
+- START YEAR is a DYNASTY SETTINGS row (row 3, after PLAYOFF FORMAT), 1871..2100, default 1993, editable before a
+  season starts. There is no separate C15: start year folded into C13.
+- Teams and playoff rounds need no new tool. T0 found the stock UI already does it (team count in UTIL SETUP
+  LEAGUES, games and playoff and series lengths in START NEW SEASON); the browser's INT 33h range was the bug,
+  fixed by the menu_patch MOUSE job. Three divisions plus a wild card stays C12.
+- Faces: 30 stock + 323 generated generics; customs from Portrait Studio live at 400..980 so new generic faces never
+  collide with them, and FACEGRP.DAT stays generic length so rookies never draw a custom (C14).
+- More than 2 leagues inside one league set is an engine limit, so "additional leagues" means additional league
+  sets (UTIL NEW LEAGUE), each its own dynasty: CLASSIC keeps C:\DYNSNAP and C:\SEASONS, any other league uses
+  C:\DYNLG\<L>\SNAP and C:\DYNLG\<L> (C16).
+- A MAJ team stem is cut at its first NUL (C12.3 amended): NEW LEAGUE leaves residue after the NUL.
+- A new league's first roll can leave managed teams under 40 named records: its pools start empty and managed teams
+  sign only the draft class (C6 step 5). Accepted; the pools fill from the second roll on.
+- HISTWR never copies a file onto itself under any spelling (TRUENAME on DOS, st_dev/st_ino on the host).
+- Known data quirk left alone: NEGRO'LG.MAJ (old 58789 B format) carries junk stems in slots 9..13.
