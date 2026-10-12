@@ -55,10 +55,10 @@ SCREEN_AWARDS = 9
 SCREEN_STANDINGS = 10
 N_CATS = 12
 
-# MILESTON.DAT kinds from this one up are award records (C7), not milestones
+# MILESTON.DAT kinds from this one up are award and leader records (C7), not milestones
 AWARD_KIND_MIN = 64
 # SEASON AWARDS keeps at most this many rows (the DOS port's fixed buffer)
-AWARD_MAX = 48
+AWARD_MAX = 64
 
 # the hub (SCREEN_MENU) rows: key 1..9 opens screen key - 48, key 0 SEASON STANDINGS
 MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  CAREER LEADERS',
@@ -705,6 +705,9 @@ def review_rows(hist, ms, league_dir=None):
 AWARD_POS = ['', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH']
 AWARD_FALLBACK = ['AL MVP', 'AL CY YOUNG', 'AL ROOKIE',
                   'NL MVP', 'NL CY YOUNG', 'NL ROOKIE']
+# SEASON AWARDS leader records (C7 second amendment): kind 128 + k (AL) or 160 + k (NL),
+# k indexes LEADER_CATS; idx = the leader's entry index, value = the stat as u16
+LEADER_CATS = ['BA', 'HR', 'RBI', 'H', 'SB', 'W', 'ERA', 'SO', 'SV']
 
 
 def award_kind(kind):
@@ -713,6 +716,14 @@ def award_kind(kind):
 
 def award_k(kind):
     return kind - 96 if kind >= 96 else kind - 64
+
+
+def leader_kind(kind):
+    return 128 <= kind <= 136 or 160 <= kind <= 168
+
+
+def leader_k(kind):
+    return kind - 160 if kind >= 160 else kind - 128
 
 
 def award_label(kind):
@@ -744,16 +755,38 @@ def award_value(kind, value):
     return fmt_war10(t) + ' RUNS'
 
 
+def leader_label(kind):
+    lg = 'NL' if kind >= 160 else 'AL'
+    return lg + ' ' + LEADER_CATS[leader_k(kind)] + ' LEADER'
+
+
+def leader_value(kind, value):
+    """value is the stored u16 with no sign: BA as .ddd, ERA as d.dd (x100), else a count"""
+    cat = LEADER_CATS[leader_k(kind)]
+    if cat == 'BA':
+        return fmt_avg(value) + ' BA'
+    if cat == 'ERA':
+        return '%d.%02d ERA' % (value // 100, value % 100)
+    return '%d %s' % (value, cat)
+
+
 def awards_rows(hist, ms, season):
-    """SEASON AWARDS rows of season: its award records of ms in (kind, file position)
-    order; a season recorded before the award records shows its six winners and a
-    GG SS row; past the history table one message row. At most AWARD_MAX rows."""
+    """SEASON AWARDS rows of season: its award and leader records of ms in (kind, file
+    position) order (AL and NL awards, then AL and NL leaders); a season recorded before
+    the award records shows its six winners and a GG SS row; past the history table one
+    message row. At most AWARD_MAX rows."""
     recs = [(kind, pos, idx, value) for pos, (s, idx, kind, value) in enumerate(ms)
-            if s == season and award_kind(kind)]
+            if s == season and (award_kind(kind) or leader_kind(kind))]
     if recs:
         recs.sort(key=lambda t: (t[0], t[1]))
-        return [(award_label(kind), entry_name(hist, idx, 16), award_value(kind, value))
-                for kind, _pos, idx, value in recs[:AWARD_MAX]]
+        out = []
+        for kind, _pos, idx, value in recs[:AWARD_MAX]:
+            if leader_kind(kind):
+                label, text = leader_label(kind), leader_value(kind, value)
+            else:
+                label, text = award_label(kind), award_value(kind, value)
+            out.append((label, entry_name(hist, idx, 16), text))
+        return out
     if season <= history.SEASON_COUNT:
         aw = hist.read_season_entry(season)['awards']
         out = [(label, entry_name(hist, aw[k], 16), '')
