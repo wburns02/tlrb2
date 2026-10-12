@@ -1271,6 +1271,56 @@ static void pick_league(const Cand *lc, int nlc, int league, int32_t *win,
     free(sub);
 }
 
+/* history.leader_value: the C7 leader value of one candidate for category cat
+ * (0 BA .. 8 SV). Returns 0 when it does not qualify: BA h * 1000 / ab over
+ * pa >= 502 and ab > 0; ERA er * 2700 / outs over outs >= 486; the others are
+ * the season stat, qualifying when > 0. */
+static int leader_value(const Cand *c, int cat, int32_t *v)
+{
+    switch (cat) {
+    case 0:
+        if (c->pa < 502 || c->ab == 0)
+            return 0;
+        *v = (int32_t)c->h * 1000 / (int32_t)c->ab;
+        return 1;
+    case 6:
+        if (c->outs < 486)
+            return 0;
+        *v = (int32_t)c->er * 2700 / (int32_t)c->outs;
+        return 1;
+    case 1: *v = c->s_hr; break;
+    case 2: *v = c->s_rbi; break;
+    case 3: *v = c->s_h; break;
+    case 4: *v = c->s_sb; break;
+    case 5: *v = c->s_w; break;
+    case 7: *v = c->s_pso; break;
+    case 8: *v = c->s_sv; break;
+    default: return 0;
+    }
+    return *v > 0;
+}
+
+/* history.leader_records for one category of one league: cands are in ascending
+ * entry index order and only a strictly better candidate replaces the leader
+ * (ERA: strictly smaller), so a tie keeps the lower index. Sets *idx and *val
+ * and returns 1, or returns 0 when the league has no leader. */
+static int leader_pick(const Cand *cands, int nc, int league, int cat,
+                       int32_t *idx, int32_t *val)
+{
+    int i, found = 0;
+    for (i = 0; i < nc; i++) {
+        int32_t v;
+        if (cands[i].league != league || !leader_value(&cands[i], cat, &v))
+            continue;
+        if (!found || (cat == 6 ? v < *val : v > *val)) {
+            *val = v;
+            *idx = cands[i].idx;
+            found = 1;
+        }
+    }
+    return found;
+}
+
 /* patch the entry's award counters on the temp file: counts[k] += 1,
  * saturating at 255 (bytes 152..156; 157..159 already zeroed) */
 static int add_award_count(FILE *g, int32_t idx, int k)
@@ -1667,6 +1717,24 @@ racc:
                 ar[4] = (uint8_t)((k ? 96 : 64) + i);
                 ar[5] = 0;
                 wr16(ar + 6, (uint16_t)(val[i] & 0xffff));
+                if (fwrite(ar, 1, 8, ms) != 8)
+                    goto fail;
+            }
+        }
+        /* C7 leader records after the award records: AL block (kind 128 + cat)
+         * then NL block (160 + cat), cat ascending, one per category with a
+         * leader; value saturates at 65535 (not wrapped, unlike the awards) */
+        for (k = 0; k < 2; k++) {
+            for (i = 0; i < 9; i++) {
+                uint8_t ar[8];
+                int32_t lidx = 0, lval = 0;
+                if (!leader_pick(g_cands, (int)g_ncands, k, i, &lidx, &lval))
+                    continue;
+                wr16(ar, season_no);
+                wr16(ar + 2, (uint16_t)lidx);
+                ar[4] = (uint8_t)((k ? 160 : 128) + i);
+                ar[5] = 0;
+                wr16(ar + 6, (lval > 0xffff) ? 0xffffu : (uint16_t)lval);
                 if (fwrite(ar, 1, 8, ms) != 8)
                     goto fail;
             }

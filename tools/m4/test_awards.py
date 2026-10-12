@@ -528,7 +528,7 @@ def test_award_records_match_pick_awards(tmp_path):
     for lg, base in (('AL', history.AWARD_KIND_AL), ('NL', history.AWARD_KIND_NL)):
         sel = history.pick_awards([c for c in coll if c['league'] == lg], lambda x: x['bat100'])
         want += winner_records(1, sel, base)
-    got = [r for r in history.milestone_entries(hp) if r[2] >= 64]
+    got = [r for r in history.milestone_entries(hp) if 64 <= r[2] < 128]   # award kinds
     assert got == want
     vals = {(i, k): v for s, i, k, v in got}
     al_cf = entry_of(h, ta, 16, 1)
@@ -583,8 +583,129 @@ def test_award_records_past_64_no_season_table(tmp_path):
     assert h.seasons_recorded == 65
     ms = history.milestone_entries(hp)
     assert all(s == 65 for s, i, k, v in ms)
-    awards = [(i, k) for s, i, k, v in ms if k >= 64]
+    awards = [(i, k) for s, i, k, v in ms if 64 <= k < 128]   # leader kinds 128+ excluded
     assert awards == [(0, 64), (0, 66), (0, 69), (0, 77)]   # AL MVP, ROY, GG(3), SS(3)
+
+
+# -- C7 leader records --
+
+def leader_league(ldir):
+    """Leader spot-check league (writes the MAJ and both team files into ldir), returns the
+    saved (AL, NL) Teams. AL (PRE_AL): LEADA (slot 16) .400 with pa 560, 40 HR, 110 RBI, 30 SB;
+    FIVEH (slot 17) .500 with pa 300 (under 502: no BA); ALSO (slot 18) .400 with pa 510, 40 HR,
+    204 H (a BA and HR tie with LEADA); ZEROERA (slot 0) 0 ER in 30 outs (under 486); ACE (slot 1)
+    540 outs, 40 ER (2.00), 15 W, 250 SO; ACETWO (slot 2) 504 outs, 30 ER (1.60). NL (PRE_NL):
+    CLOSER (slot 16) 51 SV in 180 outs (no ERA qualifier, no W, no SO); NLDH (slot 17) .327 with
+    30 HR, 105 RBI, 180 H, no SB."""
+    (ldir / PRE_AL).write_bytes(make_team_v20())
+    (ldir / PRE_NL).write_bytes(make_team_v20(name=b'NLONE', abbr=b'NL1'))
+    make_maj().save(str(ldir / 'CLASSIC.MAJ'))
+    ta = Team(open(str(ldir / PRE_AL), 'rb').read())
+    set_player(ta, 0, 'ZEROERA', 'NOOUTS', 26, 0, 10)
+    statpit(ta, 0, 100, 0, games=10)
+    set_player(ta, 1, 'ACE', 'ONE', 27, 0, 30)
+    statpit(ta, 1, 1800, 40, w=15, pso=250, games=30)
+    set_player(ta, 2, 'ACETWO', 'TWO', 27, 0, 30)
+    statpit(ta, 2, 1666, 30, w=14, pso=200, games=30)
+    set_player(ta, 16, 'LEADA', 'ALPHA', 27, 7, 150)
+    statbat(ta, 16, 500, 200, hr=40, bb=60, sb=30, rbi=110, games=150)
+    set_player(ta, 17, 'FIVEH', 'SHORT', 27, 5, 100)
+    statbat(ta, 17, 300, 150, hr=10, rbi=5, games=100)
+    set_player(ta, 18, 'ALSO', 'BETA', 27, 4, 150)
+    statbat(ta, 18, 510, 204, hr=40, games=150)
+    ta.save(str(ldir / PRE_AL))
+    tn = Team(open(str(ldir / PRE_NL), 'rb').read())
+    set_player(tn, 16, 'CLOSER', 'NLONE', 28, 0, 60)
+    statpit(tn, 16, 600, 20, sv=51, games=60)
+    set_player(tn, 17, 'NLDH', 'DESIG', 29, 9, 150)
+    statbat(tn, 17, 550, 180, hr=30, bb=70, rbi=105, games=150)
+    tn.save(str(ldir / PRE_NL))
+    return ta, tn
+
+
+def test_leader_records_synthetic_league(tmp_path):
+    """After record_season the leader records (kinds 128..175) of the leader league are exactly
+    leader_records of the AL and NL candidates, AL block then NL block. Spot checks: BA is
+    h * 1000 // ab and skips the .500 hitter under 502 PA; the HR tie goes to the lower entry
+    index; ERA is the minimum over outs >= 486 and skips the 0.00 ERA pitcher with 30 outs; a
+    category with no positive value (AL SV; NL W, SO, SB, ERA) has no record."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    ta, tn = leader_league(ldir)
+    hp = str(tmp_path / 'HISTORY.DAT')
+    history.record_season(str(ldir), hp, 1)
+    h = history.History.load(hp)
+    coll = season1_candidates(h, str(ldir))
+    want = []
+    for lg, base in (('AL', history.LEADER_KIND_AL), ('NL', history.LEADER_KIND_NL)):
+        want += history.leader_records(1, [c for c in coll if c['league'] == lg], base)
+    got = [r for r in history.milestone_entries(hp) if 128 <= r[2] < 176]
+    assert got == want
+    la, also = entry_of(h, ta, 16, 1), entry_of(h, ta, 18, 1)
+    ace, acetwo = entry_of(h, ta, 1, 1), entry_of(h, ta, 2, 1)
+    nl_dh, closer = entry_of(h, tn, 17, 1), entry_of(h, tn, 16, 1)
+    assert la < also                                        # the BA and HR tie
+    assert got == [
+        (1, la, 128, 400),          # AL BA: 200 * 1000 / 500 (FIVEH .500 is out at pa 300)
+        (1, la, 129, 40),           # AL HR: tie with ALSO at 40, lower index LEADA
+        (1, la, 130, 110),          # AL RBI
+        (1, also, 131, 204),        # AL H
+        (1, la, 132, 30),           # AL SB
+        (1, ace, 133, 15),          # AL W
+        (1, acetwo, 134, 160),      # AL ERA: 30 * 2700 / 504 (ZEROERA 0.00 is out, 30 outs)
+        (1, ace, 135, 250),         # AL SO
+                                    # AL SV: no saves, no kind 136
+        (1, nl_dh, 160, 327),       # NL BA: 180 * 1000 / 550
+        (1, nl_dh, 161, 30),        # NL HR
+        (1, nl_dh, 162, 105),       # NL RBI
+        (1, nl_dh, 163, 180),       # NL H
+                                    # NL SB, W, ERA, SO: none (kinds 164..167)
+        (1, closer, 168, 51),       # NL SV
+    ]
+
+
+def lc(idx, pa=0, ab=0, h=0, er=0, outs=0, rbi=0, hr=0, sb=0, w=0, sv=0, pso=0):
+    """A leader candidate: the leader_records keys with the given season stats (rest zero)."""
+    return {'index': idx, 'pa': pa, 'ab': ab, 'h': h, 'er': er, 'outs': outs, 'rbi': rbi,
+            history.MS_H: h, history.MS_HR: hr, history.MS_SB: sb, history.MS_W: w, history.MS_SV: sv,
+            history.MS_PSO: pso}
+
+
+def test_leader_records_ties_saturation_empty():
+    """leader_records unit rules: a tie (max or ERA min) goes to the first candidate of cands
+    (the lower entry index); a value over 65535 saturates; no candidates give []; BA needs
+    pa >= 502 (a .500 hitter under it has no BA record) and has no value gate."""
+    base = history.LEADER_KIND_AL
+    assert history.leader_records(4, [], base) == []
+    assert history.leader_records(4, [lc(8, outs=485)], base) == []      # under 486 outs
+    assert history.leader_records(4, [lc(3, hr=20), lc(9, hr=20), lc(12, hr=5)], base) == \
+        [(4, 3, 129, 20)]
+    # ERA tie at 200 (40 * 2700 / 540 and 36 * 2700 / 486): the first in cands leads
+    assert history.leader_records(4, [lc(4, outs=540, er=40), lc(7, outs=486, er=36)], base) == \
+        [(4, 4, 134, 200)]
+    # ERA strictly smaller later in cands: 199 < 200
+    assert history.leader_records(4, [lc(4, outs=540, er=40), lc(7, outs=1000, er=74)], base) == \
+        [(4, 7, 134, 199)]
+    assert history.leader_records(4, [lc(2, sb=70000)], base) == [(4, 2, 132, 0xffff)]
+    assert history.leader_records(4, [lc(5, pa=300, ab=300, h=150)], base) == [(4, 5, 131, 150)]
+    # BA has no value gate: the best qualifier at 0 hits is recorded at 0
+    assert history.leader_records(4, [lc(6, pa=502, ab=400, h=0)], base) == [(4, 6, 128, 0)]
+
+
+def test_leader_records_rerun_idempotent(tmp_path):
+    """A rerun of the same season (HISTORY.DAT rebuilt, MILESTON.DAT kept from the first run)
+    drops the season's leader records and appends them again: MILESTON.DAT byte-identical."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    leader_league(ldir)
+    hp = str(tmp_path / 'HISTORY.DAT')
+    ms_path = os.path.join(str(tmp_path), 'MILESTON.DAT')
+    history.record_season(str(ldir), hp, 1)
+    first = open(ms_path, 'rb').read()
+    assert any(128 <= k < 176 for s, i, k, v in history.milestone_entries(hp))
+    os.remove(hp)
+    history.record_season(str(ldir), hp, 1)
+    assert open(ms_path, 'rb').read() == first
 
 
 # -- real data --
@@ -612,7 +733,10 @@ def collect_all(h, ldir, season_no, lg_totals, pf):
                  'ab': stats['AB'], 'h': stats['H'], 'er': stats['ER'],
                  'range': _get(roster, *F['range']), 'arm': _get(roster, *F['arm']),
                  'po1': _get(rec, *F['po1']), 'a1': _get(rec, *F['a1']),
-                 'e1': _get(rec, *F['e1']), 'bat100': 0}
+                 'e1': _get(rec, *F['e1']), 'bat100': 0,
+                 'rbi': stats['RBI'], history.MS_H: stats['H'], history.MS_HR: stats['HR'], history.MS_SB: stats['SB'],
+                 history.MS_W: stats['W'], history.MS_SV: stats['SV'],
+                 history.MS_PSO: stats['PSO']}
             team_pf = pf.get(lg_id, 1000)
             if pos1 == 0:
                 c['w10'] = war.pitcher_war10(rec, games, lg_totals)
