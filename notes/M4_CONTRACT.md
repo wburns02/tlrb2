@@ -751,3 +751,126 @@ divisions and a wild card. Any other value counts as 0.
   `PLAYOFF FORMAT: 2 DIVISIONS AND AN LCS,`, `OR 3 DIVISIONS AND A WILD CARD WITH A`, `DIVISION SERIES. IT TAKES EFFECT AT ONCE`,
   `BEFORE A SEASON STARTS, ELSE AT THE ROLL.`, `THEN START THE NEW SEASON WITH THE`, `GENERATED SCHEDULE.`
 - ROSTERS.TXT readers ignore the FORMAT lines (the OFFSEASON screen's parser already skips unknown kinds).
+
+
+## C13. Season lines, leaders, player card, mouse, start year (added 2026-10-12)
+
+Will, 2026-10-12: season and career leaders, the year each season stat was achieved, click a player in the leaders to
+see his card, and choose the start year.
+
+### C13.1 Start year (HISTORY.DAT header bytes 18..19)
+- u16 start year at 18..19; 0 or any value outside 1871..2100 counts as 1993 (the shipped season of the game).
+- year_of(n) = start + n - 1 for season n (1-based). One rule everywhere a season is shown to the player; changing the
+  start year relabels every season, nothing else is rewritten.
+- DYNASTY SETTINGS row 3 (after PLAYOFF FORMAT, before the team rows): `START YEAR`, value the 4-digit start year.
+  On that row LEFT / RIGHT = -1 / +1, `-` (45) / `+` (43) or `=` (61) = -10 / +10, clamped to 1871..2100; each change
+  writes bytes 18..19 only (a missing or short HISTORY.DAT is created / zero-extended to 32 B as for the other
+  settings). ENTER on the row does nothing. The team rows move down one (cursor c >= 3 is team c - 3).
+- C6 era rule (REAL CALENDAR): when bytes 18..19 hold a value in 1871..2100, ROSTERS' year = start + seasons recorded
+  (bytes 4..5, read after HISTWR, so the season being started); otherwise the C6 record-byte-21 rule, unchanged.
+- ABOUT THE MODS gains a block (C13.7).
+
+### C13.2 SEASLINE.DAT (league dir, next to HISTORY.DAT), little endian
+Header 16 B: 0 'S' 'L', 2 u8 version 1, 3 u8 0, 4 u16 line size 80, 6 u16 highest season written, 8..15 zero.
+Lines, 80 B each, from offset 16, in write order:
+- 0 u16 player entry index (C2), 2 u16 season_no, 4 u8 stable team id (C12.3), 5 u8 flags (bit0 pitcher: pos1 == 0),
+  6 u8 age (roster half, pre-roll), 7 u8 pos1 (roster half pos1 & 15), 8 u16 face (roster half +27),
+  10 u8 roster half byte 29 raw (speed, throws, bats, face group), 11 u8 dev grade (byte 142),
+  12 9 x u8 ratings from the roster half, 1..15 raw nibbles in this order: power, bunt, hit_run, speed, range, arm,
+  control, velocity, endurance; 21 u8 0,
+  22 25 x u16 season stats in the C2 TOTALS order (G, AB, H, 2B, 3B, HR, R, RBI, BB, SO, SB, CS, E, W, L, SV, GS, CG,
+  SHO, OUTS, ER, PH, PBB, PSO, PHR) of the season half, each min(value, 0xffff),
+  72 s16 season WAR10 (C3, the value step 3 added to the career), 74..79 zero.
+Writing (history.record_season step 3, Python reference; HISTWR in C): one line per named record that step 3 visits,
+in step 3's visiting order (mapped teams in sorted V20 order, records 0..39). After step 3: read the file (missing or
+a bad header: start empty), drop every line with season_no >= this season, append this season's lines, header 6..7 =
+this season, rewrite. Every season is written (no 64 cap).
+Backfill (Python `history.backfill_lines(hist_path, seasons_dir)`; HISTWR `/LINES [HIST_PATH SEASONS_DIR]`, defaults
+`TEAMS\CLASSIC\HISTORY.DAT` and `C:\SEASONS`): only when SEASLINE.DAT does not exist next to HIST_PATH and HISTORY.DAT
+exists with seasons recorded > 0; otherwise nothing (exit 0). Archives = subdirs `Snn` (nn = 01..99, two digits) of
+SEASONS_DIR that hold a *.MAJ, in nn order. An archive is the pre-roll league of one season: it matches season s
+(1 <= s <= min(seasons recorded, 64), not yet matched) when its w_l, built exactly as record_season step 1 builds it
+from the archive's MAJ and TEAMID.DAT, equals season entry s's w_l for all 32 ids and has a nonzero game; the lowest
+such s. Unmatched archives are skipped. For each match in ascending s: the lines record_season would write for that
+archive as league dir and season_no s, with entry indexes from find_entry(name, 1000 + s - age) on the CURRENT
+HISTORY (a record with no entry gets no line) and WAR10 recomputed with the archive's league totals and park factors.
+Writes SEASLINE.DAT (header + lines in s order) even when nothing matched, so it never runs twice. Never touches
+HISTORY.DAT, MILESTON.DAT or BOXSCORE.DAT.
+BAT (bat_patch.py): `histwr /lines` on its own line directly before every `dynview /menu` and `dynview /title` line,
+and nothing else changes; upgrade in place and --revert as for every earlier form.
+
+### C13.3 LEADERS (DYNVIEW hub row 3 `3  LEADERS`, screen 3)
+Three modes in the screen state, TAB (9) cycles CAREER -> SEASON -> BY YEAR -> CAREER (page and cursor reset,
+category kept when it exists in the new mode, else 0). LEFT / RIGHT cycle the category (as today).
+- CAREER: categories over HISTORY player entries, the C7 rules of cat_value / cat_qualifies, in this order:
+  H, HR, RBI, R, 2B, 3B, SB, BB, AVG, WAR, W, SV, SO (PSO), ERA, IP, SHO, MVP AWARDS, GG AWARDS.
+  New counts R (TOTALS 6), 2B (3), 3B (4), BB (8), SHO (18) qualify when > 0; IP is OUTS (19), qualifies when > 0,
+  shown `IP` as whole innings and thirds `1234.2`. Columns and the top LIST_MAX as today. Title `CAREER LEADERS: <cat>`.
+- SEASON: all-time single-season bests from SEASLINE.DAT lines, categories:
+  AVG, HR, RBI, H, R, 2B, 3B, SB, BB, WAR, W, ERA, SO, SV, IP, CG, SHO.
+  AVG: pa = AB + BB >= 502 and AB > 0, value H * 1000 / AB. ERA: OUTS >= 486, value ER * 2700 / OUTS, ascending.
+  WAR: every line with G > 0, value WAR10. Counts (SO is PSO, IP is OUTS): value > 0.
+  Sort value (descending, ERA ascending), then season ascending, then entry index ascending; top 50.
+  Title `SEASON LEADERS: <cat>`. Columns: `#` (4, L), NAME (16, L), YEAR (5, R), TEAM (4, R: the 3-letter MAJ
+  abbreviation of the line's team id in the current league, `?` when none), VALUE (12, R).
+- BY YEAR: the same categories, qualifiers and order over one season's lines; `-` / `+` (or `=`) step the season
+  (start at the newest season with lines; nothing past either end). Title `<year> LEADERS: <cat>`; top 50;
+  columns as SEASON with the YEAR column blank.
+- No SEASLINE.DAT or no lines: one row `NO SEASON LINES RECORDED YET.` (SEASON and BY YEAR).
+Footers: CAREER and SEASON `LEFT RIGHT STAT  TAB MODE  ENTER CARD`, BY YEAR `LEFT RIGHT STAT  - + YEAR  TAB MODE`.
+
+### C13.4 Row cursor
+The screen state gains a cursor: the absolute index of the highlighted row. On HALL OF FAME, LEADERS (all modes),
+SEASON AWARDS and the offseason RETIREMENTS phase: UP / DOWN move it by one within the list (page follows:
+page = cursor // 12), PGUP / PGDN move the page and put the cursor on the page's first row; the highlighted row is
+drawn as the SETTINGS cursor row is (C_TITLE_RED bar, white text). Every other screen keeps its current keys.
+ENTER on a highlighted row whose row names a player entry opens PLAYER CARD for that entry (AWARDS rows whose entry
+is 0xffff or a team, and empty lists, do nothing). On the offseason ENTER keeps its walk meaning; the card opens there
+with `C` (67, 99).
+
+### C13.5 PLAYER CARD (screen 13)
+Opened from a list (C13.4); ESC returns to the exact list state it came from (one level). PGUP / PGDN page the
+season table. Data: the HISTORY entry, and the entry's SEASLINE.DAT lines in season order (latest line = the
+highest season).
+- Title: the player's name, first then last (`name_display`), upper case.
+- Portrait at x 12, y 24 (48 x 56): face = latest line's face. face < 981: ANMS\PORTRAIT.ANM frame face (CREATE's
+  `portrait()` rules); 981 <= face < 1509: OLDPORT.ANM in the game dir, frame face - 981 at offset (face - 981) * 2700
+  (no count word, 12 B header + 2688 B, header clen must be 0 and 48 x 56). Missing frame or no line: a C_GRID_GRAY
+  48 x 56 rect with a `?` centred.
+- Info lines right of the portrait (x 70; y 26, 37, 48, 59, 70), main font, white:
+  1 `<POS>  BATS <B>  THROWS <T>` (POS from pos1 as the game names it: P C 1B 2B 3B SS LF CF RF DH OF IF; B L/R/S,
+  T L/R from byte 29; no line: position from the entry, no hands)
+  2 status: `ACTIVE, AGE <age + 1>` (status 1), `RETIRED <year_of(last_season)>` (2),
+  `HALL OF FAME <year_of(hof_season)>` (3)
+  3 `<first year>-<last year>  <seasons played> SEASONS` (year_of of the entry's first and last season)
+  4 ratings of the latest line, batters `POW p  H&R h  SPD s` and line 5 `RNG r  ARM a  BUNT b`; pitchers
+  `CTL c  VEL v  END e` and line 5 empty. No line: `NO RATINGS RECORDED`. The dev grade is never shown.
+- Season table: header row at y 84 (C_HEADER_GOLD, as the list header), up to 7 season rows from y 95 (ROW_H 11),
+  then a CAREER row with the HISTORY entry totals (always the entry, not the sum of lines). Batters: YEAR (4), TEAM
+  (4), G (4), AB (5), H (4), HR (4), RBI (4), SB (4), AVG (5), WAR (5). Pitchers: YEAR, TEAM, G, W (3), L (3), SV (4),
+  IP (6), SO (4), ERA (5), WAR (5). AVG / ERA / IP / WAR formatted as the leader values. Rows newest season first.
+  No lines: one row `NO SEASON LINES RECORDED` above CAREER.
+- Footer `PGUP PGDN SEASONS   ESC BACK`.
+
+### C13.6 Mouse
+DYNVIEW (C) polls INT 16h AH=1 and INT 33h AX=3; INT 33h AX=0 at start decides whether a mouse exists (no mouse:
+keyboard only, no other change). The cursor is shown (AX=1) while waiting and hidden (AX=2) while drawing. A click
+fires on the release of a button; mode 13h x = CX >> 1, y = DX.
+- Right click = ESC.
+- Left click at (x, y), in this order:
+  - hub (MENU): a menu row band (body row r, y in 35 + 11r .. 35 + 11r + 9) = that row's key.
+  - SETTINGS: a team or setting row band = move the cursor there, then ENTER (START YEAR: x < 160 LEFT, else RIGHT).
+  - a C13.4 list: a row band holding a row = cursor there, then ENTER (opens the card).
+  - title band (y 8..20) on a screen where LEFT / RIGHT do something = LEFT when x < 160, else RIGHT.
+  - footer band (y >= 183) = PGUP when x < 160, else PGDN.
+  - else nothing.
+`/KEYS` (and Python `--keys`) tokens: a number = a key (as today), `Lx.y` = a left click at (x, y), `R` = a right
+click, so the host parity tests drive clicks.
+
+### C13.7 Years on every DYNVIEW screen
+Every place DYNVIEW shows a season number to the player shows year_of(n) instead: SEASON HISTORY's YEAR column,
+MILESTONES' YEAR column, the titles (`1995 AWARDS`, `1995 STANDINGS`, `1995 WORLD SERIES`, `1995 WS GAME 3`,
+`1995 IN REVIEW`, offseason `1/6 1995 IN REVIEW`, `6/6 1996 IS READY`, `ENTER: ON TO 1996`, /TITLE
+`DYNASTY MODE: 1996`). Text with no season keeps its wording. ABOUT THE MODS gains, after the playoff format block:
+`LEADERS: CAREER, SINGLE SEASON AND BY`, `YEAR. TAB SWITCHES. ENTER OR A CLICK ON A`, `PLAYER OPENS HIS CARD.`,
+`START YEAR: DYNASTY SETTINGS, LEFT RIGHT.`
