@@ -43,7 +43,9 @@ mv "$NEW" "$SITE/tlrb2.jsdos"; cp "$REPO/web/index.html" "$SITE/index.html"
 
 TS=$(date +%Y%m%dT%H%M%S)
 ssh "$TLRB2_WEB_HOST" "cd tlrb2-web && mkdir -p backup && cp -a saves backup/saves.$TS && cp site/tlrb2.jsdos backup/tlrb2.jsdos.$TS \
-  && (ls -d backup/saves.* | sort | head -n -4 | xargs -r rm -r --) && (ls backup/tlrb2.jsdos.* | sort | head -n -4 | xargs -r rm --)"
+  && ([ -d studio ] && cp -a studio backup/studio.$TS || true) \
+  && (ls -d backup/saves.* | sort | head -n -4 | xargs -r rm -r --) && (ls backup/tlrb2.jsdos.* | sort | head -n -4 | xargs -r rm --) \
+  && (ls -d backup/studio.* 2>/dev/null | sort | head -n -4 | xargs -r rm -r --)"
 rsync -a "$SITE/tlrb2.jsdos" "$SITE/index.html" "$TLRB2_WEB_HOST:tlrb2-web/site/"
 ssh "$TLRB2_WEB_HOST" 'systemctl --user restart tlrb2-web && sleep 2 && systemctl --user is-active tlrb2-web' | sed 's/^/[deploy] unit /'
 
