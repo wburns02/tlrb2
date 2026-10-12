@@ -408,6 +408,24 @@ visitor runs * 256 + home runs; then kind 200 + g, idx = visitor hits * 256 + ho
 home errors. Verified on three real seasons: runs equal the accumulator R sums and the series winner is the season
 entry's champion every time. Dropped on a rerun like every record of the season; milestone, award and leader readers
 ignore kinds 192..207.
+World Series box scores (fourth amendment 2026-10-11): HISTWR also writes BOXSCORE.DAT next to HISTORY.DAT, always
+(possibly 0 bytes), with the MILESTON drop rule (old records with season < current kept, only when HISTORY.DAT
+existed; a short tail dropped), then this season's records. Record = 16 B: u16 season, u8 game g, u8 flags (bit0
+side: 0 visitor, 1 home; bit1 pitching row), u16 player entry index (0xffff when the record has no entry), u8 the
+side's batting-slot byte b of the player, u8 player id i (V20 record number), 8 u8 stats. For each game g that the
+third amendment keeps (same PLAYOFFS.AL checks, same stems and league rule), in g order, side t = 0 then 1 (team id =
+the visitor id, then the home id): batting rows, then pitching rows. Team t block at r + 0x8e8 * t (FORMATS.md
+GAME.TMP accumulators, verified on 25 real games: the sums equal the line score R, H, E): singles u8 by id at R 0xf0,
+RBI 0x118, SB 0x168, IP10 0x6e0 (innings * 10 in baseball notation, 72 = 7.2), ER 0x708, R allowed 0x730; pairs
+(2 * id and 2 * id + 1, summed, capped at 255) at AB 0x1b8, H 0x208, HR 0x2f8, BB 0x348, SO 0x398, BF 0x758, H
+allowed 0x7a8, HR allowed 0x898, BB allowed 0x8e8, SO allowed 0x938. b = byte r + 6975 + 40 * t + i: 0 = did not
+appear; else low nibble = batting slot (0..8, 9 = the pitcher with the DH) and high nibble = entry order within that
+slot (1 = started), verified on 218 real sides. Batting rows: every i 0..39 with b != 0 and (b & 15) <= 8, sorted by
+(b & 15, b >> 4, i); stats AB R H RBI HR BB SO SB. Pitching rows: every i 0..15 with b != 0 and ((b & 15) == 9 or IP10
+> 0 or BF > 0), sorted by (b >> 4, i); stats IP10, H allowed, R allowed, ER, HR allowed, BB allowed, SO allowed, BF.
+Entry index = the entry the C2 player pass used for record i of the team file mapped to that team id this season
+(0xffff for an inactive record or an unmapped team). Stats of an id that did not appear are ignored (the stock game
+sometimes credits a stray RBI to an absent pitcher id).
 
 ## C8. The patched TONY2.BAT and DYNVIEW (added 2026-10-07; supersedes the C5 BAT block)
 
@@ -538,6 +556,14 @@ season (g ascending, the first record of a kind wins): a header row `GAME g+1`, 
 name as SEASON STANDINGS names it, R, H and E from the 200 + g record or empty without one, `W` in the last column of
 the team with more runs). Then one summary row: the team with more wins and `WINS a-b` when it has 4, else
 `LEADS a-b`; equal wins: `SERIES` and `TIED a-a`. A season with no such record, or past 64: `NO WORLD SERIES RECORDED`.
+Fifth amendment 2026-10-11 (box scores): on WORLD SERIES keys `1`..`7` open screen 12, the box score of game g = key
+- 49 when the season has a kind 192 + g record (else nothing); WORLD SERIES footer `1-7 BOX  LEFT RIGHT SEASON  PGUP
+PGDN  ESC`. Box state (12, page, cat * 8 + g), title `SEASON N WS GAME g+1`, footer `LEFT RIGHT GAME   PGUP PGDN   ESC
+SERIES`; LEFT and RIGHT step to the previous or next game that has a 192 record, ESC returns to that season's WORLD
+SERIES page 0. Columns: name 18 left, six 4 wide right, blank headers. Rows from BOXSCORE.DAT records of (season,
+g) in file order: visitor then home, each a header row (team name as WORLD SERIES names it, `AB R H RBI BB SO`), its
+batting rows (name, AB, R, H, RBI, BB, SO), a `PITCHING` row (`IP H R ER BB SO`) and its pitching rows (IP as
+`7.2`). Names as SEASON AWARDS (18 wide); entry 0xffff shows `?`. No records: `NO BOX SCORE RECORDED`.
 
 DYNASTY SETTINGS edits the C2 header fields that had no UI: byte 10 era mode (ENTER cycles REAL CALENDAR (0) ->
 RESERVE CLAUSE (1) -> FREE AGENCY (2) -> REAL CALENDAR; any other value shows RESERVE CLAUSE and goes to FREE AGENCY)
