@@ -954,3 +954,58 @@ built from client text except a validated id and k.
 - Boot: fetch studio/PORTRAIT.ANM (no-store); on 200 pass js-dos initFs [{path: 'TONY2/ANMS/PORTRAIT.ANM',
   contents}] so the customs overlay the bundle and the save; 404 or an error boots as today.
 - Writes send the existing WRITE headers.
+
+
+## C16. Dynasty tools follow the current league (added 2026-10-12)
+
+Will, 2026-10-12: add more leagues. Stock UTIL > SETUP LEAGUES already makes them (NEW SOURCE LEAGUE, NEW LEAGUE asks
+a name and an abbreviation, COPY TEAM, # OF LEAGUES, # OF DIVISIONS; rig and browser checked 2026-10-12) and
+UTIL > CHANGE LEAGUES picks the current one. The stock layout is TEAMS\<L>\<L>.MAJ plus the .V20s (shipped:
+CLASSIC, NEGRO'LG). Every dynasty tool was hardwired to TEAMS\CLASSIC; from C16 on each tool works on the current
+league, and CLASSIC keeps every path it had, so an existing CLASSIC dynasty is untouched.
+
+### C16.1 The current league (Python tools/m4/league.py, C tools/m4/league.h; identical results)
+- Read the file SYSTEM in the game directory (the TONY2 dir, the cwd of every tool under the BAT). Missing, or
+  shorter than 1 B: CLASSIC.
+- Name = SYSTEM bytes 0..7 up to the first NUL (8 bytes when there is none). Valid when its length is 1..8 and every
+  byte is 0x21..0x7e and not one of `" * + , . / : ; < = > ? [ \ ] |`. a..z become A..Z. Invalid: CLASSIC.
+- A valid name whose file TEAMS<sep><L><sep><L>.MAJ (relative to the game directory) cannot be opened for reading:
+  CLASSIC.
+- `league.current(game_dir)` -> the name (str). C: `int lg_current(const char *game_dir, char name[9])` (game_dir
+  "" or "." = cwd; returns 1 when SYSTEM gave the name, 0 for the CLASSIC fallback).
+- Paths, `league.paths(name, sep)` -> dict; C `lg_path(char *out, int cap, int which, const char *name, char sep)`
+  returns 0 when the result (with its NUL) does not fit cap, else 1. which / key:
+  - LG_DIR 'dir': `TEAMS<sep><L>`
+  - LG_HIST 'hist': `TEAMS<sep><L><sep>HISTORY.DAT`
+  - LG_SNAP 'snap': CLASSIC `C:<sep>DYNSNAP`, else `C:<sep>DYNLG<sep><L><sep>SNAP`
+  - LG_SEASONS 'seasons': CLASSIC `C:<sep>SEASONS`, else `C:<sep>DYNLG<sep><L>`
+  - LG_RET 'ret': snap + `<sep>RETIRED.DAT`
+  - LG_MAJ 'maj': `TEAMS<sep><L><sep><L>.MAJ`
+  The DOS tools use sep `\`; host builds use `/` (C: then is a plain relative name; host tests pass explicit paths).
+
+### C16.2 HISTWR /SNAP and /ARCHIVE (replace the BAT's copy line and ARCHIVE.BAT)
+- `HISTWR /SNAP [LEAGUE_DIR SNAP_DIR]`: defaults the current league's dir and snap. Creates SNAP_DIR and each missing
+  parent directory along it (C:\DYNLG, C:\DYNLG\<L>); then copies every regular file directly in LEAGUE_DIR (no
+  subdirectories, no recursion) into SNAP_DIR, overwriting same-named files, byte for byte. Files already in
+  SNAP_DIR and not in LEAGUE_DIR stay. Exit 0; exit 1 when LEAGUE_DIR cannot be listed or a copy fails. Prints nothing.
+- `HISTWR /ARCHIVE [SNAP_DIR SEASONS_DIR]`: defaults the current league's snap and seasons. Creates SEASONS_DIR (and
+  missing parents). The slot is the first nn in 01..99 whose SEASONS_DIR<sep>Snn holds no *.MAJ (Snn missing counts as
+  free); none free: nothing, exit 0. Creates Snn when missing and copies every regular file directly in SNAP_DIR into
+  it (overwriting). Exit 0; 1 on a copy failure. Prints nothing. (Same result as ARCHIVE.BAT for CLASSIC, whose slots
+  only ever hold CLASSIC.MAJ.)
+- Defaults of the other modes come from C16.1 too: plain `HISTWR` (pre = snap, hist, ret), `HISTWR /LINES` (hist,
+  seasons).
+
+### C16.3 Other tools' defaults (used only when the command line gives no paths; explicit paths win as today)
+- ROSTERS: league dir, snap, hist, ret from C16.1.
+- DYNVIEW, CREATE: league dir from C16.1 (host builds with sep `/`).
+- DYNASTY.EXE (blob/dynasty.asm): reads SYSTEM in the cwd and applies C16.1 (8.3 DOS names, sep `\`); the MAJ is
+  TEAMS\<L>\<L>.MAJ, history TEAMS\<L>\HISTORY.DAT, the rolled files TEAMS\<L>\*.V20, RETIRED.DAT in the league's
+  snap (no snap directory: skipped silently, as today). CLASSIC: byte-identical behaviour and output to before.
+
+### C16.4 TONY2.BAT (tools/m4/rig/bat_patch.py)
+`:start` becomes:
+  :start / histwr /snap / dynasty / if errorlevel 1 goto rolled / goto ctl / :rolled / histwr /archive / histwr /
+  rosters / dynview /offseason / :ctl / control
+(only the copy line and `call archive` change). Every earlier patched form upgrades in place; --revert restores stock.
+ARCHIVE.BAT is still written (unused) so a revert to an older bundle keeps working.
