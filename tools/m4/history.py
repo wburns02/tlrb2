@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import war
 import maj
+import teamids
 from v20 import Team, F, _get           # noqa: E402
 
 HDR_SIZE = 32
@@ -227,7 +228,8 @@ class History:
         self.d[o + 12:o + 20] = e['runner_up_stem'].ljust(8, b'\0')[:8]
         self.d[o + 20] = e['al_pennant'] & 255
         self.d[o + 21] = e['nl_pennant'] & 255
-        self.d[o + 22:o + 24] = bytes(2)
+        self.d[o + 22] = e.get('ndiv', 0) & 255
+        self.d[o + 23] = 0
         wl = e.get('w_l', [(0, 0)] * 32)
         for t in range(32):
             self.d[o + 24 + 2 * t] = wl[t][0] & 255
@@ -237,7 +239,8 @@ class History:
             hist_awards = [0] * 6           # absent key: zeros, like files written
         for k, v in enumerate(hist_awards[:6]):    # before the awards field existed
             struct.pack_into('<H', self.d, o + 88 + 2 * k, v & 0xffff)
-        self.d[o + 100:o + 128] = bytes(28)
+        self.d[o + 100:o + 116] = bytes(e.get('divmap', bytes(16)))[:16].ljust(16, b'\0')
+        self.d[o + 116:o + 128] = bytes(12)
 
     def read_season_entry(self, season_no):
         o = self.season_offset(season_no)
@@ -249,6 +252,8 @@ class History:
         e['runner_up_stem'] = bytes(self.d[o + 12:o + 20]).split(b'\0')[0]
         e['al_pennant'] = self.d[o + 20]
         e['nl_pennant'] = self.d[o + 21]
+        e['ndiv'] = self.d[o + 22]
+        e['divmap'] = bytes(self.d[o + 100:o + 116])
         e['w_l'] = [(self.d[o + 24 + 2 * t], self.d[o + 25 + 2 * t]) for t in range(32)]
         e['awards'] = [struct.unpack_from('<H', self.d, o + 88 + 2 * k)[0] for k in range(6)]
         return e
@@ -281,13 +286,14 @@ def maj_or_none(league_dir):
     return cands[0] if cands else None
 
 
-def decode_champion(m):
+def decode_champion(m, table=None):
     """C2 champion decode from the AL/NL playoff blocks (amended 2026-10-08, two samples):
     the AL block holds both series as (team0, team1) with each side's wins:
     LCS teams S+0x3d7/0x3d8, wins S+0x3df/0x3e0; WS teams S+0x3d9 (AL pennant) and
     S+0x3da (NL pennant), wins S+0x3e1/0x3e2. WS winner = the side with more wins
     (tie: 0xff). al_pennant = AL S+0x3d9; nl_pennant = NL S+0x3d9; runner-up = the
-    pennant winner that is not the WS winner. 0xff anywhere unknown."""
+    pennant winner that is not the WS winner. 0xff anywhere unknown. The engine ids are
+    read as stable ids (C12.3, teamids.id_of_engine with table)."""
     s_al, s_nl = 0x21d, 0x758c
     t0 = m.d[s_al + 0x3d9]
     t1 = m.d[s_al + 0x3da]
@@ -295,8 +301,8 @@ def decode_champion(m):
     w1 = m.d[s_al + 0x3e2]
     al_p = m.d[s_al + 0x3d9]
     nl_p = m.d[s_nl + 0x3d9]
-    # ids past the 32 league-global ids are unknown, like 0xff (C2 amendment)
-    t0, t1, al_p, nl_p = (v if v < 32 else 0xff for v in (t0, t1, al_p, nl_p))
+    # ids that name no team (or no id) are unknown, like 0xff (C2 amendment, C12.3)
+    t0, t1, al_p, nl_p = (teamids.id_of_engine(m.d, table, v) for v in (t0, t1, al_p, nl_p))
     ws = t0 if w0 > w1 else t1 if w1 > w0 else 0xff
     runner = 0xff
     if ws != 0xff:
@@ -307,29 +313,37 @@ def decode_champion(m):
     return ws, runner, al_p, nl_p
 
 
-def team_stem(m, lg_id):
-    """8 B file stem of the team's V20, from the MAJ (NL = slot+16)."""
-    if lg_id == 0xff:
-        return b''
-    lg = 'AL' if lg_id < 16 else 'NL'
-    slot = lg_id if lg_id < 16 else lg_id - 16
-    return m.stem(lg, slot).encode('latin-1')[:8]
+def team_stem(m, lg_id, table=None):
+    """8 B file stem of the team's V20 with stable id lg_id (C12.3); b'' for 0xff or no team."""
+    return teamids.stem_of_id(m.d, table, lg_id)[:8]
+
+
+def divmap_of(d, table):
+    """C12.7 division map (16 B): nibble of id k = the team's division + 1 (East 1, West 2, Central 3)."""
+    out = bytearray(16)
+    for k, _L, slot, _st in teamids.teams(d, table):
+        out[k // 2] |= (slot // 8 + 1) << (4 * (k & 1))
+    return bytes(out)
+
+
+def division_of(e, k):
+    """Division of league-global id k in season entry e: 1 East, 2 West, 3 Central, 0 none. A legacy
+    entry (ndiv 0, written before C12) has East for (k & 15) < 8, else West."""
+    if e.get('ndiv', 0) == 0:
+        return 1 if (k & 15) < 8 else 2
+    return (e.get('divmap', bytes(16))[k // 2] >> (4 * (k & 1))) & 15
 
 
 def mapped_teams(league_dir, m):
-    """[(v20 path, league-global id)] in sorted file order; files whose stem matches no MAJ slot
-    (ALLSTAR1/2.V20) are left out of every history step."""
+    """[(v20 path, league-global id)] in sorted file order; files whose stem matches no MAJ team
+    (ALLSTAR1/2.V20) are left out of every history step. Ids are the stable ids (C12.3)."""
+    ids = {st.rstrip(b'\0').decode('latin-1').lower(): k
+           for k, _L, _slot, st in teamids.teams(m.d, teamids.load_table(league_dir))}
     teams = []
     for p in sorted(glob.glob(os.path.join(league_dir, '*.V20'))):
         stem = os.path.basename(p)[:-4].lower()
-        lg_id = None
-        for lg in ('AL', 'NL'):
-            base = 0 if lg == 'AL' else 16
-            for s in range(16):
-                if m.stem(lg, s).lower() == stem:
-                    lg_id = base + s
-        if lg_id is not None:
-            teams.append((p, lg_id))
+        if stem in ids:
+            teams.append((p, ids[stem]))
     return teams
 
 
@@ -355,17 +369,20 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     mp = maj_or_none(league_dir)
     m = maj.Maj.load(mp)
     hist.version = 1
+    table = teamids.load_table(league_dir)
     # 1. season entry
-    ws, runner, al_p, nl_p = decode_champion(m)
+    ws, runner, al_p, nl_p = decode_champion(m, table)
     entry = {'season_no': season_no, 'champion': ws, 'runner_up': runner,
-             'champion_stem': team_stem(m, ws), 'runner_up_stem': team_stem(m, runner),
-             'al_pennant': al_p, 'nl_pennant': nl_p, 'w_l': [(0, 0)] * 32}
-    for lg in ('AL', 'NL'):
-        base = 0 if lg == 'AL' else 16
-        for t in range(16):
-            w, l = m.wl(lg, t)
-            if w or l:
-                entry['w_l'][base + t] = (w, l)
+             'champion_stem': team_stem(m, ws, table), 'runner_up_stem': team_stem(m, runner, table),
+             'al_pennant': al_p, 'nl_pennant': nl_p, 'w_l': [(0, 0)] * 32,
+             'ndiv': 0, 'divmap': bytes(16)}
+    if teamids.ndiv(m.d) == 3 or table is not None:
+        # C12.7: a 2-division league with no TEAMID.DAT keeps the legacy zeros (same divisions, byte-identical)
+        entry['ndiv'], entry['divmap'] = teamids.ndiv(m.d), divmap_of(m.d, table)
+    for k, L, slot, _st in teamids.teams(m.d, table):
+        w, l = m.wl('AL' if L == 0 else 'NL', slot)
+        if w or l:
+            entry['w_l'][k] = (w, l)
     if season_no <= SEASON_COUNT:      # the table holds 64 seasons; later ones keep careers only
         hist.write_season_entry(season_no, entry)
     if season_no > hist.seasons_recorded:
@@ -373,7 +390,7 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     # 2. league pass (unmatched stems, e.g. ALLSTAR1/2: skipped entirely)
     teams = mapped_teams(league_dir, m)
     per, lg_totals = war.season_league(teams)
-    pf = war.park_factors(mp) if mp else {}
+    pf = war.park_factors(mp, table) if mp else {}
     # 3. per player; collect the C7 inputs per named record
     collected = []
     table_season = season_no <= SEASON_COUNT
@@ -490,7 +507,7 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     ms_new += leader_records(season_no, nl, LEADER_KIND_NL)
     po = os.path.join(league_dir, 'PLAYOFFS.AL')
     playoffs = open(po, 'rb').read() if os.path.isfile(po) else None
-    stem_ids = series_stem_ids(m)
+    stem_ids = series_stem_ids(m, table)
     ms_new += series_records(season_no, playoffs, stem_ids)
     write_milestones(hist_path, ms_old + ms_new)
     write_box(hist_path, box_old + box_records(season_no, playoffs, stem_ids, rec_idx))
@@ -674,17 +691,11 @@ def leader_records(season_no, cands, base):
     return out
 
 
-def series_stem_ids(m):
-    """{lower-case MAJ stem: league-global id} for series_records: AL slots 0..15 then NL slots
-    0..15, so the last matching slot wins; empty stems are left out. Cut at the first NUL like
-    the game stems."""
-    ids = {}
-    for lg, base in (('AL', 0), ('NL', 16)):
-        for slot in range(16):
-            s = m.stem(lg, slot).split('\0')[0].lower()
-            if s:
-                ids[s] = base + slot
-    return ids
+def series_stem_ids(m, table=None):
+    """{lower-case MAJ stem: stable id} for series_records (teamids.teams, table = TEAMID.DAT or None):
+    the last matching id wins; empty stems are left out. Cut at the first NUL like the game stems."""
+    return {st.split(b'\0')[0].decode('latin-1').lower(): k
+            for k, _L, _slot, st in teamids.teams(m.d, table)}
 
 
 def game_stem(d, off):

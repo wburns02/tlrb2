@@ -24,6 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from collections import Counter
 import history
+import realign
+import teamids
 from assets import parse_fnt
 
 FB_W, FB_H, FB_SIZE = 320, 200, 64000
@@ -71,10 +73,18 @@ MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  CAREER LEADERS',
 
 # HISTORY.DAT header fields used by DYNASTY SETTINGS: byte 10 era, bytes 12..15 mask
 HDR_SIZE = 32
-# MAJ team stems: AL slot s (lg s) at 0x21d, NL slot s (lg s + 16) at 0x758c
+# playoff format (C12.4): HISTORY byte 11; byte 0 is the rolled flag (C12.6)
+HDR_FORMAT, HDR_ROLLED = 11, 0
+# MAJ day (C12.1, byte 0x20a): 7 new season set up, 0xf3 season over
+MAJ_DAY = 0x20a
+DAY_SETUP, DAY_OVER = 7, 0xf3
+# MAJ team stems: AL slot s (lg s) at 0x21d, NL slot s (lg s + 16) at 0x758c (the teamids
+# layout, C12.1); MAJ_MIN is the shortest MAJ read as a valid one
 MAJ_S_AL, MAJ_S_NL = 0x21d, 0x758c
 MAJ_O_STEM = 0x1d7
 MAJ_MIN = MAJ_S_NL + MAJ_O_STEM + 128
+# bytes a MAJ needs for every slot of both leagues (teamids reads 24 slots a league)
+TEAM_SPAN = teamids.S[1] + teamids.O_STEM + 8 * teamids.SLOTS
 # CONTROL file of /MENU (TONY2.BAT): byte 1 is 8 + item, the request; when DYNVIEW exits
 # it copies byte 0 (the program TONY2.BAT restarts) over byte 1
 CONTROL_FILE = 'CONTROL'
@@ -130,6 +140,12 @@ ABOUT_ROWS = ['DYNASTY MODE',
               'A HOLE ON YOUR TEAM TAKES THE BEST',
               'ROOKIE LEFT IN THE DRAFT CLASS, AND YOUR',
               'LINEUP IS REPAIRED, NOT REBUILT.',
+              'PLAYOFF FORMAT: 2 DIVISIONS AND AN LCS,',
+              'OR 3 DIVISIONS AND A WILD CARD WITH A',
+              'DIVISION SERIES. IT TAKES EFFECT AT ONCE',
+              'BEFORE A SEASON STARTS, ELSE AT THE ROLL.',
+              'THEN START THE NEW SEASON WITH THE',
+              'GENERATED SCHEDULE.',
               '',
               'NEW FACES',
               '67 NEW PORTRAITS JOIN THE 30 STOCK ONES.',
@@ -199,7 +215,8 @@ def load_data(league_dir, font_dir=None):
     era, mask = load_settings(league_dir)
     return {'hist': hist, 'ms': ms, 'fonts': fonts, 'league_dir': league_dir,
             'events': parse_rosters(league_dir), 'era': era, 'mask': mask,
-            'teams': settings_teams(league_dir), 'box': load_box(league_dir)}
+            'teams': settings_teams(league_dir), 'box': load_box(league_dir),
+            'fmt': realign.wanted_for_dir(league_dir)}
 
 
 def load_box(league_dir):
@@ -318,27 +335,28 @@ def load_settings(league_dir):
 
 
 def settings_teams(league_dir):
-    """[(lg, display)] for the MAJ team slots in ascending lg (AL slot s is lg s, NL slot
-    s is lg s + 16). Empty with no MAJ, on a read error or a MAJ shorter than MAJ_MIN; a
-    slot whose stem is empty or has no team file is skipped."""
+    """[(id, display)] of the MAJ teams in id order (C12.3: teamids.teams with the league's
+    TEAMID.DAT, engine ids without one). Empty with no MAJ, on a read error or a MAJ shorter
+    than MAJ_MIN; a team whose stem is empty or has no V20 file is skipped. The whole MAJ is
+    read (the 3 division slots past MAJ_MIN are real teams); a short one is NUL padded."""
     mp = history.maj_or_none(league_dir)
     if mp is None:
         return []
     try:
         with open(mp, 'rb') as fh:
-            d = fh.read(MAJ_MIN)
+            d = fh.read()
+        table = teamids.load_table(league_dir)
     except OSError:
         return []
     if len(d) < MAJ_MIN:
         return []
+    d = d.ljust(TEAM_SPAN, b'\0')
     out = []
-    for lg in range(32):
-        s = MAJ_S_AL if lg < 16 else MAJ_S_NL
-        o = s + MAJ_O_STEM + 8 * (lg & 15)
-        stem = d[o:o + 8].split(b'\0')[0]
+    for tid, _L, _slot, st in teamids.teams(d, table):
+        stem = st.split(b'\0')[0]
         if not stem or v20_path(league_dir, stem) is None:
             continue
-        out.append((lg, team_disp(league_dir, stem.decode('latin-1'))))
+        out.append((tid, team_disp(league_dir, stem.decode('latin-1'))))
     return out
 
 
@@ -358,12 +376,24 @@ def era_next(era):
     return 2
 
 
+def playoff_label(fmt):
+    """PLAYOFF FORMAT value from fmt = (wanted, now) (C12.4): '2 DIVISIONS' or
+    '3 DIV + WILDCARD', and '2 DIV NEXT YEAR' / '3 DIV NEXT YEAR' when wanted and now differ."""
+    wanted, now = fmt
+    three = wanted == 3
+    if wanted == now:
+        return '3 DIV + WILDCARD' if three else '2 DIVISIONS'
+    return '3 DIV NEXT YEAR' if three else '2 DIV NEXT YEAR'
+
+
 def settings_rows(data):
-    """ERA RULES, then one row per team of data['teams'] (YOU MANAGE / AI MANAGES)."""
+    """ERA RULES, PLAYOFF FORMAT, then one row per team of data['teams'] (YOU MANAGE / AI
+    MANAGES); the cursor categories are 0, 1 and 2 + the team index."""
     mask = data['mask']
-    return [('ERA RULES', era_label(data['era']))] + \
-        [(disp, 'YOU MANAGE' if (mask >> lg) & 1 else 'AI MANAGES')
-         for lg, disp in data['teams']]
+    return [('ERA RULES', era_label(data['era'])),
+            ('PLAYOFF FORMAT', playoff_label(data['fmt']))] + \
+        [(disp, 'YOU MANAGE' if (mask >> tid) & 1 else 'AI MANAGES')
+         for tid, disp in data['teams']]
 
 
 def save_settings(league_dir, era, mask):
@@ -384,6 +414,66 @@ def save_settings(league_dir, era, mask):
             fh.write(d)
     except OSError:
         pass
+
+
+def put_hist_byte(league_dir, pos, value):
+    """Write byte pos of HISTORY.DAT with the save_settings rules: a missing file is created,
+    a short one zero-extended to 32 bytes, no other byte changes; OSError is ignored."""
+    path = os.path.join(league_dir, 'HISTORY.DAT')
+    try:
+        try:
+            with open(path, 'rb') as fh:
+                d = bytearray(fh.read())
+        except FileNotFoundError:
+            d = bytearray()
+        d += bytes(max(0, HDR_SIZE - len(d)))
+        d[pos] = value & 255
+        with open(path, 'wb') as fh:
+            fh.write(d)
+    except OSError:
+        pass
+
+
+def hist_byte(league_dir, pos):
+    """Byte pos of HISTORY.DAT, or None when the file is missing, short or unreadable."""
+    try:
+        with open(os.path.join(league_dir, 'HISTORY.DAT'), 'rb') as fh:
+            d = fh.read(pos + 1)
+    except OSError:
+        return None
+    return d[pos] if len(d) > pos else None
+
+
+def maj_day(league_dir):
+    """The MAJ day byte (0x20a), or None when there is no MAJ or it is unreadable or short."""
+    mp = history.maj_or_none(league_dir)
+    if mp is None:
+        return None
+    try:
+        with open(mp, 'rb') as fh:
+            d = fh.read(MAJ_DAY + 1)
+    except OSError:
+        return None
+    return d[MAJ_DAY] if len(d) > MAJ_DAY else None
+
+
+def set_playoff_format(league_dir, wanted):
+    """ENTER on PLAYOFF FORMAT (C12.4, C12.6): HISTORY byte 11 = 5 - wanted, then the apply at
+    once: realign.apply when the MAJ day is 0xf3 and HISTORY byte 0 is 1, or the day is 7; after
+    an apply on day 7, byte 0 = 1. A missing MAJ or an unreadable HISTORY leaves it at byte 11."""
+    put_hist_byte(league_dir, HDR_FORMAT, 5 - wanted)
+    day = maj_day(league_dir)
+    rolled = hist_byte(league_dir, HDR_ROLLED)
+    if day is None or rolled is None:
+        return
+    if not ((day == DAY_OVER and rolled == 1) or day == DAY_SETUP):
+        return
+    try:
+        rc = realign.apply(league_dir)
+    except OSError:
+        return
+    if rc == 0 and day == DAY_SETUP:
+        put_hist_byte(league_dir, HDR_ROLLED, 1)
 
 
 def control_item(path):
@@ -827,9 +917,11 @@ def awards_body(state, data):
 
 
 # ---------------------------------------------------------------- standings
-# SEASON STANDINGS (C2 season entry w_l): AL ids 0..15, NL ids 16..31. Each league is two
-# divisions of 8 slots: EAST = slots 0..7 (ids base..base+7), WEST = slots 8..15
+# SEASON STANDINGS (C2 season entry w_l): AL ids 0..15, NL ids 16..31 (stable ids, C12.3).
+# The divisions of a team come from the entry (history.division_of, C12.7)
 STAND_LEAGUES = [('AL', 'AMERICAN LEAGUE', 0), ('NL', 'NATIONAL LEAGUE', 16)]
+# C12.8 division blocks in display order: (division number, header suffix)
+STAND_DIVS = [(2, ' WEST'), (3, ' CENTRAL'), (1, ' EAST')]
 
 
 def gb_text(d):
@@ -864,10 +956,12 @@ def standings_block(se, names, head, ids):
 
 
 def standings_rows(hist, teams, season):
-    """SEASON STANDINGS rows of season. Per league: its WEST then EAST block (a header row
-    and the division's teams that played, W + L > 0) when both divisions have games; one
-    block under the league's long name when only one division has games; none otherwise.
-    A header that would fall on a page's last row gets a blank row before it. Past the history table, or with no games in either league, one message row."""
+    """SEASON STANDINGS rows of season. Per league the teams that played (W + L > 0) are
+    grouped by division (history.division_of). When two or more divisions have such teams,
+    one block per division in STAND_DIVS order (WEST, CENTRAL, EAST) under a header row
+    `AL WEST` and so on; with one division, one block under the league's long name; none
+    otherwise. A header that would fall on a page's last row gets a blank row before it.
+    Past the history table, or with no games in either league, one message row."""
     if season > history.SEASON_COUNT:
         return [('NO STANDINGS RECORDED',)]
     se = hist.read_season_entry(season)
@@ -875,12 +969,15 @@ def standings_rows(hist, teams, season):
     played = {t for t, (w, l) in enumerate(se['w_l']) if w + l > 0}
     out = []
     for short, long_name, base in STAND_LEAGUES:
-        west = [t for t in range(base + 8, base + 16) if t in played]
-        east = [t for t in range(base, base + 8) if t in played]
-        if west and east:
-            blocks = [(short + ' WEST', west), (short + ' EAST', east)]
-        elif west or east:
-            blocks = [(long_name, west or east)]
+        by_div = {}
+        for t in range(base, base + 16):
+            if t in played:
+                by_div.setdefault(history.division_of(se, t), []).append(t)
+        found = [(div, suffix) for div, suffix in STAND_DIVS if div in by_div]
+        if len(found) >= 2:
+            blocks = [(short + suffix, by_div[div]) for div, suffix in found]
+        elif found:
+            blocks = [(long_name, by_div[found[0][0]])]
         else:
             blocks = []
         for head, ids in blocks:
@@ -1279,14 +1376,20 @@ def step(state, key, data):
             return state, 1
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_SETTINGS:
-        # cat is the cursor: 0 the ERA RULES row, c >= 1 the team teams[c - 1]
+        # cat is the cursor: 0 the ERA RULES row, 1 the PLAYOFF FORMAT row, c >= 2 the team
+        # teams[c - 2]
         n = len(settings_rows(data))
         if key == KEY_ENTER:
-            if cat == 0:
-                data['era'] = era_next(data['era'])
+            if cat == 1:
+                set_playoff_format(data['league_dir'], data['fmt'][0])
+                data['teams'] = settings_teams(data['league_dir'])
             else:
-                data['mask'] ^= 1 << data['teams'][cat - 1][0]
-            save_settings(data['league_dir'], data['era'], data['mask'])
+                if cat == 0:
+                    data['era'] = era_next(data['era'])
+                else:
+                    data['mask'] ^= 1 << data['teams'][cat - 2][0]
+                save_settings(data['league_dir'], data['era'], data['mask'])
+            data['fmt'] = realign.wanted_for_dir(data['league_dir'])
             return state, 0
         if key == KEY_UP and cat > 0:
             cat -= 1

@@ -210,6 +210,9 @@ def test_park_from_maj(tmp_path):
     blowouts at both extremes clamps; unplayed team falls back to nothing."""
     p = tmp_path / 'CLASSIC.MAJ'
     m = maj.Maj(bytes(MAJ_SIZE))
+    for slot in range(3):                # team identities (C12.3): a blank slot has no team
+        st = maj.LG['AL'] + maj.O_STEM + 8 * slot
+        m.d[st:st + 8] = (b'AL%d' % slot).ljust(8, b'\0')
     # day 8: team 0 at team 1, home 12-2 win
     m.d[maj.LG['AL'] + maj.O_SCHED + 16 * 8] = 0
     m.d[maj.LG['AL'] + maj.O_SCHED + 16 * 8 + 1] = 1

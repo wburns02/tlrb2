@@ -14,6 +14,7 @@ import os, sys, glob
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from v20 import Team, F, _get           # noqa: E402
 import maj                              # noqa: E402
+import teamids                          # noqa: E402
 
 PF_MIN, PF_MAX = 900, 1100
 
@@ -182,38 +183,42 @@ def park_factor1000(home_rs, home_ra, away_g, away_rs, away_ra, home_g):
     return max(PF_MIN, min(PF_MAX, pf))
 
 
-def park_factors(maj_path):
-    """pf1000 per league-global team id from the MAJ (both halves of doubleheaders)."""
+def park_factors(maj_path, table=None):
+    """pf1000 per stable team id (C12.3) from the MAJ (both halves of doubleheaders). table None: the
+    TEAMID.DAT of the MAJ's directory. The schedule pairs hold engine ids (C12.1), so each team is
+    matched by its engine id."""
     m = maj.Maj.load(maj_path)
+    if table is None:
+        table = teamids.load_table(os.path.dirname(maj_path))
+    nd = teamids.ndiv(m.d)
     out = {}
-    for lg in ('AL', 'NL'):
-        base = 0 if lg == 'AL' else 16
-        for slot in range(16):
-            lg_id = base + slot
-            home_rs = home_ra = away_rs = away_ra = home_g = away_g = 0
-            for day in range(maj.DAYS):
-                mask, mask2 = m.played(lg, day)
-                row = m.results(lg, day)
-                row2 = m.results2(lg, day)
-                sched = m.schedule(lg, day)
-                dhmask = m.dh(lg)
-                for si, (away, home) in enumerate(sched):
-                    bit = 0x80 >> si
-                    if not (mask & bit):
-                        continue
-                    ra, rh = row[2 * si], row[2 * si + 1]
-                    if home == lg_id:
-                        home_rs += rh; home_ra += ra; home_g += 1
-                    elif away == lg_id:
-                        away_rs += ra; away_ra += rh; away_g += 1
-                    if (dhmask & bit) and (mask2 & bit):
-                        ra2, rh2 = row2[2 * si], row2[2 * si + 1]
-                        if home == lg_id:
-                            home_rs += rh2; home_ra += ra2; home_g += 1
-                        elif away == lg_id:
-                            away_rs += ra2; away_ra += rh2; away_g += 1
-            if home_g or away_g:
-                out[lg_id] = park_factor1000(home_rs, home_ra, away_g, away_rs, away_ra, home_g)
+    for k, L, slot, _st in teamids.teams(m.d, table):
+        lg = 'AL' if L == 0 else 'NL'
+        eng = teamids.slot_to_engine(L, slot, nd)
+        home_rs = home_ra = away_rs = away_ra = home_g = away_g = 0
+        for day in range(maj.DAYS):
+            mask, mask2 = m.played(lg, day)
+            row = m.results(lg, day)
+            row2 = m.results2(lg, day)
+            sched = m.schedule(lg, day)
+            dhmask = m.dh(lg)
+            for si, (away, home) in enumerate(sched):
+                bit = 0x80 >> si
+                if not (mask & bit):
+                    continue
+                ra, rh = row[2 * si], row[2 * si + 1]
+                if home == eng:
+                    home_rs += rh; home_ra += ra; home_g += 1
+                elif away == eng:
+                    away_rs += ra; away_ra += rh; away_g += 1
+                if (dhmask & bit) and (mask2 & bit):
+                    ra2, rh2 = row2[2 * si], row2[2 * si + 1]
+                    if home == eng:
+                        home_rs += rh2; home_ra += ra2; home_g += 1
+                    elif away == eng:
+                        away_rs += ra2; away_ra += rh2; away_g += 1
+        if home_g or away_g:
+            out[k] = park_factor1000(home_rs, home_ra, away_g, away_rs, away_ra, home_g)
     return out
 
 
@@ -263,16 +268,16 @@ def maj_path(ldir):
 
 
 def slot_from_stem(mp, stem):
-    """league-global id from the MAJ stem match, case-insensitive; None = no match
-    (ALLSTAR files: their MAJ stems start with NUL)."""
+    """stable team id (C12.3, TEAMID.DAT of the MAJ's directory) from the MAJ stem match, case-insensitive;
+    None = no match (ALLSTAR files: their MAJ stems start with NUL or match no team)."""
     if mp is None:
         return None
     m = maj.Maj.load(mp)
-    for lg in ('AL', 'NL'):
-        base = 0 if lg == 'AL' else 16
-        for s in range(16):
-            if m.stem(lg, s).lower() == stem.lower():
-                return base + s
+    table = teamids.load_table(os.path.dirname(mp))
+    want = stem.lower()
+    for k, _L, _slot, st in teamids.teams(m.d, table):
+        if st.rstrip(b'\0').decode('latin-1').lower() == want:
+            return k
     return None
 
 

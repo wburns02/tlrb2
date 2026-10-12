@@ -752,3 +752,66 @@ def test_render_edit_msg_and_cursor_row(tmp_path):
     assert fb[127 * 320 + 215] == dynview.C_TITLE_RED       # cursor row, right of text
     assert any(fb[y * 320 + x] == dynview.C_DRED
                for y in range(172, 179) for x in range(10, 200))
+
+
+# ---------------------------------------------------------------- teams: stable ids (C12.3)
+def write_table(d, entries):
+    """TEAMID.DAT of d: entries = {k: stem} (k 0..31), every other entry NUL."""
+    tab = bytearray(256)
+    for k, stem in entries.items():
+        tab[8 * k:8 * k + len(stem)] = stem
+    with open(os.path.join(d, 'TEAMID.DAT'), 'wb') as fh:
+        fh.write(bytes(tab))
+
+
+def test_teams_no_table_engine_ids(tmp_path):
+    lg = make_league(str(tmp_path / 'L'))
+    assert [t[0] for t in cr.teams(lg)] == [0, 2, 15, 16, 17]
+
+
+def test_teams_table_gives_stable_ids(tmp_path):
+    lg = make_league(str(tmp_path / 'L'))
+    write_table(lg, {7: b'bos', 3: b'DET', 14: b'NYA', 20: b'CHI', 19: b'SLN'})
+    assert cr.teams(lg) == [(3, 'DET', 'DETROIT'), (7, 'BOS', 'BOSTON'),
+                            (14, 'NYA', 'YANKEES'), (19, 'SLN', 'SLN'),
+                            (20, 'CHI', 'CUBS')]
+
+
+def test_teams_table_skips_unlisted_stem(tmp_path):
+    lg = make_league(str(tmp_path / 'L'))
+    write_table(lg, {0: b'BOS', 2: b'DET', 15: b'NYA', 20: b'CHI'})
+    assert cr.teams(lg) == [(0, 'BOS', 'BOSTON'), (2, 'DET', 'DETROIT'),
+                            (15, 'NYA', 'YANKEES'), (20, 'CHI', 'CUBS')]
+
+
+def test_teams_bad_table_size_counts_as_missing(tmp_path):
+    lg = make_league(str(tmp_path / 'L'))
+    write_table(lg, {7: b'BOS'})
+    with open(os.path.join(lg, 'TEAMID.DAT'), 'r+b') as fh:
+        fh.truncate(255)
+    assert [t[0] for t in cr.teams(lg)] == [0, 2, 15, 16, 17]
+
+
+def test_teams_reads_through_last_nl_stem(tmp_path):
+    lg = make_league(str(tmp_path / 'L'))
+    with open(os.path.join(lg, 'LEAGUE.MAJ'), 'r+b') as fh:
+        fh.truncate(cr.MAJ_MIN_LEN)
+    assert [t[0] for t in cr.teams(lg)] == [0, 2, 15, 16, 17]
+    with open(os.path.join(lg, 'LEAGUE.MAJ'), 'r+b') as fh:
+        fh.truncate(cr.MAJ_MIN_LEN - 1)
+    assert cr.teams(lg) == []
+
+
+def test_team_rows_label_by_id(tmp_path):
+    lg = make_league(str(tmp_path / 'L'))
+    write_table(lg, {7: b'BOS', 3: b'DET', 14: b'NYA', 20: b'CHI', 19: b'SLN'})
+    _t, _c, rows, _f, _h = cr._list_view(cr.start_state(), ctx_for(lg))
+    assert [r[1] for r in rows] == ['AMERICAN'] * 3 + ['NATIONAL'] * 2
+
+
+def test_team_enter_reads_stable_id_row(tmp_path):
+    lg = make_league(str(tmp_path / 'L'))
+    write_table(lg, {7: b'BOS', 3: b'DET', 14: b'NYA', 20: b'CHI', 19: b'SLN'})
+    st, _ = walk(ctx_for(lg), [ENTER])
+    assert (st['screen'], st['team']) == (cr.S_SLOT, 0)
+    assert st['image'] == cr.read_v20(lg, 'DET')

@@ -23,7 +23,9 @@ if not os.path.isdir('/mnt/nvme/tlrb2/fixtures/t4/s1_pre'):
     pytest.skip('/mnt/nvme/tlrb2/fixtures/t4/s1_pre missing',
                 allow_module_level=True)
 
+import maj                                       # noqa: E402
 import sim50                                     # noqa: E402
+import teamids                                   # noqa: E402
 import v20                                       # noqa: E402
 from v20 import HDR, REC, F                      # noqa: E402
 
@@ -135,3 +137,58 @@ def test_season_stats_written(tmp_path):
         games.append(v20._get(twin, *F['games']))
     assert sum(1 for g in games if g >= 140) >= 9, games
     assert sum(1 for g in games if g in (32, 55)) == 10, games
+
+
+# ---------------------------------------------------------------- W/L slots (C12.3)
+def make_wl_league(d, teams, table):
+    """Synthetic 2-division league in d: LEAGUE.MAJ (full size) with the stems
+    teams = [(L, slot, stem)], an empty V20 per team (header lists vacant, records
+    zero) and TEAMID.DAT from table = {k: stem}, or none when table is None."""
+    os.makedirs(d)
+    maj_img = bytearray(maj.SIZE)
+    for L, slot, stem in teams:
+        off = teamids.S[L] + teamids.O_STEM + 8 * slot
+        maj_img[off:off + 8] = stem.ljust(8, b'\0')
+        img = bytearray(295 + 80 * 143)                  # header + 80 records
+        img[111:295] = b'\xff' * 184
+        with open(os.path.join(d, stem.decode('latin-1') + '.V20'), 'wb') as fh:
+            fh.write(bytes(img))
+    with open(os.path.join(d, 'LEAGUE.MAJ'), 'wb') as fh:
+        fh.write(bytes(maj_img))
+    if table is not None:
+        tab = bytearray(256)
+        for k, stem in table.items():
+            tab[8 * k:8 * k + len(stem)] = stem
+        with open(os.path.join(d, 'TEAMID.DAT'), 'wb') as fh:
+            fh.write(bytes(tab))
+    return d
+
+
+def wl_of(d):
+    return maj.Maj(open(os.path.join(d, 'LEAGUE.MAJ'), 'rb').read())
+
+
+def test_season_model_wl_at_stable_id_slot(tmp_path):
+    """TEAMID.DAT ids differ from the engine ids: each team's W/L lands in the
+    MAJ slot of its stable id (C12.3), nowhere else."""
+    d = make_wl_league(str(tmp_path / 'L'),
+                       [(0, 0, b'BOS'), (0, 2, b'DET'), (1, 0, b'CHI')],
+                       {5: b'BOS', 2: b'DET', 17: b'CHI'})
+    wl, _ = sim50.season_model(d, random.Random(3))
+    m = wl_of(d)
+    assert sorted(wl) == [2, 5, 17]
+    assert m.wl('AL', 0) == (wl[5], 162 - wl[5])
+    assert m.wl('AL', 2) == (wl[2], 162 - wl[2])
+    assert m.wl('NL', 0) == (wl[17], 162 - wl[17])
+    assert m.wl('AL', 5) == (0, 0) and m.wl('NL', 1) == (0, 0)
+
+
+def test_season_model_wl_engine_ids_without_table(tmp_path):
+    d = make_wl_league(str(tmp_path / 'L'),
+                       [(0, 0, b'BOS'), (0, 2, b'DET'), (1, 0, b'CHI'), (1, 1, b'SLN')],
+                       None)
+    wl, _ = sim50.season_model(d, random.Random(4))
+    m = wl_of(d)
+    assert sorted(wl) == [0, 2, 16, 17]
+    for lg, slot, key in (('AL', 0, 0), ('AL', 2, 2), ('NL', 0, 16), ('NL', 1, 17)):
+        assert m.wl(lg, slot) == (wl[key], 162 - wl[key])

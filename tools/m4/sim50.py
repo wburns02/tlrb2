@@ -32,6 +32,7 @@ for _p in (_ROOT, _TOOLS):
 import maj                                       # noqa: E402
 import v20                                       # noqa: E402
 from m4 import rosters, history as history_mod  # noqa: E402
+from m4 import teamids                           # noqa: E402
 from m4 import dynasty_ref                       # noqa: E402
 from m4 import rollover                          # noqa: E402
 from v20 import HDR, REC, F                      # noqa: E402
@@ -165,10 +166,12 @@ def form_noise(league_dir, rng, p):
 
 def season_model(league_dir, rng):
     """One season on the snapshot dir: team strength from the current rosters,
-    W/L into the MAJ (snapshot MAJ, set_wl per (lg, slot)), then the
-    season-half stat lines. Returns (wl, strengths) with wl = {lg_id: W}."""
+    W/L into the MAJ (snapshot MAJ, set_wl at the MAJ slot of each stable id,
+    C12.3), then the season-half stat lines. Returns (wl, strengths) with
+    wl = {lg_id: W}."""
     mp = history_mod.maj_or_none(league_dir)
     m = maj.Maj(open(mp, 'rb').read())
+    table = teamids.load_table(league_dir)
     teams = history_mod.mapped_teams(league_dir, m)
     strengths = {}
     imgs = {}
@@ -181,12 +184,15 @@ def season_model(league_dir, rng):
     sd = stdev(vals)
     wl = {}
     for p, lg_id in teams:
+        pos = teamids.slot_of_id(m.d, table, lg_id)
+        if pos is None:
+            continue
+        L, slot = pos
         z = (strengths[lg_id] - mean) / sd if sd > 0 else 0.0
         pct = max(0.30, min(0.70, 0.5 + 0.06 * z + rng.gauss(0, 0.03)))
         w = round(162 * pct)
         wl[lg_id] = w
-        m.set_wl('AL' if lg_id < 16 else 'NL',
-                 lg_id if lg_id < 16 else lg_id - 16, w, 162 - w)
+        m.set_wl('AL' if L == 0 else 'NL', slot, w, 162 - w)
     m.save(mp)
     for p, lg_id in teams:
         img = imgs[p]

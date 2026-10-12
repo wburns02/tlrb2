@@ -20,6 +20,16 @@
 #define DIR_SEP '/'
 #endif
 
+/* teamids.h has helpers this file does not call; gcc -Werror would stop on them */
+#if defined(__GNUC__) && !defined(__WATCOMC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
+#include "../teamids.h"
+#if defined(__GNUC__) && !defined(__WATCOMC__)
+#pragma GCC diagnostic pop
+#endif
+
 #define HDR_SIZE       32
 #define SEASON_TABLE   32
 #define SEASON_ENTRY   128
@@ -129,9 +139,11 @@
 
 typedef struct {
     uint8_t *d;
-    char stem_raw[32][9];
+    char stem_raw[32][9];           /* by stable id (C12.3), empty when no team */
     char stem_up[32][9];
     uint8_t ws, runner, al_p, nl_p;
+    uint8_t table[TI_TABLE_SIZE];   /* TEAMID.DAT of the MAJ's dir, when have_table */
+    int have_table;
 } Maj;
 
 typedef struct {
@@ -390,54 +402,59 @@ static int32_t park_factor1000(int32_t hrs, int32_t hra, int32_t away_g,
     return pf;
 }
 
-static void compute_pf(const uint8_t *d)
+/* war.park_factors: per MAJ team (C12.3 stable id k), its engine id (the team byte of the
+ * schedule pairs, C12.1) is matched in its league's block */
+static void compute_pf(const uint8_t *d, const uint8_t *tab)
 {
-    int lg, slot, day;
-    for (lg = 0; lg < 2; lg++) {
+    TiTeam t[TI_MAX_TEAMS];
+    int nd, nt, ti, day;
+    nd = ti_ndiv(d, MAJ_SIZE);
+    nt = ti_teams(d, MAJ_SIZE, tab, t);
+    for (ti = 0; ti < nt; ti++) {
+        int lg = t[ti].L;
         int s = lg ? MAJ_S_NL : MAJ_S_AL;
-        for (slot = 0; slot < 16; slot++) {
-            int32_t lg_id = (lg ? 16 : 0) + slot;
-            int32_t hrs = 0, hra = 0, ars = 0, ara = 0;
-            int32_t home_g = 0, away_g = 0;
-            uint8_t dhmask = d[s + MAJ_O_DHVAL];
-            for (day = 0; day < MAJ_DAYS; day++) {
-                const uint8_t *row = d + s + MAJ_O_RUNS + 32 * day;
-                const uint8_t *row2 = row + 16;
-                const uint8_t *sched = d + s + MAJ_O_SCHED + 16 * day;
-                uint8_t mask = d[s + MAJ_O_PLAYED + 2 * day];
-                uint8_t mask2 = d[s + MAJ_O_PLAYED + 2 * day + 1];
-                int si, jog;
-                jog = 0;                          /* real-pair index: bit and cell */
-                for (si = 0; si < 8; si++) {
-                    int away = sched[2 * si];
-                    int home = sched[2 * si + 1];
-                    int jog0;
-                    uint8_t bit;
-                    if (away == 0 && home == 0)
-                        continue;                 /* dropped pair: slot keeps its bit */
-                    jog0 = jog;
-                    bit = (uint8_t)(0x80u >> jog0);   /* py enumerate: every real pair */
-                    jog++;
-                    if (!(mask & bit))
-                        continue;
-                    if (home == lg_id) {
-                        hrs += row[2 * jog0 + 1]; hra += row[2 * jog0]; home_g++;
-                    } else if (away == lg_id) {
-                        ars += row[2 * jog0]; ara += row[2 * jog0 + 1]; away_g++;
-                    }
-                    if ((dhmask & bit) && (mask2 & bit)) {
-                        if (home == lg_id) {
-                            hrs += row2[2 * jog0 + 1]; hra += row2[2 * jog0]; home_g++;
-                        } else if (away == lg_id) {
-                            ars += row2[2 * jog0]; ara += row2[2 * jog0 + 1]; away_g++;
-                        }
+        int32_t lg_id = t[ti].id;
+        int eng = ti_slot_to_engine(lg, t[ti].slot, nd);
+        int32_t hrs = 0, hra = 0, ars = 0, ara = 0;
+        int32_t home_g = 0, away_g = 0;
+        uint8_t dhmask = d[s + MAJ_O_DHVAL];
+        for (day = 0; day < MAJ_DAYS; day++) {
+            const uint8_t *row = d + s + MAJ_O_RUNS + 32 * day;
+            const uint8_t *row2 = row + 16;
+            const uint8_t *sched = d + s + MAJ_O_SCHED + 16 * day;
+            uint8_t mask = d[s + MAJ_O_PLAYED + 2 * day];
+            uint8_t mask2 = d[s + MAJ_O_PLAYED + 2 * day + 1];
+            int si, jog;
+            jog = 0;                          /* real-pair index: bit and cell */
+            for (si = 0; si < 8; si++) {
+                int away = sched[2 * si];
+                int home = sched[2 * si + 1];
+                int jog0;
+                uint8_t bit;
+                if (away == 0 && home == 0)
+                    continue;                 /* dropped pair: slot keeps its bit */
+                jog0 = jog;
+                bit = (uint8_t)(0x80u >> jog0);   /* py enumerate: every real pair */
+                jog++;
+                if (!(mask & bit))
+                    continue;
+                if (home == eng) {
+                    hrs += row[2 * jog0 + 1]; hra += row[2 * jog0]; home_g++;
+                } else if (away == eng) {
+                    ars += row[2 * jog0]; ara += row[2 * jog0 + 1]; away_g++;
+                }
+                if ((dhmask & bit) && (mask2 & bit)) {
+                    if (home == eng) {
+                        hrs += row2[2 * jog0 + 1]; hra += row2[2 * jog0]; home_g++;
+                    } else if (away == eng) {
+                        ars += row2[2 * jog0]; ara += row2[2 * jog0 + 1]; away_g++;
                     }
                 }
             }
-            if (home_g || away_g) {
-                g_pf[lg_id] = park_factor1000(hrs, hra, away_g, ars, ara, home_g);
-                g_pf_valid[lg_id] = 1;
-            }
+        }
+        if (home_g || away_g) {
+            g_pf[lg_id] = park_factor1000(hrs, hra, away_g, ars, ara, home_g);
+            g_pf_valid[lg_id] = 1;
         }
     }
 }
@@ -450,6 +467,33 @@ static int32_t pf_of(int32_t lg_id)
 static char g_scan[MAXV][16];
 static char g_path[600];
 
+/* TEAMID.DAT of dir (any case in the listing, C12.3) into tab when it is exactly 256 B: 1 when
+ * loaded, else 0 (the table is then not used) */
+static int load_table(const char *dir, uint8_t *tab)
+{
+    static char names[MAXV][16];
+    char path[600];
+    FILE *f;
+    int n, i, ok = 0;
+    n = scan_dir(dir, ".DAT", names);
+    for (i = 0; i < n; i++)
+        if (strcmp(names[i], "TEAMID.DAT") == 0)
+            break;
+    if (i == n)
+        return 0;
+    if (!path_join(path, 600, dir, names[i]))
+        return 0;
+    f = fopen(path, "rb");
+    if (!f)
+        return 0;
+    if (fseek(f, 0, SEEK_END) == 0 && ftell(f) == TI_TABLE_SIZE
+        && fseek(f, 0, SEEK_SET) == 0
+        && fread(tab, 1, TI_TABLE_SIZE, f) == TI_TABLE_SIZE)
+        ok = 1;
+    fclose(f);
+    return ok;
+}
+
 static int read_maj(const char *dir, Maj *m)
 {
     char (*names)[16] = g_scan;
@@ -457,7 +501,9 @@ static int read_maj(const char *dir, Maj *m)
     uint8_t *buf;
     FILE *f;
     size_t n;
-    int lg, slot;
+    const uint8_t *tab;
+    TiTeam t[TI_MAX_TEAMS];
+    int nt, i, j;
     uint8_t t0, t1;
     if (scan_dir(dir, ".MAJ", names) < 1)
         return 0;
@@ -477,46 +523,33 @@ static int read_maj(const char *dir, Maj *m)
         return 0;
     }
     m->d = buf;
-    for (lg = 0; lg < 2; lg++) {
-        int s = lg ? MAJ_S_NL : MAJ_S_AL;
-        for (slot = 0; slot < 16; slot++) {
-            char tmp[9];
-            int j;
-            for (j = 0; j < 8; j++)
-                tmp[j] = (char)buf[s + MAJ_O_STEM + 8 * slot + j];
-            tmp[8] = 0;
-            for (j = 0; j < 9; j++) {
-                m->stem_raw[lg * 16 + slot][j] = tmp[j];
-                if (tmp[j] == 0)
-                    break;
-            }
-            m->stem_raw[lg * 16 + slot][8] = 0;
-            strcpy(m->stem_up[lg * 16 + slot], m->stem_raw[lg * 16 + slot]);
-            to_upper((uint8_t *)m->stem_up[lg * 16 + slot]);
-        }
+    m->have_table = load_table(dir, m->table);
+    tab = m->have_table ? m->table : NULL;
+    /* stems by stable id (C12.3): every MAJ team's stem cut at its first NUL */
+    memset(m->stem_raw, 0, sizeof m->stem_raw);
+    memset(m->stem_up, 0, sizeof m->stem_up);
+    nt = ti_teams(buf, MAJ_SIZE, tab, t);
+    for (i = 0; i < nt; i++) {
+        int k = t[i].id;
+        for (j = 0; j < 8 && t[i].stem[j]; j++)
+            m->stem_raw[k][j] = (char)t[i].stem[j];
+        m->stem_raw[k][j] = 0;
+        strcpy(m->stem_up[k], m->stem_raw[k]);
+        to_upper((uint8_t *)m->stem_up[k]);
     }
     /* C2 amended 2026-10-08: WS teams AL S+0x3d9 / S+0x3da, their wins S+0x3e1 / S+0x3e2;
-     * the winner is the side with more wins, a tie is unknown */
-    t0 = buf[MAJ_S_AL + 0x3d9];
-    t1 = buf[MAJ_S_AL + 0x3da];
-    m->al_p = buf[MAJ_S_AL + 0x3d9];
-    m->nl_p = buf[MAJ_S_NL + 0x3d9];
-    /* C2 amended: any index >= 32 is unknown (0xff) BEFORE the runner-up rule, so no
-     * MAJ byte can index the stem tables out of bounds */
-    if (t0 >= 32)
-        t0 = 0xff;
-    if (t1 >= 32)
-        t1 = 0xff;
+     * the winner is the side with more wins, a tie is unknown. C12.3: every engine id
+     * is read as its stable id (0xff for no team, 32 and up included) */
+    t0 = (uint8_t)ti_id_of_engine(buf, MAJ_SIZE, tab, buf[MAJ_S_AL + 0x3d9]);
+    t1 = (uint8_t)ti_id_of_engine(buf, MAJ_SIZE, tab, buf[MAJ_S_AL + 0x3da]);
+    m->al_p = (uint8_t)ti_id_of_engine(buf, MAJ_SIZE, tab, buf[MAJ_S_AL + 0x3d9]);
+    m->nl_p = (uint8_t)ti_id_of_engine(buf, MAJ_SIZE, tab, buf[MAJ_S_NL + 0x3d9]);
     if (buf[MAJ_S_AL + 0x3e1] > buf[MAJ_S_AL + 0x3e2])
         m->ws = t0;
     else if (buf[MAJ_S_AL + 0x3e2] > buf[MAJ_S_AL + 0x3e1])
         m->ws = t1;
     else
         m->ws = 0xff;
-    if (m->al_p >= 32)
-        m->al_p = 0xff;
-    if (m->nl_p >= 32)
-        m->nl_p = 0xff;
     m->runner = 0xff;
     if (m->ws != 0xff) {
         if (m->al_p == m->ws)
@@ -524,7 +557,7 @@ static int read_maj(const char *dir, Maj *m)
         else if (m->nl_p == m->ws)
             m->runner = m->al_p;
     }
-    compute_pf(buf);
+    compute_pf(buf, tab);
     return 1;
 }
 
@@ -972,23 +1005,32 @@ static void apply_chain(int32_t s, uint8_t *eb, int collect)
     }
 }
 
+/* history.record_season step 1 (C12.7): W/L by stable id, byte 22 and the division map (bytes
+ * 100..115) only when the MAJ has 3 divisions or TEAMID.DAT exists; else both stay 0 */
 static void write_season_entry(uint16_t season_no, const Maj *m)
 {
     uint32_t o = SEASON_TABLE + (uint32_t)(season_no - 1) * SEASON_ENTRY;
-    uint8_t wl_w[32], wl_l[32];
-    int lg, slot, i;
+    const uint8_t *tab = m->have_table ? m->table : NULL;
+    TiTeam t[TI_MAX_TEAMS];
+    uint8_t wl_w[32], wl_l[32], dmap[16];
+    int nd, nt, map_on, i, k;
     memset(wl_w, 0, 32);
     memset(wl_l, 0, 32);
-    for (lg = 0; lg < 2; lg++) {
-        int s = lg ? MAJ_S_NL : MAJ_S_AL;
-        for (slot = 0; slot < 16; slot++) {
-            uint8_t w = m->d[s + MAJ_O_W + slot];
-            uint8_t l = m->d[s + MAJ_O_L + slot];
-            if (w || l) {
-                wl_w[lg * 16 + slot] = w;
-                wl_l[lg * 16 + slot] = l;
-            }
+    memset(dmap, 0, 16);
+    nd = ti_ndiv(m->d, MAJ_SIZE);
+    map_on = nd == 3 || m->have_table;
+    nt = ti_teams(m->d, MAJ_SIZE, tab, t);
+    for (i = 0; i < nt; i++) {
+        int s = t[i].L ? MAJ_S_NL : MAJ_S_AL;
+        uint8_t w = m->d[s + MAJ_O_W + t[i].slot];
+        uint8_t l = m->d[s + MAJ_O_L + t[i].slot];
+        k = t[i].id;
+        if (w || l) {
+            wl_w[k] = w;
+            wl_l[k] = l;
         }
+        if (map_on)
+            dmap[k / 2] |= (uint8_t)((t[i].slot / 8 + 1) << (4 * (k & 1)));
     }
     wr16(g_tab + o, season_no);
     g_tab[o + 2] = m->ws;
@@ -1003,13 +1045,14 @@ static void write_season_entry(uint16_t season_no, const Maj *m)
             g_tab[o + 12 + i] = (uint8_t)m->stem_raw[m->runner][i];
     g_tab[o + 20] = m->al_p;
     g_tab[o + 21] = m->nl_p;
-    g_tab[o + 22] = 0;
+    g_tab[o + 22] = map_on ? (uint8_t)nd : 0;
     g_tab[o + 23] = 0;
     for (i = 0; i < 32; i++) {
         g_tab[o + 24 + 2 * i] = wl_w[i];
         g_tab[o + 25 + 2 * i] = wl_l[i];
     }
     memset(g_tab + o + 88, 0, 40);
+    memcpy(g_tab + o + 100, dmap, 16);      /* after the awards clear: 100..115 */
 }
 
 static int hof_passes(const uint8_t *eb)
@@ -1787,7 +1830,8 @@ static int do_run(const char *pre_dir, const char *hpath)
     sr_raw = rd16(g_tab + 4);
     season_no = (uint16_t)(((f && old_len >= 6) ? sr_raw : 0) + 1);
     g_season_no = season_no;
-    if (season_no <= SEASON_COUNT)
+    /* a header count of 0xffff wraps season_no to 0: no entry, as for any count past the table */
+    if (season_no >= 1 && season_no <= SEASON_COUNT)
         write_season_entry(season_no, &g_maj);
     g_tab[3] = VERSION_ONE;
 
@@ -1940,7 +1984,7 @@ static int do_run(const char *pre_dir, const char *hpath)
                 if (win[10 + q] >= 0 && add_award_count(g, win[10 + q], 4) != 0)
                     goto fail;
         }
-        if (season_no <= SEASON_COUNT
+        if (season_no >= 1 && season_no <= SEASON_COUNT
             && write_season_awards(g, season_no, alwin, nlwin) != 0)
             goto fail;
         if (fclose(g) != 0) {
@@ -2149,7 +2193,7 @@ int main(int argc, char **argv)
     nv = scan_dir(pre, ".V20", g_names);
     for (k = 0; k < nv; k++) {
         static char stem[16];
-        int lg, slot, lg_slot = -1;
+        int kid, lg_slot = -1;         /* lg_slot: the stable id (C12.3) */
         size_t l = strlen(g_names[k]);
         TeamInfo *ti;
         if (l <= 4 || l - 4 > 12)
@@ -2157,11 +2201,9 @@ int main(int argc, char **argv)
         memcpy(stem, g_names[k], l - 4);
         stem[l - 4] = 0;
         to_upper((uint8_t *)stem);
-        for (lg = 0; lg < 2; lg++) {
-            for (slot = 0; slot < 16; slot++) {
-                if (strcmp(stem, g_maj.stem_up[lg * 16 + slot]) == 0)
-                    lg_slot = lg * 16 + slot;
-            }
+        for (kid = 0; kid < 32; kid++) {
+            if (strcmp(stem, g_maj.stem_up[kid]) == 0)
+                lg_slot = kid;
         }
         if (lg_slot < 0)
             continue;

@@ -5,7 +5,9 @@ Runs after DYNASTY rolled and HISTWR recorded (BAT: `if errorlevel 1 rosters`
 after the histwr line). Inputs: the rolled league dir (TEAMS\\CLASSIC), the
 pre-roll snapshot C:\\DYNSNAP (V20s + MAJ), C:\\DYNSNAP\\RETIRED.DAT and
 HISTORY.DAT. Outputs: rewritten team V20s, the pool files, HISTORY header
-bytes 1..2 and 16..17, and ROSTERS.TXT.
+bytes 1..2 and 16..17, and ROSTERS.TXT. C12.6 step 9 (realign.plan) may also
+rewrite the MAJ and create TEAMID.DAT, and then ROSTERS.TXT ends with a FORMAT
+line; all of them are committed together.
 
 Pure core (importable, testable offline): the value/score/potential helpers,
 the playing-time class, depth_rebuild(image) and repair(image, changed) on
@@ -33,6 +35,8 @@ if _TOOLS not in sys.path:
 
 from m4.rollover import Rng, GM          # noqa: E402  (xorshift16, dev grade)
 from m4 import history as history_mod    # noqa: E402  (mapped_teams)
+from m4 import realign                   # noqa: E402  (plan, C12.5)
+from m4 import teamids                   # noqa: E402  (stable ids, C12.3)
 from v20 import HDR, REC, F, _get        # noqa: E402
 import war                               # noqa: E402  (ipiv_outs)
 import statline                          # noqa: E402  (placeholder stat lines)
@@ -1135,12 +1139,12 @@ def parse_retired(path):
     return out
 
 
-def league_standings(m):
-    """{league-global id: (W, L)} from the MAJ."""
+def league_standings(m, table=None):
+    """{stable team id: (W, L)} for every team of teamids.teams (C12.3): the W/L of its MAJ slot.
+    table = the TEAMID.DAT stems (teamids.load_table) or None for the engine ids."""
     out = {}
-    for lg, base in (('AL', 0), ('NL', 16)):
-        for t in range(16):
-            out[base + t] = m.wl(lg, t)
+    for k, L, slot, _st in teamids.teams(m, table):
+        out[k] = m.wl('AL' if L == 0 else 'NL', slot)
     return out
 
 
@@ -1174,7 +1178,8 @@ def run(league_dir, snap_dir, hist_path, retired_path):
         retired = parse_retired(retired_path)
         seed = hist_hdr[1] | hist_hdr[2] << 8
         rng = Rng(seed if seed else 1)
-        ev = offseason(teams, snaps, retired, pool, league_standings(m),
+        table = teamids.load_table(league_dir)
+        ev = offseason(teams, snaps, retired, pool, league_standings(m, table),
                        hist_hdr, rng)
         stars = []                                # C9: [(path, image)]
         for name, base in ALLSTAR_FILES:
@@ -1190,6 +1195,15 @@ def run(league_dir, snap_dir, hist_path, retired_path):
             statline.repair_image(pimg)
         for _, img in stars:
             statline.repair_image(img)
+        # C12.5 / C12.6 step 9: the playoff format (HISTORY byte 11) against the same MAJ
+        # bytes run() read above; a plan that does nothing adds no line
+        tfile = teamids.table_path(league_dir)
+        table_bytes = open(tfile, 'rb').read() if tfile else None
+        fcode, new_maj, new_table, reason = realign.plan(bytes(m.d), hist_raw, table_bytes)
+        if fcode == 2:
+            ev.append(('FORMAT', ['REFUSED', reason]))
+        elif fcode == 0:
+            ev.append(('FORMAT', [str(new_maj[0x20d])]))
         # write every output to <path>.TMP first, then os.replace them all only
         # after every TMP write succeeded (the except removes the TMPs), so an
         # IO error leaves every file untouched
@@ -1229,6 +1243,18 @@ def run(league_dir, snap_dir, hist_path, retired_path):
                 with open(tp, 'wb') as f:
                     f.write(bytes(img))
                 tmps.append((tp, p))
+            if fcode == 0:
+                # the realigned MAJ, and TEAMID.DAT when the plan made one (C12.3), commit with the rest
+                tp = mp + '.TMP'
+                with open(tp, 'wb') as f:
+                    f.write(bytes(new_maj))
+                tmps.append((tp, mp))
+                if new_table is not None:
+                    p = tfile or os.path.join(league_dir, teamids.TABLE_NAME)
+                    tp = p + '.TMP'
+                    with open(tp, 'wb') as f:
+                        f.write(new_table)
+                    tmps.append((tp, p))
         except Exception:
             for tp, _ in tmps:
                 if os.path.exists(tp):
@@ -1263,10 +1289,12 @@ def maj_load(path):
 
 def rosters_txt(ev):
     """ROSTERS.TXT body: CRLF, one line per event in order, names on every
-    line."""
+    line. FORMAT events (C12.6) are 'FORMAT n' or 'FORMAT REFUSED reason'."""
     lines = []
     for code, parts in ev:
-        if code in ('RET', 'REL', 'MKT', 'DRAFT'):
+        if code == 'FORMAT':
+            lines.append('FORMAT ' + ' '.join(parts))
+        elif code in ('RET', 'REL', 'MKT', 'DRAFT'):
             lines.append('%s %s %s' % (code, parts[0].upper(), parts[1]))
         elif code == 'SIGN':
             lines.append('SIGN %s %s %s' % (parts[0].upper(), parts[1], parts[2]))

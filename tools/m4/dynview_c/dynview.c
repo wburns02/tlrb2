@@ -14,6 +14,18 @@
 #include <string.h>
 #include <stdint.h>
 
+/* teamids.h (TEAMID.DAT, C12.3) and realign.h (the playoff format apply, C12.4 to C12.6).
+ * dynview uses some of their helpers only (the host parity harness uses the rest), so the
+ * unused-function warning is off for this include under GCC */
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
+#include "../realign.h"
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
+
 #ifdef __WATCOMC__
 #include <dos.h>
 #include <i86.h>
@@ -68,16 +80,16 @@
 
 /* the hub rows (SCREEN_MENU) and the ABOUT THE MODS rows */
 #define N_MENU_ROWS 11
-#define N_ABOUT_ROWS 36
+#define N_ABOUT_ROWS 42
 #define N_TITLE_ROWS 11
 
 /* MILESTON.DAT kinds from AWARD_KIND_MIN up are award and leader records (C7), not
  * milestones; SEASON AWARDS keeps at most AWARD_MAX rows; SEASON STANDINGS at most
- * STAND_MAX (four header rows, one per division, 32 teams and up to four blank rows that
- * keep a header off a page's last row) */
+ * STAND_MAX (six header rows, one per division, 32 teams and up to six blank rows that
+ * keep a header off a page's last row: 44 rows, 48 with a margin) */
 #define AWARD_KIND_MIN 64
 #define AWARD_MAX 64
-#define STAND_MAX 40
+#define STAND_MAX 48
 /* WORLD SERIES: kind 192 + g game records and 200 + g hits and errors (g 0..6), at most
  * 7 games of 3 rows and the summary row */
 #define SERIES_GAME_KIND 192
@@ -110,8 +122,19 @@
 #define MAJ_S_NL 0x758c
 #define MAJ_O_STEM 0x1d7
 #define MAJ_MIN (MAJ_S_NL + MAJ_O_STEM + 128L)
+/* the bytes load_teams reads of a MAJ: every stem of both leagues (24 slots each) */
+#define TEAM_SPAN (TI_S_NL + TI_O_STEM + 8L * TI_SLOTS)
 #define N_TEAM_MAX 32
 #define MAJ_NAME_MAX 64
+/* PLAYOFF FORMAT (C12.4, C12.6): HISTORY byte 11 is the format, byte 0 the rolled flag; the
+ * MAJ day (byte 0x20a) is 7 for a season set up and 0xf3 when the season is over. A MAJ over
+ * MAJ_APPLY_MAX bytes is never rewritten here */
+#define HDR_FORMAT 11
+#define HDR_ROLLED 0
+#define MAJ_DAY 0x20a
+#define DAY_SETUP 7
+#define DAY_OVER 0xf3
+#define MAJ_APPLY_MAX 60000L
 /* /MENU reads and rewrites CONTROL in the current directory (TONY2.BAT) */
 #define CONTROL_FILE "CONTROL"
 #define SEASON_TABLE 32
@@ -176,6 +199,8 @@ typedef struct {
     uint16_t awards[6];
     uint8_t champion, al_pennant, nl_pennant;   /* ids, 0xff unknown */
     uint8_t wl[32][2];          /* W and L by league-global id */
+    uint8_t ndiv;               /* divisions of the entry (byte 22); 0 for a legacy entry */
+    uint8_t divmap[16];         /* C12.7 division nibbles: id k in byte k / 2, low nibble for even k */
 } SeasonEntry;
 
 /* one MILESTON.DAT record: u16 season, u16 idx, u8 kind, u8 zero, u16 value */
@@ -273,12 +298,14 @@ static State g_state;
 static int g_exit;
 
 /* DYNASTY SETTINGS: era and managed-team mask (HISTORY.DAT bytes 10, 12..15), the
- * MAJ teams in lg order (g_tlg, display g_tdisp) and the redraw flag of an ENTER */
+ * MAJ teams by stable id (g_tlg, display g_tdisp), the playoff format wanted and now
+ * (g_fmt_wanted, g_fmt_now; realign.wanted_for_dir) and the redraw flag of an ENTER */
 static uint8_t g_era;
 static uint32_t g_mask;
 static int g_nteams;
 static uint8_t g_tlg[N_TEAM_MAX];
 static char g_tdisp[N_TEAM_MAX][16];
+static int g_fmt_wanted, g_fmt_now;
 static int g_dirty;
 
 /* ABOUT THE MODS rows (dynview.ABOUT_ROWS) */
@@ -311,6 +338,12 @@ static const char *ABOUT_LINES[N_ABOUT_ROWS] = {
     "A HOLE ON YOUR TEAM TAKES THE BEST",
     "ROOKIE LEFT IN THE DRAFT CLASS, AND YOUR",
     "LINEUP IS REPAIRED, NOT REBUILT.",
+    "PLAYOFF FORMAT: 2 DIVISIONS AND AN LCS,",
+    "OR 3 DIVISIONS AND A WILD CARD WITH A",
+    "DIVISION SERIES. IT TAKES EFFECT AT ONCE",
+    "BEFORE A SEASON STARTS, ELSE AT THE ROLL.",
+    "THEN START THE NEW SEASON WITH THE",
+    "GENERATED SCHEDULE.",
     "",
     "NEW FACES",
     "67 NEW PORTRAITS JOIN THE 30 STOCK ONES.",
@@ -857,6 +890,8 @@ static int read_season(SeasonEntry *se, int season_no)
     se->champion = sb[2];
     se->al_pennant = sb[20];
     se->nl_pennant = sb[21];
+    se->ndiv = sb[22];
+    memcpy(se->divmap, sb + 100, 16);
     for (k = 0; k < 32; k++) {
         se->wl[k][0] = sb[24 + 2 * k];
         se->wl[k][1] = sb[25 + 2 * k];
@@ -972,51 +1007,164 @@ static int find_maj(char *best)
     return have;
 }
 
-/* the MAJ teams in lg order: slot s of the AL block is lg s, of the NL block lg s + 16.
- * A slot with an empty stem or no team file is skipped. No MAJ, a read error or a file
- * shorter than MAJ_MIN gives no teams. */
+/* 1 when name is TEAMID.DAT in any case (teamids.TABLE_NAME, upper cased) */
+static int table_name(const char *name)
+{
+    static const char want[] = "TEAMID.DAT";
+    int i;
+    if (strlen(name) != sizeof want - 1)
+        return 0;
+    for (i = 0; want[i]; i++)
+        if (ascii_up((uint8_t)name[i]) != (uint8_t)want[i])
+            return 0;
+    return 1;
+}
+
+/* the TEAMID.DAT name of g_lgdir into best (the smallest in strcmp order, as
+ * teamids.table_path); on DOS the 8.3 name directly. 1 when there is one */
+static int find_table(char *best)
+{
+    int have = 0;
+#ifdef __WATCOMC__
+    char pat[300];
+    struct find_t ft;
+    path_join(pat, g_lgdir, "TEAMID.DAT");
+    if (_dos_findfirst(pat, _A_NORMAL, &ft) == 0 && table_name(ft.name)) {
+        strcpy(best, ft.name);
+        have = 1;
+    }
+#else
+    DIR *dirp = opendir(g_lgdir);
+    struct dirent *de;
+    if (!dirp)
+        return 0;
+    while ((de = readdir(dirp)) != NULL) {
+        if (table_name(de->d_name) && (!have || strcmp(de->d_name, best) < 0)) {
+            strcpy(best, de->d_name);
+            have = 1;
+        }
+    }
+    closedir(dirp);
+#endif
+    return have;
+}
+
+/* the TEAMID.DAT path of g_lgdir into path; 0 when there is none */
+static int table_file(char *path)
+{
+    char best[MAJ_NAME_MAX];
+    if (!find_table(best))
+        return 0;
+    path_join(path, g_lgdir, best);
+    return 1;
+}
+
+/* the first *.MAJ of g_lgdir as a path; 0 when there is none */
+static int maj_file(char *path)
+{
+    char best[MAJ_NAME_MAX];
+    if (!find_maj(best))
+        return 0;
+    path_join(path, g_lgdir, best);
+    return 1;
+}
+
+/* TEAMID.DAT as the table of the stable ids (teamids.load_table): tab gets its 256 B when the
+ * file is exactly 256 B; 1 when it did, 0 when there is no such table */
+static int load_table(uint8_t *tab)
+{
+    char path[600];
+    FILE *f;
+    int ok = 0;
+    if (!table_file(path))
+        return 0;
+    f = fopen(path, "rb");
+    if (!f)
+        return 0;
+    if (fseek(f, 0, SEEK_END) == 0 && ftell(f) == TI_TABLE_SIZE
+        && fseek(f, 0, SEEK_SET) == 0
+        && fread(tab, 1, TI_TABLE_SIZE, f) == TI_TABLE_SIZE)
+        ok = 1;
+    fclose(f);
+    return ok;
+}
+
+/* the MAJ teams by stable id (C12.3, teamids.teams: TEAMID.DAT when it is a table, else
+ * engine ids), in id order. A team whose stem is empty or has no team file is skipped. No
+ * MAJ, a read error or a file shorter than MAJ_MIN gives no teams. The first TEAM_SPAN bytes
+ * are read into a zeroed buffer (a short MAJ reads as zero padding). */
 static void load_teams(void)
 {
-    char best[MAJ_NAME_MAX], path[600];
-    uint8_t blk[2][128];
+    char path[600];
+    uint8_t *d, tab[TI_TABLE_SIZE];
+    TiTeam t[TI_MAX_TEAMS];
     FILE *f;
     long sz;
-    int lg;
+    size_t want;
+    int have_tab, n, i, m;
     g_nteams = 0;
-    if (!find_maj(best))
+    if (!maj_file(path))
         return;
-    path_join(path, g_lgdir, best);
     f = fopen(path, "rb");
     if (!f)
         return;
-    if (fseek(f, 0, SEEK_END) != 0) {
+    if (fseek(f, 0, SEEK_END) != 0 || (sz = ftell(f)) < MAJ_MIN) {
         fclose(f);
         return;
     }
-    sz = ftell(f);
-    if (sz < MAJ_MIN) {
+    want = sz < TEAM_SPAN ? (size_t)sz : (size_t)TEAM_SPAN;
+    d = (uint8_t *)malloc((size_t)TEAM_SPAN);
+    if (!d) {
         fclose(f);
         return;
     }
-    if (fseek(f, MAJ_S_AL + MAJ_O_STEM, SEEK_SET) != 0
-        || fread(blk[0], 1, 128, f) != 128
-        || fseek(f, MAJ_S_NL + MAJ_O_STEM, SEEK_SET) != 0
-        || fread(blk[1], 1, 128, f) != 128) {
+    memset(d, 0, (size_t)TEAM_SPAN);
+    if (fseek(f, 0, SEEK_SET) != 0 || fread(d, 1, want, f) != want) {
         fclose(f);
+        free(d);
         return;
     }
     fclose(f);
-    for (lg = 0; lg < N_TEAM_MAX; lg++) {
-        const uint8_t *stem = blk[lg >> 4] + 8 * (lg & 15);
-        int n = 0;
-        while (n < 8 && stem[n])
-            n++;
-        if (n == 0 || !team_file(stem, n))
+    have_tab = load_table(tab);
+    n = ti_teams(d, TEAM_SPAN, have_tab ? tab : NULL, t);
+    free(d);
+    for (i = 0; i < n; i++) {
+        m = 0;
+        while (m < 8 && t[i].stem[m])
+            m++;
+        if (m == 0 || !team_file(t[i].stem, m))
             continue;
-        g_tlg[g_nteams] = (uint8_t)lg;
-        team_disp(stem, n, g_tdisp[g_nteams]);
+        g_tlg[g_nteams] = t[i].id;
+        team_disp(t[i].stem, m, g_tdisp[g_nteams]);
         g_nteams++;
     }
+}
+
+/* g_fmt_wanted and g_fmt_now (realign.wanted_for_dir): now from the MAJ's first 0x20e bytes
+ * (no MAJ reads as an empty buffer, now 2), wanted from HISTORY.DAT's first 12 bytes */
+static void load_fmt(void)
+{
+    char path[600];
+    uint8_t mb[0x20e], hb[12];
+    FILE *f;
+    long mlen = 0, hlen = 0;
+    memset(mb, 0, sizeof mb);
+    memset(hb, 0, sizeof hb);
+    if (maj_file(path)) {
+        f = fopen(path, "rb");
+        if (f) {
+            mlen = (long)fread(mb, 1, sizeof mb, f);
+            fclose(f);
+        }
+    }
+    path_join(path, g_lgdir, "HISTORY.DAT");
+    f = fopen(path, "rb");
+    if (f) {
+        hlen = (long)fread(hb, 1, sizeof hb, f);
+        fclose(f);
+    }
+    g_fmt_now = ra_now_divs(mb, mlen);
+    g_fmt_wanted = ra_wanted(hb, hlen, mb, mlen);
 }
 
 /* HISTORY.DAT: byte 10 = g_era, bytes 12..15 = g_mask (u32 LE); nothing else changes.
@@ -1063,6 +1211,151 @@ static void save_settings(void)
     if (fseek(f, 12, SEEK_SET) == 0)
         (void)fwrite(mb, 1, 4, f);
     fclose(f);
+}
+
+/* the byte at pos of the file path, -1 when the file is missing, unreadable or shorter */
+static int file_byte(const char *path, long pos)
+{
+    uint8_t b = 0;
+    int r = -1;
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return -1;
+    if (fseek(f, pos, SEEK_SET) == 0 && fread(&b, 1, 1, f) == 1)
+        r = b;
+    fclose(f);
+    return r;
+}
+
+/* HISTORY.DAT byte pos, -1 when there is none (dynview.hist_byte) */
+static int hist_byte(int pos)
+{
+    char path[600];
+    path_join(path, g_lgdir, "HISTORY.DAT");
+    return file_byte(path, pos);
+}
+
+/* the MAJ day byte, -1 when there is no MAJ or it is short (dynview.maj_day) */
+static int maj_day(void)
+{
+    char path[600];
+    if (!maj_file(path))
+        return -1;
+    return file_byte(path, MAJ_DAY);
+}
+
+/* HISTORY.DAT byte pos = value, with the save_settings rules: a missing file is created, a
+ * short one zero-extended to HDR_SIZE bytes, no other byte changes; errors are ignored
+ * (dynview.put_hist_byte) */
+static void put_hist_byte(int pos, int value)
+{
+    char path[600];
+    uint8_t zero[HDR_SIZE], b = (uint8_t)value;
+    FILE *f;
+    long sz;
+    path_join(path, g_lgdir, "HISTORY.DAT");
+    f = fopen(path, "r+b");
+    if (!f) {
+        memset(zero, 0, sizeof zero);
+        f = fopen(path, "wb");
+        if (!f)
+            return;
+        (void)fwrite(zero, 1, HDR_SIZE, f);
+        fclose(f);
+        f = fopen(path, "r+b");
+        if (!f)
+            return;
+    }
+    if (fseek(f, 0, SEEK_END) != 0 || (sz = ftell(f)) < 0) {
+        fclose(f);
+        return;
+    }
+    if (sz < HDR_SIZE) {
+        memset(zero, 0, sizeof zero);
+        (void)fwrite(zero, 1, (size_t)(HDR_SIZE - sz), f);
+    }
+    if (fseek(f, pos, SEEK_SET) == 0)
+        (void)fwrite(&b, 1, 1, f);
+    fclose(f);
+}
+
+/* realign.apply (C12.5, C12.6): the MAJ of g_lgdir realigned to the wanted format by ra_plan,
+ * TEAMID.DAT written first when the plan made it (no table, or one not 256 B), then the MAJ.
+ * After a rewrite on day 7, HISTORY byte 0 = 1. A refused plan, a MAJ over MAJ_APPLY_MAX bytes
+ * or one that cannot be read changes nothing */
+static void realign_apply(int day)
+{
+    char mpath[600], tpath[600], hpath[600];
+    uint8_t *d, hb[HDR_SIZE], tab[TI_TABLE_SIZE];
+    const char *reason = NULL;
+    FILE *f;
+    long sz, hlen = 0;
+    size_t got;
+    int have_tab, tab_new = 0, rc;
+
+    if (!maj_file(mpath))
+        return;
+    f = fopen(mpath, "rb");
+    if (!f)
+        return;
+    if (fseek(f, 0, SEEK_END) != 0 || (sz = ftell(f)) <= 0 || sz > MAJ_APPLY_MAX
+        || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return;
+    }
+    d = (uint8_t *)malloc((size_t)sz);
+    if (!d) {
+        fclose(f);
+        return;
+    }
+    got = fread(d, 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) {
+        free(d);
+        return;
+    }
+    path_join(hpath, g_lgdir, "HISTORY.DAT");
+    f = fopen(hpath, "rb");
+    if (f) {
+        hlen = (long)fread(hb, 1, sizeof hb, f);
+        fclose(f);
+    }
+    have_tab = load_table(tab);
+    rc = ra_plan(d, sz, hb, hlen, have_tab, tab, &tab_new, &reason);
+    if (rc == 0) {
+        if (tab_new) {
+            if (!table_file(tpath))
+                path_join(tpath, g_lgdir, "TEAMID.DAT");
+            f = fopen(tpath, "wb");
+            if (f) {
+                (void)fwrite(tab, 1, TI_TABLE_SIZE, f);
+                fclose(f);
+            }
+        }
+        f = fopen(mpath, "wb");
+        if (f) {
+            (void)fwrite(d, 1, (size_t)sz, f);
+            fclose(f);
+        }
+        if (day == DAY_SETUP)
+            put_hist_byte(HDR_ROLLED, 1);
+    }
+    free(d);
+}
+
+/* ENTER on PLAYOFF FORMAT (dynview.set_playoff_format): HISTORY byte 11 = 5 - wanted, then the
+ * apply at once when the MAJ day is 0xf3 with HISTORY byte 0 = 1, or the day is 7. A missing
+ * MAJ or HISTORY byte 0 leaves it at byte 11 */
+static void set_playoff_format(int wanted)
+{
+    int day, rolled;
+    put_hist_byte(HDR_FORMAT, 5 - wanted);
+    day = maj_day();
+    rolled = hist_byte(HDR_ROLLED);
+    if (day < 0 || rolled < 0)
+        return;
+    if ((day == DAY_OVER && rolled == 1) || day == DAY_SETUP)
+        realign_apply(day);
 }
 
 /* /MENU item: CONTROL[1] = 8 + item (item 0..3) in the current directory; 0 when the file
@@ -1593,10 +1886,13 @@ static int build_awards(long season)
 
 /* ---------------- SEASON STANDINGS (C2 season entry w_l) ---------------- */
 
-/* the header rows: the league name for one division with games, else the division
- * names (STAND_DIV[league][0] WEST, [1] EAST) */
+/* the header rows: the league name for one division with games, else the short league name
+ * and the division suffix. The divisions come in dynview.STAND_DIVS order (2 WEST, 3 CENTRAL,
+ * 1 EAST) */
 static const char *STAND_HEAD[2] = { "AMERICAN LEAGUE", "NATIONAL LEAGUE" };
-static const char *STAND_DIV[2][2] = { { "AL WEST", "AL EAST" }, { "NL WEST", "NL EAST" } };
+static const char *STAND_SHORT[2] = { "AL", "NL" };
+static const int STAND_DIV_NUM[3] = { 2, 3, 1 };
+static const char *STAND_DIV_SUF[3] = { " WEST", " CENTRAL", " EAST" };
 
 /* the team column of league-global id t: its MAJ display name, else 'TEAM t' */
 static void stand_name(int t, char *dst)
@@ -1641,18 +1937,6 @@ static int stand_message(void)
     strcpy(g_stnd[0].cells[0], "NO STANDINGS RECORDED");
     g_stnd[0].ncells = 1;
     return 1;
-}
-
-/* the played teams (W + L > 0) of the division at slots first..first + 7 into ids, in
- * id order; returns the count */
-static int stand_division(const SeasonEntry *se, int first, int *ids)
-{
-    int i, m = 0;
-    for (i = first; i < first + 8; i++) {
-        if (se->wl[i][0] + se->wl[i][1] > 0)
-            ids[m++] = i;
-    }
-    return m;
 }
 
 /* one block of g_stnd from row n: a blank row when the header would be a page's last
@@ -1706,28 +1990,52 @@ static int stand_block(const SeasonEntry *se, int n, const char *head, int *ids,
     return n;
 }
 
-/* SEASON STANDINGS rows of season into g_stnd (dynview.standings_rows); returns the
- * count. Per league: WEST then EAST blocks when both divisions have games, one block
- * under the league name when one division has; past the history table or with no games
- * in either league, one message row. */
+/* history.division_of (C12.7): the division of league-global id k in a season entry, 1 East,
+ * 2 West, 3 Central, 0 none; a legacy entry (ndiv 0) has East for (k & 15) < 8, else West */
+static int division_of(const SeasonEntry *se, int k)
+{
+    if (se->ndiv == 0)
+        return (k & 15) < 8 ? 1 : 2;
+    return (se->divmap[k / 2] >> (4 * (k & 1))) & 15;
+}
+
+/* SEASON STANDINGS rows of season into g_stnd (dynview.standings_rows); returns the count.
+ * Per league the played teams (W + L > 0) are grouped by division: two or more divisions give
+ * one block each in STAND_DIVS order under AL WEST and so on, one division one block under
+ * the league name, none nothing. Past the history table or with no games in either league,
+ * one message row. */
 static int build_standings(long season)
 {
     SeasonEntry se;
-    int lg, n = 0, nw, ne, west[8], east[8];
+    char head[24];
+    int lg, t, q, dv, shown, n = 0, cnt[3], ids[3][16];
     if (season > SEASON_COUNT)
         return stand_message();
     memset(&se, 0, sizeof se);
     read_season(&se, (int)season);
     for (lg = 0; lg < 2; lg++) {
-        nw = stand_division(&se, lg * 16 + 8, west);
-        ne = stand_division(&se, lg * 16, east);
-        if (nw && ne) {
-            n = stand_block(&se, n, STAND_DIV[lg][0], west, nw);
-            n = stand_block(&se, n, STAND_DIV[lg][1], east, ne);
-        } else if (nw) {
-            n = stand_block(&se, n, STAND_HEAD[lg], west, nw);
-        } else if (ne) {
-            n = stand_block(&se, n, STAND_HEAD[lg], east, ne);
+        for (q = 0; q < 3; q++)
+            cnt[q] = 0;
+        for (t = lg * 16; t < lg * 16 + 16; t++) {
+            if (se.wl[t][0] + se.wl[t][1] == 0)
+                continue;
+            dv = division_of(&se, t);
+            for (q = 0; q < 3; q++)
+                if (dv == STAND_DIV_NUM[q])
+                    ids[q][cnt[q]++] = t;
+        }
+        shown = 0;
+        for (q = 0; q < 3; q++)
+            if (cnt[q] > 0)
+                shown++;
+        for (q = 0; q < 3; q++) {
+            if (cnt[q] == 0)
+                continue;
+            if (shown >= 2)
+                sprintf(head, "%s%s", STAND_SHORT[lg], STAND_DIV_SUF[q]);
+            else
+                strcpy(head, STAND_HEAD[lg]);
+            n = stand_block(&se, n, head, ids[q], cnt[q]);
         }
     }
     if (n == 0)
@@ -2063,18 +2371,31 @@ static const char *era_label(void)
     return "RESERVE CLAUSE";
 }
 
-/* DYNASTY SETTINGS page: row 0 ERA RULES, row c the team lg of g_tlg[c - 1] (cursor c) */
+/* the PLAYOFF FORMAT value of g_fmt_wanted and g_fmt_now (dynview.playoff_label) */
+static const char *playoff_label(void)
+{
+    int three = g_fmt_wanted == 3;
+    if (g_fmt_wanted == g_fmt_now)
+        return three ? "3 DIV + WILDCARD" : "2 DIVISIONS";
+    return three ? "3 DIV NEXT YEAR" : "2 DIV NEXT YEAR";
+}
+
+/* DYNASTY SETTINGS page: row 0 ERA RULES, row 1 PLAYOFF FORMAT, row c the team g_tlg[c - 2]
+ * (cursor c) */
 static void build_settings_rows(int page)
 {
     int i, k = 0;
-    for (i = page * ROWS_PER_PAGE; i <= g_nteams && k < ROWS_PER_PAGE; i++, k++) {
+    for (i = page * ROWS_PER_PAGE; i <= 1 + g_nteams && k < ROWS_PER_PAGE; i++, k++) {
         Row *row = &g_rows[k];
         if (i == 0) {
             strcpy(row->cells[0], "ERA RULES");
             strcpy(row->cells[1], era_label());
+        } else if (i == 1) {
+            strcpy(row->cells[0], "PLAYOFF FORMAT");
+            strcpy(row->cells[1], playoff_label());
         } else {
-            strcpy(row->cells[0], g_tdisp[i - 1]);
-            strcpy(row->cells[1], ((g_mask >> g_tlg[i - 1]) & 1u)
+            strcpy(row->cells[0], g_tdisp[i - 2]);
+            strcpy(row->cells[1], ((g_mask >> g_tlg[i - 2]) & 1u)
                                   ? "YOU MANAGE" : "AI MANAGES");
         }
         row->ncells = 2;
@@ -2217,7 +2538,7 @@ static int total_rows(State st)
     case SCREEN_BOX:
         return box_body(st, -1, &cols);
     case SCREEN_SETTINGS:
-        return 1 + g_nteams;
+        return 2 + g_nteams;
     case SCREEN_ABOUT:
         return N_ABOUT_ROWS;
     default:
@@ -2350,16 +2671,23 @@ static State step(State in, int32_t key)
         s.cat = 0;
         return s;
     }
-    /* DYNASTY SETTINGS: cat is the cursor (0 ERA RULES, c >= 1 team c - 1); ENTER flips
-     * the row and saves HISTORY.DAT, the rest moves the cursor and its page */
+    /* DYNASTY SETTINGS: cat is the cursor (0 ERA RULES, 1 PLAYOFF FORMAT, c >= 2 team
+     * c - 2); ENTER on PLAYOFF FORMAT sets the format and reloads the teams, the other rows
+     * flip and save HISTORY.DAT; then the format is read again. The rest moves the cursor */
     if (s.screen == SCREEN_SETTINGS) {
-        int n = 1 + g_nteams;
+        int n = 2 + g_nteams;
         if (key == KEY_ENTER) {
-            if (s.cat == 0)
-                g_era = (uint8_t)(g_era == 0 ? 1 : (g_era == 2 ? 0 : 2));
-            else
-                g_mask ^= (uint32_t)1 << g_tlg[s.cat - 1];
-            save_settings();
+            if (s.cat == 1) {
+                set_playoff_format(g_fmt_wanted);
+                load_teams();
+            } else {
+                if (s.cat == 0)
+                    g_era = (uint8_t)(g_era == 0 ? 1 : (g_era == 2 ? 0 : 2));
+                else
+                    g_mask ^= (uint32_t)1 << g_tlg[s.cat - 2];
+                save_settings();
+            }
+            load_fmt();
             g_dirty = 1;
             return s;
         }
@@ -3432,6 +3760,7 @@ int main(int argc, char **argv)
     load_drafts();
     load_settings();
     load_teams();
+    load_fmt();
 
     /* /OFFSEASON starts at phase 0 with the launched flag (cat 16); /TITLE is the
      * MENU with cat 16; /MENU opens the item CONTROL holds: 2 DYNASTY SETTINGS,

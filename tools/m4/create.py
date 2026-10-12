@@ -25,6 +25,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 import rookies  # noqa: E402
 import statline  # noqa: E402
+import teamids  # noqa: E402
 from dynview import (C_BLACK, C_WHITE, C_DRED, C_TITLE_RED, C_HEADER_GOLD,  # noqa: E402
                      C_ROW_TAN, C_GRID_GRAY, FB_SIZE, FB_W, KEY_ESC, KEY_ENTER,  # noqa: E402
                      KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_PGUP, KEY_PGDN,  # noqa: E402
@@ -44,7 +45,7 @@ PITCHER_SLOTS = 16                        # slots 0..15 pitchers, 16..39 batters
 IMAGE_LEN = HEADER_LEN + 80 * RECORD_LEN  # 11735: header + 80 records
 AL_BASE, NL_BASE = 0x21d, 0x758c          # *.MAJ offsets of the AL and NL stem tables
 MAJ_STEM_OFF = 0x1d7                      # first stem inside each 8 slot table
-MAJ_MIN_LEN = NL_BASE + MAJ_STEM_OFF + 8 * 15 + 8   # 30691: last byte of the NL stems
+MAJ_MIN_LEN = NL_BASE + MAJ_STEM_OFF + 8 * 24      # 30755: last byte of the 24 NL stems
 DEFAULT_YEAR_BYTE = 123
 
 LAST_MAX, FIRST_MAX = 11, 7
@@ -91,10 +92,11 @@ MSG_NAME = 'TYPE A LAST NAME FIRST'
 
 # ---------------------------------------------------------------- league data
 def teams(league_dir):
-    """[(lg, stem, display)] for lg 0..31 ascending. The MAJ is the first sorted
-    *.MAJ of league_dir; a file shorter than MAJ_MIN_LEN has no teams. A stem is
-    the 8 bytes at the team's name slot cut at the first NUL; an empty stem or one
-    without a team file is skipped."""
+    """[(id, stem, display)] in id order (C12.3). The ids are the stable ids of
+    teamids.teams with the league's TEAMID.DAT (none: the engine ids). The MAJ is
+    the first sorted *.MAJ of league_dir; a file shorter than MAJ_MIN_LEN has no
+    teams. A stem is cut at its first NUL; a team whose stem is empty or has no
+    team file is skipped."""
     majs = sorted(glob.glob(os.path.join(league_dir, '*.MAJ')))
     if not majs:
         return []
@@ -106,14 +108,12 @@ def teams(league_dir):
     if len(d) < MAJ_MIN_LEN:
         return []
     out = []
-    for lg in range(32):
-        base, slot = (AL_BASE, lg) if lg < 16 else (NL_BASE, lg - 16)
-        off = base + MAJ_STEM_OFF + 8 * slot
-        stem = d[off:off + 8].split(b'\0')[0]
+    for k, _L, _slot, st in teamids.teams(d, teamids.load_table(league_dir)):
+        stem = st.split(b'\0')[0]
         if not stem or v20_path(league_dir, stem) is None:
             continue
         s = stem.decode('latin-1')
-        out.append((lg, s, team_disp(league_dir, s)))
+        out.append((k, s, team_disp(league_dir, s)))
     return out
 
 
@@ -462,7 +462,7 @@ def _list_view(st, ctx):
         if not tm:
             return ('CREATE A PLAYER', COLS_TEAM, [('NO TEAMS FOUND', '')], FOOT_TEAM,
                     False)
-        rows = [(d, 'AMERICAN' if lg < 16 else 'NATIONAL') for lg, _s, d in tm]
+        rows = [(d, 'AMERICAN' if k < 16 else 'NATIONAL') for k, _s, d in tm]
         return 'CREATE A PLAYER', COLS_TEAM, rows, FOOT_TEAM, True
     if scr == S_SLOT:
         rows = []

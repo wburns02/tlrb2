@@ -8,8 +8,9 @@ The host binary tools/m4/rosters_c/rosters_host is built at import; the DOS
 tests skip when OpenWatcom or /mnt/nvme/src/dosbox-x/src/dosbox-x is missing;
 the real-data tests skip when /mnt/nvme/tlrb2/fixtures/t4/s1_pre is missing.
 Every parity check compares, file by file, every team V20, every pool V20,
-ROSTERS.TXT and HISTORY.DAT between a Python run (rosters.run) and a
-host-binary run on two identical copies; a zero-file comparison fails.
+ROSTERS.TXT, HISTORY.DAT, the MAJ and TEAMID.DAT (C12) between a Python run
+(rosters.run) and a host-binary run on two identical copies; a zero-file
+comparison fails.
 """
 import os
 import shutil
@@ -24,6 +25,9 @@ sys.path.insert(0, os.path.dirname(HERE))
 from m4 import rosters as rosters_py                     # noqa: E402
 from m4 import dynasty_ref                               # noqa: E402
 from m4 import sim50                                     # noqa: E402
+from m4 import history as history_py                     # noqa: E402
+from m4 import realign                                   # noqa: E402
+from m4 import teamids                                   # noqa: E402
 from test_history import make_team_v20, make_maj         # noqa: E402
 import team_fill                                         # noqa: E402
 import maj                                               # noqa: E402
@@ -75,10 +79,14 @@ def hist_of(file):
 def collect(league, hist_path):
     """Every output file of one run: ROSTERS.TXT, every team V20, every pool
     V20 and HISTORY.DAT. Unmapped stems (ALLSTAR*.V20) are not outputs, pool
-    files always are (the run creates them), HISTORY.DAT always."""
+    files always are (the run creates them), HISTORY.DAT always. The MAJ and
+    TEAMID.DAT (C12) are outputs too; a file that only one side has fails parity."""
     out = {}
     out[ROSTERS_TXT] = hist_of(os.path.join(league, ROSTERS_TXT))
     for name in os.listdir(league):
+        if name.upper().endswith('.MAJ') or name.upper() == teamids.TABLE_NAME:
+            out[name.upper()] = hist_of(os.path.join(league, name))
+            continue
         if not name.upper().endswith('.V20'):
             continue
         if name.upper().startswith('POOL'):
@@ -158,18 +166,26 @@ def setup_case(root, pre, seed, era, mask):
     return league, snap, hist, retired
 
 
-def run_case(root, tag, seed, era, mask):
-    """Run both implementations on identical copies; file-by-file parity."""
+def run_case(root, tag, seed, era, mask, fmt=None):
+    """Run both implementations on identical copies; file-by-file parity.
+    fmt, when given, is HISTORY byte 11 (the playoff format, C12.4) on both
+    copies. Returns the Python league dir."""
     d = str(root)
     lc, ls, lh, lr = setup_case(os.path.join(d, tag + 'c'), S1_PRE, seed,
                                 era, mask)
     rc_, rs, rh, rr = setup_case(os.path.join(d, tag + 'r'), S1_PRE, seed,
                                  era, mask)
+    if fmt is not None:
+        for hist in (lh, rh):
+            raw = bytearray(open(hist, 'rb').read())
+            raw[11] = fmt
+            open(hist, 'wb').write(bytes(raw))
     pyc = rosters_py.run(lc, ls, lh, lr)
     assert pyc == 0, f'py rc {pyc}'
     c = HOST_RUN(rc_, rs, rh, rr)
     assert c.returncode == 0, f'{tag}: C rc {c.returncode}: {c.stderr}'
     parity(collect(lc, lh), rc_, rh)
+    return lc
 
 
 def _first_two_mask(league):
@@ -610,14 +626,19 @@ def run_dos(cdir, bat_lines, ddir=None):
     return int(open(rc_txt).read().strip() or 0)
 
 
-def dos_inputs(d, pre, seed, era, mask):
+def dos_inputs(d, pre, seed, era, mask, fmt=None):
     """Build the case 1 inputs into a flat DOS dir d (8.3 names, one level):
     the rolled league V20s + MAJ + RETIRED.DAT + HISTORY.DAT. Returns
-    (gold, {[stem.V20]: bytes}) with the snapshot files for a D: mount."""
+    (gold, {[stem.V20]: bytes}) with the snapshot files for a D: mount.
+    fmt, when given, is HISTORY byte 11 (the playoff format, C12.4)."""
     if os.path.exists(d):
         shutil.rmtree(d)
     os.makedirs(d)
     lc, ls, lh, lr = setup_case(os.path.join(d, '_w'), pre, seed, era, mask)
+    if fmt is not None:
+        raw = bytearray(open(lh, 'rb').read())
+        raw[11] = fmt
+        open(lh, 'wb').write(bytes(raw))
     # the inputs go to the DOS dir root BEFORE the Python run (which rewrites
     # the league V20s and HISTORY.DAT and creates the pools in place)
     for f in os.listdir(lc):
@@ -664,7 +685,7 @@ def test_dos_era0_parity(tmp_path):
     # the DOS outputs: the league dir is cd itself
     out = {}
     for f in os.listdir(cd):
-        if f.upper().endswith('.V20'):
+        if f.upper().endswith(('.V20', '.MAJ')) or f.upper() == teamids.TABLE_NAME:
             out[f.upper()] = open(os.path.join(cd, f), 'rb').read()
     out['HISTORY.DAT'] = open(os.path.join(cd, 'HISTORY.DAT'), 'rb').read()
     out[ROSTERS_TXT] = open(os.path.join(cd, ROSTERS_TXT), 'rb').read()
@@ -675,6 +696,36 @@ def test_dos_era0_parity(tmp_path):
     for key in sorted(gold):
         assert key in out, f'{key}: missing from the DOS output'
         compare(key, gold[key], out[key])
+
+
+def test_dos_format3_parity(tmp_path):
+    """C12.6 step 9 under headless DOSBox-X: HISTORY byte 11 = 3 on the real fixture. The DOS run
+    realigns the MAJ, creates TEAMID.DAT and commits both through REALIGN.TMP / TEAMID.TMP with every
+    other output; all of them equal the Python run's."""
+    if not _dos_ready():
+        import pytest
+        pytest.skip('ROSTERS.EXE or dosbox-x missing')
+    if not os.path.isdir(S1_PRE):
+        import pytest
+        pytest.skip('fixtures missing')
+    d = str(tmp_path)
+    cd = os.path.join(d, 'dos')
+    gold, ddir = dos_inputs(cd, S1_PRE, 0x1234, 0, 0, fmt=3)
+    assert gold[ROSTERS_TXT].endswith(b'FORMAT 3\r\n'), 'the Python run did not realign'
+    assert teamids.TABLE_NAME in gold, 'the Python run made no TEAMID.DAT'
+    rc = run_dos(cd, ['ROSTERS.EXE . D: HISTORY.DAT RETIRED.DAT'], ddir)
+    assert rc == 0, f'dos rc {rc}'
+    out = {}
+    for f in os.listdir(cd):
+        if f.upper().endswith(('.V20', '.MAJ')) or f.upper() == teamids.TABLE_NAME:
+            out[f.upper()] = open(os.path.join(cd, f), 'rb').read()
+        assert not f.upper().endswith(('.TMP', '.BAK')), f'{f}: left behind'
+    out['HISTORY.DAT'] = open(os.path.join(cd, 'HISTORY.DAT'), 'rb').read()
+    out[ROSTERS_TXT] = open(os.path.join(cd, ROSTERS_TXT), 'rb').read()
+    for key in sorted(gold):
+        assert key in out, f'{key}: missing from the DOS output'
+        compare(key, gold[key], out[key])
+    assert out['CLASSIC.MAJ'][0x20d] == 3
 
 
 def test_dos_chain_season_parity(tmp_path):
@@ -725,7 +776,7 @@ def test_dos_chain_season_parity(tmp_path):
     assert rc == 0, f'dos rc {rc}'
     out = {}
     for f in os.listdir(cd):
-        if f.upper().endswith('.V20'):
+        if f.upper().endswith(('.V20', '.MAJ')) or f.upper() == teamids.TABLE_NAME:
             out[f.upper()] = open(os.path.join(cd, f), 'rb').read()
     out['HISTORY.DAT'] = open(os.path.join(cd, 'HISTORY.DAT'), 'rb').read()
     out[ROSTERS_TXT] = open(os.path.join(cd, ROSTERS_TXT), 'rb').read()
@@ -841,3 +892,211 @@ def test_dos_mature_league_parity(tmp_path):
     assert any(n.upper().startswith('ALLSTAR') for n in names)
     for n in names:
         compare(n, open(os.path.join(lc, n), 'rb').read(), open(os.path.join(cd, n), 'rb').read())
+
+
+# ---------------- test 5: playoff format (C12.3, C12.5, C12.6 step 9) ----------------
+
+MAJ_NAME = 'CLASSIC.MAJ'
+MAJ_SIZE = 59771
+O_W, O_L = 0x2cb, 0x2e3              # the per-league W and L, slot-indexed (C12.1)
+
+
+def _sizes(n, divs):
+    """Teams per division (East, West, Central) of a league of n teams: the C12.5 generic rule."""
+    if divs == 3:
+        q, r = divmod(n, 3)
+        return [q + (r > 0), q + (r > 1), q]
+    return [(n + 1) // 2, n // 2, 0]
+
+
+def fmt_maj(n_al=14, n_nl=14, divs=2):
+    """A synthetic MAJ (C12.1): n_al AL and n_nl NL teams in the slots their divisions use, stems and
+    abbreviations A00.. / N00.., names, the division counts and standings order 0xff (as C12.5 leaves it)."""
+    d = bytearray(MAJ_SIZE)
+    d[0x20c], d[0x20d] = 2, divs
+    for L, n, tag in ((0, n_al, 'A'), (1, n_nl, 'N')):
+        s = teamids.S[L]
+        i = 0
+        for dv, sz in enumerate(_sizes(n, divs)):
+            d[s + 0x298 + dv] = sz
+            d[0x20e + 3 * L + dv] = sz
+            for j in range(sz):
+                slot = dv * 8 + j
+                abbr = ('%s%02d' % (tag, i)).encode()
+                i += 1
+                a = s + teamids.O_NAMES + 16 * slot
+                d[a:a + 16] = (b'TEAM ' + abbr).ljust(16, b'\0')
+                a = s + teamids.O_ABBR + 3 * slot
+                d[a:a + 3] = abbr
+                a = s + teamids.O_STEM + 8 * slot
+                d[a:a + 8] = abbr.ljust(8, b'\0')
+        d[s + 0x2b3:s + 0x2cb] = b'\xff' * 24
+    return bytes(d)
+
+
+def _reversed_table(maj_bytes):
+    """A TEAMID.DAT whose ids run backwards in each league: not the engine ids, and every id stays in its league."""
+    base = teamids.make_table(maj_bytes)
+    tab = bytearray(teamids.TABLE_SIZE)
+    for e in range(32):
+        k = 15 - e % 16 + 16 * (e // 16)
+        tab[8 * k:8 * k + 8] = base[8 * e:8 * e + 8]
+    return bytes(tab)
+
+
+def fmt_setup(root, maj_bytes, byte11, table, img, mask=0):
+    """One side of a format test league under root: the MAJ, a team V20 (img) per MAJ team in league and snap,
+    HISTORY.DAT with byte 11 and the managed mask (bytes 12..15), TEAMID.DAT when table is given, RETIRED.DAT.
+    Returns (league, snap, hist, retired)."""
+    league = os.path.join(root, 'league')
+    snap = os.path.join(root, 'snap')
+    os.makedirs(league)
+    os.makedirs(snap)
+    open(os.path.join(league, MAJ_NAME), 'wb').write(bytes(maj_bytes))
+    for _L, _slot, st in teamids.maj_teams(maj_bytes):
+        name = st.rstrip(b'\0').decode('latin-1') + '.V20'
+        for dest in (league, snap):
+            open(os.path.join(dest, name), 'wb').write(img)
+    hist = os.path.join(root, 'HISTORY.DAT')
+    h = bytearray(32)
+    h[11] = byte11
+    struct.pack_into('<I', h, 12, mask)
+    open(hist, 'wb').write(bytes(h))
+    if table is not None:
+        open(os.path.join(league, teamids.TABLE_NAME), 'wb').write(bytes(table))
+    retired = os.path.join(root, 'RETIRED.DAT')
+    open(retired, 'wb').write(b'\x00')
+    return league, snap, hist, retired
+
+
+def fmt_run(tmp_path, tag, maj_bytes, byte11, table=None, mask=0):
+    """ROSTERS on two identical copies of a format test league: the Python run and the C run, parity of every
+    output (the MAJ and TEAMID.DAT included). Returns the Python league dir."""
+    img = open(synth_league(tmp_path, sub=tag + 'img', n_players=18, pit=16)[1], 'rb').read()
+    py = fmt_setup(os.path.join(str(tmp_path), tag + 'py'), maj_bytes, byte11, table, img, mask)
+    cc = fmt_setup(os.path.join(str(tmp_path), tag + 'c'), maj_bytes, byte11, table, img, mask)
+    assert rosters_py.run(*py) == 0
+    c = HOST_RUN(*cc)
+    assert c.returncode == 0, f'{tag}: C rc {c.returncode}: {c.stderr}'
+    parity(collect(py[0], py[2]), cc[0], cc[2])
+    return py[0]
+
+
+def _read(path):
+    return open(path, 'rb').read()
+
+
+def test_format_three_divisions_realigns_and_writes_the_table(tmp_path):
+    """C12.6 (a): byte 11 = 3 on a 14 + 14 team, 2-division league: the MAJ is realigned (0x20d 3, day 0xf3),
+    TEAMID.DAT (256 B) is written from the pre-realignment MAJ, ROSTERS.TXT ends with FORMAT 3, no TMP or BAK left."""
+    maj_bytes = fmt_maj(14, 14, 2)
+    lp = fmt_run(tmp_path, 'a', maj_bytes, 3)
+    after = _read(os.path.join(lp, MAJ_NAME))
+    assert after[0x20d] == 3 and after[0x20a] == 0xf3
+    assert after == realign.realign(maj_bytes, 3)[0]
+    table = _read(os.path.join(lp, teamids.TABLE_NAME))
+    assert len(table) == 256 and table == teamids.make_table(maj_bytes)
+    assert _read(os.path.join(lp, ROSTERS_TXT)).endswith(b'FORMAT 3\r\n')
+    assert not [f for f in os.listdir(lp) if f.upper().endswith(('.TMP', '.BAK'))]
+
+
+def test_format_three_divisions_keeps_an_existing_table(tmp_path):
+    """C12.6 (b): byte 11 = 3 with a TEAMID.DAT already there: the realignment keeps it as it is."""
+    maj_bytes = fmt_maj(14, 14, 2)
+    table = _reversed_table(maj_bytes)
+    lp = fmt_run(tmp_path, 'b', maj_bytes, 3, table=table)
+    assert _read(os.path.join(lp, teamids.TABLE_NAME)) == table
+    assert _read(os.path.join(lp, MAJ_NAME))[0x20d] == 3
+    assert _read(os.path.join(lp, ROSTERS_TXT)).endswith(b'FORMAT 3\r\n')
+
+
+def test_format_refused_writes_the_reason_and_changes_nothing(tmp_path):
+    """C12.6 (c): byte 11 = 3 on a league with an odd count (13 AL teams): FORMAT REFUSED with the Python reason,
+    the MAJ unchanged, no TEAMID.DAT."""
+    maj_bytes = fmt_maj(13, 14, 2)
+    reason = realign.realign(maj_bytes, 3)[1]
+    assert reason == 'AL ODD COUNT'
+    lp = fmt_run(tmp_path, 'c', maj_bytes, 3)
+    assert _read(os.path.join(lp, MAJ_NAME)) == maj_bytes
+    assert not os.path.exists(os.path.join(lp, teamids.TABLE_NAME))
+    assert _read(os.path.join(lp, ROSTERS_TXT)).endswith(f'FORMAT REFUSED {reason}\r\n'.encode())
+
+
+def test_format_two_divisions_is_nothing_to_do(tmp_path):
+    """C12.6 (d): byte 11 = 2 on a 2-division league: no FORMAT line, the MAJ unchanged, no TEAMID.DAT."""
+    maj_bytes = fmt_maj(14, 14, 2)
+    lp = fmt_run(tmp_path, 'd', maj_bytes, 2)
+    assert _read(os.path.join(lp, MAJ_NAME)) == maj_bytes
+    assert not os.path.exists(os.path.join(lp, teamids.TABLE_NAME))
+    assert b'FORMAT' not in _read(os.path.join(lp, ROSTERS_TXT))
+
+
+def test_three_divisions_maps_every_team_by_its_stable_id(tmp_path):
+    """C12.3 (e): a 3-division MAJ with the TEAMID.DAT of its pre-realignment MAJ and byte 11 = 0: every team V20
+    is mapped by its stable id (the table, not the 3-division engine ids): the managed mask and the standings are
+    keyed by it, two managed teams (A07 and A08) by their ids."""
+    pre = fmt_maj(14, 14, 2)
+    table = teamids.make_table(pre)
+    post = bytearray(realign.realign(pre, 3)[0])
+    for L, slot, _st in teamids.maj_teams(bytes(post)):
+        s = teamids.S[L]
+        post[s + O_W + slot] = 3 * slot + 1
+        post[s + O_L + slot] = 2 * slot + 5
+    post = bytes(post)
+    teams = teamids.teams(post, table)
+    ids = sorted(k for k, _L, _s, _st in teams)
+    assert ids != sorted(k for k, _L, _s, _st in teamids.teams(post, None))
+    by_stem = {st.rstrip(b'\0').decode('latin-1'): k for k, _L, _s, st in teams}
+    mask = (1 << by_stem['A07']) | (1 << by_stem['A08'])     # two managed teams, by stable id (bytes 12..15)
+    lp = fmt_run(tmp_path, 'e', post, 0, table=table, mask=mask)
+    mapped = history_py.mapped_teams(lp, maj.Maj(post))
+    assert sorted(k for _p, k in mapped) == ids
+    want = {k: (3 * slot + 1, 2 * slot + 5) for k, _L, slot, _st in teams}
+    assert rosters_py.league_standings(maj.Maj(post), table) == want
+    assert b'FORMAT' not in _read(os.path.join(lp, ROSTERS_TXT))
+
+
+def test_format_commit_failure_restores_everything(tmp_path):
+    """C12.6: a rename failing at the realigned MAJ's TMP (index 34: ROSTERS, 28 teams, 4 pools, HISTORY) or at
+    TEAMID.DAT's (35): exit 2, and the league and snap dirs exactly as they were, no TMP or BAK left (the host build
+    with TEST_FAIL_RENAME_AT=k)."""
+    maj_bytes = fmt_maj(14, 14, 2)
+    src = os.path.join(HERE, RC, 'rosters.c')
+    img = _read(synth_league(tmp_path, sub='fimg', n_players=18, pit=16)[1])
+    for k in (34, 35):
+        exe = os.path.join(str(tmp_path), 'rf%d' % k)
+        subprocess.run(['gcc', '-std=c99', '-O1', '-Wall', '-Wextra', '-Werror',
+                        '-DTEST_FAIL_RENAME_AT=%d' % k, '-o', exe, src], check=True)
+        lg, sn, hi, rt = fmt_setup(os.path.join(str(tmp_path), 'f%d' % k), maj_bytes, 3, None, img)
+        before_lg, before_sn = _snapshot_tree(lg), _snapshot_tree(sn)
+        r = subprocess.run([exe, lg, sn, hi, rt], capture_output=True)
+        assert r.returncode == 2, (k, r.returncode)
+        assert _snapshot_tree(lg) == before_lg, k
+        assert _snapshot_tree(sn) == before_sn, k
+
+
+def test_format_refuses_a_team_named_like_a_format_tmp(tmp_path):
+    """C12.6, a deliberate divergence from Python: a team V20 named REALIGN would share the realigned MAJ's TMP
+    (and BAK) name, so C exits 2 with every file as it was. Python has no such clash and realigns. Pinned here so
+    the refusal is not silent; no other league is refused."""
+    maj_bytes = bytearray(fmt_maj(14, 14, 2))
+    s = teamids.S[0]
+    maj_bytes[s + teamids.O_STEM:s + teamids.O_STEM + 8] = b'REALIGN\0'
+    img = _read(synth_league(tmp_path, sub='rimg', n_players=18, pit=16)[1])
+    lg, sn, hi, rt = fmt_setup(os.path.join(str(tmp_path), 'rn'), bytes(maj_bytes), 3, None, img)
+    before_lg, before_sn = _snapshot_tree(lg), _snapshot_tree(sn)
+    r = HOST_RUN(lg, sn, hi, rt)
+    assert r.returncode == 2, r.returncode
+    assert _snapshot_tree(lg) == before_lg
+    assert _snapshot_tree(sn) == before_sn
+
+
+def test_real_era0_three_divisions(tmp_path):
+    """C12.6 on the real 1993 league: byte 11 = 3 realigns it (the known 1994 table), TEAMID.DAT (256 B) is written,
+    and the C run matches Python byte for byte (the MAJ and the table included)."""
+    if not os.path.isdir(S1_PRE):
+        import pytest
+        pytest.skip('fixtures missing')
+    lc = run_case(tmp_path, 'f3_', 0x1234, 0, 0, fmt=3)
+    assert _read(os.path.join(lc, ROSTERS_TXT)).endswith(b'FORMAT 3\r\n')
+    assert len(_read(os.path.join(lc, teamids.TABLE_NAME))) == 256
