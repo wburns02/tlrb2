@@ -374,7 +374,15 @@ crosses the mark this season (before < mark <= after); season kinds when the sea
   i.e. ERA x100), 39 SV >= 50
 Write order (HISTWR): MILESTON.DAT and HISTORY.DAT are each written to a temp file; both renames happen only after
 both temp files are complete, using the C5 BAK scheme, so on any exit 2 both files are unchanged.
-Known v1 gaps: per-season Gold Glove and Silver Slugger winners are only kept as career counts.
+Award records (amendment 2026-10-11, closes the v1 gap "per-season Gold Glove and Silver Slugger winners are only
+kept as career counts"): after this season's milestone records HISTWR appends one MILESTON.DAT record per award
+winner, AL block then NL block, k ascending: kind = 64 + k (AL) or 96 + k (NL), k = 0 MVP, 1 CY, 2 ROY, 2 + q Gold
+Glove position q (1..8), 10 + q Silver Slugger position q (1..9); idx = the winner's entry index; value = s16 stored as
+u16 (value & 0xffff): the season WAR10 for MVP, CY and ROY, fp1000 for Gold Glove, bat100 for Silver Slugger. No record
+for an award with no winner. Written every season (also past 64) and dropped with the season on a rerun like every
+other record. Milestone readers (MILESTONES, REVIEW) skip kinds >= 64. DYNVIEW shows them on SEASON AWARDS (hub key
+9; C8). A season recorded before this amendment has no award records; SEASON AWARDS then falls back to the six
+winners in the season entry.
 
 ## C8. The patched TONY2.BAT and DYNVIEW (added 2026-10-07; supersedes the C5 BAT block)
 
@@ -407,7 +415,7 @@ mode except the two C10 writes: DYNASTY SETTINGS (HISTORY.DAT bytes 10 and 12..1
 exits 0 and the BAT falls through to control. A missing DYNVIEW or ROSTERS prints the DOS error and the BAT goes on.
 The install copies DYNASTY.EXE, HISTWR.EXE, ROSTERS.EXE and DYNVIEW.EXE into the game dir.
 DOS limit: DYNVIEW reads at most the first 7000 MILESTON.DAT records (one far allocation under 64 KB); later
-records are not listed (about 200 seasons at the observed 20 to 35 records a season). HISTORY.DAT has no cap (entries are read one
+records are not listed (about 100 seasons at the observed 20 to 35 milestone records plus up to 40 award records a season). HISTORY.DAT has no cap (entries are read one
 at a time).
 
 ### C8a. The offseason sequence (added 2026-10-08)
@@ -450,7 +458,7 @@ install (idempotent, asserts stock bytes, `--revert` restores them byte for byte
 
 | item | CONTROL[1] | errorlevel | BAT route | program |
 |---|---|---|---|---|
-| DYNASTY MODE | 8 | 8 | `:dynmenu` | `dynview /menu`: the hub (history, HOF, leaders, milestones, review, offseason, settings, about) |
+| DYNASTY MODE | 8 | 8 | `:dynmenu` | `dynview /menu`: the hub (history, HOF, leaders, milestones, review, offseason, settings, about, awards) |
 | CREATE A PLAYER | 9 | 9 | `:create` | `create` (CREATE.EXE) |
 | DYNASTY SETTINGS | 10 | 10 | `:dynmenu` | `dynview /menu`: SETTINGS |
 | ABOUT THE MODS | 11 | 11 | `:dynmenu` | `dynview /menu`: ABOUT |
@@ -478,7 +486,11 @@ The labels `dynmenu` and `create` are free in the shipped BAT. The routes and la
 
 DYNVIEW `/MENU` (Python `--menu N` / `--control PATH`): reads CONTROL in the cwd; d[1] in 8..11 gives item d[1] - 8,
 else 0. Item 2 opens SETTINGS, 3 ABOUT, anything else the hub. Precedence /OFFSEASON, /REVIEW, /TITLE, /MENU. The hub
-has eight rows (7 DYNASTY SETTINGS, 8 ABOUT THE MODS) with or without a recorded season.
+has eight rows (7 DYNASTY SETTINGS, 8 ABOUT THE MODS) with or without a recorded season. Amendment 2026-10-11: a ninth row
+`9  SEASON AWARDS` (screen 9, footers `1-9 SELECT ...`). SEASON AWARDS shows one season, newest first: LEFT goes one
+season back, RIGHT one forward (page reset), PGUP/PGDN page by 12, ESC to the hub. Title `SEASON N AWARDS`. Rows are
+that season's C7 award records in kind order (AWARD, NAME, VALUE: `7.4 WAR`, `.992 FLD`, `45.2 RUNS`); a season with no
+award records shows the season entry's six winners and `GG SS  NOT RECORDED` (seasons past 64: `NO AWARDS RECORDED`).
 
 DYNASTY SETTINGS edits the C2 header fields that had no UI: byte 10 era mode (ENTER cycles REAL CALENDAR (0) ->
 RESERVE CLAUSE (1) -> FREE AGENCY (2) -> REAL CALENDAR; any other value shows RESERVE CLAUSE and goes to FREE AGENCY)
