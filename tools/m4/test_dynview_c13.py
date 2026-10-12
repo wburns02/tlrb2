@@ -1,0 +1,986 @@
+#!/usr/bin/env python3
+"""Tests for DYNVIEW C13 (tools/m4/dynview.py): season lines, leaders, player card, mouse and the
+start year. Synthetic HISTORY.DAT, SEASLINE.DAT, MILESTON.DAT, MAJ, fonts and portrait ANM files
+are built in tmp_path; nothing needs /mnt/nvme.
+Run:  python3 -m pytest -q tools/m4/test_dynview_c13.py
+"""
+import os, struct, sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))
+import dynview
+import history
+from test_teamids import build_maj
+
+ENTER, ESC = dynview.KEY_ENTER, dynview.KEY_ESC
+UP, DOWN = dynview.KEY_UP, dynview.KEY_DOWN
+LEFT, RIGHT = dynview.KEY_LEFT, dynview.KEY_RIGHT
+PGUP, PGDN = dynview.KEY_PGUP, dynview.KEY_PGDN
+TAB = dynview.KEY_TAB
+HUB = (dynview.SCREEN_MENU, 0, 0)
+LEAD = dynview.SCREEN_LEADERS
+SA, SS, SW, SB = (dynview.SCREEN_AWARDS, dynview.SCREEN_STANDINGS,
+                  dynview.SCREEN_SERIES, dynview.SCREEN_BOX)
+SET, ABOUT, HOF = dynview.SCREEN_SETTINGS, dynview.SCREEN_ABOUT, dynview.SCREEN_HOF
+SO, CARD = dynview.SCREEN_OFFSEASON, dynview.SCREEN_CARD
+OFF_RETIRE = dynview.OFF_RETIRE
+BY_YEAR, SEASON = 2 * 32, 1 * 32
+
+# TOTALS indexes (C2 order)
+S = dict(G=0, AB=1, H=2, D2=3, T3=4, HR=5, R=6, RBI=7, BB=8, SO=9, SB=10, CS=11, E=12,
+         W=13, L=14, SV=15, GS=16, CG=17, SHO=18, OUTS=19, ER=20, PH=21, PBB=22, PSO=23, PHR=24)
+SEASON_LABELS = [c[0] for c in dynview.SEASON_CATS]
+CAREER_LABELS = [c[0] for c in dynview.CATS]
+
+
+def sidx(label):
+    """The SEASON category index of a label."""
+    return SEASON_LABELS.index(label)
+
+
+def cidx(label):
+    """The CAREER category index of a label."""
+    return CAREER_LABELS.index(label)
+
+
+def tot(**kw):
+    t = [0] * 25
+    for k, v in kw.items():
+        t[S[k]] = v
+    return t
+
+
+def player(last, first='A', status=1, first_season=1, last_season=3, played=3, pitcher=0,
+           hof=0, age=27, pos1=3, war10=0, totals=None, awards=(0, 0, 0, 0, 0)):
+    return dict(last=last, first=first, status=status, first_season=first_season,
+                last_season=last_season, played=played, pitcher=pitcher, hof=hof, age=age,
+                pos1=pos1, war10=war10, totals=totals or tot(), awards=awards)
+
+
+def write_league(ldir, players, seasons=3, start=None, lines=None, ms=None):
+    """HISTORY.DAT with the players as entries 0..n-1 (and the season table), SEASLINE.DAT when
+    lines (80 B records) is given, MILESTON.DAT when ms ((season, idx, kind, value) records) is."""
+    ldir.mkdir(parents=True, exist_ok=True)
+    d = bytearray(32 + 64 * 128 + 160 * len(players))
+    d[3] = 1
+    d[4:6] = seasons.to_bytes(2, 'little')
+    d[6:8] = len(players).to_bytes(2, 'little')
+    if start is not None:
+        d[18:20] = start.to_bytes(2, 'little')
+    for n in range(1, seasons + 1):
+        o = 32 + (n - 1) * 128
+        struct.pack_into('<H', d, o, n)
+        d[o + 4:o + 12] = (b'ALA%02d' % n).ljust(8, b'\0')
+    for i, p in enumerate(players):
+        o = 8224 + i * 160
+        d[o:o + 20] = p['last'].encode().ljust(12, b'\0')[:12] + p['first'].encode().ljust(8, b'\0')[:8]
+        d[o + 22] = p['status']
+        d[o + 23] = p['age']
+        struct.pack_into('<HHH', d, o + 24, p['first_season'], p['last_season'], p['played'])
+        d[o + 30] = p['pos1']
+        d[o + 31] = p['pitcher']
+        for k, v in enumerate(p['totals']):
+            struct.pack_into('<I', d, o + 32 + 4 * k, v)
+        struct.pack_into('<h', d, o + 132, p['war10'])
+        struct.pack_into('<H', d, o + 150, p['hof'])
+        d[o + 152:o + 157] = bytes(p['awards'])
+    (ldir / 'HISTORY.DAT').write_bytes(bytes(d))
+    if lines is not None:
+        write_lines(ldir, lines)
+    if ms is not None:
+        out = bytearray()
+        for season, idx, kind, value in ms:
+            out += struct.pack('<HHBBH', season, idx, kind, 0, value)
+        (ldir / 'MILESTON.DAT').write_bytes(bytes(out))
+
+
+def line(entry, season, team=0, pitcher=0, age=25, pos1=3, face=0, hand=0x0A, dev=0,
+         ratings=(9, 8, 7, 6, 5, 4, 3, 2, 1), totals=None, war10=0):
+    """One 80 B SEASLINE.DAT record (C13.2). hand 0x0A: bats R (bits 2..1 = 1), throws R (bit 3)."""
+    r = bytearray(80)
+    struct.pack_into('<HHBBBBHBB', r, 0, entry, season, team, pitcher & 1, age, pos1, face, hand, dev)
+    r[12:21] = bytes(ratings)
+    struct.pack_into('<25H', r, 22, *(totals or tot()))
+    struct.pack_into('<h', r, 72, war10)
+    return bytes(r)
+
+
+def write_lines(ldir, recs):
+    head = bytearray(16)
+    head[0:2] = b'SL'
+    head[2] = 1
+    head[4:6] = (80).to_bytes(2, 'little')
+    head[6:8] = max([int.from_bytes(r[2:4], 'little') for r in recs] or [0]).to_bytes(2, 'little')
+    (ldir / 'SEASLINE.DAT').write_bytes(bytes(head) + b''.join(recs))
+
+
+def make_fonts(d):
+    """Synthetic MAIN.FNT (7 rows, advance 7) and BOLD.FNT (8 rows, advance 8), 95 glyphs each."""
+    d.mkdir(parents=True, exist_ok=True)
+
+    def fnt(rows, bits, adv):
+        out = bytearray(struct.pack('<H', 95))
+        for k in range(95):
+            out += bytes([rows, bits, adv])
+            for r in range(rows):
+                out.append(0x55 if (r + k) % 2 else 0xAA)
+        return bytes(out)
+    (d / 'MAIN.FNT').write_bytes(fnt(7, 5, 7))
+    (d / 'BOLD.FNT').write_bytes(fnt(8, 6, 8))
+    return str(d)
+
+
+def press(state, key, data):
+    return dynview.step(state, key, data)[0]
+
+
+def load(ldir, fonts=None, game_dir='.', anms_dir='ANMS'):
+    return dynview.load_data(str(ldir), fonts, game_dir, anms_dir)
+
+
+def season_lines_fixture():
+    """Eight SEASLINE lines over entries 0..7 (the expectations are in the tests below). Teams:
+    entry 2 is team 2 (DET), entry 5 team 9 (no abbreviation), the rest team 0 (BOS)."""
+    return [
+        # A: batter, season 1, pa 502 (AVG .300); HR 30, RBI 100, H 150
+        line(0, 1, totals=tot(G=150, AB=500, BB=2, H=150, HR=30, R=90, RBI=100, SB=10, D2=20,
+                              T3=5), war10=60),
+        # B: batter, season 2, pa 502 (AVG .325); BB 102
+        line(1, 2, totals=tot(G=140, AB=400, BB=102, H=130, HR=30, R=80, RBI=90, D2=25, T3=2),
+             war10=40),
+        # C: batter, season 1, AB 600 (AVG .300, ties A: season then entry put A first); DET
+        line(2, 1, team=2, totals=tot(G=120, AB=600, H=180, HR=30, R=70, RBI=60, SB=10, D2=30),
+             war10=40),
+        # D: batter, season 1, pa 501 (not an AVG qualifier) though its AVG is .600
+        line(3, 1, totals=tot(G=130, AB=500, BB=1, H=300, HR=10, R=0), war10=0),
+        # P1: pitcher, season 1, 300 IP, ER 60 -> ERA 180 (1.80); SHO 2
+        line(4, 1, pitcher=1, pos1=0, totals=tot(G=30, W=15, L=5, OUTS=900, ER=60, PSO=200,
+                                                 CG=4, SHO=2), war10=50),
+        # P2: pitcher, season 2, 162 IP (486 outs qualifies), ER 24 -> ERA 133; team 9
+        line(5, 2, team=9, pitcher=1, pos1=0, totals=tot(G=40, W=12, L=3, SV=30, OUTS=486,
+                                                         ER=24, PSO=150), war10=30),
+        # P3: pitcher, season 2, 485 outs (not an ERA qualifier), no ER
+        line(6, 2, pitcher=1, pos1=0, totals=tot(G=30, W=10, OUTS=485, PSO=100), war10=20),
+        # P4: no games: never a WAR leader, whatever its WAR10
+        line(7, 1, totals=tot(), war10=99),
+    ]
+
+
+def player_set():
+    """Eight career entries 0..7 (the names match the season fixture's entries)."""
+    return [
+        player('ALPHA', totals=tot(H=3000, AB=9000, HR=400, RBI=1500, R=1200, D2=500, T3=50,
+                                   SB=100, BB=1000), war10=650),
+        player('BRAVO', totals=tot(H=2000, AB=2999, HR=300, RBI=1000, R=900, D2=300, T3=30,
+                                   SB=300, BB=500), war10=300),
+        player('CHARLIE', totals=tot(H=2000, AB=3000, HR=300, RBI=1000, R=900, D2=300, T3=30,
+                                     SB=300, BB=500), war10=300),
+        player('DELTA', totals=tot(H=10), war10=0, awards=(2, 0, 0, 1, 0)),
+        player('ECHO', pitcher=1, totals=tot(W=300, OUTS=3704, ER=900, PSO=3000, SHO=18, G=500),
+               war10=500),
+        player('FOXTROT', pitcher=1, totals=tot(W=200, OUTS=4499, ER=1000, PSO=2000, SHO=18),
+               war10=100),
+        player('GOLF', pitcher=1, totals=tot(W=200, OUTS=4500, ER=1000, PSO=2000, SHO=17),
+               war10=100),
+        player('HOTEL', totals=tot(), war10=0),
+    ]
+
+
+# ---------------------------------------------------------------- years and start year (C13.1)
+def test_year_of_start_rules():
+    for raw, start in ((0, 1993), (1870, 1993), (2101, 1993), (1871, 1871), (2100, 2100),
+                       (1992, 1992)):
+        d = bytearray(32)
+        d[18:20] = raw.to_bytes(2, 'little')
+        h = history.History(bytes(d))
+        assert dynview.start_year(h) == start, raw
+        assert dynview.year_of(h, 1) == start
+        assert dynview.year_of(h, 3) == start + 2
+    assert dynview.year_of(history.History(None), 1) == 1993     # no HISTORY.DAT: the shipped year
+
+
+def test_load_lines_header_and_tail(tmp_path):
+    assert dynview.load_lines(str(tmp_path)) == []                # missing file
+    write_lines(tmp_path, [line(0, 1, totals=tot(G=1)), line(1, 2, totals=tot(G=2))])
+    path = tmp_path / 'SEASLINE.DAT'
+    good = path.read_bytes()
+    got = dynview.load_lines(str(tmp_path))
+    assert [(r['entry'], r['season'], r['totals'][0]) for r in got] == [(0, 1, 1), (1, 2, 2)]
+    assert got[0]['ratings'] == [9, 8, 7, 6, 5, 4, 3, 2, 1]
+    path.write_bytes(good + b'\x01' * 40)                         # a short tail record is dropped
+    assert len(dynview.load_lines(str(tmp_path))) == 2
+    for patch in ({0: b'XL'}, {2: b'\x02'}, {4: (79).to_bytes(2, 'little')}):
+        raw = bytearray(good)
+        for off, v in patch.items():
+            raw[off:off + len(v)] = v
+        path.write_bytes(bytes(raw))
+        assert dynview.load_lines(str(tmp_path)) == [], patch   # a bad header gives []
+    path.write_bytes(b'SL')                                       # shorter than the header
+    assert dynview.load_lines(str(tmp_path)) == []
+
+
+def test_year_in_every_title_and_label(tmp_path):
+    ldir = tmp_path / 'lg'
+    write_league(ldir, [player('ALPHA', totals=tot(H=5), hof=2, status=3)], seasons=3,
+                 start=1990, ms=[(3, 0, 2, 3000)], lines=season_lines_fixture())
+    data = load(ldir)
+    cases = {
+        (SA, 0, 0): '1992 AWARDS', (SA, 0, 1): '1991 AWARDS',
+        (SS, 0, 0): '1992 STANDINGS', (SS, 0, 2): '1990 STANDINGS',
+        (SW, 0, 0): '1992 WORLD SERIES', (SB, 0, 0): '1992 WS GAME 1',
+        (SB, 0, 8 + 2): '1991 WS GAME 3',
+        (dynview.SCREEN_REVIEW, 0, 0): '1992 IN REVIEW',
+        (dynview.SCREEN_HISTORY, 0, 0): 'SEASON HISTORY',
+        (SO, 0, 0): '1/6 1992 IN REVIEW', (SO, 0, 5): '6/6 1993 IS READY',
+        (SO, 0, 5 + 16): '6/6 1993 IS READY',
+        (dynview.SCREEN_MENU, 0, 16): 'DYNASTY MODE: 1993',
+        (LEAD, 0, BY_YEAR + sidx('H')): '1991 LEADERS: H',         # the newest line season is 2
+        (LEAD, 0, BY_YEAR + sidx('H'), 0, 1): '1990 LEADERS: H',
+        (LEAD, 0, 0): 'CAREER LEADERS: H',
+        (LEAD, 0, SEASON): 'SEASON LEADERS: AVG',
+    }
+    for state, want in cases.items():
+        assert dynview.screen_title(state, data) == want, state
+    assert dynview.ready_lines(data, 1)[-1] == 'ENTER: ON TO 1993'
+    assert dynview.ready_lines(data, 0)[-1] == 'ENTER: BACK TO THE MENU'
+    assert dynview.rows((dynview.SCREEN_HISTORY, 0, 0), data)[0][0] == '1992'
+    assert dynview.milestone_rows(data['hist'], data['ms'])[0][0] == '1992'
+    assert dynview.hof_rows(data['hist'])[0][1] == '1991'        # IND: the HoF season's year
+    assert dynview.screen_title((SET, 0, 0), data) == 'DYNASTY SETTINGS'
+
+
+def test_start_year_label_and_no_history_default(tmp_path):
+    ldir = tmp_path / 'nohist'
+    ldir.mkdir()
+    data = load(ldir)
+    assert dynview.settings_rows(data)[2] == ('START YEAR', '1993')
+    assert dynview.screen_title((dynview.SCREEN_MENU, 0, 16), data) == 'DYNASTY MODE: 1993'
+
+
+# ---------------------------------------------------------------- SEASON and BY YEAR (C13.3)
+def season_pairs(label):
+    """(entry, season) of the SEASON leader order of the fixture lines for label."""
+    lines = [dynview.read_line(r) for r in season_lines_fixture()]
+    cat = dynview.SEASON_CATS[sidx(label)]
+    return [(e, s) for _v, s, e, _ln in dynview.season_order(lines, cat)]
+
+
+def test_season_categories_order_qualifiers_and_ties():
+    assert season_pairs('AVG') == [(1, 2), (0, 1), (2, 1)]            # D (pa 501) and AB 0 out
+    assert season_pairs('HR') == [(0, 1), (2, 1), (1, 2), (3, 1)]      # ties: season, then entry
+    assert season_pairs('WAR') == [(0, 1), (4, 1), (2, 1), (1, 2), (5, 2), (6, 2), (3, 1)]
+    assert season_pairs('H') == [(3, 1), (2, 1), (0, 1), (1, 2)]
+    assert season_pairs('R') == [(0, 1), (1, 2), (2, 1)]              # D has R 0: out
+    assert season_pairs('2B') == [(2, 1), (1, 2), (0, 1)]
+    assert season_pairs('3B') == [(0, 1), (1, 2)]
+    assert season_pairs('SB') == [(0, 1), (2, 1)]
+    assert season_pairs('RBI') == [(0, 1), (1, 2), (2, 1)]
+    assert season_pairs('BB') == [(1, 2), (0, 1), (3, 1)]
+    assert season_pairs('W') == [(4, 1), (5, 2), (6, 2)]
+    assert season_pairs('ERA') == [(5, 2), (4, 1)]                    # ascending; P3 485 outs out
+    assert season_pairs('SO') == [(4, 1), (5, 2), (6, 2)]             # SO is PSO
+    assert season_pairs('SV') == [(5, 2)]
+    assert season_pairs('IP') == [(4, 1), (5, 2), (6, 2)]             # IP is OUTS
+    assert season_pairs('CG') == [(4, 1)]
+    assert season_pairs('SHO') == [(4, 1)]
+
+
+def test_season_ties_across_seasons_break_by_season_then_entry():
+    lines = [dynview.read_line(line(e, s, totals=tot(G=5, HR=9)))
+             for e, s in ((4, 3), (1, 2), (0, 2), (2, 1))]
+    cat = dynview.SEASON_CATS[sidx('HR')]
+    got = [(s, e) for _v, s, e, _ln in dynview.season_order(lines, cat)]
+    assert got == [(1, 2), (2, 0), (2, 1), (3, 4)]
+
+
+def test_season_sho_and_era_ties():
+    lines = [dynview.read_line(line(3, 1, totals=tot(G=9, SHO=3, OUTS=486, ER=24))),
+             dynview.read_line(line(1, 1, totals=tot(G=9, SHO=3, OUTS=486, ER=24))),
+             dynview.read_line(line(2, 2, totals=tot(G=9, SHO=5, OUTS=486, ER=24)))]
+    sho = dynview.SEASON_CATS[sidx('SHO')]
+    era = dynview.SEASON_CATS[sidx('ERA')]
+    assert [e for _v, _s, e, _ln in dynview.season_order(lines, sho)] == [2, 1, 3]
+    # equal ERA (133 each): season then entry, ascending
+    assert [e for _v, _s, e, _ln in dynview.season_order(lines, era)] == [1, 3, 2]
+
+
+def test_season_leaders_rows_team_column_and_columns(tmp_path):
+    ldir = tmp_path / 'lg'
+    write_league(ldir, player_set(), seasons=3, lines=season_lines_fixture())
+    (ldir / 'LEAGUE.MAJ').write_bytes(build_maj({0: [(0, 'BOS'), (2, 'DET')], 1: [(0, 'NYA')]}))
+    data = load(ldir)
+    assert data['abbrs'] == {0: 'BOS', 2: 'DET', 16: 'NYA'}
+    hr = (LEAD, 0, SEASON + sidx('HR'))
+    assert dynview.rows(hr, data) == [
+        ('#1', 'ALPHA, A', '1993', 'BOS', '30'),
+        ('#2', 'CHARLIE, A', '1993', 'DET', '30'),
+        ('#3', 'BRAVO, A', '1994', 'BOS', '30'),
+        ('#4', 'DELTA, A', '1993', 'BOS', '10')]
+    assert dynview.body_cols(hr, data) == dynview.COLS_SEASON_LEADERS
+    assert dynview.screen_title(hr, data) == 'SEASON LEADERS: HR'
+    assert dynview.footer_text(hr, data) == 'LEFT RIGHT STAT  TAB MODE  ENTER CARD'
+    era = (LEAD, 0, SEASON + sidx('ERA'))
+    rows = dynview.rows(era, data)
+    assert rows[0] == ('#1', 'FOXTROT, A', '1994', '?', '1.33')      # team 9: no abbreviation
+    assert rows[1] == ('#2', 'ECHO, A', '1993', 'BOS', '1.80')
+
+
+def test_season_no_lines_message(tmp_path):
+    ldir = tmp_path / 'nolines'
+    write_league(ldir, player_set(), seasons=3)
+    data = load(ldir)
+    season = (LEAD, 0, SEASON)
+    assert dynview.rows(season, data) == [('NO SEASON LINES RECORDED YET.',)]
+    assert dynview.body_cols(season, data) == dynview.COLS_SINGLE
+    assert dynview.total_rows(season, data) == 1
+    assert dynview.rows((LEAD, 0, BY_YEAR), data) == [('NO SEASON LINES RECORDED YET.',)]
+
+
+def test_career_categories_order_qualifiers_and_ties(tmp_path):
+    ldir = tmp_path / 'career'
+    write_league(ldir, player_set(), seasons=3)
+    data = load(ldir)
+    assert CAREER_LABELS == ['H', 'HR', 'RBI', 'R', '2B', '3B', 'SB', 'BB', 'AVG', 'WAR', 'W',
+                             'SV', 'SO', 'ERA', 'IP', 'SHO', 'MVP AWARDS', 'GG AWARDS']
+    assert dynview.N_CATS == 18 == len(dynview.CATS)
+
+    def order(label):
+        return [i for _v, i, _e in dynview.career_order(data['hist'], cidx(label))]
+    assert order('H') == [0, 1, 2, 3]                 # 3000, then the 2000 tie by entry, then 10
+    assert order('R') == [0, 1, 2]                    # DELTA R 0 is out
+    assert order('2B') == [0, 1, 2]
+    assert order('3B') == [0, 1, 2]
+    assert order('BB') == [0, 1, 2]
+    assert order('SB') == [1, 2, 0]                   # BRAVO 300, CHARLIE 300, ALPHA 100
+    assert order('SHO') == [4, 5, 6]                  # 18, 18 (tie by entry), 17
+    assert order('IP') == [6, 5, 4]                   # OUTS 4500, 4499, 3704
+    assert order('SO') == [4, 5, 6]                   # PSO 3000, 2000 (tie by entry), 2000
+    assert order('W') == [4, 5, 6]                    # 300, 200 (tie), 200
+    assert order('SV') == []                          # no career saves
+    # AVG needs AB >= 3000: BRAVO (2999) is out; CHARLIE .666 leads ALPHA .333
+    assert order('AVG') == [2, 0]
+    # ERA needs OUTS >= 4500: only GOLF
+    assert order('ERA') == [6]
+    # WAR has no qualifier: every entry, WAR10 descending, the 0s last by entry
+    assert order('WAR') == [0, 4, 1, 2, 5, 6, 3, 7]
+    assert order('MVP AWARDS') == [3]                 # awards[0] = 2
+    assert order('GG AWARDS') == [3]                  # awards[3] = 1
+
+
+def test_career_ip_format_and_leader_rows(tmp_path):
+    ldir = tmp_path / 'ip'
+    write_league(ldir, player_set(), seasons=3)
+    data = load(ldir)
+    rows = dynview.leaders_rows(data['hist'], cidx('IP'))
+    assert rows[0] == ('#1', 'GOLF, A', ' ', '3', '1500.0')
+    assert rows[2] == ('#3', 'ECHO, A', ' ', '3', '1234.2')          # 3704 outs: 1234 and two
+    assert dynview.fmt_ip(4499) == '1499.2'
+
+
+def test_career_award_counts_and_tie_break_order(tmp_path):
+    ldir = tmp_path / 'aw'
+    players = player_set()
+    players[1]['awards'] = (2, 0, 0, 0, 0)                            # BRAVO ties DELTA on MVP
+    write_league(ldir, players, seasons=3)
+    data = load(ldir)
+    got = [i for _v, i, _e in dynview.career_order(data['hist'], cidx('MVP AWARDS'))]
+    assert got == [1, 3]                                              # equal value: entry ascending
+
+
+def test_by_year_stepping_and_ends(tmp_path):
+    ldir = tmp_path / 'lg'
+    write_league(ldir, player_set(), seasons=3, lines=season_lines_fixture())
+    (ldir / 'LEAGUE.MAJ').write_bytes(build_maj({0: [(0, 'BOS')]}))
+    data = load(ldir)
+    s = press((LEAD, 0, SEASON + sidx('H')), TAB, data)
+    # BY YEAR starts at the newest season with lines (2 here: the fixture has seasons 1 and 2)
+    assert s == (LEAD, 0, BY_YEAR + sidx('H'), 0, 2)
+    assert dynview.screen_title(s, data) == '1994 LEADERS: H'
+    assert dynview.rows(s, data) == [('#1', 'BRAVO, A', '', 'BOS', '130')]
+    assert dynview.footer_text(s, data) == 'LEFT RIGHT STAT  - + YEAR  TAB MODE'
+    s = press(s, dynview.KEY_MINUS, data)                             # the older season
+    assert s[4] == 1 and dynview.screen_title(s, data) == '1993 LEADERS: H'
+    assert [r[1] for r in dynview.rows(s, data)] == ['DELTA, A', 'CHARLIE, A', 'ALPHA, A']
+    assert press(s, dynview.KEY_MINUS, data) == s                     # nothing older than 1
+    s = press(s, dynview.KEY_EQUALS, data)                            # '=' steps newer
+    assert s[4] == 2
+    assert press(s, dynview.KEY_PLUS, data) == s                      # nothing past the newest
+    s = press(s, dynview.KEY_MINUS, data)                             # back to 1 and forward to 2
+    s = press(s, dynview.KEY_PLUS, data)
+    assert s[4] == 2
+
+
+def test_by_year_no_lines_uses_the_last_season(tmp_path):
+    ldir = tmp_path / 'nolines'
+    write_league(ldir, player_set(), seasons=3)
+    data = load(ldir)
+    s = press((LEAD, 0, SEASON), TAB, data)                           # SEASON -> BY YEAR
+    assert s == (LEAD, 0, BY_YEAR, 0, 3)                              # no lines: season 3
+    assert dynview.rows(s, data) == [('NO SEASON LINES RECORDED YET.',)]
+    assert press(s, dynview.KEY_MINUS, data) == s and press(s, dynview.KEY_PLUS, data) == s
+
+
+def test_tab_cycles_modes_and_keeps_the_category_by_label(tmp_path):
+    ldir = tmp_path / 'lg'
+    write_league(ldir, player_set(), seasons=3, lines=season_lines_fixture())
+    data = load(ldir)
+    s = press((LEAD, 0, cidx('SV')), TAB, data)                       # CAREER SV -> SEASON SV
+    assert s == (LEAD, 0, SEASON + sidx('SV'))
+    s = press(s, TAB, data)                                           # -> BY YEAR, newest season
+    assert s == (LEAD, 0, BY_YEAR + sidx('SV'), 0, 2)
+    s = press(s, TAB, data)                                           # -> CAREER, year cleared
+    assert s == (LEAD, 0, cidx('SV'))
+    # MVP AWARDS has no SEASON counterpart: the category falls back to 0
+    assert press((LEAD, 2, cidx('MVP AWARDS')), TAB, data) == (LEAD, 0, SEASON)
+    # page and cursor reset on TAB
+    assert press((LEAD, 0, 0, 2), TAB, data) == (LEAD, 0, SEASON + sidx('H'))
+
+
+def test_season_top_fifty_cap(tmp_path):
+    lines = [line(e, 1, totals=tot(G=1, H=100 + e, AB=500)) for e in range(60)]
+    ldir = tmp_path / 'cap'
+    write_league(ldir, [player('P%02d' % e, first='A') for e in range(60)], seasons=1, lines=lines)
+    data = load(ldir)
+    h = (LEAD, 0, SEASON + sidx('H'))
+    assert dynview.total_rows(h, data) == 50
+    rows = dynview.rows((LEAD, 4, SEASON + sidx('H')), data)
+    assert rows[0][0] == '#49' and len(rows) == 2
+
+
+# ---------------------------------------------------------------- cursor (C13.4)
+def test_cursor_up_down_and_page_boundaries(tmp_path):
+    ldir = tmp_path / 'cur'
+    write_league(ldir, [player('P%02d' % e, first='A', totals=tot(H=10 + e)) for e in range(30)],
+                 seasons=3)
+    data = load(ldir)
+    s = (LEAD, 0, 0)
+    assert dynview.total_rows(s, data) == 30
+    for _ in range(12):
+        s = press(s, DOWN, data)
+    assert s == (LEAD, 1, 0, 12)                          # the page follows the cursor
+    assert dynview.rows(s, data)[0][0] == '#13'
+    assert press(s, UP, data) == (LEAD, 0, 0, 11)
+    s = press((LEAD, 0, 0), PGDN, data)
+    assert s == (LEAD, 1, 0, 12)                          # PGDN: the page's first row
+    s = press(s, PGDN, data)
+    assert s == (LEAD, 2, 0, 24)
+    assert press(s, PGDN, data) == s                       # the last page: nothing moves
+    assert press(s, PGUP, data) == (LEAD, 1, 0, 12)
+    assert press((LEAD, 0, 0), UP, data) == (LEAD, 0, 0)   # UP at the top: nothing
+    s = (LEAD, 0, 0)
+    for _ in range(29):
+        s = press(s, DOWN, data)
+    assert s == (LEAD, 2, 0, 29)
+    assert press(s, DOWN, data) == s                       # DOWN at the last row: nothing
+
+
+def test_cursor_rows_of_hall_of_fame_awards_and_retire(tmp_path):
+    ldir = tmp_path / 'lists'
+    players = [player('HOFA', first='A', status=3, hof=2, totals=tot(H=5)),
+               player('HOFB', first='B', status=3, hof=3, totals=tot(H=6)),
+               player('RET', first='C', status=2, last_season=3, war10=100),
+               player('RET2', first='D', status=2, last_season=3, war10=50)]
+    write_league(ldir, players, seasons=3, ms=[(3, 2, 64, 1), (3, 0, 96, 1)])
+    data = load(ldir)
+    assert press((HOF, 0, 0), DOWN, data) == (HOF, 0, 0, 1)
+    # HALL OF FAME: the newer HoF season first (HOFB, entry 1), then HOFA (entry 0)
+    assert dynview.row_entry((HOF, 0, 0, 0), data) == 1
+    assert dynview.row_entry((HOF, 0, 0, 1), data) == 0
+    assert dynview.row_entry((HOF, 0, 0, 2), data) is None
+    # SEASON AWARDS: the AL MVP (kind 64, entry 2) first, the NL MVP (kind 96, entry 0) second
+    assert dynview.row_entry((SA, 0, 0, 0), data) == 2
+    assert dynview.row_entry((SA, 0, 0, 1), data) == 0
+    assert dynview.row_entry((SA, 0, 0, 2), data) is None
+    # RETIREMENTS: WAR descending (RET 100, RET2 50), then the WAR 0 HoF entries by index
+    assert dynview.row_entry((SO, 0, OFF_RETIRE, 0), data) == 2
+    assert dynview.row_entry((SO, 0, OFF_RETIRE, 1), data) == 3
+    assert dynview.row_entry((SO, 0, OFF_RETIRE, 2), data) == 0
+    # the cursor screens move with UP and DOWN; the offseason only in its RETIREMENTS phase
+    assert press((SA, 0, 0), DOWN, data) == (SA, 0, 0, 1)
+    assert press((SO, 0, OFF_RETIRE), DOWN, data) == (SO, 0, OFF_RETIRE, 1)
+    assert press((SO, 0, 0), DOWN, data) == (SO, 0, 0)
+
+
+def test_empty_rows_have_no_entry(tmp_path):
+    ldir = tmp_path / 'e'
+    write_league(ldir, [player('ONLY', first='A', totals=tot(H=5))], seasons=3)
+    data = load(ldir)
+    assert dynview.row_entry((LEAD, 0, 0, 5), data) is None
+    assert dynview.row_entry((HOF, 0, 0, 0), data) is None
+    assert dynview.row_entry((SO, 0, OFF_RETIRE, 0), data) is None
+
+
+# ---------------------------------------------------------------- ENTER and the PLAYER CARD (C13.4/5)
+def award_league(tmp_path):
+    players = [player('HOFA', first='A', status=3, hof=2, totals=tot(H=5)),
+               player('HOFB', first='B', status=3, hof=3, totals=tot(H=6)),
+               player('RET', first='C', status=2, last_season=3, war10=100),
+               player('RET2', first='D', status=2, last_season=3, war10=50)]
+    ldir = tmp_path / 'open'
+    write_league(ldir, players, seasons=3, ms=[(3, 2, 64, 1), (3, 0, 96, 1)],
+                 lines=[line(1, 3, totals=tot(G=3, H=6))])
+    return ldir
+
+
+def test_enter_opens_card_from_leaders_hof_awards_and_c_from_retire(tmp_path):
+    data = load(award_league(tmp_path))
+    # LEADERS career H: HOFB (6, entry 1) then HOFA (5, entry 0)
+    s, _ex = dynview.step((LEAD, 0, 0), ENTER, data)
+    assert s == (CARD, 0, 1)
+    assert press(s, ESC, data) == (LEAD, 0, 0)
+    # HALL OF FAME row 1 is HOFA (entry 0)
+    s, _ex = dynview.step((HOF, 0, 0, 1), ENTER, data)
+    assert s == (CARD, 0, 0)
+    assert press(s, ESC, data) == (HOF, 0, 0, 1)
+    # SEASON AWARDS row 0 is the AL MVP of entry 2
+    s, _ex = dynview.step((SA, 0, 0), ENTER, data)
+    assert s == (CARD, 0, 2) and press(s, ESC, data) == (SA, 0, 0)
+    # a row past the awards does nothing
+    assert dynview.step((SA, 0, 0, 2), ENTER, data) == ((SA, 0, 0, 2), 0)
+    # RETIREMENTS: ENTER walks the phases; C opens the card of the highlighted retiree
+    off = (SO, 0, OFF_RETIRE)
+    assert press(off, ENTER, data) == (SO, 0, OFF_RETIRE + 1)
+    s = press(off, DOWN, data)
+    assert s == (SO, 0, OFF_RETIRE, 1)
+    s, _ex = dynview.step(s, 67, data)                                 # C
+    assert s == (CARD, 0, 3)
+    assert press(s, ESC, data) == (SO, 0, OFF_RETIRE, 1)
+    s, _ex = dynview.step((SO, 0, OFF_RETIRE), 99, data)              # c
+    assert s == (CARD, 0, 2)
+    assert dynview.step((SO, 0, 0), 67, data) == ((SO, 0, 0), 0)     # C outside RETIREMENTS
+
+
+def test_enter_on_row_without_player_does_nothing(tmp_path):
+    ldir = tmp_path / 'empty'
+    write_league(ldir, player_set(), seasons=3, lines=season_lines_fixture())
+    data = load(ldir)
+    shows = (LEAD, 0, SEASON + sidx('SHO'))                           # one qualifier: P1 (entry 4)
+    assert dynview.step(shows, ENTER, data)[0] == (CARD, 0, 4)
+    past = (LEAD, 0, SEASON + sidx('SHO'), 3)                         # row 3: no row
+    assert dynview.step(past, ENTER, data) == (past, 0)
+
+
+def test_card_esc_returns_to_the_identical_state(tmp_path):
+    ldir = tmp_path / 'esc'
+    write_league(ldir, player_set(), seasons=3, lines=season_lines_fixture())
+    data = load(ldir)
+    lead = (LEAD, 0, 0, 2)                                           # CHARLIE, a cursor row
+    s = press(lead, ENTER, data)
+    assert s == (CARD, 0, 2)
+    assert press(s, ESC, data) == lead
+    by = (LEAD, 0, BY_YEAR + sidx('H'), 0, 2)                          # BY YEAR keeps its year
+    s = press(by, ENTER, data)
+    assert s == (CARD, 0, 1)
+    assert press(s, ESC, data) == by
+
+
+def test_card_season_rows_newest_first_and_paging(tmp_path):
+    ldir = tmp_path / 'card'
+    recs = [line(0, n, face=7, totals=tot(G=n, AB=400 + n, H=100 + n, HR=n, RBI=n, SB=n, BB=n),
+                 war10=10 * n) for n in range(1, 10)]
+    write_league(ldir, [player('ALPHA', first='B', totals=tot(G=45, AB=3645, H=945, HR=45),
+                               war10=90)], seasons=9, lines=recs)
+    data = load(ldir)
+    s = (CARD, 0, 0)
+    rows = dynview.rows(s, data)
+    assert len(rows) == 8                                             # seven seasons and CAREER
+    assert [r[0] for r in rows[:7]] == ['2001', '2000', '1999', '1998', '1997', '1996', '1995']
+    assert rows[0][2] == '9' and rows[0][3] == '409'                  # G and AB of season 9
+    assert rows[7][0] == 'CAREER' and rows[7][2] == '45' and rows[7][3] == '3645'
+    s = press(s, PGDN, data)
+    assert s == (CARD, 1, 0)
+    rows = dynview.rows(s, data)
+    assert [r[0] for r in rows[:2]] == ['1994', '1993'] and rows[-1][0] == 'CAREER'
+    assert press(s, PGDN, data) == s                                  # the last page stays
+    assert press(s, PGUP, data) == (CARD, 0, 0)
+    assert press((CARD, 0, 0), PGUP, data) == (CARD, 0, 0)
+    assert dynview.total_rows(s, data) == 9
+    assert dynview.screen_title(s, data) == 'B ALPHA'
+    assert dynview.footer_text(s, data) == 'PGUP PGDN SEASONS   ESC BACK'
+
+
+def test_card_with_no_lines_and_missing_entry(tmp_path):
+    ldir = tmp_path / 'nolines'
+    write_league(ldir, [player('LONE', first='A', pitcher=1, pos1=0,
+                               totals=tot(W=3, OUTS=300, ER=30, PSO=40))], seasons=3)
+    data = load(ldir)
+    rows = dynview.rows((CARD, 0, 0), data)
+    assert rows[0] == ('NO SEASON LINES RECORDED',)
+    assert rows[1][0] == 'CAREER' and rows[1][3] == '3' and rows[1][6] == '100.0'
+    info, last = dynview.card_info((CARD, 0, 0), data)
+    assert last is None
+    assert info == ['P', 'ACTIVE, AGE 28', '1993-1995  3 SEASONS', 'NO RATINGS RECORDED', '']
+    # an entry index that is not in the table: a blank card, no crash
+    assert dynview.rows((CARD, 0, 99), data)[0] == ('NO SEASON LINES RECORDED',)
+    assert dynview.screen_title((CARD, 0, 99), data) == '?'
+
+
+def test_card_info_lines_status_and_ratings(tmp_path):
+    ldir = tmp_path / 'info'
+    recs = [line(0, 2, pos1=6, hand=0x08, ratings=(12, 3, 11, 9, 7, 6, 0, 0, 0)),
+            line(0, 1, pos1=5, hand=0x0E, ratings=(1, 1, 1, 1, 1, 1, 1, 1, 1))]
+    write_league(ldir, [player('RETIRED', first='JOE', status=2, first_season=1, last_season=2,
+                               played=2, age=34, pos1=5)], seasons=2, start=2000, lines=recs)
+    data = load(ldir)
+    info, last = dynview.card_info((CARD, 0, 0), data)
+    # the latest line is season 2: LF, bats L (hand bits 2..1 = 0), throws R (bit 3)
+    assert info[0] == 'LF  BATS L  THROWS R'
+    assert info[1] == 'RETIRED 2001'                                  # year_of(2) with start 2000
+    assert info[2] == '2000-2001  2 SEASONS'
+    assert info[3] == 'POW 12  H&R 11  SPD 9'
+    assert info[4] == 'RNG 7  ARM 6  BUNT 3'
+    assert last['season'] == 2
+    assert dynview.card_title((CARD, 0, 0), data) == 'JOE RETIRED'
+    write_league(ldir, [player('HOFMAN', first='A', status=3, hof=2, first_season=1,
+                               last_season=2, played=2, age=40)], seasons=2, start=2000, lines=recs)
+    info, _ = dynview.card_info((CARD, 0, 0), load(ldir))
+    assert info[1] == 'HALL OF FAME 2001'
+    pit = [line(0, 1, pitcher=1, pos1=0, ratings=(0, 0, 0, 0, 0, 0, 14, 13, 12))]
+    write_league(ldir, [player('ACE', first='A', pitcher=1, pos1=0, totals=tot(W=1))],
+                 seasons=1, lines=pit)
+    info, _ = dynview.card_info((CARD, 0, 0), load(ldir))
+    assert info[0] == 'P  BATS R  THROWS R'
+    assert info[3] == 'CTL 14  VEL 13  END 12'
+    assert info[4] == ''
+
+
+def test_card_pitcher_season_columns_and_career(tmp_path):
+    ldir = tmp_path / 'pit'
+    recs = [line(0, 1, pitcher=1, pos1=0, totals=tot(G=30, W=15, L=5, SV=2, OUTS=900, ER=60,
+                                                    PSO=200), war10=50)]
+    write_league(ldir, [player('ACE', first='A', pitcher=1, pos1=0,
+                               totals=tot(G=30, W=15, L=5, SV=2, OUTS=900, ER=60, PSO=200),
+                               war10=50)], seasons=1, lines=recs)
+    (ldir / 'LEAGUE.MAJ').write_bytes(build_maj({0: [(0, 'BOS')]}))
+    data = load(ldir)
+    assert dynview.card_pitcher((CARD, 0, 0), data)
+    season, career = dynview.card_table((CARD, 0, 0), data)
+    assert season[0] == ('1993', 'BOS', '30', '15', '5', '2', '300.0', '200', '1.80', '5.0')
+    assert career[2:] == ('30', '15', '5', '2', '300.0', '200', '1.80', '5.0')
+
+
+# ---------------------------------------------------------------- portraits (C13.5)
+def portrait_frame(value):
+    """One stored frame: 12 B header (flags, h 56, w 48, yo, xo, clen 0) and 2688 B of value."""
+    return struct.pack('<6H', 0, 56, 48, 0, 0, 0) + bytes([value]) * (48 * 56)
+
+
+def write_portraits(anms, game):
+    anms.mkdir(parents=True, exist_ok=True)
+    body = b''.join(portrait_frame(10 + k) for k in range(4))
+    (anms / 'PORTRAIT.ANM').write_bytes(struct.pack('<H', 4) + body)
+    game.mkdir(parents=True, exist_ok=True)
+    (game / 'OLDPORT.ANM').write_bytes(portrait_frame(100) + portrait_frame(101))
+
+
+def test_portrait_stock_old_and_missing(tmp_path):
+    anms, game = tmp_path / 'ANMS', tmp_path / 'game'
+    write_portraits(anms, game)
+    data = {'anms_dir': str(anms), 'game_dir': str(game)}
+    w, h, px = dynview.portrait_of(data, 2)                           # PORTRAIT.ANM frame 2
+    assert (w, h) == (48, 56) and px[0] == 12 and len(px) == 48 * 56
+    assert dynview.portrait_of(data, 980) is None                     # past the 4 stock frames
+    assert dynview.portrait_of(data, 981)[2][0] == 100                # OLDPORT frame 0
+    assert dynview.portrait_of(data, 982)[2][0] == 101                # OLDPORT frame 1
+    assert dynview.portrait_of(data, 983) is None                     # past the file
+    assert dynview.portrait_of(data, 1509) is None                    # 1509 and up: no frame
+    bad = bytearray(portrait_frame(100))
+    bad[10:12] = (5).to_bytes(2, 'little')                            # clen must be 0
+    (game / 'OLDPORT.ANM').write_bytes(bytes(bad))
+    assert dynview.portrait_of(data, 981) is None
+    assert dynview.portrait_of({'anms_dir': str(tmp_path / 'none'), 'game_dir': str(tmp_path)},
+                               3) is None
+
+
+def test_card_portrait_from_oldport_and_missing_box(tmp_path):
+    ldir = tmp_path / 'lg'
+    anms, game = tmp_path / 'ANMS', tmp_path / 'game'
+    write_portraits(anms, game)
+    fonts = make_fonts(tmp_path / 'fonts')
+    write_league(ldir, [player('ALPHA', first='B', totals=tot(G=1, AB=1))], seasons=2,
+                 lines=[line(0, 1, face=2), line(0, 2, face=981)])
+    data = load(ldir, fonts, str(game), str(anms))
+    fb = dynview.render((CARD, 0, 0), data)
+    assert fb[24 * 320 + 12] == 100                                   # the latest line: OLDPORT 0
+    assert fb[79 * 320 + 59] == 100
+    # a face past the old portraits: the gray box with a ? in its middle
+    write_league(ldir, [player('ALPHA', first='B', totals=tot(G=1, AB=1))], seasons=2,
+                 lines=[line(0, 2, face=1600)])
+    data = load(ldir, fonts, str(game), str(anms))
+    fb = dynview.render((CARD, 0, 0), data)
+    assert fb[24 * 320 + 12] == dynview.C_GRID_GRAY and fb[79 * 320 + 59] == dynview.C_GRID_GRAY
+    assert any(fb[y * 320 + x] == dynview.C_WHITE for y in range(24, 80) for x in range(12, 60))
+    # no line at all: the box as well
+    write_league(ldir, [player('ALPHA', first='B', totals=tot(G=1, AB=1))], seasons=2)
+    data = load(ldir, fonts, str(game), str(anms))
+    assert dynview.render((CARD, 0, 0), data)[24 * 320 + 12] == dynview.C_GRID_GRAY
+
+
+def test_stock_portrait_drawn_from_anms(tmp_path):
+    ldir = tmp_path / 'lg'
+    anms, game = tmp_path / 'ANMS', tmp_path / 'game'
+    write_portraits(anms, game)
+    fonts = make_fonts(tmp_path / 'fonts')
+    write_league(ldir, [player('ALPHA', first='B', totals=tot(G=1, AB=1))], seasons=1,
+                 lines=[line(0, 1, face=3)])
+    data = load(ldir, fonts, str(game), str(anms))
+    assert dynview.render((CARD, 0, 0), data)[24 * 320 + 12] == 13   # PORTRAIT.ANM frame 3
+
+
+# ---------------------------------------------------------------- START YEAR (C13.1)
+def diff_positions(a, b):
+    assert len(a) == len(b)
+    return {i for i in range(len(a)) if a[i] != b[i]}
+
+
+def test_start_year_steps_clamp_and_write_only_bytes_18_19(tmp_path):
+    ldir = tmp_path / 'sy'
+    write_league(ldir, [player('ALPHA', first='B', totals=tot(H=1))], seasons=3, start=1900)
+    hp = ldir / 'HISTORY.DAT'
+    before = hp.read_bytes()
+    data = load(ldir)
+    s = (SET, 0, 2)
+    assert dynview.settings_rows(data)[2] == ('START YEAR', '1900')
+    assert press(s, RIGHT, data) == s                                 # the state does not move
+    after = hp.read_bytes()
+    assert diff_positions(before, after) <= {18, 19}
+    assert int.from_bytes(after[18:20], 'little') == 1901
+    assert data['hist'].d[18:20] == after[18:20]                      # the labels follow now
+    assert dynview.settings_rows(data)[2] == ('START YEAR', '1901')
+    press(s, LEFT, data)
+    assert int.from_bytes(hp.read_bytes()[18:20], 'little') == 1900
+    press(s, dynview.KEY_MINUS, data)                                 # '-' = -10
+    assert int.from_bytes(hp.read_bytes()[18:20], 'little') == 1890
+    press(s, dynview.KEY_PLUS, data)                                  # '+' = +10
+    assert int.from_bytes(hp.read_bytes()[18:20], 'little') == 1900
+    press(s, dynview.KEY_EQUALS, data)                                # '=' = +10
+    assert int.from_bytes(hp.read_bytes()[18:20], 'little') == 1910
+    assert diff_positions(before, hp.read_bytes()) <= {18, 19}
+    # clamps at 1871 and 2100
+    hp.write_bytes(before[:18] + (1872).to_bytes(2, 'little') + before[20:])
+    data = load(ldir)
+    press(s, dynview.KEY_MINUS, data)
+    assert int.from_bytes(hp.read_bytes()[18:20], 'little') == 1871
+    press(s, LEFT, data)
+    assert int.from_bytes(hp.read_bytes()[18:20], 'little') == 1871
+    hp.write_bytes(before[:18] + (2095).to_bytes(2, 'little') + before[20:])
+    data = load(ldir)
+    press(s, dynview.KEY_PLUS, data)
+    assert int.from_bytes(hp.read_bytes()[18:20], 'little') == 2100
+    press(s, RIGHT, data)
+    assert int.from_bytes(hp.read_bytes()[18:20], 'little') == 2100
+    # ENTER on the row does nothing; the other rows ignore the year keys
+    b4 = hp.read_bytes()
+    assert press(s, ENTER, data) == s and hp.read_bytes() == b4
+    assert press((SET, 0, 0), RIGHT, data) == (SET, 0, 0)
+    assert hp.read_bytes() == b4
+
+
+def test_start_year_zero_is_1993_and_missing_history_is_created(tmp_path):
+    ldir = tmp_path / 'zero'
+    ldir.mkdir()
+    data = load(ldir)
+    assert data['hist'].seasons_recorded == 0
+    press((SET, 0, 2), RIGHT, data)
+    hp = ldir / 'HISTORY.DAT'
+    got = hp.read_bytes()
+    assert len(got) == 32
+    assert int.from_bytes(got[18:20], 'little') == 1994               # 0 counts as 1993, + 1
+    assert got[:18] == bytes(18) and got[20:] == bytes(12)
+    # a short file is zero extended and only bytes 18..19 change
+    hp.write_bytes(b'\x01\x02\x03\x04')
+    data = load(ldir)
+    press((SET, 0, 2), dynview.KEY_MINUS, data)                       # 1993 - 10
+    got = hp.read_bytes()
+    assert len(got) == 32 and got[:4] == b'\x01\x02\x03\x04'
+    assert int.from_bytes(got[18:20], 'little') == 1983
+
+
+# ---------------------------------------------------------------- clicks and --keys (C13.6)
+def test_parse_keys_tokens_and_backward_compatibility():
+    assert dynview.parse_keys('') == []
+    assert dynview.parse_keys('13,0x4b00, 9') == [13, 0x4b00, 9]
+    assert dynview.parse_keys('L100.60,R,51') == [('L', 100, 60), ESC, 51]
+
+
+def test_click_hub_rows_title_footer_and_right_side(tmp_path):
+    ldir = tmp_path / 'hub'
+    write_league(ldir, player_set(), seasons=3)
+    data = load(ldir)
+    assert dynview.click_to_key(HUB, data, 100, 60) == (ord('3'), None)     # body row 2
+    assert dynview.click_to_key(HUB, data, 100, 40) == (ord('1'), None)     # body row 0
+    assert dynview.click_to_key(HUB, data, 100, 148) == (ord('W'), None)    # body row 10
+    assert dynview.click_to_key(HUB, data, 100, 67) == (None, None)         # the gap after row 2
+    assert dynview.click_to_key(HUB, data, 100, 14) == (None, None)         # title, not LEFT/RIGHT
+    assert dynview.click_to_key(HUB, data, 100, 190) == (PGUP, None)        # footer, left
+    assert dynview.click_to_key(HUB, data, 250, 190) == (PGDN, None)        # footer, right
+    assert dynview.click_to_key(HUB, data, 100, 0) == (None, None)
+    assert press(HUB, ord('3'), data) == (LEAD, 0, 0)
+
+
+def test_click_list_row_opens_card_and_empty_row_does_nothing(tmp_path):
+    ldir = tmp_path / 'list'
+    write_league(ldir, player_set(), seasons=3)
+    data = load(ldir)
+    lead = (LEAD, 0, 0)
+    key, row = dynview.click_to_key(lead, data, 100, 35 + 11 + 4)     # row 1
+    assert (key, row) == (ENTER, 1)
+    s = press(dynview.cursor_to(lead, row), key, data)
+    assert s == (CARD, 0, dynview.career_order(data['hist'], 0)[1][1])
+    assert dynview.total_rows(lead, data) == 4
+    assert dynview.click_to_key(lead, data, 100, 35 + 11 * 6 + 2) == (None, None)  # row 6: empty
+    assert dynview.click_to_key(lead, data, 100, 28) == (None, None)           # header band
+
+
+def test_click_settings_rows_and_start_year_sides(tmp_path):
+    ldir = tmp_path / 'set'
+    write_league(ldir, player_set(), seasons=3, start=1993)
+    data = load(ldir)
+    st = (SET, 0, 0)
+    assert dynview.click_to_key(st, data, 100, 35 + 22 + 3) == (LEFT, 2)     # START YEAR, left
+    assert dynview.click_to_key(st, data, 200, 35 + 22 + 3) == (RIGHT, 2)    # START YEAR, right
+    assert dynview.click_to_key(st, data, 100, 35 + 11 + 3) == (ENTER, 1)    # PLAYOFF FORMAT
+    assert dynview.click_to_key(st, data, 100, 35 + 33 + 3) == (None, None)  # no team row here
+    s = press(dynview.cursor_to(st, 2), LEFT, data)                       # the START YEAR click
+    assert int.from_bytes((ldir / 'HISTORY.DAT').read_bytes()[18:20], 'little') == 1992
+    assert s == (SET, 0, 2)
+
+
+def test_click_retirement_row_sends_c_and_opens_card(tmp_path):
+    data = load(award_league(tmp_path))
+    off = (SO, 0, OFF_RETIRE)
+    key, row = dynview.click_to_key(off, data, 100, 35 + 11 + 4)      # RETIREMENTS row 1
+    assert (key, row) == (67, 1)                                      # C, not ENTER (ENTER walks)
+    assert press(dynview.cursor_to(off, row), key, data) == (CARD, 0, 3)
+    assert dynview.click_to_key((SO, 0, 0), data, 100, 35 + 11 + 4) == (None, None)
+
+
+def test_click_title_band_left_right_and_footer_pages(tmp_path):
+    ldir = tmp_path / 'tb'
+    write_league(ldir, [player('P%02d' % e, first='A', totals=tot(H=10 + e)) for e in range(30)],
+                 seasons=3)
+    data = load(ldir)
+    lead = (LEAD, 0, 0)
+    assert dynview.click_to_key(lead, data, 100, 14) == (LEFT, None)
+    assert dynview.click_to_key(lead, data, 250, 14) == (RIGHT, None)
+    assert press(lead, LEFT, data) == (LEAD, 0, 17)                    # LEFT wraps to GG AWARDS
+    assert press(lead, RIGHT, data) == (LEAD, 0, 1)
+    assert dynview.click_to_key(lead, data, 250, 190) == (PGDN, None)
+    s = press(lead, PGDN, data)
+    assert s == (LEAD, 1, 0, 12)
+    assert dynview.click_to_key(s, data, 100, 190) == (PGUP, None)
+    assert dynview.click_to_key((SA, 0, 0), data, 100, 14) == (LEFT, None)
+    assert dynview.click_to_key((dynview.SCREEN_HISTORY, 0, 0), data, 100, 14) == (None, None)
+
+
+def test_main_applies_click_and_right_click_tokens(tmp_path):
+    ldir = tmp_path / 'main'
+    fonts = make_fonts(tmp_path / 'fonts')
+    write_league(ldir, player_set(), seasons=3, lines=season_lines_fixture())
+    data = dynview.load_data(str(ldir), fonts)
+    out = tmp_path / 'out.raw'
+
+    def run(keys):
+        dynview.main(['--keys', keys, '--raw', str(out), str(ldir), fonts])
+        return out.read_bytes()
+    assert run('L100.60') == bytes(dynview.render((LEAD, 0, 0), data))       # hub row 3
+    assert run('L100.60,L100.50') == bytes(dynview.render((CARD, 0, 1), data))   # row 1's card
+    # a right click returns from the card to the list state it came from (the cursor on row 1)
+    assert run('L100.60,L100.50,R') == bytes(dynview.render((LEAD, 0, 0, 1), data))
+
+
+def test_main_game_dir_anms_dir_options(tmp_path):
+    ldir = tmp_path / 'opts'
+    fonts = make_fonts(tmp_path / 'fonts')
+    anms, game = tmp_path / 'ANMS', tmp_path / 'game'
+    write_portraits(anms, game)
+    write_league(ldir, [player('ALPHA', first='B', totals=tot(H=5))], seasons=1,
+                 lines=[line(0, 1, face=981)])                       # OLDPORT frame 0 (pixel 100)
+    out = tmp_path / 'o.raw'
+    # the hub, then row 0 of the LEADERS (ALPHA): the PLAYER CARD with its OLDPORT portrait
+    dynview.main(['--keys', 'L100.60,L100.38', '--raw', str(out), '--game-dir', str(game),
+                  '--anms-dir', str(anms), str(ldir), fonts])
+    got = out.read_bytes()
+    assert got[24 * 320 + 12] == 100 and got[79 * 320 + 59] == 100
+    data = dynview.load_data(str(ldir), fonts, str(game), str(anms))
+    assert got == bytes(dynview.render((CARD, 0, 0), data))
+    # without the game dir the OLDPORT frame is missing: the gray box
+    dynview.main(['--keys', 'L100.60,L100.38', '--raw', str(out), '--game-dir', str(tmp_path),
+                  '--anms-dir', str(anms), str(ldir), fonts])
+    assert out.read_bytes()[24 * 320 + 12] == dynview.C_GRID_GRAY
+
+
+# ---------------------------------------------------------------- renders per new screen state
+def test_render_every_new_screen_state_to_png(tmp_path):
+    ldir = tmp_path / 'render'
+    fonts = make_fonts(tmp_path / 'fonts')
+    anms, game = tmp_path / 'ANMS', tmp_path / 'game'
+    write_portraits(anms, game)
+    players = player_set() + [player('RET', first='Z', status=2, last_season=3, war10=100),
+                              player('HALL', first='H', status=3, hof=2),
+                              player('HALLTWO', first='I', status=3, hof=3)]
+    write_league(ldir, players, seasons=3, start=1990, lines=season_lines_fixture(),
+                 ms=[(3, 2, 64, 1), (3, 0, 96, 1), (3, 0, 2, 3000)])
+    (ldir / 'LEAGUE.MAJ').write_bytes(build_maj({0: [(0, 'BOS'), (2, 'DET')], 1: [(0, 'NYA')]}))
+    data = dynview.load_data(str(ldir), fonts, str(game), str(anms))
+    out = tmp_path / 'png'
+    out.mkdir()
+    states = [
+        (LEAD, 0, 0), (LEAD, 0, 1, 0), (LEAD, 1, SEASON + sidx('HR')),
+        (LEAD, 0, BY_YEAR + sidx('H'), 0, 2), (HOF, 0, 0, 0), (SA, 0, 0, 1),
+        (SO, 0, OFF_RETIRE, 0), (SET, 0, 2), (ABOUT, 0, 0), (dynview.SCREEN_MENU, 0, 0),
+        (CARD, 0, 0), (CARD, 0, 4), (CARD, 0, 7), (CARD, 1, 4),
+    ]
+    for i, state in enumerate(states):
+        fb = dynview.render(state, data)
+        assert len(fb) == dynview.FB_SIZE
+        dynview.write_png(str(out / ('s%02d.png' % i)), fb, dynview.load_palette())
+    assert len(list(out.iterdir())) == len(states)
+    # the cursor row is C_TITLE_RED; the other rows of a list are C_ROW_TAN
+    fb = dynview.render((HOF, 0, 0, 1), data)
+    assert fb[(35 + 11 + 1) * 320 + 9] == dynview.C_TITLE_RED
+    assert fb[(35 + 1) * 320 + 9] == dynview.C_ROW_TAN
+    assert dynview.render((LEAD, 0, 0), data)[(35 + 1) * 320 + 9] == dynview.C_TITLE_RED
+
+
+def test_render_list_screens_with_no_season_lines(tmp_path):
+    ldir = tmp_path / 'nl'
+    fonts = make_fonts(tmp_path / 'fonts')
+    write_league(ldir, player_set(), seasons=3)
+    data = load(ldir, fonts)
+    for state in ((LEAD, 0, SEASON), (LEAD, 0, BY_YEAR), (CARD, 0, 0)):
+        assert len(dynview.render(state, data)) == dynview.FB_SIZE
+
+
+def test_about_gains_the_leaders_and_start_year_block():
+    rows = dynview.ABOUT_ROWS
+    assert 'LEADERS: CAREER, SINGLE SEASON AND BY' in rows
+    assert 'YEAR. TAB SWITCHES. ENTER OR A CLICK ON A' in rows
+    assert 'PLAYER OPENS HIS CARD.' in rows
+    assert 'START YEAR: DYNASTY SETTINGS, LEFT RIGHT.' in rows
+    i = rows.index('LEADERS: CAREER, SINGLE SEASON AND BY')
+    assert rows[i - 1] == '' and rows[i - 2] == 'GENERATED SCHEDULE.'
+    assert dynview.MENU_ROWS[2] == '3  LEADERS'
+    assert all(len(t) <= 42 for t in rows)
+
+
+def test_by_year_left_right_keep_the_season(tmp_path):
+    ldir = tmp_path / 'lg'
+    write_league(ldir, player_set(), seasons=3, lines=season_lines_fixture())
+    data = load(ldir)
+    s = (LEAD, 0, BY_YEAR + sidx('H'), 0, 1)
+    s = press(s, dynview.KEY_RIGHT, data)
+    assert s[4] == 1 and dynview.screen_title(s, data) == '1993 LEADERS: ' + dynview.SEASON_CATS[sidx('H') + 1][0]
+    s = press(s, dynview.KEY_LEFT, data)
+    assert s == (LEAD, 0, BY_YEAR + sidx('H'), 0, 1)
+
+
+def test_seasline_header_byte_3_must_be_zero(tmp_path):
+    ldir = tmp_path / 'lg'
+    write_league(ldir, player_set(), seasons=3, lines=season_lines_fixture())
+    p = ldir / 'SEASLINE.DAT'
+    assert dynview.load_lines(str(ldir))
+    b = bytearray(p.read_bytes())
+    b[3] = 1
+    p.write_bytes(bytes(b))
+    assert dynview.load_lines(str(ldir)) == []
