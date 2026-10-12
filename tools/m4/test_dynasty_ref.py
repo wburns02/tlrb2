@@ -44,3 +44,16 @@ def test_deterministic(tmp_path):
     b = dynasty_ref.roll_league(M3_DIR, str(tmp_path / 'b'), 77)
     assert a['rng_end'] == b['rng_end']
     assert _v20s(str(tmp_path / 'a')) == _v20s(str(tmp_path / 'b'))
+
+
+@needs_m3
+def test_any_league_maj_is_carried_through(tmp_path):
+    """C16: a league other than CLASSIC keeps its own <L>.MAJ in the rolled dir (same bytes)."""
+    import shutil
+    src = tmp_path / 'TESTLG'
+    shutil.copytree(M3_DIR, str(src))
+    os.rename(str(src / 'CLASSIC.MAJ'), str(src / 'TESTLG.MAJ'))
+    out = tmp_path / 'out'
+    dynasty_ref.roll_league(str(src), str(out), 4321)
+    assert (out / 'TESTLG.MAJ').read_bytes() == (src / 'TESTLG.MAJ').read_bytes()
+    assert not (out / 'CLASSIC.MAJ').exists()
