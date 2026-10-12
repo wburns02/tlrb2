@@ -613,11 +613,17 @@ def offseason(teams, snaps, retired, pool, standings, hist_hdr, rng):
     if start_word == 0:
         start_word = 1
     year = None
-    for _, _, img in teams:
-        y = image_year(img)
-        if y is not None:
-            year = y
-            break
+    start = hist_hdr[18] | hist_hdr[19] << 8
+    if 1871 <= start <= 2100:
+        # C13.1: a set start year runs the real calendar (bytes 4..5 = seasons recorded,
+        # read after HISTWR, so this is the season being started)
+        year = start + (hist_hdr[4] | hist_hdr[5] << 8)
+    else:
+        for _, _, img in teams:
+            y = image_year(img)
+            if y is not None:
+                year = y
+                break
     fa_on = era == 2 or (era == 0 and year is not None and year >= 1976)
     rev = rev_order(teams, standings)
     fwd = list(reversed(rev))

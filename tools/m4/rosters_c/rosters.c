@@ -1790,9 +1790,16 @@ static int offseason(void)
     if (start_word == 0)
         start_word = 1;
     g_year = -1;
-    for (k = 0; k < g_nt; k++) {
-        int y = image_year(g_tp[k]->img);
-        if (y >= 0) { g_year = y; break; }
+    k = g_hist32[18] | (g_hist32[19] << 8);
+    if (k >= 1871 && k <= 2100) {
+        /* C13.1: a set start year runs the real calendar (bytes 4..5 = seasons recorded,
+           read after HISTWR, so this is the season being started) */
+        g_year = k + (g_hist32[4] | (g_hist32[5] << 8));
+    } else {
+        for (k = 0; k < g_nt; k++) {
+            int y = image_year(g_tp[k]->img);
+            if (y >= 0) { g_year = y; break; }
+        }
     }
     g_fa = (g_era == 2) || (g_era == 0 && g_year >= 1976);
     rev_order(rev, g_nt);
