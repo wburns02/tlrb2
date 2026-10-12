@@ -4,7 +4,8 @@
  * top-LIST_MAX list buffers; screen output matches the Python reference pixel
  * for pixel.
  * usage: DYNVIEW [/REVIEW] [/OFFSEASON] [/TITLE] [/MENU] [/KEYS:k,k,...] [/RAW:FILE]
- *                [LEAGUE_DIR [FONT_DIR]]
+ *                [/ANMS:DIR] [/GAME:DIR] [LEAGUE_DIR [FONT_DIR]]
+ * /KEYS tokens: a key code, Lx.y a left click at (x, y), R a right click (ESC)
  * (precedence /OFFSEASON, /REVIEW, /TITLE, /MENU; /MENU opens the item CONTROL holds
  * in the current directory and then sets CONTROL[1] = CONTROL[0])
  * exit 0 ok, 2 on bad usage, font failure or /RAW write failure.
@@ -76,11 +77,74 @@
 #define SCREEN_STANDINGS 10
 #define SCREEN_SERIES 11
 #define SCREEN_BOX 12
-#define N_CATS 12
+#define SCREEN_CARD 13
+/* LEADERS modes (C13.3): the state cat is mode * MODE_SHIFT + category index */
+#define MODE_CAREER 0
+#define MODE_SEASON 1
+#define MODE_BYYEAR 2
+#define MODE_SHIFT 32
+#define N_CAREER_CATS 18
+#define N_SEASON_CATS 17
+/* SEASON and BY YEAR leaders keep the top SEASON_MAX lines */
+#define SEASON_MAX 50
+#define NO_LINES_TEXT "NO SEASON LINES RECORDED YET."
+/* PLAYER CARD (C13.5): CARD_SEASON_ROWS season rows a page, then the CAREER row; the entry's
+ * SEASLINE lines are collected up to CARD_MAX (the newest of a longer career are cut) */
+#define CARD_SEASON_ROWS 7
+#define CARD_HDR_Y 84
+#define CARD_ROW_Y0 95
+#define CARD_CAREER_Y (CARD_ROW_Y0 + CARD_SEASON_ROWS * ROW_H)
+#define CARD_MAX 256
+#define CARD_CELLS 10
+#define NO_CARD_TEXT "NO SEASON LINES RECORDED"
+#define NO_RATINGS_TEXT "NO RATINGS RECORDED"
+/* PLAYER CARD portraits (C13.5): stock PORTRAIT.ANM frames below OLD_FACE, OLDPORT.ANM from it */
+#define PORTRAIT_W 48
+#define PORTRAIT_H 56
+#define PORTRAIT_X 12
+#define PORTRAIT_Y 24
+#define OLD_FACE 981
+#define OLD_FACE_END 1509
+#define OLD_FRAME (12 + PORTRAIT_W * PORTRAIT_H)
+#define INFO_X 70
+#define DEF_ANMS "ANMS"
+#define DEF_GAME "."
+/* click bands (C13.6): list and hub body rows start at y 35, title band 8..20, footer from 183 */
+#define BODY_Y0 35
+#define TITLE_Y0 8
+#define TITLE_Y1 20
+#define FOOTER_Y0 183
+/* DYNASTY SETTINGS cursor rows: 0 ERA RULES, 1 PLAYOFF FORMAT, 2 START YEAR, 3 and up the teams */
+#define SET_START 2
+#define SET_TEAM0 3
+/* ASCII keys of the screens (C13.1, C13.3, C13.5) */
+#define KEY_TAB 9
+#define KEY_MINUS 45
+#define KEY_PLUS 43
+#define KEY_EQUALS 61
+#define KEY_CARD_CAP 67
+#define KEY_CARD_LOW 99
+/* START YEAR (C13.1): u16 LE at HISTORY bytes 18..19; 0 or outside START_MIN..START_MAX counts as
+ * START_DEFAULT */
+#define HDR_START 18
+#define START_MIN 1871
+#define START_MAX 2100
+#define START_DEFAULT 1993
+/* SEASLINE.DAT (C13.2): 16 B header ('SL', version 1, byte 3 zero, u16 line size 80), 80 B lines */
+#define SEASLINE_FILE "SEASLINE.DAT"
+#define SEASLINE_HDR 16
+#define SEASLINE_REC 80
+#define SEASLINE_VERSION 1
+/* SEASLINE line totals (TOTALS order) used by the SEASON qualifiers */
+#define T_G 0
+#define T_AB 1
+#define T_BB 8
+#define T_OUTS 19
+#define T_ER 20
 
 /* the hub rows (SCREEN_MENU) and the ABOUT THE MODS rows */
 #define N_MENU_ROWS 11
-#define N_ABOUT_ROWS 42
+#define N_ABOUT_ROWS 47
 #define N_TITLE_ROWS 11
 
 /* MILESTON.DAT kinds from AWARD_KIND_MIN up are award and leader records (C7), not
@@ -183,6 +247,8 @@ typedef struct {
     uint8_t status;
     uint8_t pitcher;
     uint8_t age;
+    uint8_t pos1;
+    uint16_t first_season;
     uint16_t seasons_played;
     uint16_t last_season;
     uint32_t tot[NUM_TOT];
@@ -218,9 +284,41 @@ typedef struct {
     uint8_t b, i, s[8];
 } BoxRec;
 
+/* the screen state (dynview.pack): cat is the category, entry or cursor, row the cursor row of
+ * the cursor screens (C13.4) and year the BY YEAR season (0: the default season) */
 typedef struct {
-    int16_t screen, page, cat;
+    int16_t screen, page;
+    int32_t cat, row, year;
 } State;
+
+/* a leader category (C13.3): title label, kind (CK_*) and TOTALS index */
+enum { CK_COUNT, CK_AVG, CK_ERA, CK_WAR, CK_AW0, CK_AW3, CK_IP };
+typedef struct {
+    const char *label;
+    uint8_t kind, idx;
+} CatDef;
+
+/* one SEASLINE.DAT line (C13.2), decoded */
+typedef struct {
+    uint16_t entry, season, face;
+    uint8_t team, pitcher, age, pos1, hand, dev;
+    uint8_t ratings[9];
+    uint32_t tot[NUM_TOT];
+    int16_t war10;
+} Line;
+
+/* one SEASON or BY YEAR leader: value, season, entry and team */
+typedef struct {
+    int32_t val;
+    uint16_t season, entry;
+    uint8_t team;
+} SItem;
+
+/* one PLAYER CARD line: its SEASLINE.DAT offset and season */
+typedef struct {
+    uint32_t off;
+    uint16_t season;
+} CardLine;
 
 /* sorted top-K list: (key, index) pairs keyed for the exact Python total
  * order, capped at LIST_MAX; equal keys keep insertion (file) order */
@@ -268,6 +366,20 @@ static int g_nrows;
  * records kept for them, in (kind, file position) order */
 static Row FARDATA g_awd[AWARD_MAX];
 static MsRec FARDATA g_arec[AWARD_MAX];
+/* the player entry of each g_awd row (-1 for none: a message, the GG SS row, an empty slot) */
+static int32_t FARDATA g_awd_idx[AWARD_MAX];
+
+/* SEASON and BY YEAR leaders: the top SEASON_MAX of the category (g_sn of them) */
+static SItem FARDATA g_sbuf[SEASON_MAX];
+static int g_sn;
+
+/* PLAYER CARD: the SEASLINE offsets of the card's entry in season order (g_ncard of them) */
+static CardLine FARDATA g_card[CARD_MAX];
+static int g_ncard;
+static State g_card_back;       /* the list state the PLAYER CARD was opened from (C13.5) */
+
+/* portrait pixels of the PLAYER CARD (48 x 56) */
+static uint8_t FARDATA g_portrait[PORTRAIT_W * PORTRAIT_H];
 
 /* SEASON STANDINGS: the rows of the season (STAND_MAX at most) */
 static Row FARDATA g_stnd[STAND_MAX];
@@ -308,6 +420,21 @@ static char g_tdisp[N_TEAM_MAX][16];
 static int g_fmt_wanted, g_fmt_now;
 static int g_dirty;
 
+/* TEAM column (C13.3): the MAJ 3-letter abbreviation of each team id with one */
+static uint8_t g_abid[TI_MAX_TEAMS];
+static char g_abtxt[TI_MAX_TEAMS][4];
+static int g_nab;
+
+/* /ANMS:dir (PORTRAIT.ANM) and /GAME:dir (OLDPORT.ANM) */
+static char g_anms[260] = DEF_ANMS;
+static char g_game[260] = DEF_GAME;
+
+#ifdef __WATCOMC__
+/* INT 33h: 1 when a mouse driver answered AX=0; g_mbtn the buttons of the last poll */
+static int g_mouse;
+static int g_mbtn;
+#endif
+
 /* ABOUT THE MODS rows (dynview.ABOUT_ROWS) */
 static const char *ABOUT_LINES[N_ABOUT_ROWS] = {
     "DYNASTY MODE",
@@ -345,6 +472,11 @@ static const char *ABOUT_LINES[N_ABOUT_ROWS] = {
     "THEN START THE NEW SEASON WITH THE",
     "GENERATED SCHEDULE.",
     "",
+    "LEADERS: CAREER, SINGLE SEASON AND BY",
+    "YEAR. TAB SWITCHES. ENTER OR A CLICK ON A",
+    "PLAYER OPENS HIS CARD.",
+    "START YEAR: DYNASTY SETTINGS, LEFT RIGHT.",
+    "",
     "NEW FACES",
     "67 NEW PORTRAITS JOIN THE 30 STOCK ONES.",
     "ROOKIES AND CREATED PLAYERS USE THEM.",
@@ -353,12 +485,30 @@ static const char *ABOUT_LINES[N_ABOUT_ROWS] = {
     "UTILITIES > ASSIGN STADIUMS LETS ANY TEAM",
     "PLAY IN A NEW PARK." };
 
-static const char *CAT_LABEL[N_CATS] = {
-    "H", "HR", "RBI", "SB", "AVG", "WAR", "W", "SV", "PSO", "ERA",
-    "MVP AWARDS", "GG AWARDS" };
-/* kind 0 count, 1 avg, 2 era, 3 war, 4 aw0, 5 aw3 */
-static const uint8_t CAT_KIND[N_CATS] = { 0, 0, 0, 0, 1, 3, 0, 0, 0, 2, 4, 5 };
-static const uint8_t CAT_IDX[N_CATS] = { 2, 5, 7, 10, 0, 0, 13, 15, 23, 0, 0, 0 };
+/* CAREER LEADERS categories (C13.3, dynview.CATS), in list order */
+static const CatDef CAREER_CATS[N_CAREER_CATS] = {
+    { "H", CK_COUNT, 2 }, { "HR", CK_COUNT, 5 }, { "RBI", CK_COUNT, 7 },
+    { "R", CK_COUNT, 6 }, { "2B", CK_COUNT, 3 }, { "3B", CK_COUNT, 4 },
+    { "SB", CK_COUNT, 10 }, { "BB", CK_COUNT, 8 }, { "AVG", CK_AVG, 0 },
+    { "WAR", CK_WAR, 0 }, { "W", CK_COUNT, 13 }, { "SV", CK_COUNT, 15 },
+    { "SO", CK_COUNT, 23 }, { "ERA", CK_ERA, 0 }, { "IP", CK_IP, 19 },
+    { "SHO", CK_COUNT, 18 }, { "MVP AWARDS", CK_AW0, 0 },
+    { "GG AWARDS", CK_AW3, 0 } };
+/* SEASON and BY YEAR categories (C13.3, dynview.SEASON_CATS), over SEASLINE.DAT lines */
+static const CatDef SEASON_CATS[N_SEASON_CATS] = {
+    { "AVG", CK_AVG, 0 }, { "HR", CK_COUNT, 5 }, { "RBI", CK_COUNT, 7 },
+    { "H", CK_COUNT, 2 }, { "R", CK_COUNT, 6 }, { "2B", CK_COUNT, 3 },
+    { "3B", CK_COUNT, 4 }, { "SB", CK_COUNT, 10 }, { "BB", CK_COUNT, 8 },
+    { "WAR", CK_WAR, 0 }, { "W", CK_COUNT, 13 }, { "ERA", CK_ERA, 0 },
+    { "SO", CK_COUNT, 23 }, { "SV", CK_COUNT, 15 }, { "IP", CK_IP, 19 },
+    { "CG", CK_COUNT, 17 }, { "SHO", CK_COUNT, 18 } };
+/* the position names of the PLAYER CARD (dynview.POS_NAMES) and the bats code (byte 29 bits 2..1) */
+static const char *POS_NAMES[16] = {
+    "P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH", "OF", "IF",
+    "OI", "CO", "CI", "C3" };
+static const char BATS_NAMES[5] = "LRS?";
+/* PLAYER CARD info rows (C13.5): x INFO_X, y INFO_Y[0..4] */
+static const int INFO_Y[5] = { 26, 37, 48, 59, 70 };
 
 int main(int argc, char **argv);
 static void render(State st);
@@ -369,6 +519,7 @@ static int awards_body(State st, int page, const ColDef **cols);
 static int standings_body(State st, int page, const ColDef **cols);
 static int series_body(State st, int page, const ColDef **cols);
 static int box_body(State st, int page, const ColDef **cols);
+static int leaders_body(State st, int page, const ColDef **cols);
 /* ---- helpers ---- */
 
 /* signed division truncating toward zero == C99 / (x86 idiv) */
@@ -479,10 +630,11 @@ static void draw_text(uint8_t *fb, const Font *ft, int x, int y,
         for (r = 0; r < g->rows; r++) {
             int py = y + r;
             const uint8_t *row = ft->bytes + g->off + r * g->bpr;
-            int base;
+            long base;
             if (py < 0 || py >= FB_H)
                 continue;
-            base = py * FB_W;
+            /* long: py * FB_W passes 32767 from y 103 on a 16-bit int (DOS) */
+            base = (long)py * FB_W;
             for (c = 0; c < g->bits; c++) {
                 if (row[c / 8] & (0x80u >> (c % 8))) {
                     int px = x + c;
@@ -521,7 +673,7 @@ static void rect_fb(int x0, int y0, int x1, int y1, int color)
     if (x1 > FB_W - 1) x1 = FB_W - 1;
     if (y1 > FB_H - 1) y1 = FB_H - 1;
     for (y = y0; y <= y1; y++) {
-        uint8_t *row = g_fb + y * FB_W;
+        uint8_t *row = g_fb + (long)y * FB_W;
         for (x = x0; x <= x1; x++)
             row[x] = (uint8_t)color;
     }
@@ -715,6 +867,12 @@ static void fmt_war10(int32_t v, char *dst)
             (unsigned long)(a / 10u), (unsigned long)(a % 10u));
 }
 
+/* outs = OUTS: whole innings and thirds, '1234.2' (dynview.fmt_ip) */
+static void fmt_ip(uint32_t outs, char *dst)
+{
+    sprintf(dst, "%lu.%lu", (unsigned long)(outs / 3u), (unsigned long)(outs % 3u));
+}
+
 /* u32 career totals: Python // on a nonnegative quotient (the dividend fits
  * int32 for these ratios) */
 static uint32_t avg_of(const uint32_t *t)
@@ -848,6 +1006,8 @@ static int read_entry(Entry *e, uint32_t idx)
     e->status = eb[22];
     e->age = eb[23];
     e->pitcher = eb[31];
+    e->pos1 = eb[30];
+    e->first_season = (uint16_t)(eb[24] | ((uint16_t)eb[25] << 8));
     e->seasons_played = (uint16_t)(eb[28] | ((uint16_t)eb[29] << 8));
     e->last_season = (uint16_t)(eb[26] | ((uint16_t)eb[27] << 8));
     for (k = 0; k < NUM_TOT; k++)
@@ -1103,6 +1263,7 @@ static void load_teams(void)
     size_t want;
     int have_tab, n, i, m;
     g_nteams = 0;
+    g_nab = 0;
     if (!maj_file(path))
         return;
     f = fopen(path, "rb");
@@ -1127,6 +1288,16 @@ static void load_teams(void)
     fclose(f);
     have_tab = load_table(tab);
     n = ti_teams(d, TEAM_SPAN, have_tab ? tab : NULL, t);
+    /* the TEAM column names (dynview.team_abbrs): every team with a non-blank abbreviation */
+    for (i = 0; i < n && g_nab < TI_MAX_TEAMS; i++) {
+        uint8_t ab[3];
+        memcpy(ab, d + ti_league_s(t[i].L) + TI_O_ABBR + 3L * t[i].slot, 3);
+        field_of(ab, 3, g_abtxt[g_nab]);
+        if (g_abtxt[g_nab][0]) {
+            g_abid[g_nab] = t[i].id;
+            g_nab++;
+        }
+    }
     free(d);
     for (i = 0; i < n; i++) {
         m = 0;
@@ -1277,6 +1448,43 @@ static void put_hist_byte(int pos, int value)
     if (fseek(f, pos, SEEK_SET) == 0)
         (void)fwrite(&b, 1, 1, f);
     fclose(f);
+}
+
+/* the start year (C13.1, dynview.start_year): HISTORY bytes 18..19 as u16 LE, START_DEFAULT when
+ * that is 0 or outside START_MIN..START_MAX */
+static int32_t start_year(void)
+{
+    int32_t v = g_hdr[HDR_START] | (g_hdr[HDR_START + 1] << 8);
+    return v >= START_MIN && v <= START_MAX ? v : START_DEFAULT;
+}
+
+/* the calendar year of season n (1-based): start year + n - 1 (dynview.year_of) */
+static int32_t year_of(int32_t n)
+{
+    return start_year() + n - 1;
+}
+
+/* year_of(n) as text (dynview.year_text) */
+static void year_text(int32_t n, char *dst)
+{
+    sprintf(dst, "%ld", (long)year_of(n));
+}
+
+/* LEFT / RIGHT / '-' / '+' / '=' on START YEAR (C13.1, dynview.start_year_step): the start year moves
+ * by delta, clamped to START_MIN..START_MAX; HISTORY bytes 18..19 are written (the rest of the file
+ * is untouched) and the header in memory follows, so every season label relabels */
+static void start_year_step(int32_t delta)
+{
+    int32_t v = start_year() + delta;
+    if (v < START_MIN)
+        v = START_MIN;
+    if (v > START_MAX)
+        v = START_MAX;
+    put_hist_byte(HDR_START, (int)(v & 255));
+    put_hist_byte(HDR_START + 1, (int)(v >> 8));
+    g_hdr[HDR_START] = (uint8_t)(v & 255);
+    g_hdr[HDR_START + 1] = (uint8_t)(v >> 8);
+    g_dirty = 1;
 }
 
 /* realign.apply (C12.5, C12.6): the MAJ of g_lgdir realigned to the wanted format by ra_plan,
@@ -1619,36 +1827,60 @@ static void roster_pass(int phase, int page)
 
 /* ---------------- categories ---------------- */
 
-static uint32_t cat_value(const Entry *e, int cat)
+/* the value of a category over the 25 totals t and WAR10 war10 (career entry or SEASLINE line);
+ * the award kinds are not totals and are read by cat_value */
+static uint32_t tot_value(const uint32_t *t, int32_t war10, const CatDef *c)
 {
-    switch (CAT_KIND[cat]) {
-    case 0: return e->tot[CAT_IDX[cat]];
-    case 1: return avg_of(e->tot);
-    case 2: return era100_of(e->tot);
-    case 3: return (uint32_t)(int32_t)e->war10;
-    case 4: return e->awards[0];
-    default: return e->awards[3];
+    switch (c->kind) {
+    case CK_AVG: return avg_of(t);
+    case CK_ERA: return era100_of(t);
+    case CK_WAR: return (uint32_t)war10;
+    default: return t[c->idx];
     }
 }
 
-static int cat_qualifies(const Entry *e, int cat)
+static uint32_t cat_value(const Entry *e, const CatDef *c)
 {
-    switch (CAT_KIND[cat]) {
-    case 0: return e->tot[CAT_IDX[cat]] > 0;
-    case 1: return e->tot[1] >= 3000;
-    case 2: return e->tot[19] >= 4500;
-    case 4:
-    case 5: return cat_value(e, cat) > 0;
+    if (c->kind == CK_AW0)
+        return e->awards[0];
+    if (c->kind == CK_AW3)
+        return e->awards[3];
+    return tot_value(e->tot, e->war10, c);
+}
+
+/* career qualifiers (C7 and C13.3) */
+static int cat_qualifies(const Entry *e, const CatDef *c)
+{
+    switch (c->kind) {
+    case CK_COUNT:
+    case CK_IP: return e->tot[c->idx] > 0;
+    case CK_AVG: return e->tot[1] >= 3000;
+    case CK_ERA: return e->tot[19] >= 4500;
+    case CK_AW0:
+    case CK_AW3: return cat_value(e, c) > 0;
     default: return 1;
     }
 }
 
-static void cat_format(int cat, uint32_t v, char *dst)
+/* SEASON and BY YEAR qualifiers (C13.3, dynview.season_qualifies): AVG needs AB > 0 and
+ * AB + BB >= 502; ERA needs OUTS >= 486; WAR needs G > 0; counts and IP need value > 0 */
+static int season_qualifies(const Line *ln, const CatDef *c)
 {
-    switch (CAT_KIND[cat]) {
-    case 1: fmt_avg((int32_t)v, dst); return;
-    case 2: fmt_era100((int32_t)v, dst); return;
-    case 3: fmt_war10((int32_t)v, dst); return;
+    switch (c->kind) {
+    case CK_AVG: return ln->tot[T_AB] > 0 && ln->tot[T_AB] + ln->tot[T_BB] >= 502;
+    case CK_ERA: return ln->tot[T_OUTS] >= 486;
+    case CK_WAR: return ln->tot[T_G] > 0;
+    default: return tot_value(ln->tot, ln->war10, c) > 0;
+    }
+}
+
+static void cat_format(const CatDef *c, uint32_t v, char *dst)
+{
+    switch (c->kind) {
+    case CK_AVG: fmt_avg((int32_t)v, dst); return;
+    case CK_ERA: fmt_era100((int32_t)v, dst); return;
+    case CK_WAR: fmt_war10((int32_t)v, dst); return;
+    case CK_IP: fmt_ip(v, dst); return;
     default: fmt_count((int32_t)v, dst); return;
     }
 }
@@ -1668,21 +1900,321 @@ static void hof_scan(List *b)
     }
 }
 
-/* leaders: value desc (ERA asc), index asc */
+/* career leaders: value desc (ERA asc), index asc */
 static void leaders_scan(List *b, int cat)
 {
     uint32_t i;
     Entry e;
+    const CatDef *c = &CAREER_CATS[cat];
     b->n = 0;
     for (i = 0; i < n_entries(); i++) {
         read_entry(&e, i);
-        if (cat_qualifies(&e, cat)) {
-            if (CAT_KIND[cat] == 2)
-                list_add_asc(b, (int32_t)cat_value(&e, cat), i);
+        if (cat_qualifies(&e, c)) {
+            if (c->kind == CK_ERA)
+                list_add_asc(b, (int32_t)cat_value(&e, c), i);
             else
-                list_add_desc(b, (int32_t)cat_value(&e, cat), i);
+                list_add_desc(b, (int32_t)cat_value(&e, c), i);
         }
     }
+}
+
+/* ---------------- SEASLINE.DAT (C13.2): streamed 80 B lines, never all in memory ---------------- */
+
+/* SEASLINE.DAT of g_lgdir, its 16 B header checked like load_lines (not 'SL', version 1, byte 3
+ * nonzero or line size other than 80: NULL; a short header too). The stream is left at line 0 */
+static FILE *seasline_open(void)
+{
+    char path[600];
+    uint8_t hd[SEASLINE_HDR];
+    FILE *f;
+    path_join(path, g_lgdir, SEASLINE_FILE);
+    f = fopen(path, "rb");
+    if (!f)
+        return NULL;
+    if (fread(hd, 1, SEASLINE_HDR, f) != SEASLINE_HDR || hd[0] != 'S' || hd[1] != 'L'
+        || hd[2] != SEASLINE_VERSION || hd[3] != 0
+        || (hd[4] | (hd[5] << 8)) != SEASLINE_REC) {
+        fclose(f);
+        return NULL;
+    }
+    return f;
+}
+
+/* one 80 B line (read_line): the stable fields and the TOTALS */
+static void line_decode(const uint8_t *r, Line *ln)
+{
+    int k;
+    ln->entry = (uint16_t)(r[0] | (r[1] << 8));
+    ln->season = (uint16_t)(r[2] | (r[3] << 8));
+    ln->team = r[4];
+    ln->pitcher = r[5] & 1;
+    ln->age = r[6];
+    ln->pos1 = r[7];
+    ln->face = (uint16_t)(r[8] | (r[9] << 8));
+    ln->hand = r[10];
+    ln->dev = r[11];
+    for (k = 0; k < 9; k++)
+        ln->ratings[k] = r[12 + k];
+    for (k = 0; k < NUM_TOT; k++)
+        ln->tot[k] = (uint32_t)(r[22 + 2 * k] | (r[23 + 2 * k] << 8));
+    ln->war10 = (int16_t)(r[72] | (r[73] << 8));
+}
+
+/* the next whole line of f into ln; 0 at the end, a short tail line is dropped */
+static int line_next(FILE *f, Line *ln)
+{
+    uint8_t rec[SEASLINE_REC];
+    if (fread(rec, 1, SEASLINE_REC, f) != SEASLINE_REC)
+        return 0;
+    line_decode(rec, ln);
+    return 1;
+}
+
+/* the BY YEAR season when none is chosen (C13.3, dynview.default_year): the newest season with
+ * lines, else the newest season recorded */
+static int32_t default_year(void)
+{
+    FILE *f = seasline_open();
+    Line ln;
+    int32_t best = g_hdr_seasons;
+    int any = 0;
+    if (!f)
+        return best;
+    while (line_next(f, &ln)) {
+        if (!any || ln.season > best) {
+            best = ln.season;
+            any = 1;
+        }
+    }
+    fclose(f);
+    return best;
+}
+
+/* the BY YEAR season of st (dynview.leaders_year): its year, or the default season at 0 */
+static int32_t leaders_year(State st)
+{
+    return st.year ? st.year : default_year();
+}
+
+/* the nearest season with lines after cur (newer) or before it (older), into *out (dynview.step's
+ * '+' and '-'); 1 when there is one */
+static int season_near(int32_t cur, int newer, int32_t *out)
+{
+    FILE *f = seasline_open();
+    Line ln;
+    int found = 0;
+    if (!f)
+        return 0;
+    while (line_next(f, &ln)) {
+        int32_t sn = ln.season;
+        if (newer ? sn > cur : sn < cur) {
+            if (!found || (newer ? sn < *out : sn > *out)) {
+                *out = sn;
+                found = 1;
+            }
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+/* the SEASON order (dynview.season_order): value desc (ERA asc), then season asc, then entry asc */
+static int sitem_before(const SItem *a, const SItem *b, int asc)
+{
+    if (a->val != b->val)
+        return asc ? a->val < b->val : a->val > b->val;
+    if (a->season != b->season)
+        return a->season < b->season;
+    return a->entry < b->entry;
+}
+
+/* insert one leader into g_sbuf, keeping the top SEASON_MAX in sitem_before order */
+static void sitem_add(int asc, int32_t val, uint16_t season, uint16_t entry, uint8_t team)
+{
+    SItem it;
+    int i, n = g_sn;
+    it.val = val;
+    it.season = season;
+    it.entry = entry;
+    it.team = team;
+    if (n == SEASON_MAX && !sitem_before(&it, &g_sbuf[n - 1], asc))
+        return;
+    i = n < SEASON_MAX ? n : n - 1;
+    while (i > 0 && sitem_before(&it, &g_sbuf[i - 1], asc)) {
+        g_sbuf[i] = g_sbuf[i - 1];
+        i--;
+    }
+    g_sbuf[i] = it;
+    if (n < SEASON_MAX)
+        g_sn++;
+}
+
+/* SEASON leaders (C13.3, dynview.season_order) over the SEASLINE lines, all of them or only the
+ * lines of season when by_year, into g_sbuf. *seen gets the number of lines of the season (any
+ * line when not by_year); returns the leader count */
+static int season_scan(const CatDef *c, int by_year, int32_t season, int *seen)
+{
+    FILE *f = seasline_open();
+    Line ln;
+    int asc = c->kind == CK_ERA;
+    *seen = 0;
+    g_sn = 0;
+    if (!f)
+        return 0;
+    while (line_next(f, &ln)) {
+        if (by_year && ln.season != season)
+            continue;
+        (*seen)++;
+        if (season_qualifies(&ln, c))
+            sitem_add(asc, (int32_t)tot_value(ln.tot, ln.war10, c), ln.season, ln.entry,
+                      ln.team);
+    }
+    fclose(f);
+    return g_sn;
+}
+
+/* the PLAYER CARD lines of entry (C13.5, dynview.card_lines): their offsets in season order (stable,
+ * file order within a season) into g_card, at most CARD_MAX */
+static void card_collect(int32_t entry)
+{
+    FILE *f = seasline_open();
+    Line ln;
+    long off = SEASLINE_HDR;
+    g_ncard = 0;
+    if (!f)
+        return;
+    while (line_next(f, &ln)) {
+        if ((int32_t)ln.entry == entry && g_ncard < CARD_MAX) {
+            CardLine cl;
+            int i = g_ncard;
+            cl.off = (uint32_t)off;
+            cl.season = ln.season;
+            while (i > 0 && g_card[i - 1].season > cl.season) {
+                g_card[i] = g_card[i - 1];
+                i--;
+            }
+            g_card[i] = cl;
+            g_ncard++;
+        }
+        off += SEASLINE_REC;
+    }
+    fclose(f);
+}
+
+/* the SEASLINE line at offset off (a card_collect offset) into ln; 1 when read */
+static int card_line(uint32_t off, Line *ln)
+{
+    FILE *f = seasline_open();
+    int ok = 0;
+    if (!f)
+        return 0;
+    if (fseek(f, (long)off, SEEK_SET) == 0)
+        ok = line_next(f, ln);
+    fclose(f);
+    return ok;
+}
+
+/* the file WANT (upper case) of dir: DOS names are case-blind, the host finds it in any case;
+ * NULL when there is none (dynview.find_upper) */
+static FILE *open_upper(const char *dir, const char *want)
+{
+#ifdef __WATCOMC__
+    char path[300];
+    path_join(path, dir, want);
+    return fopen(path, "rb");
+#else
+    char path[300];
+    DIR *dirp = opendir(dir);
+    struct dirent *de;
+    FILE *f = NULL;
+    if (!dirp)
+        return NULL;
+    while ((de = readdir(dirp)) != NULL) {
+        if (tok_eq((const uint8_t *)de->d_name, (int)strlen(de->d_name), want, 1)) {
+            path_join(path, dir, de->d_name);
+            f = fopen(path, "rb");
+            break;
+        }
+    }
+    closedir(dirp);
+    return f;
+#endif
+}
+
+/* PORTRAIT.ANM frame k into g_portrait (create's portrait() rules, dynview.portrait_stock): the
+ * frame must be stored (clen 0) at PORTRAIT_W x PORTRAIT_H and fit the file; the frames before it
+ * are skipped by their 12 B headers. 1 when it was read */
+static int portrait_stock(int32_t k)
+{
+    FILE *f = open_upper(g_anms, "PORTRAIT.ANM");
+    uint8_t hd[12], head[2];
+    long size = 0, p = 2;
+    uint32_t count;
+    int32_t i;
+    int ok = 0;
+    if (!f)
+        return 0;
+    if (fseek(f, 0L, SEEK_END) != 0 || (size = ftell(f)) < 0 || fseek(f, 0L, SEEK_SET) != 0
+        || fread(head, 1, 2, f) != 2) {
+        fclose(f);
+        return 0;
+    }
+    count = (uint32_t)(head[0] | (head[1] << 8));
+    if (k >= (int32_t)count) {
+        fclose(f);
+        return 0;
+    }
+    for (i = 0;; i++) {
+        int h, w, clen;
+        if (fseek(f, p, SEEK_SET) != 0 || fread(hd, 1, 12, f) != 12)
+            break;
+        h = hd[2] | (hd[3] << 8);
+        w = hd[4] | (hd[5] << 8);
+        clen = hd[10] | (hd[11] << 8);
+        if (i < k) {
+            p += 12 + (clen == 0 ? (long)h * w : (long)clen);
+            continue;
+        }
+        if (clen == 0 && w == PORTRAIT_W && h == PORTRAIT_H && p + 12 + (long)h * w <= size
+            && fseek(f, p + 12, SEEK_SET) == 0
+            && fread(g_portrait, 1, PORTRAIT_W * PORTRAIT_H, f) == PORTRAIT_W * PORTRAIT_H)
+            ok = 1;
+        break;
+    }
+    fclose(f);
+    return ok;
+}
+
+/* OLDPORT.ANM frame k into g_portrait (dynview.portrait_old): no count word, frame k at
+ * k * OLD_FRAME, a 12 B header with clen 0 and PORTRAIT_W x PORTRAIT_H, then the pixels */
+static int portrait_old(int32_t k)
+{
+    FILE *f = open_upper(g_game, "OLDPORT.ANM");
+    uint8_t hd[12];
+    int h, w, clen, ok = 0;
+    if (!f)
+        return 0;
+    if (fseek(f, (long)k * OLD_FRAME, SEEK_SET) == 0 && fread(hd, 1, 12, f) == 12) {
+        h = hd[2] | (hd[3] << 8);
+        w = hd[4] | (hd[5] << 8);
+        clen = hd[10] | (hd[11] << 8);
+        if (clen == 0 && w == PORTRAIT_W && h == PORTRAIT_H
+            && fread(g_portrait, 1, PORTRAIT_W * PORTRAIT_H, f) == PORTRAIT_W * PORTRAIT_H)
+            ok = 1;
+    }
+    fclose(f);
+    return ok;
+}
+
+/* the portrait of a face into g_portrait (dynview.portrait_of, C13.5): stock frames below OLD_FACE,
+ * OLDPORT frames up to OLD_FACE_END; 1 when there is one */
+static int portrait_of(int face)
+{
+    if (face < OLD_FACE)
+        return portrait_stock(face);
+    if (face < OLD_FACE_END)
+        return portrait_old(face - OLD_FACE);
+    return 0;
 }
 
 /* milestones (award records skipped): season desc, file position asc */
@@ -1710,14 +2242,6 @@ static void hist_scan(List *b)
             break;
         list_add_desc(b, (int32_t)se.season_no, (uint32_t)pos);
     }
-}
-
-/* qualifying candidates (paging bound), not the on-screen 12 */
-static int leaders_count(int cat)
-{
-    List b;
-    leaders_scan(&b, cat);
-    return (int)b.n;
 }
 
 /* ---------------- SEASON AWARDS (C7 award and leader records) ---------------- */
@@ -1860,6 +2384,7 @@ static int build_awards(long season)
             }
             entry_name(g_arec[k].idx, 16, row->cells[1]);
             row->ncells = 3;
+            g_awd_idx[k] = g_arec[k].idx;
         }
         return n;
     }
@@ -1872,15 +2397,18 @@ static int build_awards(long season)
             entry_name(se.awards[k], 16, row->cells[1]);
             row->cells[2][0] = 0;
             row->ncells = 3;
+            g_awd_idx[k] = se.awards[k];
         }
         strcpy(g_awd[6].cells[0], "GG SS");
         strcpy(g_awd[6].cells[1], "NOT RECORDED");
         g_awd[6].cells[2][0] = 0;
         g_awd[6].ncells = 3;
+        g_awd_idx[6] = -1;
         return 7;
     }
     strcpy(g_awd[0].cells[0], "NO AWARDS RECORDED");
     g_awd[0].ncells = 1;
+    g_awd_idx[0] = -1;
     return 1;
 }
 
@@ -2164,7 +2692,7 @@ static int build_hist_rows(int page)
     int n = 0, k, r0 = page * ROWS_PER_PAGE, r;
     for (r = r0; r < g_histl.n && r < (page + 1) * ROWS_PER_PAGE; r++, n++) {
         read_season(&se, (int)g_histl.idx[r]);
-        sprintf(g_rows[n].cells[0], "%u", (unsigned)se.season_no);
+        year_text(se.season_no, g_rows[n].cells[0]);
         stem_display(se.champion_stem, g_rows[n].cells[1]);
         entry_name(se.awards[0], 11, nm);
         strcpy(g_rows[n].cells[2], nm);
@@ -2188,7 +2716,7 @@ static int build_hof_rows(int page)
         g_rows[n].ncells = 7;
         name_display(e.name, 12, nm);
         strcpy(g_rows[n].cells[0], nm[0] ? nm : "?");
-        sprintf(g_rows[n].cells[1], "%u", (unsigned)e.hof_season);
+        year_text(e.hof_season, g_rows[n].cells[1]);
         sprintf(g_rows[n].cells[2], "%u", (unsigned)e.seasons_played);
         if (e.pitcher) {
             fmt_count((int32_t)e.tot[13], g_rows[n].cells[3]);
@@ -2209,6 +2737,7 @@ static int build_hof_rows(int page)
 /* leaders row: rank (restarted per page), NAME, status mark, YRS, value */
 static int build_lead_rows(int cat, int page)
 {
+    const CatDef *c = &CAREER_CATS[cat];
     int n = 0, k, r0 = page * ROWS_PER_PAGE, r;
     for (r = r0; r < g_leadl.n && r < (page + 1) * ROWS_PER_PAGE; r++, n++) {
         Entry e;
@@ -2222,8 +2751,41 @@ static int build_lead_rows(int cat, int page)
                               : (e.status == STATUS_HOF ? 'H' : ' ');
         g_rows[n].cells[2][1] = 0;
         sprintf(g_rows[n].cells[3], "%u", (unsigned)e.seasons_played);
-        cat_format(cat, cat_value(&e, cat), val);
+        cat_format(c, cat_value(&e, c), val);
         strcpy(g_rows[n].cells[4], val);
+    }
+    for (k = n; k < MAX_ROWS; k++)
+        g_rows[k].ncells = 0;
+    return n;
+}
+
+/* the TEAM column of a team id: its MAJ abbreviation, else '?' (dynview.team_abbrs) */
+static const char *abbr_of(uint8_t id)
+{
+    int i;
+    for (i = 0; i < g_nab; i++)
+        if (g_abid[i] == id)
+            return g_abtxt[i];
+    return "?";
+}
+
+/* SEASON and BY YEAR leader rows of page from g_sbuf (C13.3): rank, NAME, YEAR (blank for BY YEAR),
+ * TEAM, VALUE; the rank counts from the top of the list */
+static int build_season_rows(const CatDef *c, int by_year, int page)
+{
+    int n = 0, k, r;
+    for (r = page * ROWS_PER_PAGE; r < g_sn && r < (page + 1) * ROWS_PER_PAGE; r++, n++) {
+        const SItem *it = &g_sbuf[r];
+        Row *row = &g_rows[n];
+        sprintf(row->cells[0], "#%d", r + 1);
+        entry_name(it->entry, 16, row->cells[1]);
+        if (by_year)
+            row->cells[2][0] = 0;
+        else
+            year_text(it->season, row->cells[2]);
+        strcpy(row->cells[3], abbr_of(it->team));
+        cat_format(c, (uint32_t)it->val, row->cells[4]);
+        row->ncells = 5;
     }
     for (k = n; k < MAX_ROWS; k++)
         g_rows[k].ncells = 0;
@@ -2238,7 +2800,7 @@ static int build_ms_rows(int page)
         MsRec *rec = &g_ms[g_msl.idx[r]];
         char nm[NAME_CAP_MAX], ev[64];
         g_rows[n].ncells = 3;
-        sprintf(g_rows[n].cells[0], "%u", (unsigned)rec->season);
+        year_text(rec->season, g_rows[n].cells[0]);
         entry_name(rec->idx, 16, nm);
         strcpy(g_rows[n].cells[1], nm);
         event_text(rec->kind, (int32_t)rec->value, ev);
@@ -2315,16 +2877,18 @@ done:
 }
 
 /* the hub rows (dynview.MENU_ROWS) */
+/* the hub rows (dynview.MENU_ROWS): the key of row k is its first char */
+static const char *MENU_ITEMS[N_MENU_ROWS] = {
+    "1  SEASON HISTORY", "2  HALL OF FAME", "3  LEADERS",
+    "4  MILESTONES", "5  LAST SEASON REVIEW", "6  OFFSEASON",
+    "7  DYNASTY SETTINGS", "8  ABOUT THE MODS", "9  SEASON AWARDS",
+    "0  SEASON STANDINGS", "W  WORLD SERIES" };
+
 static void build_menu_rows(void)
 {
-    static const char *items[N_MENU_ROWS] = {
-        "1  SEASON HISTORY", "2  HALL OF FAME", "3  CAREER LEADERS",
-        "4  MILESTONES", "5  LAST SEASON REVIEW", "6  OFFSEASON",
-        "7  DYNASTY SETTINGS", "8  ABOUT THE MODS", "9  SEASON AWARDS",
-        "0  SEASON STANDINGS", "W  WORLD SERIES" };
     int k;
     for (k = 0; k < N_MENU_ROWS; k++) {
-        strcpy(g_rows[k].cells[0], items[k]);
+        strcpy(g_rows[k].cells[0], MENU_ITEMS[k]);
         g_rows[k].ncells = 1;
     }
     for (; k < MAX_ROWS; k++)
@@ -2380,12 +2944,12 @@ static const char *playoff_label(void)
     return three ? "3 DIV NEXT YEAR" : "2 DIV NEXT YEAR";
 }
 
-/* DYNASTY SETTINGS page: row 0 ERA RULES, row 1 PLAYOFF FORMAT, row c the team g_tlg[c - 2]
- * (cursor c) */
+/* DYNASTY SETTINGS page: row 0 ERA RULES, row 1 PLAYOFF FORMAT, row 2 START YEAR (C13.1), row c
+ * the team g_tlg[c - SET_TEAM0] (cursor c) */
 static void build_settings_rows(int page)
 {
     int i, k = 0;
-    for (i = page * ROWS_PER_PAGE; i <= 1 + g_nteams && k < ROWS_PER_PAGE; i++, k++) {
+    for (i = page * ROWS_PER_PAGE; i < SET_TEAM0 + g_nteams && k < ROWS_PER_PAGE; i++, k++) {
         Row *row = &g_rows[k];
         if (i == 0) {
             strcpy(row->cells[0], "ERA RULES");
@@ -2393,9 +2957,12 @@ static void build_settings_rows(int page)
         } else if (i == 1) {
             strcpy(row->cells[0], "PLAYOFF FORMAT");
             strcpy(row->cells[1], playoff_label());
+        } else if (i == SET_START) {
+            strcpy(row->cells[0], "START YEAR");
+            sprintf(row->cells[1], "%ld", (long)start_year());
         } else {
-            strcpy(row->cells[0], g_tdisp[i - 2]);
-            strcpy(row->cells[1], ((g_mask >> g_tlg[i - 2]) & 1u)
+            strcpy(row->cells[0], g_tdisp[i - SET_TEAM0]);
+            strcpy(row->cells[1], ((g_mask >> g_tlg[i - SET_TEAM0]) & 1u)
                                   ? "YOU MANAGE" : "AI MANAGES");
         }
         row->ncells = 2;
@@ -2461,8 +3028,9 @@ static void build_ret_rows(int page)
 /* the seven phase 5 lines (the counts are uncapped totals) */
 static void build_ready_rows(uint32_t nret, uint32_t nhof, int launched)
 {
-    unsigned long n = (unsigned long)g_hdr_seasons;
+    char yr[16];
     int k;
+    year_text((int32_t)g_hdr_seasons + 1, yr);
     sprintf(g_rows[0].cells[0], "RETIRED: %lu   NEW HALL OF FAME: %lu",
             (unsigned long)nret, (unsigned long)nhof);
     sprintf(g_rows[1].cells[0], "ROOKIES DRAFTED: %lu", (unsigned long)g_rc.picks);
@@ -2471,7 +3039,7 @@ static void build_ready_rows(uint32_t nret, uint32_t nhof, int launched)
     sprintf(g_rows[4].cells[0], "PLAYERS RELEASED: %lu", (unsigned long)g_rc.rel);
     strcpy(g_rows[5].cells[0], "EVERY PLAYER AGED A YEAR AND DEVELOPED");
     if (launched)
-        sprintf(g_rows[6].cells[0], "ENTER: ON TO SEASON %lu", n + 1);
+        sprintf(g_rows[6].cells[0], "ENTER: ON TO %s", yr);
     else
         strcpy(g_rows[6].cells[0], "ENTER: BACK TO THE MENU");
     for (k = 0; k < 7; k++)
@@ -2516,15 +3084,22 @@ static int total_rows(State st)
         hist_scan(&g_histl);
         return g_histl.n;
     case SCREEN_HOF:
+        if (!g_hdr_seasons)
+            return 0;
         hof_scan(&g_hofl);
         return g_hofl.n;
     case SCREEN_LEADERS:
-        return leaders_count(st.cat);
+        return leaders_body(st, -1, &cols);
     case SCREEN_MILESTONES: {
         List b;
+        if (!g_hdr_seasons)
+            return 0;
         ms_scan(&b);
         return (int)b.n;
     }
+    case SCREEN_CARD:
+        card_collect(st.cat);
+        return g_ncard;
     case SCREEN_REVIEW:
         return build_review_rows();
     case SCREEN_OFFSEASON:
@@ -2538,7 +3113,7 @@ static int total_rows(State st)
     case SCREEN_BOX:
         return box_body(st, -1, &cols);
     case SCREEN_SETTINGS:
-        return 2 + g_nteams;
+        return SET_TEAM0 + g_nteams;
     case SCREEN_ABOUT:
         return N_ABOUT_ROWS;
     default:
@@ -2573,8 +3148,7 @@ static int refresh_rows(State st, const ColDef **cols)
     }
     switch (st.screen) {
     case SCREEN_LEADERS:
-        leaders_scan(&g_leadl, st.cat);
-        return build_lead_rows(st.cat, st.page);
+        return page_rows(leaders_body(st, st.page, cols), st.page);
     case SCREEN_HISTORY:
         hist_scan(&g_histl);
         return build_hist_rows(st.page);
@@ -2597,6 +3171,122 @@ static int refresh_rows(State st, const ColDef **cols)
     default:
         return build_review_rows();
     }
+}
+
+/* a state with no cursor, row and year (dynview.pack of a 3-tuple) */
+static State mk_state(int screen, int page, int32_t cat)
+{
+    State s;
+    s.screen = (int16_t)screen;
+    s.page = (int16_t)page;
+    s.cat = cat;
+    s.row = 0;
+    s.year = 0;
+    return s;
+}
+
+/* the category list of a LEADERS mode (dynview.leader_cats): CAREER, or SEASON for both season modes */
+static const CatDef *leader_cats(int mode)
+{
+    return mode == MODE_CAREER ? CAREER_CATS : SEASON_CATS;
+}
+
+static int leader_ncats(int mode)
+{
+    return mode == MODE_CAREER ? N_CAREER_CATS : N_SEASON_CATS;
+}
+
+/* the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode), SEASON AWARDS and the
+ * offseason RETIREMENTS phase */
+static int cursor_screen(State st)
+{
+    if (st.screen == SCREEN_HOF || st.screen == SCREEN_LEADERS || st.screen == SCREEN_AWARDS)
+        return 1;
+    return st.screen == SCREEN_OFFSEASON && (st.cat & 15) == OFF_RETIRE;
+}
+
+/* st with the cursor on row; the page follows (page = row / ROWS_PER_PAGE) */
+static State cursor_state(State st, int32_t row)
+{
+    st.row = row;
+    st.page = (int16_t)(row / ROWS_PER_PAGE);
+    return st;
+}
+
+/* UP / DOWN move the cursor one row within the list; PGUP / PGDN move the page and put the cursor
+ * on its first row, only when the page changes (dynview.cursor_move) */
+static State cursor_move(State st, int32_t key)
+{
+    int32_t n = total_rows(st), row = st.row;
+    int32_t page = st.page;
+    if (key == KEY_UP && row > 0)
+        row--;
+    else if (key == KEY_DOWN && row < n - 1)
+        row++;
+    else if (key == KEY_PGDN && page * ROWS_PER_PAGE + ROWS_PER_PAGE < n)
+        row = (page + 1) * ROWS_PER_PAGE;
+    else if (key == KEY_PGUP && page > 0)
+        row = (page - 1) * ROWS_PER_PAGE;
+    else
+        return st;
+    return cursor_state(st, row);
+}
+
+/* an AWARDS entry index as a player (dynview.award_entry): -1 for none, NO_AWARD or an index past
+ * the entry table */
+static int32_t award_entry(int32_t idx)
+{
+    if (idx < 0 || idx == NO_AWARD || (uint32_t)idx >= n_entries())
+        return -1;
+    return idx;
+}
+
+/* the player entry named by the cursor row of st (dynview.row_entry), -1 for none: a message row, an
+ * award with no player, an empty list or no history */
+static int32_t row_entry(State st)
+{
+    int32_t row = st.row;
+    if (g_hdr_seasons == 0)
+        return -1;
+    if (st.screen == SCREEN_HOF) {
+        hof_scan(&g_hofl);
+        return row < (int32_t)g_hofl.n ? (int32_t)g_hofl.idx[row] : -1;
+    }
+    if (st.screen == SCREEN_LEADERS) {
+        int mode = (int)(st.cat >> 5), idx = (int)(st.cat & 31), seen = 0;
+        if (mode == MODE_CAREER) {
+            leaders_scan(&g_leadl, idx);
+            return row < (int32_t)g_leadl.n ? (int32_t)g_leadl.idx[row] : -1;
+        }
+        season_scan(&SEASON_CATS[idx], mode == MODE_BYYEAR,
+                    mode == MODE_BYYEAR ? leaders_year(st) : 0, &seen);
+        return row < g_sn ? (int32_t)g_sbuf[row].entry : -1;
+    }
+    if (st.screen == SCREEN_AWARDS) {
+        int n = build_awards((long)g_hdr_seasons - st.cat);
+        return row < n ? award_entry(g_awd_idx[row]) : -1;
+    }
+    if (st.screen == SCREEN_OFFSEASON) {
+        uint32_t nret = 0, nhof = 0;
+        retire_scan(&nret, &nhof);
+        return row < (int32_t)g_retl.n ? (int32_t)g_retl.idx[row] : -1;
+    }
+    return -1;
+}
+
+/* the PLAYER CARD of entry, opened from the list state st (C13.5): ESC returns to st */
+static State open_card(State st, int32_t entry)
+{
+    g_card_back = st;
+    return mk_state(SCREEN_CARD, 0, entry);
+}
+
+/* st with the cursor on row (dynview.cursor_to): the SETTINGS cursor, or the row cursor (C13.4) */
+static State cursor_to(State st, int32_t row)
+{
+    if (st.screen == SCREEN_SETTINGS)
+        return mk_state(SCREEN_SETTINGS, (int)(row / ROWS_PER_PAGE), row);
+    return cursor_state(st, row);
 }
 
 /* the screens LEFT and RIGHT step a season on */
@@ -2622,12 +3312,12 @@ static State step(State in, int32_t key)
             s.cat = (int16_t)(s.cat >> 3);
             return s;
         }
+        /* the PLAYER CARD goes back to the list state it was opened from (C13.5) */
+        if (s.screen == SCREEN_CARD)
+            return g_card_back;
         if (s.screen == SCREEN_MENU)
             g_exit = 1;
-        s.screen = SCREEN_MENU;
-        s.page = 0;
-        s.cat = 0;
-        return s;
+        return mk_state(SCREEN_MENU, 0, 0);
     }
     if (s.screen == SCREEN_MENU) {
         if (key == 48) {
@@ -2660,23 +3350,38 @@ static State step(State in, int32_t key)
         if ((s.cat & 15) < OFF_READY && g_hdr_seasons > 0) {
             s.cat = (int16_t)(s.cat + 1);
             s.page = 0;
+            s.row = 0;
             return s;
         }
         if (s.cat >> 4) {
             g_exit = 1;
             return s;
         }
-        s.screen = SCREEN_MENU;
-        s.page = 0;
-        s.cat = 0;
-        return s;
+        return mk_state(SCREEN_MENU, 0, 0);
     }
-    /* DYNASTY SETTINGS: cat is the cursor (0 ERA RULES, 1 PLAYOFF FORMAT, c >= 2 team
-     * c - 2); ENTER on PLAYOFF FORMAT sets the format and reloads the teams, the other rows
-     * flip and save HISTORY.DAT; then the format is read again. The rest moves the cursor */
+    /* C on the RETIREMENTS phase opens the PLAYER CARD of the highlighted retiree (C13.4); ENTER
+     * keeps its walk meaning, and with no player the key does nothing */
+    if (s.screen == SCREEN_OFFSEASON && (key == KEY_CARD_CAP || key == KEY_CARD_LOW)
+        && (s.cat & 15) == OFF_RETIRE) {
+        int32_t entry = row_entry(s);
+        if (entry >= 0)
+            return open_card(s, entry);
+    }
+    /* DYNASTY SETTINGS: cat is the cursor (0 ERA RULES, 1 PLAYOFF FORMAT, 2 START YEAR, c >= 3
+     * team c - 3); ENTER on PLAYOFF FORMAT sets the format and reloads the teams, the other rows
+     * flip and save HISTORY.DAT; then the format is read again. START YEAR steps with LEFT and
+     * RIGHT (-1, +1), '-' (-10), '+' and '=' (+10). The rest moves the cursor */
     if (s.screen == SCREEN_SETTINGS) {
-        int n = 2 + g_nteams;
+        int n = SET_TEAM0 + g_nteams;
+        if (s.cat == SET_START && (key == KEY_LEFT || key == KEY_RIGHT || key == KEY_MINUS
+                                   || key == KEY_PLUS || key == KEY_EQUALS)) {
+            start_year_step(key == KEY_LEFT ? -1 : key == KEY_RIGHT ? 1
+                            : key == KEY_MINUS ? -10 : 10);
+            return s;
+        }
         if (key == KEY_ENTER) {
+            if (s.cat == SET_START)
+                return s;
             if (s.cat == 1) {
                 set_playoff_format(g_fmt_wanted);
                 load_teams();
@@ -2684,7 +3389,7 @@ static State step(State in, int32_t key)
                 if (s.cat == 0)
                     g_era = (uint8_t)(g_era == 0 ? 1 : (g_era == 2 ? 0 : 2));
                 else
-                    g_mask ^= (uint32_t)1 << g_tlg[s.cat - 2];
+                    g_mask ^= (uint32_t)1 << g_tlg[s.cat - SET_TEAM0];
                 save_settings();
             }
             load_fmt();
@@ -2704,6 +3409,27 @@ static State step(State in, int32_t key)
         } else
             return s;
         s.page = (int16_t)(s.cat / ROWS_PER_PAGE);
+        return s;
+    }
+    /* PLAYER CARD: PGUP / PGDN page the season table, CARD_SEASON_ROWS lines a page (C13.5) */
+    if (s.screen == SCREEN_CARD) {
+        if (key == KEY_PGDN) {
+            card_collect(s.cat);
+            if ((s.page + 1) * CARD_SEASON_ROWS < g_ncard)
+                s.page++;
+        } else if (key == KEY_PGUP && s.page > 0) {
+            s.page--;
+        }
+        return s;
+    }
+    /* the row cursor (C13.4): UP / DOWN / PGUP / PGDN move it, ENTER opens the card of its row */
+    if (cursor_screen(s) && (key == KEY_UP || key == KEY_DOWN || key == KEY_PGUP
+                             || key == KEY_PGDN))
+        return cursor_move(s, key);
+    if (cursor_screen(s) && key == KEY_ENTER) {
+        int32_t entry = row_entry(s);
+        if (entry >= 0)
+            return open_card(s, entry);
         return s;
     }
     /* WORLD SERIES keys 1..7: the box score of game key - 49 of the season (cat seasons
@@ -2750,9 +3476,44 @@ static State step(State in, int32_t key)
         return s;
     }
     if (s.screen == SCREEN_LEADERS && (key == KEY_LEFT || key == KEY_RIGHT)) {
+        /* the category of the mode cycles; BY YEAR keeps its season (C13.3) */
         int d = (key == KEY_LEFT) ? -1 : 1;
+        int mode = (int)(s.cat >> 5), idx = (int)(s.cat & 31);
+        int n = leader_ncats(mode);
+        return mk_state(SCREEN_LEADERS, 0, mode * MODE_SHIFT + (idx + d + n) % n);
+    }
+    /* TAB cycles the LEADERS mode CAREER -> SEASON -> BY YEAR; the category stays when the new
+     * mode has it (by label), else the first one. Entering BY YEAR picks the default season */
+    if (s.screen == SCREEN_LEADERS && key == KEY_TAB) {
+        int mode = (int)(s.cat >> 5), idx = (int)(s.cat & 31), nmode = (mode + 1) % 3;
+        const char *label = leader_cats(mode)[idx].label;
+        int j, nidx = 0;
+        State r;
+        for (j = 0; j < leader_ncats(nmode); j++) {
+            if (strcmp(leader_cats(nmode)[j].label, label) == 0) {
+                nidx = j;
+                break;
+            }
+        }
+        r = mk_state(SCREEN_LEADERS, 0, nmode * MODE_SHIFT + nidx);
+        if (nmode == MODE_BYYEAR)
+            r.year = default_year();
+        return r;
+    }
+    /* BY YEAR: '-' steps to the older season with lines, '+' or '=' to the newer; nothing past
+     * either end (C13.3) */
+    if (s.screen == SCREEN_LEADERS && (s.cat >> 5) == MODE_BYYEAR
+        && (key == KEY_MINUS || key == KEY_PLUS || key == KEY_EQUALS)) {
+        int32_t cur = leaders_year(s), to = 0;
+        if (key == KEY_MINUS) {
+            if (!season_near(cur, 0, &to))
+                return s;
+        } else if (!season_near(cur, 1, &to)) {
+            return s;
+        }
+        s.row = 0;
         s.page = 0;
-        s.cat = (int16_t)((s.cat + d + N_CATS) % N_CATS);
+        s.year = to;
         return s;
     }
     /* SEASON AWARDS, SEASON STANDINGS and WORLD SERIES: LEFT goes back a season while the
@@ -2762,6 +3523,7 @@ static State step(State in, int32_t key)
         if ((long)g_hdr_seasons - s.cat > 1) {
             s.cat = (int16_t)(s.cat + 1);
             s.page = 0;
+            s.row = 0;
         }
         return s;
     }
@@ -2769,6 +3531,7 @@ static State step(State in, int32_t key)
         if (s.cat > 0) {
             s.cat = (int16_t)(s.cat - 1);
             s.page = 0;
+            s.row = 0;
         }
         return s;
     }
@@ -2831,6 +3594,23 @@ static const ColDef COLS_BOX[] = {
     { " ", CX(26), 4, 1 }, { " ", CX(30), 4, 1 }, { " ", CX(34), 4, 1 },
     { " ", CX(38), 4, 1 } };
 
+static const ColDef COLS_SEASON_LEADERS[] = {
+    { "#", CX(0), 4, 0 }, { "NAME", CX(4), 16, 0 }, { "YEAR", CX(20), 5, 1 },
+    { "TEAM", CX(25), 4, 1 }, { "VALUE", CX(29), 12, 1 } };
+
+/* PLAYER CARD season tables (C13.5): batters and pitchers */
+static const ColDef COLS_CARD_BAT[] = {
+    { "YEAR", CX(0), 4, 0 }, { "TEAM", CX(4), 4, 0 }, { "G", CX(8), 4, 1 },
+    { "AB", CX(12), 5, 1 }, { "H", CX(17), 4, 1 }, { "HR", CX(21), 4, 1 },
+    { "RBI", CX(25), 4, 1 }, { "SB", CX(29), 4, 1 }, { "AVG", CX(33), 5, 1 },
+    { "WAR", CX(38), 5, 1 } };
+
+static const ColDef COLS_CARD_PIT[] = {
+    { "YEAR", CX(0), 4, 0 }, { "TEAM", CX(4), 4, 0 }, { "G", CX(8), 4, 1 },
+    { "W", CX(12), 3, 1 }, { "L", CX(15), 3, 1 }, { "SV", CX(18), 4, 1 },
+    { "IP", CX(22), 6, 1 }, { "SO", CX(28), 4, 1 }, { "ERA", CX(32), 5, 1 },
+    { "WAR", CX(37), 5, 1 } };
+
 #define NCOLS(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 static int n_cols(const ColDef *cols)
@@ -2859,6 +3639,12 @@ static int n_cols(const ColDef *cols)
         return NCOLS(COLS_SERIES);
     if (cols == COLS_BOX)
         return NCOLS(COLS_BOX);
+    if (cols == COLS_SEASON_LEADERS)
+        return NCOLS(COLS_SEASON_LEADERS);
+    if (cols == COLS_CARD_BAT)
+        return NCOLS(COLS_CARD_BAT);
+    if (cols == COLS_CARD_PIT)
+        return NCOLS(COLS_CARD_PIT);
     return NCOLS(COLS_MILESTONES);
 }
 
@@ -2894,6 +3680,33 @@ static const ColDef *body_cols(State st)
     default:
         return COLS_SINGLE;
     }
+}
+
+/* LEADERS (C13.3, dynview.leaders_body): the row count of st's mode and category; the rows of page
+ * into g_rows (page < 0 counts only) and their columns into *cols. A season mode with no line of
+ * the season (SEASON: no line at all) is one NO_LINES_TEXT row */
+static int leaders_body(State st, int page, const ColDef **cols)
+{
+    int mode = (int)(st.cat >> 5), idx = (int)(st.cat & 31), seen = 0, n;
+    int by_year = mode == MODE_BYYEAR;
+    const CatDef *c;
+    if (mode == MODE_CAREER) {
+        leaders_scan(&g_leadl, idx);
+        *cols = COLS_LEADERS;
+        if (page >= 0)
+            build_lead_rows(idx, page);
+        return (int)g_leadl.n;
+    }
+    c = &SEASON_CATS[idx];
+    n = season_scan(c, by_year, by_year ? leaders_year(st) : 0, &seen);
+    if (seen == 0) {
+        *cols = COLS_SINGLE;
+        return msg_row(page, NO_LINES_TEXT);
+    }
+    *cols = COLS_SEASON_LEADERS;
+    if (page >= 0)
+        build_season_rows(c, by_year, page);
+    return n;
 }
 
 /* offseason phase of st: its rows for page into g_rows (page < 0 counts only).
@@ -3143,6 +3956,34 @@ static int box_body(State st, int page, const ColDef **cols)
     return ord;
 }
 
+/* 1 when entry names a player of the history (PLAYER CARD, C13.5) */
+static int card_valid(int32_t entry)
+{
+    return entry >= 0 && (uint32_t)entry < n_entries();
+}
+
+/* the card's player name (dynview.card_name): first then last, upper case, '?' when blank */
+static void card_name(const Entry *e, char *dst)
+{
+    char first[9], last[13];
+    int i;
+    field_of(e->name + 12, 8, first);
+    field_of(e->name, 12, last);
+    dst[0] = 0;
+    if (first[0])
+        strcpy(dst, first);
+    if (first[0] && last[0])
+        strcat(dst, " ");
+    if (last[0])
+        strcat(dst, last);
+    if (!dst[0]) {
+        strcpy(dst, "?");
+        return;
+    }
+    for (i = 0; dst[i]; i++)
+        dst[i] = (char)ascii_up((uint8_t)dst[i]);
+}
+
 /* footer line: the offseason's ENTER label follows its phase */
 static const char *footer_of(State st)
 {
@@ -3150,9 +3991,13 @@ static const char *footer_of(State st)
         "0-9 W SELECT   ESC EXIT",
         "PGUP PGDN   ESC MENU",
         "PGUP PGDN   ESC MENU",
-        "LEFT RIGHT CATEGORY   ESC MENU",
+        "LEFT RIGHT STAT  TAB MODE  ENTER CARD",
         "PGUP PGDN   ESC MENU",
         "ENTER MENU   ESC MENU" };
+    if (st.screen == SCREEN_LEADERS && (st.cat >> 5) == MODE_BYYEAR)
+        return "LEFT RIGHT STAT  - + YEAR  TAB MODE";
+    if (st.screen == SCREEN_CARD)
+        return "PGUP PGDN SEASONS   ESC BACK";
     if (st.screen == SCREEN_MENU && (st.cat >> 4))
         return g_hdr_seasons == 0 ? "ENTER PLAY BALL" : "0-9 W SELECT   ENTER PLAY BALL";
     if (st.screen == SCREEN_SETTINGS)
@@ -3176,7 +4021,7 @@ static const char *footer_of(State st)
 static void screen_title(State st, char *dst)
 {
     if (st.screen == SCREEN_MENU && (st.cat >> 4))
-        sprintf(dst, "DYNASTY MODE: SEASON %lu", (unsigned long)g_hdr_seasons + 1);
+        sprintf(dst, "DYNASTY MODE: %ld", (long)year_of((int32_t)g_hdr_seasons + 1));
     else if (st.screen == SCREEN_MENU)
         strcpy(dst, "DYNASTY");
     else if (st.screen == SCREEN_HISTORY)
@@ -3184,8 +4029,25 @@ static void screen_title(State st, char *dst)
     else if (st.screen == SCREEN_HOF)
         strcpy(dst, "HALL OF FAME");
     else if (st.screen == SCREEN_LEADERS) {
-        strcpy(dst, "CAREER LEADERS: ");
-        strcat(dst, CAT_LABEL[st.cat]);
+        int mode = (int)(st.cat >> 5);
+        const char *label = leader_cats(mode)[st.cat & 31].label;
+        if (mode == MODE_CAREER) {
+            strcpy(dst, "CAREER LEADERS: ");
+            strcat(dst, label);
+        } else if (mode == MODE_SEASON) {
+            strcpy(dst, "SEASON LEADERS: ");
+            strcat(dst, label);
+        } else
+            sprintf(dst, "%ld LEADERS: %s", (long)year_of(leaders_year(st)), label);
+    } else if (st.screen == SCREEN_CARD) {
+        /* the player's name, first then last, upper case; '?' for no entry (C13.5) */
+        if (!card_valid(st.cat))
+            strcpy(dst, "?");
+        else {
+            Entry e;
+            read_entry(&e, (uint32_t)st.cat);
+            card_name(&e, dst);
+        }
     } else if (st.screen == SCREEN_MILESTONES)
         strcpy(dst, "MILESTONES");
     else if (st.screen == SCREEN_SETTINGS)
@@ -3194,33 +4056,32 @@ static void screen_title(State st, char *dst)
         sprintf(dst, "ABOUT THE MODS %d/%d", st.page + 1,
                 (N_ABOUT_ROWS + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE);
     else if (st.screen == SCREEN_AWARDS) {
-        /* no recorded season: no season number to show (it would read SEASON 0) */
+        /* no recorded season: no season number to show (it would read a year of 0) */
         if (g_hdr_seasons)
-            sprintf(dst, "SEASON %ld AWARDS", (long)g_hdr_seasons - st.cat);
+            sprintf(dst, "%ld AWARDS", (long)year_of((int32_t)g_hdr_seasons - st.cat));
         else
             strcpy(dst, "SEASON AWARDS");
     } else if (st.screen == SCREEN_STANDINGS) {
         if (g_hdr_seasons)
-            sprintf(dst, "SEASON %ld STANDINGS", (long)g_hdr_seasons - st.cat);
+            sprintf(dst, "%ld STANDINGS", (long)year_of((int32_t)g_hdr_seasons - st.cat));
         else
             strcpy(dst, "SEASON STANDINGS");
     } else if (st.screen == SCREEN_SERIES) {
         if (g_hdr_seasons)
-            sprintf(dst, "SEASON %ld WORLD SERIES", (long)g_hdr_seasons - st.cat);
+            sprintf(dst, "%ld WORLD SERIES", (long)year_of((int32_t)g_hdr_seasons - st.cat));
         else
             strcpy(dst, "WORLD SERIES");
     } else if (st.screen == SCREEN_BOX) {
         if (g_hdr_seasons)
-            sprintf(dst, "SEASON %ld WS GAME %d", (long)g_hdr_seasons - (st.cat >> 3),
-                    (st.cat & 7) + 1);
+            sprintf(dst, "%ld WS GAME %d",
+                    (long)year_of((int32_t)g_hdr_seasons - (st.cat >> 3)), (st.cat & 7) + 1);
         else
             strcpy(dst, "WS BOX SCORE");
     }
     else if (st.screen == SCREEN_OFFSEASON) {
         int phase = st.cat & 15;
-        unsigned long n = (unsigned long)g_hdr_seasons;
         if (phase == OFF_REVIEW)
-            sprintf(dst, "1/6 SEASON %lu IN REVIEW", n);
+            sprintf(dst, "1/6 %ld IN REVIEW", (long)year_of((int32_t)g_hdr_seasons));
         else if (phase == OFF_RETIRE)
             strcpy(dst, "2/6 RETIREMENTS");
         else if (phase == OFF_DRAFT)
@@ -3230,9 +4091,9 @@ static void screen_title(State st, char *dst)
         else if (phase == OFF_FA)
             strcpy(dst, "5/6 FREE AGENT SIGNINGS");
         else
-            sprintf(dst, "6/6 SEASON %lu IS READY", n + 1);
+            sprintf(dst, "6/6 %ld IS READY", (long)year_of((int32_t)g_hdr_seasons + 1));
     } else if (g_hdr_seasons)
-        sprintf(dst, "SEASON %u IN REVIEW", (unsigned)g_hdr_seasons);
+        sprintf(dst, "%ld IN REVIEW", (long)year_of((int32_t)g_hdr_seasons));
     else
         strcpy(dst, "LAST SEASON REVIEW");
 }
@@ -3246,6 +4107,202 @@ static void draw_panel(void)
     rect_fb(4, 195, 315, 195, C_BLACK);
     rect_fb(4, 4, 4, 195, C_BLACK);
     rect_fb(315, 4, 315, 195, C_BLACK);
+}
+
+/* ---------------- PLAYER CARD (C13.5) ---------------- */
+
+/* the POS name of a pos1 byte (dynview.pos_name): '?' out of range */
+static const char *pos_name(int p)
+{
+    return p >= 0 && p < (int)(sizeof POS_NAMES / sizeof POS_NAMES[0]) ? POS_NAMES[p] : "?";
+}
+
+/* the season table cells of one PLAYER CARD row (dynview.card_cells) from the totals t, WAR10 and
+ * the entry's pitcher flag: the batter columns, or the pitcher columns */
+static void card_cells(const uint32_t *t, int32_t war10, int pitcher, const char *first,
+                       const char *team, char cells[][SLEN])
+{
+    strcpy(cells[0], first);
+    strcpy(cells[1], team);
+    if (pitcher) {
+        fmt_count((int32_t)t[0], cells[2]);
+        fmt_count((int32_t)t[13], cells[3]);
+        fmt_count((int32_t)t[14], cells[4]);
+        fmt_count((int32_t)t[15], cells[5]);
+        fmt_ip(t[19], cells[6]);
+        fmt_count((int32_t)t[23], cells[7]);
+        fmt_era100((int32_t)era100_of(t), cells[8]);
+        fmt_war10(war10, cells[9]);
+    } else {
+        fmt_count((int32_t)t[0], cells[2]);
+        fmt_count((int32_t)t[1], cells[3]);
+        fmt_count((int32_t)t[2], cells[4]);
+        fmt_count((int32_t)t[5], cells[5]);
+        fmt_count((int32_t)t[7], cells[6]);
+        fmt_count((int32_t)t[10], cells[7]);
+        fmt_avg((int32_t)avg_of(t), cells[8]);
+        fmt_war10(war10, cells[9]);
+    }
+}
+
+/* the five info rows of the PLAYER CARD (dynview.card_info): position and hands, status, years and
+ * seasons, then the ratings of the latest line (last, NULL with none) */
+static void card_info(const Entry *e, const Line *last, char info[][SLEN])
+{
+    char a[SLEN], b[SLEN];
+    const uint8_t *r;
+    if (!last)
+        strcpy(info[0], pos_name(e->pos1));
+    else
+        sprintf(info[0], "%s  BATS %c  THROWS %c", pos_name(last->pos1),
+                BATS_NAMES[(last->hand >> 1) & 3], (last->hand & 8) ? 'R' : 'L');
+    if (e->status == STATUS_ACTIVE) {
+        sprintf(info[1], "ACTIVE, AGE %u", (unsigned)e->age + 1u);
+    } else if (e->status == STATUS_RETIRED) {
+        year_text(e->last_season, a);
+        sprintf(info[1], "RETIRED %s", a);
+    } else if (e->status == STATUS_HOF) {
+        year_text(e->hof_season, a);
+        sprintf(info[1], "HALL OF FAME %s", a);
+    } else {
+        info[1][0] = 0;
+    }
+    year_text(e->first_season, a);
+    year_text(e->last_season, b);
+    sprintf(info[2], "%s-%s  %u SEASONS", a, b, (unsigned)e->seasons_played);
+    if (!last) {
+        strcpy(info[3], NO_RATINGS_TEXT);
+        info[4][0] = 0;
+        return;
+    }
+    r = last->ratings;
+    if (e->pitcher) {
+        sprintf(info[3], "CTL %u  VEL %u  END %u", (unsigned)r[6], (unsigned)r[7],
+                (unsigned)r[8]);
+        info[4][0] = 0;
+    } else {
+        sprintf(info[3], "POW %u  H&R %u  SPD %u", (unsigned)r[0], (unsigned)r[2],
+                (unsigned)r[3]);
+        sprintf(info[4], "RNG %u  ARM %u  BUNT %u", (unsigned)r[4], (unsigned)r[5],
+                (unsigned)r[1]);
+    }
+}
+
+/* the column headers of a table at y (the render rules: right aligned columns end at their edge) */
+static void draw_headers(const ColDef *cols, int ncols, int y)
+{
+    int ci;
+    for (ci = 0; ci < ncols; ci++) {
+        const ColDef *cd = &cols[ci];
+        uint8_t h[16];
+        int hl = (int)strlen(cd->header);
+        if (hl > cd->w)
+            hl = cd->w;
+        memcpy(h, cd->header, (size_t)hl);
+        h[hl] = 0;
+        if (cd->ralign)
+            draw_text(g_fb, g_main, cd->x + cd->w * CHAR_W - text_width(g_main, h), y, h,
+                      C_BLACK);
+        else
+            draw_text(g_fb, g_main, cd->x, y, h, C_BLACK);
+    }
+}
+
+/* one PLAYER CARD table row at y0 (dynview.draw_row): the tan band with the grid line under it,
+ * the cells cut to their columns; a row of one cell is drawn unclipped from the first column */
+static void draw_card_row(const ColDef *cols, char cells[][SLEN], int ncells, int y0)
+{
+    int ci;
+    rect_fb(8, y0, 311, y0 + 9, C_ROW_TAN);
+    if (ncells == 1) {
+        draw_text(g_fb, g_main, cols[0].x, y0 + 2, (const uint8_t *)cells[0], C_BLACK);
+    } else {
+        for (ci = 0; ci < ncells; ci++) {
+            const ColDef *cd = &cols[ci];
+            uint8_t shown[SLEN];
+            int cl = (int)strlen(cells[ci]);
+            if (cl > cd->w)
+                cl = cd->w;
+            memcpy(shown, cells[ci], (size_t)cl);
+            shown[cl] = 0;
+            if (cd->ralign)
+                draw_text(g_fb, g_main, cd->x + cd->w * CHAR_W - text_width(g_main, shown),
+                          y0 + 2, shown, C_BLACK);
+            else
+                draw_text(g_fb, g_main, cd->x, y0 + 2, shown, C_BLACK);
+        }
+    }
+    rect_fb(8, y0 + 10, 311, y0 + 10, C_GRID_GRAY);
+}
+
+/* the PLAYER CARD body of entry on the season page (dynview.draw_card, C13.5): the portrait of the
+ * latest line's face (or a gray box with a ?), the five info rows, the season table header, the
+ * page's season rows (newest first) and the CAREER row at its fixed slot */
+static void draw_card(int32_t entry, int page)
+{
+    int valid = card_valid(entry), has_last = 0, pitch = 0, ncols, k, r;
+    Entry e;
+    Line last;
+    char info[5][SLEN], cells[CARD_CELLS][SLEN], yr[SLEN];
+    const ColDef *cols;
+    memset(&e, 0, sizeof e);
+    memset(&last, 0, sizeof last);
+    if (valid) {
+        read_entry(&e, (uint32_t)entry);
+        pitch = e.pitcher != 0;
+        card_collect(entry);
+        has_last = g_ncard > 0 && card_line(g_card[g_ncard - 1].off, &last);
+    }
+    if (has_last && portrait_of(last.face)) {
+        for (k = 0; k < PORTRAIT_H; k++)
+            memcpy(g_fb + (long)(PORTRAIT_Y + k) * FB_W + PORTRAIT_X, g_portrait + k * PORTRAIT_W,
+                   PORTRAIT_W);
+    } else {
+        int q = glyph_of(g_main, '?')->rows;
+        rect_fb(PORTRAIT_X, PORTRAIT_Y, PORTRAIT_X + PORTRAIT_W - 1,
+                PORTRAIT_Y + PORTRAIT_H - 1, C_GRID_GRAY);
+        draw_text(g_fb, g_main,
+                  PORTRAIT_X + (PORTRAIT_W - text_width(g_main, (const uint8_t *)"?")) / 2,
+                  PORTRAIT_Y + (PORTRAIT_H - q) / 2, (const uint8_t *)"?", C_WHITE);
+    }
+    if (!valid) {
+        strcpy(info[0], "?");
+        info[1][0] = 0;
+        info[2][0] = 0;
+        strcpy(info[3], NO_RATINGS_TEXT);
+        info[4][0] = 0;
+    } else {
+        card_info(&e, has_last ? &last : NULL, info);
+    }
+    for (k = 0; k < 5; k++)
+        draw_text(g_fb, g_main, INFO_X, INFO_Y[k], (const uint8_t *)info[k], C_WHITE);
+    cols = pitch ? COLS_CARD_PIT : COLS_CARD_BAT;
+    ncols = pitch ? NCOLS(COLS_CARD_PIT) : NCOLS(COLS_CARD_BAT);
+    rect_fb(8, CARD_HDR_Y, 311, CARD_HDR_Y + 9, C_HEADER_GOLD);
+    draw_headers(cols, ncols, CARD_HDR_Y + 2);
+    if (!valid || g_ncard == 0) {
+        strcpy(cells[0], NO_CARD_TEXT);
+        draw_card_row(cols, cells, 1, CARD_ROW_Y0);
+    } else {
+        for (r = 0; r < CARD_SEASON_ROWS; r++) {
+            int idx = g_ncard - 1 - (page * CARD_SEASON_ROWS + r);
+            Line ln;
+            if (idx < 0 || !card_line(g_card[idx].off, &ln))
+                break;
+            year_text(ln.season, yr);
+            card_cells(ln.tot, ln.war10, pitch, yr, abbr_of(ln.team), cells);
+            draw_card_row(cols, cells, ncols, CARD_ROW_Y0 + r * ROW_H);
+        }
+    }
+    /* CAREER: the entry's totals at the fixed slot after the season rows; its label is not cut */
+    if (valid) {
+        card_cells(e.tot, e.war10, pitch, "", "", cells);
+        draw_card_row(cols, cells, ncols, CARD_CAREER_Y);
+    } else {
+        cells[0][0] = 0;
+        draw_card_row(cols, cells, 1, CARD_CAREER_Y);
+    }
+    draw_text(g_fb, g_main, cols[0].x, CARD_CAREER_Y + 2, (const uint8_t *)"CAREER", C_BLACK);
 }
 
 /* render into g_fb: panel, bold title with a drop shadow, gold header row,
@@ -3265,24 +4322,22 @@ static void render(State st)
     tx = 8 + (304 - text_width(g_bold, up)) / 2;
     draw_text(g_fb, g_bold, tx + 1, 11, up, C_BLACK);
     draw_text(g_fb, g_bold, tx, 10, up, C_WHITE);
-    /* SETTINGS: the cursor (st.cat) row of the page is highlighted */
-    hot = (st.screen == SCREEN_SETTINGS) ? st.cat - st.page * ROWS_PER_PAGE : -1;
+    if (st.screen == SCREEN_CARD) {
+        draw_card(st.cat, st.page);
+        draw_text(g_fb, g_main, 10, 185, (const uint8_t *)footer_of(st), C_WHITE);
+        return;
+    }
+    /* the highlighted row of the page: SETTINGS' cat row, the cursor row (C13.4) on the cursor
+     * screens */
+    if (st.screen == SCREEN_SETTINGS)
+        hot = st.cat - st.page * ROWS_PER_PAGE;
+    else if (cursor_screen(st))
+        hot = st.row - st.page * ROWS_PER_PAGE;
+    else
+        hot = -1;
     g_nrows = refresh_rows(st, &cols);
     rect_fb(8, 24, 311, 33, C_HEADER_GOLD);
-    for (ci = 0; ci < n_cols(cols); ci++) {
-        const ColDef *cd = &cols[ci];
-        uint8_t h[16];
-        int hl = (int)strlen(cd->header);
-        if (hl > cd->w)
-            hl = cd->w;
-        memcpy(h, cd->header, (size_t)hl);
-        h[hl] = 0;
-        if (cd->ralign)
-            draw_text(g_fb, g_main, cd->x + cd->w * CHAR_W - text_width(g_main, h),
-                      26, h, C_BLACK);
-        else
-            draw_text(g_fb, g_main, cd->x, 26, h, C_BLACK);
-    }
+    draw_headers(cols, n_cols(cols), 26);
     for (r = 0; r < g_nrows; r++) {
         const Row *row = &g_rows[r];
         int y0 = 35 + r * ROW_H;
@@ -3519,7 +4574,90 @@ static int32_t parse_key(const uint8_t *t)
     return (int32_t)strtol((const char *)t, NULL, 0);
 }
 
-/* apply step() for each token in order, ignoring the exit flag */
+/* ---------------- clicks (C13.6) ---------------- */
+
+/* the body row (0..ROWS_PER_PAGE - 1) whose band (BODY_Y0 + r * ROW_H .. + 9) holds y, -1 for none */
+static int band_row(int y)
+{
+    int r, off;
+    if (y < BODY_Y0)
+        return -1;
+    r = (y - BODY_Y0) / ROW_H;
+    off = (y - BODY_Y0) % ROW_H;
+    return off <= 9 && r < ROWS_PER_PAGE ? r : -1;
+}
+
+/* the screens where LEFT and RIGHT step something (a title click there is LEFT or RIGHT) */
+static int left_right_screen(int screen)
+{
+    return screen == SCREEN_LEADERS || screen == SCREEN_AWARDS || screen == SCREEN_STANDINGS
+           || screen == SCREEN_SERIES || screen == SCREEN_BOX;
+}
+
+/* the key of a left click at (x, y) (dynview.click_to_key, C13.6), in order: a hub row band is that
+ * row's key; a SETTINGS row band is the row with ENTER (START YEAR: LEFT when x < 160, else RIGHT);
+ * a band of a cursor screen row is the row with ENTER (the RETIREMENTS phase: C); a title band where
+ * LEFT and RIGHT act is LEFT or RIGHT; a footer band is PGUP or PGDN. *row is the cursor row to set
+ * first (-1: none), *key is -1 when the click does nothing */
+static void click_to_key(State st, int x, int y, int32_t *key, int32_t *row)
+{
+    int r = band_row(y);
+    int title_menu = g_hdr_seasons == 0 && (st.cat >> 4) != 0;
+    *key = -1;
+    *row = -1;
+    if (st.screen == SCREEN_MENU && r >= 0 && r < N_MENU_ROWS && !title_menu) {
+        *key = (int32_t)(unsigned char)MENU_ITEMS[r][0];
+        return;
+    }
+    if (st.screen == SCREEN_SETTINGS && r >= 0) {
+        int32_t cur = st.page * ROWS_PER_PAGE + r;
+        if (cur < SET_TEAM0 + g_nteams) {
+            *row = cur;
+            if (cur == SET_START)
+                *key = x < 160 ? KEY_LEFT : KEY_RIGHT;
+            else
+                *key = KEY_ENTER;
+            return;
+        }
+    }
+    if (cursor_screen(st) && r >= 0) {
+        int32_t cur = st.page * ROWS_PER_PAGE + r;
+        if (cur < total_rows(st)) {
+            *row = cur;
+            *key = st.screen == SCREEN_OFFSEASON ? KEY_CARD_CAP : KEY_ENTER;
+            return;
+        }
+    }
+    if (y >= TITLE_Y0 && y <= TITLE_Y1
+        && (left_right_screen(st.screen) || (st.screen == SCREEN_SETTINGS && st.cat == SET_START))) {
+        *key = x < 160 ? KEY_LEFT : KEY_RIGHT;
+        return;
+    }
+    if (y >= FOOTER_Y0)
+        *key = x < 160 ? KEY_PGUP : KEY_PGDN;
+}
+
+/* one key on the screen state (dynview.step) */
+static void apply_key(int32_t key)
+{
+    g_state = step(g_state, key);
+}
+
+/* a left click at (x, y): click_to_key, the cursor row set first when there is one, then the key
+ * (dynview main) */
+static void apply_click(int x, int y)
+{
+    int32_t key, row;
+    click_to_key(g_state, x, y, &key, &row);
+    if (key < 0)
+        return;
+    if (row >= 0)
+        g_state = cursor_to(g_state, row);
+    apply_key(key);
+}
+
+/* apply the /KEYS tokens in order (dynview.parse_keys, C13.6): a number is a key, Lx.y a left
+ * click at (x, y), R a right click (ESC); the exit flag is ignored */
 static void parse_keys(const uint8_t *s)
 {
     uint8_t tok[64];
@@ -3531,8 +4669,15 @@ static void parse_keys(const uint8_t *s)
             s++;
         }
         tok[i] = 0;
-        if (i > 0)
-            g_state = step(g_state, parse_key(tok));
+        if (i == 1 && tok[0] == 'R') {
+            apply_key(KEY_ESC);
+        } else if (i > 0 && tok[0] == 'L') {
+            int x = 0, y = 0;
+            if (sscanf((const char *)tok + 1, "%d.%d", &x, &y) == 2)
+                apply_click(x, y);
+        } else if (i > 0) {
+            apply_key(parse_key(tok));
+        }
         if (s[0] == ',')
             s++;
     }
@@ -3570,7 +4715,7 @@ static const uint8_t *arg_switch(const uint8_t *a, const char *name)
 static int usage(void)
 {
     fprintf(stderr, "usage: DYNVIEW [/REVIEW] [/OFFSEASON] [/TITLE] [/MENU] "
-            "[/KEYS:k,k,...] [/RAW:FILE] [LEAGUE_DIR [FONT_DIR]]\n");
+            "[/KEYS:k,k,...] [/RAW:FILE] [/ANMS:DIR] [/GAME:DIR] [LEAGUE_DIR [FONT_DIR]]\n");
     return 2;
 }
 
@@ -3679,6 +4824,75 @@ static unsigned read_key(void)
     return (unsigned)(rg.x.ax & 0xff00u);
 }
 
+/* INT 33h at start (AX=0): g_mouse is 1 when a driver answers; no mouse means keyboard only */
+static void mouse_reset(void)
+{
+    union REGS rg;
+    rg.x.ax = 0;
+    int86(0x33, &rg, &rg);
+    g_mouse = rg.x.ax != 0;
+    g_mbtn = 0;
+}
+
+/* the range of the mode 13h screen after the mode set: x = CX in 0..319, y = DX in 0..199 */
+static void mouse_range(void)
+{
+    union REGS rg;
+    if (!g_mouse)
+        return;
+    rg.x.ax = 7;
+    rg.x.cx = 0;
+    rg.x.dx = 319;
+    int86(0x33, &rg, &rg);
+    rg.x.ax = 8;
+    rg.x.cx = 0;
+    rg.x.dx = 199;
+    int86(0x33, &rg, &rg);
+}
+
+/* the pointer shown (AX=1) while waiting, hidden (AX=2) while the screen is drawn */
+static void mouse_show(int on)
+{
+    union REGS rg;
+    if (!g_mouse)
+        return;
+    rg.x.ax = on ? 1 : 2;
+    int86(0x33, &rg, &rg);
+}
+
+/* the state of the screen equal in every field */
+static int state_eq(State a, State b)
+{
+    return a.screen == b.screen && a.page == b.page && a.cat == b.cat && a.row == b.row
+           && a.year == b.year;
+}
+
+/* the next input of the interactive loop (C13.6): 1 a key (*key), 2 a left click at (*x, *y),
+ * 3 a right click, 0 none yet. With no mouse it waits for a key. A click fires on the release of
+ * a button, at the pointer position then */
+static int next_input(int32_t *key, int *x, int *y)
+{
+    union REGS rg;
+    int b, released;
+    if (!g_mouse || kbhit()) {
+        *key = (int32_t)read_key();
+        return 1;
+    }
+    rg.x.ax = 3;
+    int86(0x33, &rg, &rg);
+    b = rg.x.bx & 3;
+    released = g_mbtn & ~b;
+    g_mbtn = b;
+    if (released & 1) {
+        *x = (int)rg.x.cx;
+        *y = (int)rg.x.dx;
+        return 2;
+    }
+    if (released & 2)
+        return 3;
+    return 0;
+}
+
 #endif /* __WATCOMC__ */
 
 int main(int argc, char **argv)
@@ -3710,6 +4924,14 @@ int main(int argc, char **argv)
         } else if ((v = arg_switch((const uint8_t *)argv[i], "raw")) != NULL) {
             raw_path = v;
             raw_mode = 1;
+        } else if ((v = arg_switch((const uint8_t *)argv[i], "anms")) != NULL) {
+            if (strlen((const char *)v) >= sizeof g_anms)
+                return usage();
+            strcpy(g_anms, (const char *)v);
+        } else if ((v = arg_switch((const uint8_t *)argv[i], "game")) != NULL) {
+            if (strlen((const char *)v) >= sizeof g_game)
+                return usage();
+            strcpy(g_game, (const char *)v);
         } else if (argv[i][0] == '/') {
             if (DIR_SEP == '/' && strchr(argv[i] + 1, '/') != NULL) {
                 /* host absolute path (never a DOS switch): positional */
@@ -3765,9 +4987,7 @@ int main(int argc, char **argv)
     /* /OFFSEASON starts at phase 0 with the launched flag (cat 16); /TITLE is the
      * MENU with cat 16; /MENU opens the item CONTROL holds: 2 DYNASTY SETTINGS,
      * 3 ABOUT THE MODS, else the hub (precedence /OFFSEASON, /REVIEW, /TITLE, /MENU) */
-    st.screen = SCREEN_MENU;
-    st.page = 0;
-    st.cat = 0;
+    st = mk_state(SCREEN_MENU, 0, 0);
     if (offseason) {
         st.screen = SCREEN_OFFSEASON;
         st.cat = 16;
@@ -3812,26 +5032,40 @@ int main(int argc, char **argv)
 #ifdef __WATCOMC__
     {
         int quit = 0;
+        mouse_reset();
         save_video();
         init_vga_mode13();
+        mouse_range();
         load_dac();
-        render(st);
+        render(g_state);
         fb_to_vram();
         g_dirty = 0;
+        mouse_show(1);
         while (!quit) {
-            unsigned k = read_key();
-            State prev = st;
-            st = step(st, (int32_t)k);
+            int32_t key = 0;
+            int x = 0, y = 0, ev;
+            State prev = g_state;
+            ev = next_input(&key, &x, &y);
+            if (ev == 0)
+                continue;
+            if (ev == 1)
+                apply_key(key);
+            else if (ev == 2)
+                apply_click(x, y);
+            else
+                apply_key(KEY_ESC);
             if (g_exit) {
+                mouse_show(0);
                 restore_video();
                 quit = 1;
-            } else if (st.screen != prev.screen || st.page != prev.page
-                       || st.cat != prev.cat || g_dirty) {
-                /* render after a key changed the state or an ENTER changed the
-                 * settings (the state itself is the same then) */
-                render(st);
+            } else if (!state_eq(prev, g_state) || g_dirty) {
+                /* render after a key or click changed the state or an ENTER changed the
+                 * settings (the state itself is the same then); the pointer is hidden meanwhile */
+                mouse_show(0);
+                render(g_state);
                 fb_to_vram();
                 g_dirty = 0;
+                mouse_show(1);
             }
         }
         if (menu)

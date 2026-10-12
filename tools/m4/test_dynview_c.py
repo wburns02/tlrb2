@@ -1265,7 +1265,7 @@ def test_dos_parity(tmp_path):
             ('k51', 'DYNVIEW.EXE /RAW:OUT.RAW /KEYS:51 LEAGUE FONTS'),
             ('lead4p1',
              'DYNVIEW.EXE /RAW:OUT2.RAW /KEYS:51,0x4d00,0x4d00,0x4d00,0x4d00,'
-             '0x4d,51 LEAGUE FONTS'),
+             '0x5100 LEAGUE FONTS'),
             ('review', 'DYNVIEW.EXE /RAW:OUT3.RAW /REVIEW LEAGUE FONTS')):
         rc = run_dos(d, [args])
         assert rc == 0, f'{tag}: dos rc {rc}'
