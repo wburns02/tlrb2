@@ -106,8 +106,9 @@ of Fame already carry forward. Past-season standings: DONE 2026-10-11 as DYNASTY
 STANDINGS, built from the w_l every season entry already stores (no archive read needed), split into divisions
 like the stock screen. Past-season league leaders: DONE 2026-10-11 as C7 leader records (BA, HR, RBI, H, SB, W,
 ERA, SO, SV per league) on SEASON AWARDS. World Series line scores: DONE 2026-10-11 as C7 series records (from
-PLAYOFFS.AL at roll time) on DYNASTY MODE > W WORLD SERIES (per game R H E, the winner, WINS 4-2). Still open: full
-playoff box scores of an archived season (SEASONS\Snn). No pre-roll guard is needed (probe 2026-10-08): SEASON > START NEW SEASON
+PLAYOFFS.AL at roll time) on DYNASTY MODE > W WORLD SERIES (per game R H E, the winner, WINS 4-2). World Series
+box scores: DONE 2026-10-11 as C7 BOXSCORE.DAT (per player AB R H RBI BB SO, pitchers IP H R ER BB SO) on WORLD
+SERIES keys 1-7. Still open: earlier playoff rounds (only the World Series games are in PLAYOFFS.AL at roll time). No pre-roll guard is needed (probe 2026-10-08): SEASON > START NEW SEASON
 on BACK's post World Series menu saves the season and exits through the BAT, which archives and rolls it like QUIT.
 
 ## Next season sequence like BBPRO / ClaudeBall (Will, 2026-10-08)
