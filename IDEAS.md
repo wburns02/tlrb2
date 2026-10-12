@@ -72,9 +72,9 @@ write it, so a new shape is: new fence rows plus a panorama redrawn to match.
 Taken: batting-order slot roles (src/engine/ai/LineupBuilder.ts) into C6 step 7. Earlier: trade value bands and
 position weights (TradeEngine), retirement shape (DevelopmentEngine, since superseded by C1).
 Queued:
-- Awards (OffseasonEngine.generateAwards): the set MVP, Cy Young, Rookie of the Year, Gold Glove, Silver Slugger
-  per league. Take the set, not the method: ClaudeBall picks from ratings; ours should pick from season stats and
-  the C3 WAR10 HISTWR already computes. Storage: HISTORY season entry bytes 88..127 (reserved for P4 awards).
+- Awards: DONE. MVP, Cy Young and Rookie went into the season table earlier; 2026-10-11 every winner (also Gold
+  Glove and Silver Slugger, per league) is logged per season as a C7 award record in MILESTON.DAT, shown on DYNASTY
+  MODE > 9 SEASON AWARDS with LEFT RIGHT season browsing.
 - Milestones (player/CareerEngine.ts MILESTONE_DEFS): career thresholds (500 HR, 3000 H, 300 W, 3000 K, ...) and
   season marks (40 HR, .300, 20 W, sub-2.00 ERA). HISTWR sees career totals before and after each season, so it
   can log "reached 3000 hits in season N" for a league-news / history screen.
@@ -102,8 +102,9 @@ chain, byte-exact against the Python reference in the browser too; rookies draw 
 Stock Start New Season wipes the simulated season and box scores. Dynasty now archives first: ARCHIVE.BAT (written
 by bat_patch) copies the finished pre-roll league (all V20s, MAJ, PLAYOFFS, HISTORY, MILESTON, RETIRED) to the first
 free C:\SEASONS\Snn before the roll, verified byte-exact in the browser. Career stats, history, awards and the Hall
-of Fame already carry forward. Open: browse an archived season in game (DYNVIEW "past seasons": standings, leaders,
-playoff box scores from SEASONS\Snn). No pre-roll guard is needed (probe 2026-10-08): SEASON > START NEW SEASON
+of Fame already carry forward. Past-season standings: DONE 2026-10-11 as DYNASTY MODE > 0 SEASON
+STANDINGS, built from the w_l every season entry already stores (no archive read needed). Still open: leaders and
+playoff box scores of an archived season (SEASONS\Snn). No pre-roll guard is needed (probe 2026-10-08): SEASON > START NEW SEASON
 on BACK's post World Series menu saves the season and exits through the BAT, which archives and rolls it like QUIT.
 
 ## Next season sequence like BBPRO / ClaudeBall (Will, 2026-10-08)

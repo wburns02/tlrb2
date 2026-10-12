@@ -458,7 +458,7 @@ install (idempotent, asserts stock bytes, `--revert` restores them byte for byte
 
 | item | CONTROL[1] | errorlevel | BAT route | program |
 |---|---|---|---|---|
-| DYNASTY MODE | 8 | 8 | `:dynmenu` | `dynview /menu`: the hub (history, HOF, leaders, milestones, review, offseason, settings, about, awards) |
+| DYNASTY MODE | 8 | 8 | `:dynmenu` | `dynview /menu`: the hub (history, HOF, leaders, milestones, review, offseason, settings, about, awards, standings) |
 | CREATE A PLAYER | 9 | 9 | `:create` | `create` (CREATE.EXE) |
 | DYNASTY SETTINGS | 10 | 10 | `:dynmenu` | `dynview /menu`: SETTINGS |
 | ABOUT THE MODS | 11 | 11 | `:dynmenu` | `dynview /menu`: ABOUT |
@@ -486,7 +486,7 @@ The labels `dynmenu` and `create` are free in the shipped BAT. The routes and la
 
 DYNVIEW `/MENU` (Python `--menu N` / `--control PATH`): reads CONTROL in the cwd; d[1] in 8..11 gives item d[1] - 8,
 else 0. Item 2 opens SETTINGS, 3 ABOUT, anything else the hub. Precedence /OFFSEASON, /REVIEW, /TITLE, /MENU. The hub
-has eight rows (7 DYNASTY SETTINGS, 8 ABOUT THE MODS) with or without a recorded season. Amendment 2026-10-11: a ninth row
+has eight rows (7 DYNASTY SETTINGS, 8 ABOUT THE MODS; ten with the amendments below) with or without a recorded season. Amendment 2026-10-11: a ninth row
 `9  SEASON AWARDS` (screen 9, footers `1-9 SELECT ...`). SEASON AWARDS shows one season, newest first: LEFT goes one
 season back, RIGHT one forward (page reset), PGUP/PGDN page by 12, ESC to the hub. Title `SEASON N AWARDS`. Rows are
 that season's C7 award records in kind order (AWARD, NAME, VALUE: `7.4 WAR`, `.992 FLD`, `45.2 RUNS`); a season with no
