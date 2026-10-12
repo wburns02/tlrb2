@@ -28,7 +28,7 @@ Install = DATA1.ARJ extracted to C:\TONY2 (what INSTALL does). The game reads ar
 
 Everything is reached from the game's own menus (contract C10, notes/M4_CONTRACT.md):
 - DYNASTY on the menu bar of every screen that has one (MAIN, BACK, MANAGE, UTIL): DYNASTY MODE (season history,
-  Hall of Fame, career leaders, milestones, last season review, offseason, season awards, season standings),
+  Hall of Fame, career leaders, milestones, last season review, offseason, season awards with league leaders, season standings by division),
   CREATE A PLAYER, DYNASTY SETTINGS
   (era rules, which teams you manage), ABOUT THE MODS.
 - The offseason runs itself after the World Series (SEASON > START NEW SEASON): aging, retirements, rookie draft,

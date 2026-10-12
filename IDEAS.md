@@ -103,8 +103,9 @@ Stock Start New Season wipes the simulated season and box scores. Dynasty now ar
 by bat_patch) copies the finished pre-roll league (all V20s, MAJ, PLAYOFFS, HISTORY, MILESTON, RETIRED) to the first
 free C:\SEASONS\Snn before the roll, verified byte-exact in the browser. Career stats, history, awards and the Hall
 of Fame already carry forward. Past-season standings: DONE 2026-10-11 as DYNASTY MODE > 0 SEASON
-STANDINGS, built from the w_l every season entry already stores (no archive read needed). Still open: leaders and
-playoff box scores of an archived season (SEASONS\Snn). No pre-roll guard is needed (probe 2026-10-08): SEASON > START NEW SEASON
+STANDINGS, built from the w_l every season entry already stores (no archive read needed), split into divisions
+like the stock screen. Past-season league leaders: DONE 2026-10-11 as C7 leader records (BA, HR, RBI, H, SB, W,
+ERA, SO, SV per league) on SEASON AWARDS. Still open: playoff box scores of an archived season (SEASONS\Snn). No pre-roll guard is needed (probe 2026-10-08): SEASON > START NEW SEASON
 on BACK's post World Series menu saves the season and exits through the BAT, which archives and rolls it like QUIT.
 
 ## Next season sequence like BBPRO / ClaudeBall (Will, 2026-10-08)
