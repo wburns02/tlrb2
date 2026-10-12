@@ -121,7 +121,7 @@ def frame_px(k):
 def ctx_for(league, anms=None, fonts=None):
     anms = anms or os.path.join(league, 'NOANMS')
     return {'league_dir': league, 'anms_dir': anms, 'teams': cr.teams(league),
-            'faces': rookies.load_faces(anms), 'fonts': fonts}
+            'faces': rookies.load_faces(anms), 'anm_count': cr.portrait_count(anms), 'fonts': fonts}
 
 
 def walk(ctx, keys, st=None):
@@ -679,6 +679,107 @@ def test_load_faces(tmp_path):
     assert rookies.load_faces(str(tmp_path / 'nope')) == rookies.default_faces()
     big = make_anms(str(tmp_path / 'B'), n=40, faces=bytes(982))
     assert rookies.load_faces(big) == rookies.default_faces()
+
+
+# ---------------------------------------------------------------- face list (C14.1)
+def face_edit(ctx):
+    """P2 (empty pitcher) with the cursor on the FACE row (8)."""
+    return walk(ctx, [DOWN] * 8, to_edit(ctx, 0, 1))[0]
+
+
+def face_value(st, ctx):
+    return cr._edit_value(st, 'face', ctx, False)
+
+
+def test_face_walk_len_rules(tmp_path):
+    assert cr.portrait_count(str(tmp_path / 'nope')) == 0
+    assert cr.face_walk_len(30, 0) == 30
+    assert cr.face_walk_len(97, 97) == 97
+    assert cr.face_walk_len(97, 400) == 97         # c = 400 exactly: no customs
+    assert cr.face_walk_len(97, 401) == 98
+    assert cr.face_walk_len(97, 403) == 100
+    assert cr.face_walk_len(97, 1000) == 97 + 981 - 400     # c capped at 981
+
+
+def test_face_list_generic_only(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')), make_anms(str(tmp_path / 'A'), n=97))
+    st = face_edit(ctx)                            # default face 30 with 97 faces
+    assert st['form']['face'] == 30
+    st, _ = walk(ctx, [RIGHT] * 65, st)
+    assert (st['form']['face'], face_value(st, ctx)) == (95, '96 OF 97')
+    st, _ = walk(ctx, [PGDN], st)                  # 95 + 10 wraps to 8
+    assert (st['form']['face'], face_value(st, ctx)) == (8, '9 OF 97')
+    st, _ = walk(ctx, [PGUP], st)                  # 8 - 10 wraps to 95
+    assert st['form']['face'] == 95
+    st, _ = walk(ctx, [RIGHT] * 2, st)             # 95 + 2 wraps to 0
+    assert (st['form']['face'], face_value(st, ctx)) == (0, '1 OF 97')
+    st, _ = walk(ctx, [LEFT], st)                  # 0 - 1 wraps to 96
+    assert (st['form']['face'], face_value(st, ctx)) == (96, '97 OF 97')
+    st, _ = walk(ctx, [PGUP], st)                  # 96 - 10
+    assert st['form']['face'] == 86
+    seen, st = [], face_edit(ctx)
+    for _ in range(97):                            # 97 is prime: PGDN laps every face
+        st, _ = walk(ctx, [PGDN], st)
+        seen.append(st['form']['face'])
+    assert sorted(seen) == list(range(97))
+
+
+def test_face_list_with_customs(tmp_path):
+    faces = bytes(1 if k == 5 else 0 for k in range(97))
+    ctx = ctx_for(make_league(str(tmp_path / 'L')), make_anms(str(tmp_path / 'A'), n=403, faces=faces))
+    assert (ctx['faces'][0], ctx['anm_count']) == (97, 403)
+    st = face_edit(ctx)                            # default 30
+    st, _ = walk(ctx, [RIGHT] * 66, st)            # 96: the last generic face
+    assert face_value(st, ctx) == '97 OF 97'
+    for want, text in ((400, 'CUSTOM 1'), (401, 'CUSTOM 2'), (402, 'CUSTOM 3'), (0, '1 OF 97')):
+        st, _ = walk(ctx, [RIGHT], st)
+        assert (st['form']['face'], face_value(st, ctx)) == (want, text)
+    st, _ = walk(ctx, [PGUP], st)                  # 0 - 10 wraps to list position 90
+    assert (st['form']['face'], face_value(st, ctx)) == (90, '91 OF 97')
+    st, _ = walk(ctx, [RIGHT] * 7, st)             # position 97: first custom
+    assert (st['form']['face'], face_value(st, ctx)) == (400, 'CUSTOM 1')
+    st, _ = walk(ctx, [PGDN], st)                  # 97 + 10 wraps to 7
+    assert (st['form']['face'], face_value(st, ctx)) == (7, '8 OF 97')
+    st, _ = walk(ctx, [LEFT] * 8, st)              # 7 - 8 wraps to position 99
+    assert (st['form']['face'], face_value(st, ctx)) == (402, 'CUSTOM 3')
+
+
+def test_face_list_exactly_400_has_no_customs(tmp_path):
+    anms = make_anms(str(tmp_path / 'A'), n=400, faces=bytes(97))
+    ctx = ctx_for(make_league(str(tmp_path / 'L')), anms)
+    assert (ctx['faces'][0], ctx['anm_count']) == (97, 400)
+    st = face_edit(ctx)
+    st, _ = walk(ctx, [RIGHT] * 67, st)            # 30 + 67 wraps to 0
+    assert (st['form']['face'], face_value(st, ctx)) == (0, '1 OF 97')
+    st, _ = walk(ctx, [PGDN], st)
+    assert st['form']['face'] == 10
+    st, _ = walk(ctx, [LEFT] * 11, st)             # 10 - 11 wraps to 96
+    assert st['form']['face'] == 96
+
+
+def test_face_keys_on_other_rows_do_nothing(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')), make_anms(str(tmp_path / 'A'), n=97))
+    st = to_edit(ctx, 0, 1)
+    assert walk(ctx, [PGDN, PGUP], st)[0]['form'] == st['form']          # LAST NAME row
+    st4 = walk(ctx, [DOWN] * 4, st)[0]                                    # AGE row
+    assert walk(ctx, [PGDN, PGUP], st4)[0]['form'] == st4['form']
+
+
+def test_custom_face_record_group_and_portrait(tmp_path):
+    faces = bytes(1 if k == 5 else 0 for k in range(97))
+    lg = make_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg, make_anms(str(tmp_path / 'A'), n=403, faces=faces))
+    keys = [ENTER, DOWN, ENTER] + typed('Ruiz') + [DOWN] + typed('Tom') + [DOWN] * 7
+    st, _ = walk(ctx, keys + [RIGHT] * 68 + [DOWN, ENTER])        # face 401, then SAVE
+    assert st['screen'] == cr.S_DONE and st['form']['face'] == 401
+    rec = cr.record(st['image'], 1)
+    assert struct.unpack_from('<H', rec, rookies.OFF_PORTRAIT)[0] == 401
+    assert rec[rookies.OFF_HAND] & 1 == 0                         # custom face: group 0
+    assert open(os.path.join(lg, 'BOS.V20'), 'rb').read()[295 + 143:295 + 286] == rec
+    form5 = dict(st['form'], face=5)                              # generic face 5: flag 1
+    rec5 = cr.build_record(form5, True, 100, ctx['faces'][1])
+    assert struct.unpack_from('<H', rec5, rookies.OFF_PORTRAIT)[0] == 5
+    assert rec5[rookies.OFF_HAND] & 1 == 1
 
 
 # ---------------------------------------------------------------- CONTROL

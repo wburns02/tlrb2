@@ -542,3 +542,63 @@ def test_3div_team_list_table_parity(tmp_path):
     fonts = synth_fonts(os.path.join(work, 'fonts'))
     parity(tmp_path, [], base=base, fonts=fonts)
     parity(tmp_path, [DOWN] * 5 + [ENTER], base=base, fonts=fonts)
+
+
+# ---------------------------------------------------------------- parity: face list (C14.1)
+# Synthetic fonts again, so these run without the game fonts. Generic faces 0..G-1 and customs
+# 400..c-1 (C14.1): G = FACEGRP.DAT length, c = PORTRAIT.ANM count.
+FLAG5 = bytes(1 if k == 5 else 0 for k in range(97))
+FACE_P2 = [ENTER, DOWN, ENTER]                     # P2, empty pitcher: FACE is row 8, SAVE row 9
+SAVE_FACE_P2 = FACE_P2 + typed('Ruiz') + [DOWN] + typed('Tom') + [DOWN] * 7
+
+
+def _face_setup(tmp_path, n_frames, faces, count=None):
+    """(anms dir, synthetic fonts): PORTRAIT.ANM with n_frames frames, FACEGRP.DAT = faces, and
+    the header count patched to count when given (a count past the frames)."""
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    anms = make_anms(os.path.join(work, 'anms'), n=n_frames, faces=faces)
+    if count is not None:
+        path = os.path.join(anms, 'PORTRAIT.ANM')
+        data = open(path, 'rb').read()
+        open(path, 'wb').write(struct.pack('<H', count) + data[2:])
+    return anms, synth_fonts(os.path.join(work, 'fonts'))
+
+
+def test_parity_face_list_generic_only(tmp_path):
+    """G = c = 97: the list is 0..96, wraps both ways, and a save writes the generic flag."""
+    anms, fonts = _face_setup(tmp_path, 97, None)
+    keys = FACE_P2 + [DOWN] * 8 + [RIGHT] * 65 + [PGDN, PGUP, RIGHT, RIGHT, LEFT, LEFT, PGUP]
+    parity(tmp_path, keys, anms_path=anms, fonts=fonts)
+    st, _ = parity(tmp_path, SAVE_FACE_P2 + [PGDN, PGDN, DOWN, ENTER], anms_path=anms, fonts=fonts)
+    assert st['screen'] == cr.S_DONE and st['form']['face'] == 50
+
+
+def test_parity_face_list_with_customs(tmp_path):
+    """G = 97, c = 403: the list is 0..96 then 400..402; wraps and PGUP / PGDN cross into customs,
+    and saves of custom 401 (group 0) and generic 5 (group 1) match the V20 bytes."""
+    anms, fonts = _face_setup(tmp_path, 403, FLAG5)
+    keys = FACE_P2 + [DOWN] * 8 + [RIGHT] * 70 + [PGUP] + [RIGHT] * 7 + [PGDN] + [LEFT] * 8
+    keys += [PGDN, PGUP]
+    st, _ = parity(tmp_path, keys, anms_path=anms, fonts=fonts)
+    assert st['form']['face'] == 402
+    st, _ = parity(tmp_path, SAVE_FACE_P2 + [RIGHT] * 68 + [DOWN, ENTER], anms_path=anms, fonts=fonts)
+    assert st['screen'] == cr.S_DONE and st['form']['face'] == 401
+    st, _ = parity(tmp_path, SAVE_FACE_P2 + [LEFT] * 25 + [DOWN, ENTER], anms_path=anms, fonts=fonts)
+    assert st['screen'] == cr.S_DONE and st['form']['face'] == 5
+
+
+def test_parity_face_list_exactly_400(tmp_path):
+    """c = 400: no customs, the list is the 97 generic faces only."""
+    anms, fonts = _face_setup(tmp_path, 400, bytes(97))
+    keys = FACE_P2 + [DOWN] * 8 + [RIGHT] * 67 + [PGDN] + [LEFT] * 11 + [PGUP, PGDN]
+    parity(tmp_path, keys, anms_path=anms, fonts=fonts)
+
+
+def test_parity_face_list_count_capped_981(tmp_path):
+    """Header count 1000 (past the 981 cap, and past the 403 frames in the file): the list is
+    97 + 981 - 400 = 678 entries, so PGUP from 30 lands on custom 971 (position 668)."""
+    anms, fonts = _face_setup(tmp_path, 403, bytes(97), count=1000)
+    keys = FACE_P2 + [DOWN] * 8 + [PGUP] * 4
+    st, _ = parity(tmp_path, keys, anms_path=anms, fonts=fonts)
+    assert st['form']['face'] == 971
+    parity(tmp_path, keys + [PGUP], anms_path=anms, fonts=fonts)
