@@ -498,6 +498,13 @@ season browsing as SEASON AWARDS, title `SEASON N STANDINGS`. Rows come from the
 with any games, a header row (`AMERICAN LEAGUE`, `NATIONAL LEAGUE`) then its teams by PCT desc, W desc, id asc (TEAM, W,
 L, PCT, GB as `-`, `4`, `4.5`, mark `WS` for the champion, `P` for the other pennant winner). A team with no MAJ stem
 shows `TEAM n`. No games in either league, or a season past 64: `NO STANDINGS RECORDED`.
+Third amendment 2026-10-11: SEASON STANDINGS follows the stock Season > Standings screen. A league splits into its two
+MAJ divisions (FORMATS.md: slot = division * 8 + i, East slots 0..7, West 8..15; league-global id = slot, NL slot + 16)
+when both halves have a team with games: blocks `AL WEST`, `AL EAST`, `NL WEST`, `NL EAST` in that order (the stock
+screen's order), each sorted and GB-measured on its own. A league with games in only one half keeps the one
+`AMERICAN LEAGUE` / `NATIONAL LEAGUE` block. GB is written the stock way: `-` for 0, else `N.0` or `N.5` (`9.0`, `1.5`,
+`-2.0`). With no recorded season the season screens' titles carry no number: `SEASON AWARDS`, `SEASON STANDINGS`,
+`LAST SEASON REVIEW` (a954686).
 
 DYNASTY SETTINGS edits the C2 header fields that had no UI: byte 10 era mode (ENTER cycles REAL CALENDAR (0) ->
 RESERVE CLAUSE (1) -> FREE AGENCY (2) -> REAL CALENDAR; any other value shows RESERVE CLAUSE and goes to FREE AGENCY)
