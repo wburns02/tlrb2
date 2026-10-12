@@ -2049,7 +2049,7 @@ def test_standings_about_rows_and_columns_fit():
 
 # ---------------------------------------------------------------- world series
 SW = dynview.SCREEN_SERIES
-SERIES_FOOTER = 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'
+SERIES_FOOTER = '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
 # a game: (visitor id, home id, visitor runs, home runs, (visitor hits, home hits),
 # (visitor errors, home errors)). AL ids 0..15 (BOSTON 0), NL 16..31 (ATLANTA 16)
 SERIES6 = [(0, 16, 3, 5, (7, 9), (1, 0)), (0, 16, 6, 1, (9, 4), (0, 2)),
@@ -2137,7 +2137,7 @@ def test_series_hub_key_and_footers(tmp_path):
     assert dynview.step((SW, 0, 0), ESC, data) == (HUB, 0)
     assert dynview.screen_title((SW, 0, 0), data) == 'SEASON 3 WORLD SERIES'
     assert dynview.screen_title((SW, 0, 2), data) == 'SEASON 1 WORLD SERIES'
-    assert dynview.footer_text((SW, 0, 0), data) == SERIES_FOOTER == STAND_FOOTER
+    assert dynview.footer_text((SW, 0, 0), data) == SERIES_FOOTER
     assert dynview.FOOTERS[SW] == SERIES_FOOTER
     assert dynview.footer_text(HUB, data) == '0-9 W SELECT   ESC EXIT'
     assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
@@ -2325,3 +2325,249 @@ def test_series_columns_fit():
     assert all(x + w * dynview.CHAR_W <= 10 + 42 * dynview.CHAR_W
                for _h, x, w, _a in dynview.COLS_SERIES)
     assert [h for h, _x, _w, _a in dynview.COLS_SERIES] == ['TEAM', 'R', 'H', 'E', ' ']
+
+
+# ---------------------------------------------------------------- BOX SCORE (C10 fifth amendment)
+SB = dynview.SCREEN_BOX
+BOX_FOOTER = 'LEFT RIGHT GAME   PGUP PGDN   ESC SERIES'
+HDR_AB = ('AB', 'R', 'H', 'RBI', 'BB', 'SO')
+PIT_HDR = ('PITCHING', 'IP', 'H', 'R', 'ER', 'BB', 'SO')
+
+
+def box_rec(season, g, flags, idx, stats, b=0, i=0):
+    """one 16 B BOXSCORE.DAT record; stats is 8 numbers (batting AB R H RBI HR BB SO SB,
+    pitching IP10 H R ER HR BB SO BF)"""
+    return struct.pack('<HBBHBB', season, g, flags, idx, b, i) + bytes(stats)
+
+
+def write_box(ldir, recs):
+    (ldir / 'BOXSCORE.DAT').write_bytes(b''.join(recs))
+
+
+def game_ms(season, games):
+    """MILESTON.DAT kind 192 + g records of season for each game g in games (visitor 0,
+    home 16, 3-5): the game records only, no hits and errors"""
+    return [(season, 0 * 256 + 16, 192 + g, 3 * 256 + 5) for g in games]
+
+
+# game 1 of season 3: BOSTON (visitor) and ATLANTA (home); entries 0 HITTER, A, 5 ACE, P,
+# 1, 2 and 6 are PLAYER01, PLAYER02, PLAYER06 (make_data)
+BOX_G0 = [box_rec(3, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0)),
+          box_rec(3, 0, 2, 5, (72, 5, 2, 2, 1, 1, 8, 30)),
+          box_rec(3, 0, 2, 1, (1, 1, 0, 0, 0, 0, 0, 1)),
+          box_rec(3, 0, 1, 2, (3, 0, 1, 0, 0, 2, 0, 0)),
+          box_rec(3, 0, 3, 6, (100, 9, 4, 4, 2, 3, 5, 40))]
+BOX_G0_ROWS = [('BOSTON',) + HDR_AB,
+               ('HITTER, A', '4', '1', '2', '1', '0', '1'),
+               PIT_HDR,
+               ('ACE, P', '7.2', '5', '2', '2', '1', '8'),
+               ('PLAYER01, B', '0.1', '1', '0', '0', '0', '0'),
+               ('ATLANTA',) + HDR_AB,
+               ('PLAYER02, B', '3', '0', '1', '0', '2', '0'),
+               PIT_HDR,
+               ('PLAYER06, B', '10.0', '9', '4', '4', '3', '5')]
+
+
+def box_all_rows(state, data):
+    """every row of the paged BOX SCORE state's game"""
+    n = dynview.total_rows(state, data)
+    return [r for p in range((n + 11) // 12) for r in dynview.rows((SB, p, state[2]), data)]
+
+
+def test_box_ws_footer_and_box_footer(tmp_path):
+    ldir = make_series(tmp_path, game_ms(3, (0,)))
+    data = dynview.load_data(str(ldir))
+    assert SERIES_FOOTER == '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
+    assert len(SERIES_FOOTER) == 42
+    assert dynview.footer_text((SW, 0, 0), data) == SERIES_FOOTER
+    assert dynview.FOOTERS[SB] == BOX_FOOTER
+    assert dynview.footer_text((SB, 0, 0), data) == BOX_FOOTER
+    assert dynview.SCREEN_BOX == 12
+
+
+def test_box_keys_open_existing_games(tmp_path):
+    """keys 1..7 open game key - 49 of the season when its kind 192 + g record is there; a
+    missing game, a non-game key and a season past 64 or with no seasons leave the series"""
+    ldir = make_series(tmp_path, game_ms(3, (0, 1, 3, 6)) + game_ms(1, (0,)))
+    data = dynview.load_data(str(ldir))
+    for key in (49, 50, 52, 55):
+        assert dynview.step((SW, 0, 0), key, data) == ((SB, 0, key - 49), 0)
+    for key in (51, 53, 54, 48, 56):
+        assert dynview.step((SW, 0, 0), key, data) == ((SW, 0, 0), 0)
+    # season 1 (cat 2) has game 1 only; season 2 (cat 1) has no game records
+    assert dynview.step((SW, 0, 2), 49, data) == ((SB, 0, 16), 0)
+    assert dynview.step((SW, 0, 2), 50, data) == ((SW, 0, 2), 0)
+    assert dynview.step((SW, 0, 1), 49, data) == ((SW, 0, 1), 0)
+    # the hub and the offseason keep their own keys
+    assert dynview.step(HUB, 49, data) == ((1, 0, 0), 0)
+    for seasons, want in ((64, (SB, 0, 0)), (65, (SW, 0, 0))):
+        (tmp_path / ('s%d' % seasons)).mkdir()
+        ldir = make_series(tmp_path / ('s%d' % seasons), game_ms(seasons, (0,)))
+        p = ldir / 'HISTORY.DAT'
+        d = bytearray(p.read_bytes())
+        d[4], d[5] = seasons & 255, seasons >> 8
+        p.write_bytes(bytes(d))
+        assert dynview.step((SW, 0, 0), 49, dynview.load_data(str(ldir))) == (want, 0)
+    (tmp_path / 'empty').mkdir()
+    empty = dynview.load_data(str(tmp_path / 'empty'))
+    assert dynview.step((SW, 0, 0), 49, empty) == ((SW, 0, 0), 0)
+
+
+def test_box_title(tmp_path):
+    ldir = make_series(tmp_path, game_ms(3, range(7)) + game_ms(1, (0,)))
+    data = dynview.load_data(str(ldir))
+    assert dynview.screen_title((SB, 0, 0), data) == 'SEASON 3 WS GAME 1'
+    assert dynview.screen_title((SB, 0, 6), data) == 'SEASON 3 WS GAME 7'
+    assert dynview.screen_title((SB, 0, 9), data) == 'SEASON 2 WS GAME 2'
+    assert dynview.screen_title((SB, 0, 16), data) == 'SEASON 1 WS GAME 1'
+    (tmp_path / 'empty').mkdir()
+    empty = dynview.load_data(str(tmp_path / 'empty'))
+    assert dynview.screen_title((SB, 0, 0), empty) == 'WS BOX SCORE'
+    assert dynview.rows((SB, 0, 0), empty) == [('NO DYNASTY HISTORY YET',)]
+    assert dynview.total_rows((SB, 0, 0), empty) == 0
+
+
+def test_box_rows_full_game(tmp_path):
+    """both sides: team row, batting rows, PITCHING row and pitching rows; IP as 7.2, 10.0
+    and 0.1"""
+    ldir = make_series(tmp_path, game_ms(3, (0,)))
+    write_box(ldir, BOX_G0)
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((SB, 0, 0), data) == 9 == len(BOX_G0_ROWS)
+    assert dynview.box_body((SB, 0, 0), data) == (dynview.COLS_BOX, BOX_G0_ROWS)
+    assert dynview.body_cols((SB, 0, 0), data) == dynview.COLS_BOX
+    assert dynview.rows((SB, 0, 0), data) == BOX_G0_ROWS
+    assert dynview.rows((SB, 1, 0), data) == []
+    for row in BOX_G0_ROWS:
+        assert len(row) == len(dynview.COLS_BOX), row
+        for cell, (_h, _x, w, _a) in zip(row, dynview.COLS_BOX):
+            assert len(cell) <= w, cell
+
+
+def test_box_unknown_entry_and_pitching_ip(tmp_path):
+    """entry 0xffff shows '?' on both kinds of row; IP 15.0 has two digits before the dot"""
+    ldir = make_series(tmp_path, game_ms(3, (0,)))
+    write_box(ldir, [box_rec(3, 0, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)),
+                     box_rec(3, 0, 3, 0xffff, (150, 3, 1, 1, 0, 0, 4, 40))])
+    data = dynview.load_data(str(ldir))
+    assert box_all_rows((SB, 0, 0), data) == [
+        ('BOSTON',) + HDR_AB, ('?', '4', '1', '2', '1', '0', '1'), PIT_HDR,
+        ('ATLANTA',) + HDR_AB, PIT_HDR, ('?', '15.0', '3', '1', '1', '0', '4')]
+
+
+def test_box_other_season_and_game_ignored(tmp_path):
+    """records of another season or another game of the same season never show"""
+    ldir = make_series(tmp_path, game_ms(3, (0, 1)) + game_ms(2, (0,)))
+    write_box(ldir, [box_rec(2, 0, 0, 7, (9, 9, 9, 9, 9, 9, 9, 9)),
+                     box_rec(3, 1, 0, 8, (9, 9, 9, 9, 9, 9, 9, 9))] + BOX_G0
+              + [box_rec(3, 2, 2, 9, (9, 9, 9, 9, 9, 9, 9, 9))])
+    data = dynview.load_data(str(ldir))
+    assert box_all_rows((SB, 0, 0), data) == BOX_G0_ROWS
+    # game 2 has its own record only; game 3 has a box record but no game record
+    assert box_all_rows((SB, 0, 1), data) == [
+        ('BOSTON',) + HDR_AB, ('PLAYER08, B', '9', '9', '9', '9', '9', '9'), PIT_HDR,
+        ('ATLANTA',) + HDR_AB, PIT_HDR]
+    assert dynview.rows((SB, 0, 2), data) == [('NO BOX SCORE RECORDED',)]
+    assert box_all_rows((SB, 0, 8), data) == [
+        ('BOSTON',) + HDR_AB, ('PLAYER07, B', '9', '9', '9', '9', '9', '9'), PIT_HDR,
+        ('ATLANTA',) + HDR_AB, PIT_HDR]
+
+
+def test_box_no_records_message(tmp_path):
+    """no BOXSCORE.DAT, no record of the game, or only other games' records: one message
+    row with COLS_SINGLE"""
+    (tmp_path / 'nofile').mkdir()
+    ldir = make_series(tmp_path / 'nofile', game_ms(3, (0,)))
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows((SB, 0, 0), data) == [('NO BOX SCORE RECORDED',)]
+    assert dynview.body_cols((SB, 0, 0), data) == dynview.COLS_SINGLE
+    assert dynview.total_rows((SB, 0, 0), data) == 1
+    assert dynview.screen_title((SB, 0, 0), data) == 'SEASON 3 WS GAME 1'
+    (tmp_path / 'other').mkdir()
+    ldir = make_series(tmp_path / 'other', game_ms(3, (0,)))
+    write_box(ldir, [box_rec(3, 1, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0))])
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows((SB, 0, 0), data) == [('NO BOX SCORE RECORDED',)]
+    assert dynview.body_cols((SB, 0, 0), data) == dynview.COLS_SINGLE
+    (tmp_path / 'nogame').mkdir()
+    ldir = make_series(tmp_path / 'nogame', game_ms(3, (1,)))
+    write_box(ldir, BOX_G0)
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows((SB, 0, 0), data) == [('NO BOX SCORE RECORDED',)]
+    assert dynview.rows((SB, 0, 1), data) == [('NO BOX SCORE RECORDED',)]
+
+
+def test_box_left_right_skip_and_stop(tmp_path):
+    """LEFT and RIGHT step to the previous and next game with a record (game 3 has none),
+    stop at the first and last, keep the season, and reset the page"""
+    ldir = make_series(tmp_path, game_ms(3, (0, 1, 3, 6)) + game_ms(1, (0,)))
+    data = dynview.load_data(str(ldir))
+    assert press((SB, 0, 3), dynview.KEY_LEFT, data) == (SB, 0, 1)
+    assert press((SB, 0, 3), dynview.KEY_RIGHT, data) == (SB, 0, 6)
+    assert press((SB, 1, 3), dynview.KEY_RIGHT, data) == (SB, 0, 6)
+    assert press((SB, 0, 6), dynview.KEY_LEFT, data) == (SB, 0, 3)
+    assert press((SB, 0, 6), dynview.KEY_RIGHT, data) == (SB, 0, 6)
+    assert dynview.step((SB, 0, 0), dynview.KEY_LEFT, data) == ((SB, 0, 0), 0)
+    assert press((SB, 0, 16), dynview.KEY_RIGHT, data) == (SB, 0, 16)
+    assert press((SB, 0, 16), dynview.KEY_LEFT, data) == (SB, 0, 16)
+
+
+def test_box_esc_returns_to_its_series(tmp_path):
+    """ESC goes back to the series of the box's season (cat >> 3), page 0, not the hub"""
+    ldir = make_series(tmp_path, game_ms(3, (0, 1)) + game_ms(1, (0,)))
+    data = dynview.load_data(str(ldir))
+    assert dynview.step((SB, 0, 1), ESC, data) == ((SW, 0, 0), 0)
+    assert dynview.step((SB, 1, 1), ESC, data) == ((SW, 0, 0), 0)
+    assert dynview.step((SB, 0, 16), ESC, data) == ((SW, 0, 2), 0)
+    assert dynview.step((SB, 1, 16), ESC, data) == ((SW, 0, 2), 0)
+    assert dynview.step((SB, 0, 1), dynview.KEY_ENTER, data) == ((SB, 0, 1), 0)
+
+
+def test_box_paging_four_pages(tmp_path):
+    """a 40 row box (two side headers, two PITCHING rows, 36 batting rows): pages of 12, 12,
+    12 and 4; PGDN stops on the last page, PGUP goes back"""
+    ldir = make_series(tmp_path, game_ms(3, (0,)))
+    write_box(ldir, [box_rec(3, 0, 0, k % 30, (k + 1, 0, 0, 0, 0, 0, 0, 0)) for k in range(36)])
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((SB, 0, 0), data) == 40
+    assert [len(dynview.rows((SB, p, 0), data)) for p in range(4)] == [12, 12, 12, 4]
+    assert dynview.rows((SB, 3, 0), data)[-1] == PIT_HDR
+    assert dynview.rows((SB, 0, 0), data)[1] == ('HITTER, A', '1', '0', '0', '0', '0', '0')
+    s = press((SB, 0, 0), dynview.KEY_PGDN, data)
+    assert s == (SB, 1, 0)
+    s = press(press(s, dynview.KEY_PGDN, data), dynview.KEY_PGDN, data)
+    assert s == (SB, 3, 0)
+    assert press(s, dynview.KEY_PGDN, data) == (SB, 3, 0)
+    assert press(s, dynview.KEY_PGUP, data) == (SB, 2, 0)
+    assert press((SB, 0, 0), dynview.KEY_PGUP, data) == (SB, 0, 0)
+
+
+def test_load_box_format_and_short_tail(tmp_path):
+    """records as tuples (season, g, flags, idx, b, i, 8 stats) in file order; a short tail
+    is dropped; a missing or under-16-byte file gives []"""
+    (tmp_path / 'missing').mkdir()
+    assert dynview.load_box(str(tmp_path / 'missing')) == []
+    (tmp_path / 'short').mkdir()
+    (tmp_path / 'short' / 'BOXSCORE.DAT').write_bytes(b'\x01' * 15)
+    assert dynview.load_box(str(tmp_path / 'short')) == []
+    (tmp_path / 'tail').mkdir()
+    ldir = tmp_path / 'tail'
+    write_box(ldir, BOX_G0 + [box_rec(3, 0, 1, 0xffff, (1, 2, 3, 4, 5, 6, 7, 8), b=2, i=9)])
+    with open(ldir / 'BOXSCORE.DAT', 'ab') as fh:
+        fh.write(bytes(range(1, 8)))
+    box = dynview.load_box(str(ldir))
+    assert len(box) == len(BOX_G0) + 1
+    assert box[0] == (3, 0, 0, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0))
+    assert box[-1] == (3, 0, 1, 0xffff, 2, 9, (1, 2, 3, 4, 5, 6, 7, 8))
+
+
+def test_box_cap_112_records(tmp_path):
+    """only the first 112 records of a game count: 116 rows, the 113th and later never show"""
+    ldir = make_series(tmp_path, game_ms(3, (0,)))
+    write_box(ldir, [box_rec(3, 0, 0, 0, (k, 0, 0, 0, 0, 0, 0, 0)) for k in range(120)])
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((SB, 0, 0), data) == 116
+    rows_all = box_all_rows((SB, 0, 0), data)
+    assert rows_all[0] == ('BOSTON',) + HDR_AB
+    assert [r[1] for r in rows_all[1:113]] == ['%d' % k for k in range(112)]
+    assert rows_all[113:] == [PIT_HDR, ('ATLANTA',) + HDR_AB, PIT_HDR]

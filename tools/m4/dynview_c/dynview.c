@@ -63,6 +63,7 @@
 #define SCREEN_AWARDS 9
 #define SCREEN_STANDINGS 10
 #define SCREEN_SERIES 11
+#define SCREEN_BOX 12
 #define N_CATS 12
 
 /* the hub rows (SCREEN_MENU) and the ABOUT THE MODS rows */
@@ -83,6 +84,9 @@
 #define SERIES_HE_KIND 200
 #define SERIES_GAMES 7
 #define SERIES_MAX 22
+/* BOX SCORE (C7 fourth amendment BOXSCORE.DAT): the first BOX_MAX_RECS records of one
+ * (season, game), in file order */
+#define BOX_MAX_RECS 112
 
 /* offseason phases: cat & 15 is the phase, cat >> 4 the launched flag */
 #define OFF_REVIEW 0
@@ -180,6 +184,15 @@ typedef struct {
     uint8_t kind;
 } MsRec;
 
+/* one BOXSCORE.DAT record (16 B on disk, the same fields in the same order): u16 season,
+ * u8 g, u8 flags (bit0 side, bit1 pitching), u16 idx, u8 b, u8 i, u8 s[8] stats */
+typedef struct {
+    uint16_t season;
+    uint8_t g, flags;
+    uint16_t idx;
+    uint8_t b, i, s[8];
+} BoxRec;
+
 typedef struct {
     int16_t screen, page, cat;
 } State;
@@ -236,6 +249,12 @@ static Row FARDATA g_stnd[STAND_MAX];
 
 /* WORLD SERIES: the rows of the season (SERIES_MAX at most) */
 static Row FARDATA g_ser[SERIES_MAX];
+
+/* BOX SCORE: the records of the game on the screen (BOX_MAX_RECS at most); the file is
+ * read again only for another (season, game): g_box_g -1 is none yet */
+static BoxRec FARDATA g_box[BOX_MAX_RECS];
+static long g_box_season;
+static int g_box_g = -1, g_box_n;
 
 /* ROSTERS.TXT draft table (loaded once): the first DRAFT_KEEP valid DRAFT lines.
  * Slot: [0] stem length, [1] name length, then the upper-case stem and the joined
@@ -316,6 +335,7 @@ static int offseason_body(State st, int page, const ColDef **cols);
 static int awards_body(State st, int page, const ColDef **cols);
 static int standings_body(State st, int page, const ColDef **cols);
 static int series_body(State st, int page, const ColDef **cols);
+static int box_body(State st, int page, const ColDef **cols);
 /* ---- helpers ---- */
 
 /* signed division truncating toward zero == C99 / (x86 idiv) */
@@ -1732,6 +1752,13 @@ static int ms_first(long season, int kind, uint16_t *idx, uint16_t *value)
     return 0;
 }
 
+/* the game g (0..6) of season has its kind 192 + g record */
+static int ws_game(long season, int g)
+{
+    uint16_t idx = 0, val = 0;
+    return ms_first(season, SERIES_GAME_KIND + g, &idx, &val);
+}
+
 /* the five cells of g_ser[k] (TEAM, R, H, E, the last column); "" for an empty one */
 static void ser_put(int k, const char *c0, const char *c1, const char *c2,
                     const char *c3, const char *c4)
@@ -2187,6 +2214,8 @@ static int total_rows(State st)
         return standings_body(st, -1, &cols);
     case SCREEN_SERIES:
         return series_body(st, -1, &cols);
+    case SCREEN_BOX:
+        return box_body(st, -1, &cols);
     case SCREEN_SETTINGS:
         return 1 + g_nteams;
     case SCREEN_ABOUT:
@@ -2242,6 +2271,8 @@ static int refresh_rows(State st, const ColDef **cols)
         return page_rows(standings_body(st, st.page, cols), st.page);
     case SCREEN_SERIES:
         return page_rows(series_body(st, st.page, cols), st.page);
+    case SCREEN_BOX:
+        return page_rows(box_body(st, st.page, cols), st.page);
     default:
         return build_review_rows();
     }
@@ -2257,11 +2288,19 @@ static int season_screen(int screen)
 /* step: ESC exits from MENU, otherwise goes back to MENU; PGUP/PGDN page by
  * 12; LEFT/RIGHT cycle the LEADERS category or step the SEASON AWARDS, SEASON
  * STANDINGS or WORLD SERIES season; key 0 on the hub opens SEASON STANDINGS, W or w
- * WORLD SERIES */
+ * WORLD SERIES; keys 1..7 on WORLD SERIES open the BOX SCORE of that game (ESC there goes
+ * back to the series, LEFT and RIGHT step between the season's games) */
 static State step(State in, int32_t key)
 {
     State s = in;
     if (key == KEY_ESC) {
+        if (s.screen == SCREEN_BOX) {
+            /* the box score goes back to its season's WORLD SERIES, not the hub */
+            s.screen = SCREEN_SERIES;
+            s.page = 0;
+            s.cat = (int16_t)(s.cat >> 3);
+            return s;
+        }
         if (s.screen == SCREEN_MENU)
             g_exit = 1;
         s.screen = SCREEN_MENU;
@@ -2337,6 +2376,38 @@ static State step(State in, int32_t key)
         } else
             return s;
         s.page = (int16_t)(s.cat / ROWS_PER_PAGE);
+        return s;
+    }
+    /* WORLD SERIES keys 1..7: the box score of game key - 49 of the season (cat seasons
+     * back) when the season is 1..64 and has that game; other keys leave it as it is */
+    if (s.screen == SCREEN_SERIES && 49 <= key && key <= 55) {
+        int g = (int)key - 49;
+        long season = (long)g_hdr_seasons - s.cat;
+        if (season >= 1 && season <= SEASON_COUNT && ws_game(season, g)) {
+            s.screen = SCREEN_BOX;
+            s.page = 0;
+            s.cat = (int16_t)(s.cat * 8 + g);
+        }
+        return s;
+    }
+    /* BOX SCORE: LEFT and RIGHT step to the previous or next game of the season that has
+     * a game record; none: the state is unchanged */
+    if (s.screen == SCREEN_BOX && (key == KEY_LEFT || key == KEY_RIGHT)) {
+        long season = (long)g_hdr_seasons - (s.cat >> 3);
+        int g = s.cat & 7, k, to = -1;
+        if (key == KEY_LEFT) {
+            for (k = g - 1; k >= 0 && to < 0; k--)
+                if (ws_game(season, k))
+                    to = k;
+        } else {
+            for (k = g + 1; k < SERIES_GAMES && to < 0; k++)
+                if (ws_game(season, k))
+                    to = k;
+        }
+        if (to >= 0) {
+            s.cat = (int16_t)((s.cat >> 3) * 8 + to);
+            s.page = 0;
+        }
         return s;
     }
     if (key == KEY_PGDN) {
@@ -2427,6 +2498,11 @@ static const ColDef COLS_SERIES[] = {
     { "TEAM", CX(0), 17, 0 }, { "R", CX(17), 5, 1 }, { "H", CX(22), 5, 1 },
     { "E", CX(27), 5, 1 }, { " ", CX(32), 10, 1 } };
 
+static const ColDef COLS_BOX[] = {
+    { " ", CX(0), 18, 0 }, { " ", CX(18), 4, 1 }, { " ", CX(22), 4, 1 },
+    { " ", CX(26), 4, 1 }, { " ", CX(30), 4, 1 }, { " ", CX(34), 4, 1 },
+    { " ", CX(38), 4, 1 } };
+
 #define NCOLS(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
 static int n_cols(const ColDef *cols)
@@ -2453,6 +2529,8 @@ static int n_cols(const ColDef *cols)
         return NCOLS(COLS_STANDINGS);
     if (cols == COLS_SERIES)
         return NCOLS(COLS_SERIES);
+    if (cols == COLS_BOX)
+        return NCOLS(COLS_BOX);
     return NCOLS(COLS_MILESTONES);
 }
 
@@ -2483,6 +2561,8 @@ static const ColDef *body_cols(State st)
         return COLS_STANDINGS;
     case SCREEN_SERIES:
         return COLS_SERIES;
+    case SCREEN_BOX:
+        return COLS_BOX;
     default:
         return COLS_SINGLE;
     }
@@ -2603,6 +2683,138 @@ static int series_body(State st, int page, const ColDef **cols)
     return n;
 }
 
+/* BOXSCORE.DAT streamed once (LEAGUE_DIR): the first BOX_MAX_RECS records of (season, g)
+ * into g_box in file order; returns their count, 0 when the file is missing or unreadable */
+static int box_recs(long season, int g)
+{
+    char path[600];
+    FILE *f;
+    uint8_t rb[16];
+    int n = 0;
+    path_join(path, g_lgdir, "BOXSCORE.DAT");
+    f = fopen(path, "rb");
+    if (!f)
+        return 0;
+    while (fread(rb, 1, sizeof rb, f) == sizeof rb) {
+        BoxRec rec;
+        rec.season = (uint16_t)(rb[0] | ((uint16_t)rb[1] << 8));
+        rec.g = rb[2];
+        rec.flags = rb[3];
+        rec.idx = (uint16_t)(rb[4] | ((uint16_t)rb[5] << 8));
+        rec.b = rb[6];
+        rec.i = rb[7];
+        memcpy(rec.s, rb + 8, 8);
+        if (rec.season != season || rec.g != g)
+            continue;
+        if (n == BOX_MAX_RECS)
+            break;
+        g_box[n++] = rec;
+    }
+    if (ferror(f))
+        n = 0;
+    fclose(f);
+    return n;
+}
+
+/* the g_rows slot of the next box row (*ord counts the rows from 0), NULL when page does
+ * not show it */
+static Row *box_next(int *ord, int page)
+{
+    int r = *ord - page * ROWS_PER_PAGE;
+    (*ord)++;
+    if (page < 0 || r < 0 || r >= ROWS_PER_PAGE)
+        return NULL;
+    return &g_rows[r];
+}
+
+/* a row of seven cells */
+static void box_set(Row *row, const char *c0, const char *c1, const char *c2,
+                    const char *c3, const char *c4, const char *c5, const char *c6)
+{
+    strcpy(row->cells[0], c0);
+    strcpy(row->cells[1], c1);
+    strcpy(row->cells[2], c2);
+    strcpy(row->cells[3], c3);
+    strcpy(row->cells[4], c4);
+    strcpy(row->cells[5], c5);
+    strcpy(row->cells[6], c6);
+    row->ncells = 7;
+}
+
+/* the batting row (pitch 0) or pitching row (pitch 1) of record r: NAME ('?' for entry
+ * 0xffff), then stats 0, 1, 2, 3, 5, 6 (IP as d.d for a pitching row) */
+static void box_rec_row(Row *row, const BoxRec *r, int pitch)
+{
+    static const uint8_t slot[6] = { 0, 1, 2, 3, 5, 6 };
+    int k;
+    if (r->idx == NO_AWARD)
+        strcpy(row->cells[0], "?");
+    else
+        entry_name(r->idx, 18, row->cells[0]);
+    for (k = 0; k < 6; k++) {
+        unsigned v = r->s[slot[k]];
+        if (k == 0 && pitch)
+            sprintf(row->cells[1], "%u.%u", v / 10, v % 10);
+        else
+            sprintf(row->cells[k + 1], "%u", v);
+    }
+    row->ncells = 7;
+}
+
+/* BOX SCORE page: the rows of game st.cat & 7 of the season st.cat >> 3 seasons back from
+ * the newest (dynview.box_rows) into g_rows for page (page < 0 counts only). Per side: a
+ * team row, its batting rows, a PITCHING row and its pitching rows. Returns the row count;
+ * *cols is COLS_SINGLE for the message row and with no history, else COLS_BOX. */
+static int box_body(State st, int page, const ColDef **cols)
+{
+    int g = st.cat & 7, n = 0, ord = 0, t, k;
+    long season = (long)g_hdr_seasons - (st.cat >> 3);
+    uint16_t gidx = 0, gval = 0;
+    *cols = COLS_BOX;
+    if (g_hdr_seasons == 0) {
+        *cols = COLS_SINGLE;
+        return 0;
+    }
+    if (season <= SEASON_COUNT && ms_first(season, SERIES_GAME_KIND + g, &gidx, &gval)) {
+        if (season != g_box_season || g != g_box_g) {
+            g_box_n = box_recs(season, g);
+            g_box_season = season;
+            g_box_g = g;
+        }
+        n = g_box_n;
+    }
+    if (n == 0) {
+        *cols = COLS_SINGLE;
+        return msg_row(page, "NO BOX SCORE RECORDED");
+    }
+    for (t = 0; t < 2; t++) {
+        uint16_t tid = t == 0 ? (uint16_t)(gidx >> 8) : (uint16_t)(gidx & 255);
+        int pitch;
+        Row *row = box_next(&ord, page);
+        if (row) {
+            char nm[SLEN];
+            stand_name(tid, nm);
+            box_set(row, nm, "AB", "R", "H", "RBI", "BB", "SO");
+        }
+        for (pitch = 0; pitch < 2; pitch++) {
+            if (pitch) {
+                row = box_next(&ord, page);
+                if (row)
+                    box_set(row, "PITCHING", "IP", "H", "R", "ER", "BB", "SO");
+            }
+            for (k = 0; k < n; k++) {
+                const BoxRec *r = &g_box[k];
+                if ((r->flags & 1) != t || ((r->flags >> 1) & 1) != pitch)
+                    continue;
+                row = box_next(&ord, page);
+                if (row)
+                    box_rec_row(row, r, pitch);
+            }
+        }
+    }
+    return ord;
+}
+
 /* footer line: the offseason's ENTER label follows its phase */
 static const char *footer_of(State st)
 {
@@ -2619,9 +2831,12 @@ static const char *footer_of(State st)
         return "UP DOWN MOVE   ENTER CHANGE   ESC MENU";
     if (st.screen == SCREEN_ABOUT)
         return "PGUP PGDN   ESC MENU";
-    if (st.screen == SCREEN_AWARDS || st.screen == SCREEN_STANDINGS
-        || st.screen == SCREEN_SERIES)
+    if (st.screen == SCREEN_AWARDS || st.screen == SCREEN_STANDINGS)
         return "LEFT RIGHT SEASON   PGUP PGDN   ESC MENU";
+    if (st.screen == SCREEN_SERIES)
+        return "1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC";
+    if (st.screen == SCREEN_BOX)
+        return "LEFT RIGHT GAME   PGUP PGDN   ESC SERIES";
     if (st.screen == SCREEN_OFFSEASON) {
         if ((st.cat & 15) < OFF_READY)
             return "ENTER NEXT   PGUP PGDN   ESC MENU";
@@ -2666,6 +2881,12 @@ static void screen_title(State st, char *dst)
             sprintf(dst, "SEASON %ld WORLD SERIES", (long)g_hdr_seasons - st.cat);
         else
             strcpy(dst, "WORLD SERIES");
+    } else if (st.screen == SCREEN_BOX) {
+        if (g_hdr_seasons)
+            sprintf(dst, "SEASON %ld WS GAME %d", (long)g_hdr_seasons - (st.cat >> 3),
+                    (st.cat & 7) + 1);
+        else
+            strcpy(dst, "WS BOX SCORE");
     }
     else if (st.screen == SCREEN_OFFSEASON) {
         int phase = st.cat & 15;
