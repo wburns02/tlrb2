@@ -22,6 +22,7 @@ every face, stock and new, so our rookie generator can keep face and record flag
 """
 import colorsys
 import glob
+import io
 import json
 import os
 import random
@@ -238,20 +239,40 @@ def fill_cap_logo(px, rounds=4):
     return bytes(px)
 
 
-def build(outdir):
+def to_frame(im, pal=None):
+    """RGB render (832 x 960 from ComfyUI, any size) -> the 2688 B frame: crop to 48:56 from the top centre, resize
+    LANCZOS to 48 x 56, contrast 1.1, quantize. pal None -> DEFAULT.PAL."""
     from PIL import Image, ImageEnhance
+    if pal is None:
+        pal = pal_for(SRC, 'DEFAULT')
+    w, h = im.size                          # 832 x 960 is 6:6.9; crop to exactly 48:56
+    cw = min(w, h * W // H)
+    ch = cw * H // W
+    im = im.crop(((w - cw) // 2, 0, (w - cw) // 2 + cw, ch))
+    im = ImageEnhance.Contrast(im.resize((W, H), Image.LANCZOS)).enhance(1.1)
+    return quantize(im, pal)
+
+
+def preview_png(frame, pal=None):
+    """2688 B frame -> PNG bytes under DEFAULT.PAL (red team), scaled 4x nearest: 192 x 224."""
+    from PIL import Image
+    if pal is None:
+        pal = pal_for(SRC, 'DEFAULT')
+    t = Image.frombytes('P', (W, H), frame)
+    t.putpalette(pal)
+    buf = io.BytesIO()
+    t.convert('RGB').resize((W * 4, H * 4), Image.NEAREST).save(buf, 'PNG')
+    return buf.getvalue()
+
+
+def build(outdir):
+    from PIL import Image
     pal = pal_for(SRC, 'DEFAULT')
     fdir = os.path.join(outdir, 'frames')
     os.makedirs(fdir, exist_ok=True)
     tiles = []
     for p in sorted(glob.glob(os.path.join(outdir, 'raw', '*.png'))):
-        im = Image.open(p).convert('RGB')
-        w, h = im.size                          # 832 x 960 is 6:6.9; crop to exactly 48:56
-        cw = min(w, h * W // H)
-        ch = cw * H // W
-        im = im.crop(((w - cw) // 2, 0, (w - cw) // 2 + cw, ch))
-        im = ImageEnhance.Contrast(im.resize((W, H), Image.LANCZOS)).enhance(1.1)
-        px = quantize(im, pal)
+        px = to_frame(Image.open(p).convert('RGB'), pal)
         cap = sum(1 for k, b in enumerate(px) if k // W < CAP_ROWS and b in TEAM)
         if cap < CAP_MIN:                       # cap would stay gray or brown instead of the team colour
             os.makedirs(os.path.join(outdir, 'rejects'), exist_ok=True)

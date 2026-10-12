@@ -1,0 +1,14 @@
+# systemd user unit for tools/studio_worker.py. Copy to ~/.config/systemd/user/studio_worker.service, then
+#   systemctl --user daemon-reload && systemctl --user enable --now studio_worker
+# Config lives in ~/.config/tlrb2/ (studio.env, web_login), not here.
+[Unit]
+Description=TLRB2 Portrait Studio worker
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/tlrb2/tools/studio_worker.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
