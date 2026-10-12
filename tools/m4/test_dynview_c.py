@@ -1636,3 +1636,36 @@ def test_standings_three_divisions_parity(tmp_path):
         assert sum(1 for r in rows if r[0] and r[1]) == len(ids)
         for k in range((n + 11) // 12):
             check_parity(ldir, tmp_path, '%s_p%d' % (tag, k), keys=[48] + [PGDN] * k)
+
+
+def _game_dir(tmp_path, name, system):
+    """a game dir (the cwd under the BAT) holding the fonts, TEAMS/<name> (settings_league, its MAJ renamed
+    <name>.MAJ) and SYSTEM (None: no file)"""
+    g = tmp_path / 'g'
+    (g / 'TEAMS').mkdir(parents=True)
+    src = settings_league(tmp_path / 'src')
+    ldir = g / 'TEAMS' / name
+    shutil.copytree(str(src), str(ldir))
+    os.rename(str(ldir / 'TEST.MAJ'), str(ldir / (name + '.MAJ')))
+    for f in os.listdir(FILES):
+        if f.upper().endswith('.FNT') or f.upper() == 'DEFAULT.PAL':
+            shutil.copy2(os.path.join(FILES, f), str(g / f))
+    if system is not None:
+        (g / 'SYSTEM').write_bytes(system)
+    return g, ldir
+
+
+@pytest.mark.parametrize('name,system', [('TESTLG', b'testlg\0\0\0\0\0'), ('CLASSIC', None),
+                                         ('CLASSIC', b'NOSUCH\0\0')])
+def test_default_league_dir_follows_system(tmp_path, name, system):
+    """C16.3: with no LEAGUE_DIR the host binary opens TEAMS/<current league>; the frame equals the run that
+    names that dir (TESTLG via SYSTEM, CLASSIC without SYSTEM or when SYSTEM names a league with no MAJ)."""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    g, ldir = _game_dir(tmp_path, name, system)
+    raw = str(tmp_path / 'default.raw')
+    r = subprocess.run([HOST, '/KEYS:' + toks([55]), '/RAW:' + raw], capture_output=True, text=True,
+                       timeout=300, cwd=str(g))
+    assert r.returncode == 0, f'host rc {r.returncode}: {r.stderr[:400]}'
+    named = run_host(str(ldir), str(tmp_path / 'named.raw'), keys=[55], font_dir=str(g))
+    assert open(raw, 'rb').read() == named
