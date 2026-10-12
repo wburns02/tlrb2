@@ -958,6 +958,66 @@ def test_award_records_host_full_league(tmp_path):
     assert any(r[2] == 66 and r[3] >= 0x8000 for r in ms)
 
 
+def test_leader_records_host_hr_tie_no_era(tmp_path):
+    """C7 leader records, season 2 on a season-1 HISTORY.DAT, host binary against the Python
+    reference byte for byte. AL: RETURNR (entry 0, from season 1) sits on the LATER team file
+    and ties FILEROOK (appended in season 2, first in file order) at 347 BA, 40 HR and 160 H;
+    the lower entry index wins each tie. The AL pitcher has 30 outs and the NL has no pitcher,
+    so no ERA leader; NLBAT has pa 440, so no NL BA leader."""
+    _build()
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    make_maj().save(str(ldir / 'CLASSIC.MAJ'))
+    p1, p2, pn = str(ldir / PRE_AL), str(ldir / 'ALA02.V20'), str(ldir / PRE_NL)
+    open(p2, 'wb').write(make_team_v20())
+    t = Team(open(p2, 'rb').read())
+    set_player(t, 17, 'RETURNR', 'REX', 27, 3, 150)
+    statbat(t, 17, 460, 160, d2=35, hr=20, bb=50, runs=95, games=150)
+    t.save(p2)
+    s1 = os.path.join(str(tmp_path), 's1')
+    os.makedirs(s1)
+    history.record_season(str(ldir), os.path.join(s1, 'HISTORY.DAT'), 1)
+    # season 2
+    t = Team(open(p2, 'rb').read())
+    set_player(t, 17, 'RETURNR', 'REX', 28, 3, 150)
+    statbat(t, 17, 460, 160, d2=35, hr=40, bb=50, runs=95, games=150)
+    t.save(p2)
+    open(p1, 'wb').write(make_team_v20())
+    t1 = Team(open(p1, 'rb').read())
+    set_player(t1, 0, 'SHORTP', 'ART', 26, 0, 10)
+    statpit(t1, 0, 100, 0, games=10)                    # 30 outs: no ERA qualifier
+    set_player(t1, 16, 'FILEROOK', 'FRED', 21, 3, 150)
+    statbat(t1, 16, 460, 160, d2=35, hr=40, bb=50, runs=95, games=150)
+    t1.save(p1)
+    open(pn, 'wb').write(make_team_v20(name=b'NLONE', abbr=b'NL1'))
+    tn = Team(open(pn, 'rb').read())
+    set_player(tn, 16, 'NLBAT', 'NELL', 28, 3, 150)
+    statbat(tn, 16, 400, 120, hr=10, bb=40, games=150)  # pa 440: no BA leader
+    tn.save(pn)
+    hs, py = os.path.join(str(tmp_path), 'host'), os.path.join(str(tmp_path), 'py')
+    shutil.copytree(s1, hs)
+    shutil.copytree(s1, py)
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    rc = HISTWR(str(ldir), os.path.join(hs, 'HISTORY.DAT'), ret)
+    assert rc.returncode == 0, rc.stderr
+    history.record_season(str(ldir), os.path.join(py, 'HISTORY.DAT'), 2)
+    off, ent = first_diff(open(os.path.join(hs, 'HISTORY.DAT'), 'rb').read(),
+                          open(os.path.join(py, 'HISTORY.DAT'), 'rb').read())
+    assert off < 0, f'leader league off {off} (entry {ent})'
+    ms_py = open(os.path.join(py, MS_NAME), 'rb').read()
+    assert open(os.path.join(hs, MS_NAME), 'rb').read() == ms_py, 'MILESTON.DAT differs'
+    h = history.History.load(os.path.join(py, 'HISTORY.DAT'))
+    ret_idx = entry_of(h, t, 17, 2)
+    fileroo = entry_of(h, t1, 16, 2)
+    nlbat = entry_of(h, tn, 16, 2)
+    assert ret_idx < fileroo                            # the tie: lower index RETURNR
+    got = [r for r in history.milestone_entries(os.path.join(py, MS_NAME))
+           if r[0] == 2 and 128 <= r[2] < 176]
+    assert got == [(2, ret_idx, 128, 347), (2, ret_idx, 129, 40), (2, ret_idx, 131, 160),
+                   (2, nlbat, 161, 10), (2, nlbat, 163, 120)]
+
+
 # ---------------- round 5: second season under DOS (MILESTON.DAT already present) ----------------
 
 def test_dos_second_season_existing_milestones(tmp_path):

@@ -53,6 +53,8 @@ MILESTONE_SEASON = [(32, 'HR', None, None), (33, 'H', None, None), (34, 'SB', No
 MILESTONE_RECORD = 8        # 8 B records in MILESTON.DAT
 # C7 award record kinds: AL block 64 + k, NL block 96 + k (k in award_records)
 AWARD_KIND_AL, AWARD_KIND_NL = 64, 96
+# C7 leader record kinds: AL block 128 + k, NL block 160 + k (k in leader_records)
+LEADER_KIND_AL, LEADER_KIND_NL = 128, 160
 # career-total keys used by the milestone tables, as TOTALS indexes
 MILESTONE_IDX = {'H': 2, 'HR': 5, 'RBI': 7, 'SB': 10, 'W': 13, 'SV': 15, 'PSO': 23}
 # season-half milestone stats, as collected keys (H/HR/SB = L+R; W/SV/PSO as in C2;
@@ -323,7 +325,8 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     C7 (after step 3): season awards (6 winners in season bytes 88..99, career award
     counts in player bytes 152..156) and MILESTON.DAT next to HISTORY.DAT
     (read, drop season_no >= current, append this season in entry index order,
-    then the AL and NL award records of this season: award_records).
+    then the AL and NL award records of this season: award_records, and the AL and
+    NL leader records: leader_records).
     retirees = {v20 basename: [record indexes]} from rollover(); applied later
     by mark_retired() (step 4 runs after the P1 rollover)."""
     hist = History.load(hist_path)
@@ -399,7 +402,7 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
                  'exp': exp, 'games': season_games, 'w10': w10,
                  'pa': totals['AB'] + totals['BB'],
                  'outs': totals['OUTS'], 'ab': totals['AB'], 'h': totals['H'],
-                 'er': totals['ER'],
+                 'er': totals['ER'], 'rbi': totals['RBI'],
                  MS_H: totals['H'], MS_HR: totals['HR'],
                  MS_SB: totals['SB'], MS_W: totals['W'], MS_SV: totals['SV'],
                  MS_PSO: totals['PSO'],
@@ -458,6 +461,8 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     ms_new = season_milestones([c for _, c, _, _ in ordered], exps)
     ms_new += award_records(season_no, alo, AWARD_KIND_AL)
     ms_new += award_records(season_no, nlo, AWARD_KIND_NL)
+    ms_new += leader_records(season_no, al, LEADER_KIND_AL)
+    ms_new += leader_records(season_no, nl, LEADER_KIND_NL)
     write_milestones(hist_path, ms_old + ms_new)
     hist.done = 1
     hist.flush()
@@ -599,6 +604,43 @@ def award_records(season_no, sel, base):
         else:
             value = c['bat100']
         out.append((season_no, c['index'], base + k, value & 0xffff))
+    return out
+
+
+def leader_value(c, k):
+    """C7 leader value of one candidate for category k, or None when it does not qualify.
+    0 BA = h * 1000 / ab over pa >= 502 and ab > 0; 6 ERA = er * 2700 / outs (ERA x100) over
+    outs >= 486; the rest are the season stat, qualifying when > 0 (1 HR, 2 RBI, 3 H, 4 SB,
+    5 W, 7 SO, 8 SV)."""
+    if k == 0:
+        if c['pa'] >= 502 and c['ab'] > 0:
+            return idiv(c['h'] * 1000, c['ab'])
+        return None
+    if k == 6:
+        if c['outs'] >= 486:
+            return idiv(c['er'] * 2700, c['outs'])
+        return None
+    v = {1: c[MS_HR], 2: c['rbi'], 3: c[MS_H], 4: c[MS_SB], 5: c[MS_W],
+         7: c[MS_PSO], 8: c[MS_SV]}[k]
+    return v if v > 0 else None
+
+
+def leader_records(season_no, cands, base):
+    """C7 leader records of one league: cands in entry index order; one (season_no, idx, base + k, value)
+    per category k with a leader (0 BA, 1 HR, 2 RBI, 3 H, 4 SB, 5 W, 6 ERA x100 min, 7 SO, 8 SV), value
+    saturated at 0xffff; ties to the lower entry index (the first in cands)."""
+    out = []
+    for k in range(9):
+        best = None                      # (value, entry index) of the leader so far
+        for c in cands:
+            v = leader_value(c, k)
+            if v is None:
+                continue
+            # strictly better only, so a tie keeps the earlier (lower index) candidate
+            if best is None or (v < best[0] if k == 6 else v > best[0]):
+                best = (v, c['index'])
+        if best is not None:
+            out.append((season_no, best[1], base + k, min(best[0], 0xffff)))
     return out
 
 
