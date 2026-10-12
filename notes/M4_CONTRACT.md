@@ -892,3 +892,64 @@ MILESTONES' YEAR column, the titles (`1995 AWARDS`, `1995 STANDINGS`, `1995 WORL
 - tools/faces.py set2: about 300 prompts from a fixed grid (heritage x age band x facial hair x build x expression),
   each prompt's group flag from its heritage, fixed seeds; frames that fail the cap QC go to rejects as today. They are
   appended after the installed generic faces, FACEGRP.DAT grows with them, G stays <= 400.
+
+### C14.2 Portrait Studio server (web/server.py), all under the existing identity check
+Storage: STUDIO_DIR = env TLRB2_STUDIO_DIR, default the directory `studio` next to SAVES_DIR (sibling, never inside
+it). Layout: `jobs/<id>.json` (job record), `jobs/<id>.img` (upload, deleted once the job is done or failed),
+`jobs/<id>.v<k>.bin` (2688 B frame) and `jobs/<id>.v<k>.png` (preview), `customs.bin` (concatenated 2688 B frames,
+custom k at offset 2688 * k). Job id = 16 lowercase hex (secrets.token_hex(8)), matched by `^[0-9a-f]{16}$`.
+Browser endpoints (reads need _allowed(); every POST/DELETE needs _allowed(write=True), as saves do):
+- POST /studio/jobs, JSON body (Content-Length <= 6 MiB): {"prompt": str, "image": base64 str}; either may be
+  absent or empty but not both. prompt: <= 300 chars after strip, printable ASCII only (0x20..0x7e), else 400.
+  image: base64 that decodes to <= 4 MiB starting with the PNG (89 50 4E 47 0D 0A 1A 0A) or JPEG (FF D8 FF)
+  magic, else 400. More than 3 jobs queued or running: 429. Creates the job {id, state "queued", prompt,
+  has_image, created, claimed: null, error: null, variants: 0, accepted: []}; 200 {"id": id}.
+- GET /studio/jobs/<id>: 200 {"id", "state" (queued|running|done|failed), "error", "variants", "accepted",
+  "position" (1-based place among queued jobs by created, or 0)}; 404 unknown.
+- GET /studio/jobs/<id>/v<k>.png (k 0..3): the preview PNG, Content-Type image/png; 404 when absent.
+- POST /studio/jobs/<id>/accept?pick=<k>: job must be done and v<k>.bin exist (else 409 / 404); appends the frame
+  to customs.bin (count = size / 2688; at most 581 customs: 409 past that), records k in accepted (accepting the
+  same k twice returns the first face again, no second append); 200 {"face": 400 + n, "custom": n + 1} where n is
+  that custom's index.
+- DELETE /studio/jobs/<id>: removes every file of the job; 204 (404 unknown).
+- GET /studio/customs: 200 {"count": n}.
+- GET /studio/PORTRAIT.ANM: 404 when customs.bin is missing or empty. Else 200 application/octet-stream:
+  base = the zip entry `TONY2/ANMS/PORTRAIT.ANM` of SITE_DIR/tlrb2.jsdos (u16 count c0, c0 frames of 2700 B);
+  output = u16 (400 + n), the c0 base frames byte for byte, (400 - c0) copies of base frame 0 (header and pixels),
+  then each custom as FRAME_HDR (u16 0x1001, 56, 48, 0, 0, 0) + its 2688 pixels. A base that is not exactly
+  2 + 2700 * c0 bytes or has c0 > 400: 500.
+- Housekeeping on every studio request: a job older than 24 h (created) is removed with its files; a running job
+  claimed more than 10 min ago goes back to queued.
+Worker endpoints: _allowed() AND header `Authorization: Bearer <token>` where token is the first line of the file
+named by env TLRB2_STUDIO_TOKEN_FILE, compared with hmac.compare_digest; no env, unreadable or empty file, or a
+mismatch: 403. They do not need X-TLRB2 or Origin.
+- POST /studio/worker/claim: oldest queued job -> running (claimed = now); 200 {"id", "prompt", "image": base64 or
+  null}; 204 when nothing is queued.
+- POST /studio/worker/deliver/<id>, JSON (<= 2 MiB): {"variants": [{"frame": base64 of exactly 2688 B, "png":
+  base64 PNG <= 256 KiB}, ... 1 to 4]} -> done, variants = count, files written; or {"error": str <= 200 chars}
+  -> failed. Either way the upload is deleted. The job must be running (409 otherwise); 204.
+Every studio write takes the server lock; files are written via a .tmp then os.replace. No studio path is ever
+built from client text except a validated id and k.
+
+### C14.3 Portrait Studio worker (tools/studio_worker.py, the workstation with the GPU)
+- Config: env or ~/.config/tlrb2/studio.env: TLRB2_STUDIO_URL (the site URL), TLRB2_STUDIO_TOKEN_FILE; basic auth
+  user and password from ~/.config/tlrb2/web_login (url=, user=, password=). Never logs the token or password.
+- Loop: when faces.owner_busy() leave the queue alone (sleep 30 s); else claim; 204 -> sleep 10 s.
+- A job makes 4 variants, seeds random per job: no image -> txt2img with faces.STYLE.format(who=prompt or
+  'a veteran player') and faces.NEG (the faces._workflow graph); image -> the upload goes to ComfyUI /upload/image
+  and an img2img graph (LoadImage -> scale to 832 x 960 -> VAEEncode -> KSampler denoise 0.55 with the same text
+  and NEG -> VAEDecode -> PreviewImage). Each render -> faces.to_frame(im) (the crop + resize + contrast +
+  quantize step of faces.build, factored out unchanged) -> 2688 B; preview PNG = the frame under DEFAULT.PAL scaled
+  4x nearest (192 x 224). No cap QC reject: the player picks. Then POST deliver; any exception -> deliver
+  {"error": short text}. After each job POST ComfyUI /free (unload models) as faces.gen does.
+- Runs as a systemd user unit (tools/studio_worker.service.example), Restart=always.
+
+### C14.4 Portrait Studio page (web/index.html)
+- A STUDIO button next to SAVES opens a panel (outside the canvas): a description box (maxlength 300), a file
+  picker (PNG/JPEG, <= 4 MB, checked before upload), GENERATE (POST /studio/jobs), a status line polled every 3 s
+  (queued with position / GPU busy / rendering / failed with the error), then the 4 previews; each preview has ADD
+  TO GAME (accept) which shows `ADDED AS CUSTOM n: SAVE AND RELOAD, THEN PICK IT IN CREATE A PLAYER (FACE FIELD).`
+  and a SAVE AND RELOAD button (the existing save-then-reload slot switch to the current slot).
+- Boot: fetch studio/PORTRAIT.ANM (no-store); on 200 pass js-dos initFs [{path: 'TONY2/ANMS/PORTRAIT.ANM',
+  contents}] so the customs overlay the bundle and the save; 404 or an error boots as today.
+- Writes send the existing WRITE headers.
