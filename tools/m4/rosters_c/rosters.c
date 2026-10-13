@@ -2795,8 +2795,38 @@ static int do_run(void)
     return rc;
 }
 
+/* ---------------- C15 expand: see the block below main ------------------- */
+
+static int do_expand(void);
+
 int main(int argc, char **argv)
 {
+    int expand;
+    if (argc == 5 || argc == 2) {
+        expand = (argv[1][0] == '/' && ti_lower(argv[1][1]) == 'e'
+               && ti_lower(argv[1][2]) == 'x' && ti_lower(argv[1][3]) == 'p'
+               && ti_lower(argv[1][4]) == 'a' && ti_lower(argv[1][5]) == 'n'
+               && ti_lower(argv[1][6]) == 'd' && argv[1][7] == 0);
+    } else {
+        expand = 0;
+    }
+    if (expand && argc == 5) {
+        if (!fit_copy(g_lgdir, sizeof g_lgdir, argv[2])
+            || !fit_copy(g_snapdir, sizeof g_snapdir, argv[3])
+            || !fit_copy(g_histpath, sizeof g_histpath, argv[4]))
+            return 2;
+        return do_expand();
+    }
+    if (expand) {
+        /* the current league's paths (C16.1); the retired path is not used */
+        char lg[9];
+        lg_current(".", lg);
+        if (!lg_path(g_lgdir, sizeof g_lgdir, LG_DIR, lg, DIR_SEP)
+            || !lg_path(g_snapdir, sizeof g_snapdir, LG_SNAP, lg, DIR_SEP)
+            || !lg_path(g_histpath, sizeof g_histpath, LG_HIST, lg, DIR_SEP))
+            return 2;
+        return do_expand();
+    }
     if (argc >= 5) {
         if (!fit_copy(g_lgdir, sizeof g_lgdir, argv[1])
             || !fit_copy(g_snapdir, sizeof g_snapdir, argv[2])
@@ -2814,4 +2844,1434 @@ int main(int argc, char **argv)
             return 2;
     }
     return do_run();
+}
+
+
+/* ---------------- C15 expansion / contraction (ROSTERS /EXPAND) ---------- */
+
+/* C15.1 placeholder: roster bytes 0..19 = b'EMPTY' + 15 NUL (byte 0 is the
+ * active flag and the E) */
+static int ex_is_placeholder(const uint8_t *img, int slot)
+{
+    const uint8_t *b = img + V20_HDR + V20_REC * slot;
+    int i;
+    if (!b[0])
+        return 0;
+    if (memcmp(b, "EMPTY", 5) != 0)
+        return 0;
+    for (i = 5; i < 20; i++)
+        if (b[i])
+            return 0;
+    return 1;
+}
+
+static int ex_real(const uint8_t *img, int slot)
+{
+    return IS_ON(img, slot) && !ex_is_placeholder(img, slot);
+}
+
+static int ex_count_real(const uint8_t *img, int lo, int hi)
+{
+    int s, n = 0;
+    for (s = lo; s < hi; s++)
+        if (ex_real(img, s))
+            n++;
+    return n;
+}
+
+/* the 8 B stem as text, trailing NULs trimmed (case done by the callers) */
+static void ex_stem_lc(const uint8_t *st8, char *out)
+{
+    int n = ti_trim(st8, 8), i;
+    for (i = 0; i < n; i++)
+        out[i] = (char)ti_lower(st8[i]);
+    out[n] = 0;
+}
+
+static void ex_stem_up(const uint8_t *st8, char *out)
+{
+    int n = ti_trim(st8, 8), i;
+    for (i = 0; i < n; i++) {
+        char c = (char)st8[i];
+        out[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+    }
+    out[n] = 0;
+}
+
+/* os.listdir: the names of dir, case preserved, strcmp sorted (Python sorts
+ * by codepoint; strcmp on bytes is the same order). 0 when unreadable. A dir
+ * with more than maxn names is an error (ex_err), never a silent cut. */
+#define EX_LIST_MAX 256
+static int ex_err;                 /* read or malloc failure: exit 2 */
+static int ex_list(const char *dir, char names[][32], int maxn)
+{
+#ifdef __WATCOMC__
+    static char pat[300];
+    struct find_t ft;
+    int dir_len = (int)strlen(dir);
+    int n = 0;
+    if (dir_len + 4 >= (int)sizeof pat)
+        return 0;
+    memcpy(pat, dir, (size_t)dir_len);
+    if (dir_len > 0 && pat[dir_len - 1] != '\\' && pat[dir_len - 1] != '/')
+        pat[dir_len++] = '\\';
+    strcpy(pat + dir_len, "*.*");
+    if (_dos_findfirst(pat, _A_NORMAL, &ft) != 0)
+        return 0;
+    do {
+        if (n >= maxn) {
+            ex_err = 1;
+            break;
+        }
+        if (fit_copy(names[n], 32, ft.name))
+            n++;
+    } while (_dos_findnext(&ft) == 0);
+    qsort(names, (size_t)n, 32, cmpname);
+    return n;
+#else
+    DIR *dirp = opendir(dir);
+    struct dirent *de;
+    int n = 0;
+    if (!dirp)
+        return 0;
+    while ((de = readdir(dirp)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+            continue;
+        if (n >= maxn) {
+            ex_err = 1;
+            break;
+        }
+        if (fit_copy(names[n], 32, de->d_name))
+            n++;
+    }
+    closedir(dirp);
+    qsort(names, (size_t)n, 32, cmpname);
+    return n;
+#endif
+}
+
+/* os.path.isfile: 1 when the path opens for reading (a directory fails) */
+static int ex_isfile(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    int c, ok;
+    if (!f)
+        return 0;
+    c = fgetc(f);
+    ok = (c != EOF) || !ferror(f);
+    fclose(f);
+    return ok;
+}
+
+/* a whole file read (V20s are 11735 B, the MAJ 59771 B). NULL = any failure
+ * (the reference raises: exit 2). */
+static uint8_t *ex_read_whole(const char *path, long *len)
+{
+    FILE *f = fopen(path, "rb");
+    long sz;
+    uint8_t *b;
+    size_t got;
+    int ferr;
+    if (!f)
+        return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    sz = ftell(f);
+    if (sz < 0 || sz > 65535L) { fclose(f); return NULL; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
+    b = (uint8_t *)malloc((size_t)sz ? (size_t)sz : 1);
+    if (!b) { fclose(f); return NULL; }
+    got = fread(b, 1, (size_t)sz, f);
+    ferr = ferror(f);
+    fclose(f);
+    if ((long)got != sz || ferr) { free(b); return NULL; }
+    if (len)
+        *len = sz;
+    return b;
+}
+
+/* every buffer read for the expand stays registered here (freed at exit) */
+#define EX_REG_MAX 96
+static uint8_t *ex_reg[EX_REG_MAX];
+static int ex_nreg;
+
+static uint8_t *ex_reg_read(const char *path, long *len)
+{
+    uint8_t *b;
+    if (ex_nreg >= EX_REG_MAX) {
+        ex_err = 1;
+        return NULL;
+    }
+    b = ex_read_whole(path, len);
+    if (!b) {
+        ex_err = 1;
+        return NULL;
+    }
+    ex_reg[ex_nreg++] = b;
+    return b;
+}
+
+/* _team_path + team_file_of: the *.V20 of the league dir whose lower stem
+ * matches, only when exactly 11735 B (and a real file); else NULL. The path
+ * lands in a static buffer (one lookup live at a time). */
+static char *ex_team_path(const char *dir, const char *stem)
+{
+    static char out[640];
+    static char names[EX_LIST_MAX][32];
+    int n, i;
+    n = ex_list(dir, names, EX_LIST_MAX);
+    for (i = 0; i < n; i++) {
+        size_t l = strlen(names[i]);
+        char cand[32];
+        long sz;
+        if (l <= 4 || strcmp(names[i] + l - 4, ".V20") != 0)
+            continue;
+        if (l - 4 > 30)
+            continue;
+        memcpy(cand, names[i], l - 4);
+        cand[l - 4] = 0;
+        to_lower_str(cand);
+        if (strcmp(cand, stem) != 0)
+            continue;
+        if (!path_join(out, sizeof out, dir, names[i]))
+            continue;
+        if (!ex_isfile(out))
+            continue;
+        {
+            FILE *f = fopen(out, "rb");
+            if (!f)
+                continue;
+            if (fseek(f, 0, SEEK_END) != 0) { fclose(f); continue; }
+            sz = ftell(f);
+            fclose(f);
+        }
+        if (sz != V20_SIZE)
+            continue;
+        return out;
+    }
+    return NULL;
+}
+
+/* _file_ci: the file of dir named name, any case, or NULL */
+static char *ex_file_ci(const char *dir, const char *name)
+{
+    static char out[640];
+    static char names[EX_LIST_MAX][32];
+    char up[32];
+    int n, i;
+    fit_copy(up, sizeof up, name);
+    to_upper_str(up);
+    n = ex_list(dir, names, EX_LIST_MAX);
+    for (i = 0; i < n; i++) {
+        char u2[32];
+        fit_copy(u2, sizeof u2, names[i]);
+        to_upper_str(u2);
+        if (strcmp(u2, up) != 0)
+            continue;
+        if (!path_join(out, sizeof out, dir, names[i]))
+            continue;
+        if (!ex_isfile(out))
+            continue;
+        return out;
+    }
+    return NULL;
+}
+
+/* team file images by lower stem, one image per stem (edited and written) */
+typedef struct {
+    char stem[9];
+    uint8_t *img;                  /* NULL = no 11735 B team file */
+} XImg;
+
+static XImg ex_team_cache[96];
+static int ex_nteamcache;
+
+static uint8_t *ex_team_img(const char *stem)
+{
+    int i;
+    char *p;
+    long len;
+    for (i = 0; i < ex_nteamcache; i++)
+        if (strcmp(ex_team_cache[i].stem, stem) == 0)
+            return ex_team_cache[i].img;
+    if (ex_nteamcache >= 96) {
+        ex_err = 1;
+        return NULL;
+    }
+    p = ex_team_path(g_lgdir, stem);
+    fit_copy(ex_team_cache[ex_nteamcache].stem, 9, stem);
+    ex_team_cache[ex_nteamcache].img = p ? ex_reg_read(p, &len) : NULL;
+    ex_nteamcache++;
+    return ex_team_cache[ex_nteamcache - 1].img;
+}
+
+/* snap_img: the snap-dir V20 of stem (any case), exactly 11735 B, or NULL */
+static uint8_t *ex_snap_img(const char *stem)
+{
+    static char names[EX_LIST_MAX][32];
+    int n, i;
+    n = ex_list(g_snapdir, names, EX_LIST_MAX);
+    for (i = 0; i < n; i++) {
+        size_t l = strlen(names[i]);
+        char up4[5], cand[32];
+        char path[640];
+        long sz, len;
+        if (l <= 4 || l - 4 > 30)
+            continue;
+        memcpy(up4, names[i] + l - 4, 5);
+        to_upper_str(up4);
+        if (strcmp(up4, ".V20") != 0)   /* the extension matched any case */
+            continue;
+        memcpy(cand, names[i], l - 4);
+        cand[l - 4] = 0;
+        to_lower_str(cand);
+        if (strcmp(cand, stem) != 0)
+            continue;
+        if (!path_join(path, sizeof path, g_snapdir, names[i]))
+            continue;
+        if (!ex_isfile(path))
+            continue;
+        {
+            FILE *f = fopen(path, "rb");
+            if (!f)
+                continue;
+            if (fseek(f, 0, SEEK_END) != 0) { fclose(f); continue; }
+            sz = ftell(f);
+            fclose(f);
+        }
+        if (sz != V20_SIZE)
+            continue;
+        return ex_reg_read(path, &len);
+    }
+    return NULL;
+}
+
+/* ---------------- C15 event log ---------------- */
+
+typedef struct {
+    int code;                      /* 0 CONTRACT, 1 REL, 2 POOLRET, 3 SIGN */
+    char p1[24];                   /* stem up, or the name for POOLRET */
+    char p2[24];                   /* the player name (REL, SIGN) */
+    char p3[12];                   /* the source stem up, or pool (SIGN) */
+} ExEv;
+
+static ExEv **ex_el;
+static int ex_nel, ex_elcap;
+
+static ExEv *ex_ev_add(int code)
+{
+    ExEv *e;
+    if (ex_nel >= ex_elcap) {
+        ExEv **nn = (ExEv **)realloc(ex_el,
+            (size_t)(ex_elcap + 64) * sizeof(ExEv *));
+        if (!nn) {
+            ex_err = 1;
+            return NULL;
+        }
+        ex_el = nn;
+        ex_elcap += 64;
+    }
+    e = (ExEv *)calloc(1, sizeof(ExEv));
+    if (!e) {
+        ex_err = 1;
+        return NULL;
+    }
+    e->code = code;
+    ex_el[ex_nel++] = e;
+    return e;
+}
+
+/* ---------------- C15 output lines (the ROSTERS.TXT body) --------------- */
+
+static char **ex_out;
+static int ex_nout, ex_outcap;
+
+static int ex_out_add(const char *s)
+{
+    size_t l = strlen(s);
+    if (ex_nout >= ex_outcap) {
+        char **nn = (char **)realloc(ex_out,
+            (size_t)(ex_outcap + 64) * sizeof(char *));
+        if (!nn) {
+            ex_err = 1;
+            return 0;
+        }
+        ex_out = nn;
+        ex_outcap += 64;
+    }
+    ex_out[ex_nout] = (char *)malloc(l + 1);
+    if (!ex_out[ex_nout]) {
+        ex_err = 1;
+        return 0;
+    }
+    memcpy(ex_out[ex_nout], s, l + 1);
+    ex_nout++;
+    return 1;
+}
+
+/* ---------------- C15 changed sets and the stem -> image map ------------ */
+
+static char ex_chg[96][9];         /* lower stems with a written team file */
+static int ex_nchg;
+static char ex_map_stem[96][9];    /* lower stem -> the image that is written */
+static uint8_t *ex_map_img[96];
+static int ex_nmap;
+static uint8_t ex_chg_pool[POOL_FILES];
+
+static void ex_chg_add(const char *stem)
+{
+    int i;
+    for (i = 0; i < ex_nchg; i++)
+        if (strcmp(ex_chg[i], stem) == 0)
+            return;
+    if (ex_nchg < 96)
+        fit_copy(ex_chg[ex_nchg++], 9, stem);
+}
+
+static void ex_chg_sort(void)
+{
+    int i, j;
+    for (i = 1; i < ex_nchg; i++) {
+        char v[9];
+        fit_copy(v, sizeof v, ex_chg[i]);
+        for (j = i - 1; j >= 0 && strcmp(ex_chg[j], v) > 0; j--)
+            strcpy(ex_chg[j + 1], ex_chg[j]);
+        strcpy(ex_chg[j + 1], v);
+    }
+}
+
+static void ex_map_add(const char *stem, uint8_t *img)
+{
+    int i;
+    for (i = 0; i < ex_nmap; i++)
+        if (strcmp(ex_map_stem[i], stem) == 0) {
+            ex_map_img[i] = img;
+            return;
+        }
+    if (ex_nmap < 96) {
+        fit_copy(ex_map_stem[ex_nmap], 9, stem);
+        ex_map_img[ex_nmap] = img;
+        ex_nmap++;
+    }
+}
+
+static uint8_t *ex_map_get(const char *stem)
+{
+    int i;
+    for (i = 0; i < ex_nmap; i++)
+        if (strcmp(ex_map_stem[i], stem) == 0)
+            return ex_map_img[i];
+    return NULL;
+}
+
+/* ---------------- C15 state ---------------- */
+
+typedef struct {
+    int k;
+    int L;
+    int slot;
+    uint8_t stem8[8];
+    char lc[9];
+    char up[9];
+} ExSide;
+
+static TiTeam ex_curT[32], ex_snapT[32];
+static char ex_cur_lc[32][9], ex_snap_lc[32][9];
+static int ex_ncur, ex_nsnap;
+static int ex_contracted[32], ex_ncon;
+static int ex_expansion[32], ex_nexp;
+static int ex_nmv;                 /* moved-count only (the trigger) */
+static int ex_nd_cur, ex_nd_snap;
+static int ex_has_snap;
+static uint8_t *ex_cur_maj, *ex_snap_maj;
+static long ex_cur_maj_len, ex_snap_maj_len;
+static uint8_t ex_tab[TI_TABLE_SIZE], ex_tab_old[TI_TABLE_SIZE];
+static char ex_tab_path[640];
+static int ex_tab_found, ex_tab_valid, ex_tab_existed, ex_tab_changed;
+static long ex_tab_size;
+
+static ExSide ex_E[32], ex_S[32];
+static int ex_nE, ex_nS;
+static uint8_t *ex_Eimg[32], *ex_Simg[32];
+static uint8_t ex_prot[32][40];
+static int ex_cap[32], ex_got[32];
+static uint8_t *ex_pool[POOL_FILES];
+static long ex_pool_len[POOL_FILES];
+
+static void ex_side_set(ExSide *sd, int k, const TiTeam *t)
+{
+    sd->k = k;
+    sd->L = t->L;
+    sd->slot = t->slot;
+    memcpy(sd->stem8, t->stem, 8);
+    ex_stem_lc(t->stem, sd->lc);
+    ex_stem_up(t->stem, sd->up);
+}
+
+/* ascending by (k, L, slot, stem8) */
+static void ex_sides_sort(ExSide *a, int n)
+{
+    int i, j;
+    for (i = 1; i < n; i++) {
+        ExSide v = a[i];
+        for (j = i - 1; j >= 0
+             && (a[j].k > v.k
+                 || (a[j].k == v.k
+                     && (a[j].L > v.L
+                         || (a[j].L == v.L
+                             && (a[j].slot > v.slot
+                                 || (a[j].slot == v.slot
+                                     && memcmp(a[j].stem8, v.stem8,
+                                               8) > 0))))));
+             j--)
+            a[j + 1] = a[j];
+        a[j + 1] = v;
+    }
+}
+
+/* the pool files and the first team image (the pool_blank source) */
+static void ex_pools_setup(void)
+{
+    TiTeam tt[48];
+    uint8_t *t0 = NULL;
+    int n, i;
+    n = ti_teams(ex_cur_maj, ex_cur_maj_len, ex_tab_valid ? ex_tab : NULL, tt);
+    for (i = 0; i < n && !t0; i++) {
+        char lc[9];
+        ex_stem_lc(tt[i].stem, lc);
+        t0 = ex_team_img(lc);
+        if (ex_err)
+            return;
+    }
+    for (i = 0; i < POOL_FILES; i++) {
+        char nm[16], path[640];
+        sprintf(nm, "POOL%d.V20", i + 1);
+        if (!path_join(path, sizeof path, g_lgdir, nm)) {
+            ex_err = 1;
+            return;
+        }
+        if (ex_isfile(path)) {
+            ex_pool[i] = ex_reg_read(path, &ex_pool_len[i]);
+            if (!ex_pool[i])
+                return;
+        } else if (t0) {
+            ex_pool_len[i] = V20_SIZE;
+            ex_pool[i] = pool_blank_new(t0);
+            if (!ex_pool[i]) {
+                ex_err = 1;
+                return;
+            }
+            if (ex_nreg < EX_REG_MAX)
+                ex_reg[ex_nreg++] = ex_pool[i];
+            else {
+                ex_err = 1;
+                return;
+            }
+        } else {
+            ex_pool[i] = NULL;
+            ex_pool_len[i] = 0;
+        }
+    }
+}
+
+/* sort of (slot, -V) pairs: the dispersal players and the protection tie */
+static void ex_pv_sort(int *slots, int32_t *vs, int n)
+{
+    int a, b;
+    for (a = 1; a < n; a++) {
+        int tslot = slots[a];
+        int32_t tv = vs[a];
+        for (b = a - 1; b >= 0
+             && (vs[b] > tv || (vs[b] == tv && slots[b] > tslot)); b--) {
+            slots[b + 1] = slots[b];
+            vs[b + 1] = vs[b];
+        }
+        slots[b + 1] = tslot;
+        vs[b + 1] = tv;
+    }
+}
+
+/* C15.4 step 2: the dispersal of the contracted teams into the pools */
+static void ex_dispersal(void)
+{
+    int i, s, pi, ps;
+    for (i = 0; i < ex_ncon; i++) {
+        int ci = ex_contracted[i];
+        uint8_t *img;
+        char *tp;
+        int has_file;
+        int slots[40];
+        int32_t vs[40];
+        int n = 0, a;
+        ExEv *e = ex_ev_add(0);
+        if (!e)
+            return;
+        ex_stem_up(ex_snapT[ci].stem, e->p1);
+        img = ex_team_img(ex_snap_lc[ci]);
+        if (ex_err)
+            return;
+        if (!img) {
+            img = ex_snap_img(ex_snap_lc[ci]);
+            if (ex_err)
+                return;
+        }
+        if (!img)
+            continue;                  /* no TEAMID.DAT change, a bare line */
+        tp = ex_team_path(g_lgdir, ex_snap_lc[ci]);
+        has_file = (tp != NULL);
+        for (s = 0; s < 40; s++)
+            if (ex_real(img, s)) {
+                slots[n] = s;
+                vs[n] = -v_of(RIMG(img, s));
+                n++;
+            }
+        ex_pv_sort(slots, vs, n);
+        for (a = 0; a < n; a++) {
+            int pitch, placed = 0;
+            char nm[24];
+            const uint8_t *rec;
+            s = slots[a];
+            rec = RIMG(img, s);
+            pitch = is_pitcher(rec);
+            for (pi = 0; pi < POOL_FILES && !placed; pi++) {
+                int lo = pitch ? 0 : 16, hi = pitch ? 16 : 40;
+                if (!ex_pool[pi])
+                    continue;
+                for (ps = lo; ps < hi; ps++) {
+                    uint8_t pair[2 * V20_REC];
+                    if (ex_pool[pi][V20_HDR + V20_REC * ps] != 0)
+                        continue;
+                    memcpy(pair, RIMG(img, s), V20_REC);
+                    memcpy(pair + V20_REC, RIMG(img, s + 40), V20_REC);
+                    write_pair(ex_pool[pi], ps, pair);
+                    write_pool_years(ex_pool[pi], ps, 0);
+                    ex_chg_pool[pi] = 1;
+                    placed = 1;
+                    break;
+                }
+            }
+            pname(rec, nm);
+            if (placed) {
+                ExEv *e2 = ex_ev_add(1);
+                if (!e2)
+                    return;
+                strcpy(e2->p1, e->p1);
+                strcpy(e2->p2, nm);
+            } else {
+                ExEv *e2 = ex_ev_add(2);
+                if (!e2)
+                    return;
+                strcpy(e2->p1, nm);
+            }
+        }
+        if (has_file) {
+            for (s = 0; s < 40; s++)
+                if (ex_real(img, s))
+                    vacate(img, s);
+            ex_chg_add(ex_snap_lc[ci]);
+            ex_map_add(ex_snap_lc[ci], img);
+        }
+    }
+}
+
+/* C15.4 step 3 setup: the E teams, the sources, protection and caps */
+static void ex_draft_setup(uint32_t mask)
+{
+    int i, ci, s;
+    ex_nE = 0;
+    ex_nS = 0;
+    for (i = 0; i < ex_nexp; i++) {
+        int k;
+        ci = ex_expansion[i];
+        k = ex_tab_valid
+            ? (int)ti_id_of_stem(ex_tab, ex_curT[ci].stem)
+            : (int)ti_slot_to_engine(ex_curT[ci].L, ex_curT[ci].slot,
+                                     ex_nd_cur);
+        if (k < 0)
+            continue;
+        ex_side_set(&ex_E[ex_nE], k, &ex_curT[ci]);
+        ex_nE++;
+    }
+    ex_sides_sort(ex_E, ex_nE);
+    for (i = 0; i < ex_nE; i++) {
+        ex_Eimg[i] = ex_team_img(ex_E[i].lc);
+        if (ex_err)
+            return;
+        if (!ex_Eimg[i]) {
+            ex_err = 1;                /* the detection read it: cannot miss */
+            return;
+        }
+    }
+    for (ci = 0; ci < ex_ncur; ci++) {
+        int k, inE = 0, managed;
+        k = ex_tab_valid
+            ? (int)ti_id_of_stem(ex_tab, ex_curT[ci].stem)
+            : (int)ti_slot_to_engine(ex_curT[ci].L, ex_curT[ci].slot,
+                                     ex_nd_cur);
+        if (k < 0)
+            continue;                  /* no id: loses nobody */
+        for (i = 0; i < ex_nE; i++)
+            if (ex_E[i].k == k) {
+                inE = 1;
+                break;
+            }
+        if (inE)
+            continue;
+        managed = (k < 32) ? (int)((mask >> k) & 1u) : 0;
+        if (managed)
+            continue;
+        if (!ex_team_img(ex_cur_lc[ci])) {
+            if (ex_err)
+                return;
+            continue;
+        }
+        ex_side_set(&ex_S[ex_nS], k, &ex_curT[ci]);
+        ex_nS++;
+    }
+    ex_sides_sort(ex_S, ex_nS);
+    for (i = 0; i < ex_nS; i++) {
+        int slots[40], n = 0, a;
+        int32_t vs[40];
+        ex_Simg[i] = ex_team_img(ex_S[i].lc);
+        if (ex_err)
+            return;
+        if (!ex_Simg[i]) {
+            ex_err = 1;
+            return;
+        }
+        ex_cap[i] = 2 * ex_nE;
+        memset(ex_prot[i], 0, 40);
+        for (s = 0; s < 40; s++)
+            if (ex_real(ex_Simg[i], s)) {
+                slots[n] = s;
+                vs[n] = -v_of(RIMG(ex_Simg[i], s));
+                n++;
+            }
+        ex_pv_sort(slots, vs, n);
+        for (a = 0; a < n && a < 15; a++)
+            ex_prot[i][slots[a]] = 1;
+    }
+    for (i = 0; i < ex_nE; i++)
+        ex_got[i] = 0;
+    for (i = 0; i < ex_nE; i++)
+        ex_map_add(ex_E[i].lc, ex_Eimg[i]);
+    for (i = 0; i < ex_nS; i++)
+        ex_map_add(ex_S[i].lc, ex_Simg[i]);
+}
+
+/* C15.4 step 3: the draft, one pick per E team per round */
+static void ex_draft(void)
+{
+    int e, sk, s;
+    for (;;) {
+        int acted = 0;
+        for (e = 0; e < ex_nE; e++) {
+            uint8_t *img = ex_Eimg[e];
+            int needp = ex_count_real(img, 0, 16) < 10;
+            int needb = ex_count_real(img, 16, 40) < 15;
+            int bsk = -1, bs = 0;
+            int32_t bv = 0;
+            int pit, lo, hi, d, dst;
+            uint8_t pair[2 * V20_REC];
+            uint8_t recb[V20_REC];
+            if (!needp && !needb)
+                continue;
+            for (sk = 0; sk < ex_nS; sk++) {
+                if (ex_cap[sk] <= 0)
+                    continue;
+                for (s = 0; s < 40; s++) {
+                    int32_t v;
+                    int p2;
+                    const uint8_t *r2;
+                    if (!ex_real(ex_Simg[sk], s) || ex_prot[sk][s])
+                        continue;
+                    r2 = RIMG(ex_Simg[sk], s);
+                    p2 = is_pitcher(r2);
+                    if (p2 ? !needp : !needb)
+                        continue;
+                    v = v_of(r2);
+                    if (bsk < 0 || v > bv
+                        || (v == bv && ex_S[sk].k < ex_S[bsk].k)) {
+                        bsk = sk;
+                        bs = s;
+                        bv = v;
+                    }
+                }
+            }
+            if (bsk < 0)
+                continue;
+            memcpy(recb, RIMG(ex_Simg[bsk], bs), V20_REC);
+            pit = is_pitcher(recb);
+            lo = pit ? 0 : 16;
+            hi = pit ? 16 : 40;
+            dst = -1;
+            for (d = lo; d < hi; d++)
+                if (!ex_real(img, d)) {
+                    dst = d;
+                    break;
+                }
+            if (dst < 0)
+                continue;
+            memcpy(pair, RIMG(ex_Simg[bsk], bs), V20_REC);
+            memcpy(pair + V20_REC, RIMG(ex_Simg[bsk], bs + 40), V20_REC);
+            write_pair(img, dst, pair);
+            write_pool_years(img, dst, 0);
+            vacate(ex_Simg[bsk], bs);
+            ex_cap[bsk]--;
+            ex_got[e]++;
+            {
+                ExEv *e2 = ex_ev_add(3);
+                char nm[24];
+                if (!e2)
+                    return;
+                pname(recb, nm);
+                strcpy(e2->p1, ex_E[e].up);
+                strcpy(e2->p2, nm);
+                strcpy(e2->p3, ex_S[bsk].up);
+            }
+            ex_chg_add(ex_E[e].lc);
+            ex_chg_add(ex_S[bsk].lc);
+            acted = 1;
+        }
+        if (!acted)
+            break;
+    }
+}
+
+/* C15.4 step 4: pool signing */
+static void ex_poolsign(void)
+{
+    int e, pi, s;
+    for (;;) {
+        int acted = 0;
+        for (e = 0; e < ex_nE; e++) {
+            uint8_t *img = ex_Eimg[e];
+            int needp = 0, needb = 0;
+            int bpi = -1, bs = 0;
+            int32_t bv = 0;
+            int pit, lo, hi, d, dst;
+            uint8_t pair[2 * V20_REC];
+            uint8_t recb[V20_REC];
+            for (d = 0; d < 16 && !needp; d++)
+                if (!ex_real(img, d))
+                    needp = 1;
+            for (d = 16; d < 40 && !needb; d++)
+                if (!ex_real(img, d))
+                    needb = 1;
+            if (!needp && !needb)
+                continue;
+            for (pi = 0; pi < POOL_FILES; pi++) {
+                if (!ex_pool[pi])
+                    continue;
+                for (s = 0; s < 40; s++) {
+                    int32_t v;
+                    int p2;
+                    const uint8_t *r2;
+                    if (!IS_ON(ex_pool[pi], s))
+                        continue;
+                    r2 = RIMG(ex_pool[pi], s);
+                    p2 = is_pitcher(r2);
+                    if (p2 ? !needp : !needb)
+                        continue;
+                    v = v_of(r2);
+                    if (bpi < 0 || v > bv) {
+                        bpi = pi;
+                        bs = s;
+                        bv = v;
+                    }
+                }
+            }
+            if (bpi < 0)
+                continue;
+            memcpy(recb, RIMG(ex_pool[bpi], bs), V20_REC);
+            pit = is_pitcher(recb);
+            lo = pit ? 0 : 16;
+            hi = pit ? 16 : 40;
+            dst = -1;
+            for (d = lo; d < hi; d++)
+                if (!ex_real(img, d)) {
+                    dst = d;
+                    break;
+                }
+            if (dst < 0)
+                continue;
+            memcpy(pair, RIMG(ex_pool[bpi], bs), V20_REC);
+            memcpy(pair + V20_REC, RIMG(ex_pool[bpi], bs + 40), V20_REC);
+            write_pair(img, dst, pair);
+            write_pool_years(img, dst, 0);
+            vacate(ex_pool[bpi], bs);
+            ex_chg_pool[bpi] = 1;
+            ex_got[e]++;
+            {
+                ExEv *e2 = ex_ev_add(3);
+                char nm[24];
+                if (!e2)
+                    return;
+                pname(recb, nm);
+                strcpy(e2->p1, ex_E[e].up);
+                strcpy(e2->p2, nm);
+                strcpy(e2->p3, "pool");
+            }
+            ex_chg_add(ex_E[e].lc);
+            acted = 1;
+        }
+        if (!acted)
+            break;
+    }
+}
+
+/* C15.4 step 5: the floor keeps the lowest placeholder slots */
+static void ex_floor(void)
+{
+    int e, s, phase;
+    for (e = 0; e < ex_nE; e++) {
+        uint8_t *img = ex_Eimg[e];
+        for (phase = 0; phase < 2; phase++) {
+            int lo = phase ? 16 : 0, hi = phase ? 40 : 16;
+            int keep = (phase ? 15 : 10) - ex_count_real(img, lo, hi);
+            int seen = 0;
+            if (keep < 0)
+                keep = 0;
+            for (s = lo; s < hi; s++) {
+                if (ex_is_placeholder(img, s)) {
+                    if (seen < keep)
+                        seen++;
+                    else
+                        vacate(img, s);
+                } else if (!ex_real(img, s)) {
+                    vacate(img, s);
+                }
+            }
+        }
+    }
+}
+
+/* C15.4 step 6: depth rebuild of every E team that got a player, then of the
+ * sources that lost one (lowest id first, one rebuild per id) */
+static void ex_rebuild(void)
+{
+    static Team st;
+    int e, i, j, nlost = 0;
+    int lostk[32];
+    uint8_t *lostimg[32];
+    for (e = 0; e < ex_nE; e++) {
+        if (!ex_got[e])
+            continue;
+        memset(&st, 0, sizeof st);
+        st.img = ex_Eimg[e];
+        depth_rebuild(&st, NULL);
+    }
+    for (i = 0; i < ex_nS; i++) {
+        int dup = 0;
+        if (ex_cap[i] >= 2 * ex_nE)
+            continue;
+        for (j = 0; j < nlost && !dup; j++)
+            if (lostk[j] == ex_S[i].k)
+                dup = 1;
+        if (dup || nlost >= 32)
+            continue;
+        lostk[nlost] = ex_S[i].k;
+        lostimg[nlost] = ex_Simg[i];
+        nlost++;
+    }
+    for (i = 1; i < nlost; i++) {
+        int tk = lostk[i];
+        uint8_t *ti = lostimg[i];
+        for (j = i - 1; j >= 0 && lostk[j] > tk; j--) {
+            lostk[j + 1] = lostk[j];
+            lostimg[j + 1] = lostimg[j];
+        }
+        lostk[j + 1] = tk;
+        lostimg[j + 1] = ti;
+    }
+    for (i = 0; i < nlost; i++) {
+        memset(&st, 0, sizeof st);
+        st.img = lostimg[i];
+        depth_rebuild(&st, NULL);
+    }
+}
+
+/* the ROSTERS.TXT body lines, in order: the event lines in ev order (the
+ * CONTRACT seg flush never reorders: CONTRACT always starts its segment);
+ * then EXPAND per E team that got a player; then the draft and pool SIGN
+ * lines in ev order */
+static void ex_build_lines(void)
+{
+    int i, e;
+    char lb[96];                   /* the longest line is 44 chars */
+    for (i = 0; i < ex_nel; i++) {
+        ExEv *ev = ex_el[i];
+        if (ev->code == 0) {
+            strcpy(lb, "CONTRACT ");
+            strcat(lb, ev->p1);
+        } else if (ev->code == 1) {
+            strcpy(lb, "REL ");
+            strcat(lb, ev->p1);
+            strcat(lb, " ");
+            strcat(lb, ev->p2);
+        } else if (ev->code == 2) {
+            strcpy(lb, "POOLRET ");
+            strcat(lb, ev->p1);
+        } else {
+            continue;
+        }
+        ex_out_add(lb);
+    }
+    for (e = 0; e < ex_nE; e++) {
+        if (!ex_got[e])
+            continue;
+        strcpy(lb, "EXPAND ");
+        strcat(lb, ex_E[e].up);
+        ex_out_add(lb);
+    }
+    for (i = 0; i < ex_nel; i++) {
+        ExEv *ev = ex_el[i];
+        if (ev->code == 3 && strcmp(ev->p3, "pool") != 0) {
+            strcpy(lb, "SIGN ");
+            strcat(lb, ev->p1);
+            strcat(lb, " ");
+            strcat(lb, ev->p2);
+            strcat(lb, " ");
+            strcat(lb, ev->p3);
+            ex_out_add(lb);
+        }
+    }
+    for (i = 0; i < ex_nel; i++) {
+        ExEv *ev = ex_el[i];
+        if (ev->code == 3 && strcmp(ev->p3, "pool") == 0) {
+            strcpy(lb, "SIGN ");
+            strcat(lb, ev->p1);
+            strcat(lb, " ");
+            strcat(lb, ev->p2);
+            strcat(lb, " pool");
+            ex_out_add(lb);
+        }
+    }
+}
+
+static int ex_wrote;               /* TMP writes committed or pending */
+
+/* one write of a whole buffer to <path>.TMP (8.3-safe name), 0 on failure */
+static int ex_put(const char *fin, const uint8_t *b, size_t n)
+{
+    int idx;
+    if (g_ntmps >= 70 || reg_tmp(fin) != 0) {
+        ex_err = 1;
+        return 0;
+    }
+    idx = g_ntmps - 1;
+    if (!write_file(g_tmps[idx], b, n)) {
+        ex_err = 1;
+        return 0;
+    }
+    ex_wrote++;
+    return 1;
+}
+
+/* ROSTERS.TXT: the existing bytes streamed in, then the new lines (CRLF) */
+static int ex_put_txt(const char *fin)
+{
+    FILE *f, *src;
+    int idx, i;
+    static uint8_t chunk[8192];
+    size_t got;
+    if (g_ntmps >= 70 || reg_tmp(fin) != 0) {
+        ex_err = 1;
+        return 0;
+    }
+    idx = g_ntmps - 1;
+    f = fopen(g_tmps[idx], "wb");
+    if (!f) {
+        ex_err = 1;
+        return 0;
+    }
+    if (ex_isfile(fin)) {
+        src = fopen(fin, "rb");
+        if (!src) {
+            fclose(f);
+            ex_err = 1;
+            return 0;
+        }
+        for (;;) {
+            got = fread(chunk, 1, sizeof chunk, src);
+            if (ferror(src)
+                || (got > 0 && fwrite(chunk, 1, got, f) != got)) {
+                fclose(src);
+                fclose(f);
+                ex_err = 1;
+                return 0;
+            }
+            if (got < sizeof chunk)
+                break;
+        }
+        fclose(src);
+    }
+    for (i = 0; i < ex_nout; i++)
+        if (fprintf(f, "%s\r\n", ex_out[i]) < 0) {
+            fclose(f);
+            ex_err = 1;
+            return 0;
+        }
+    if (fclose(f) != 0) {
+        ex_err = 1;
+        return 0;
+    }
+    ex_wrote++;
+    return 1;
+}
+
+/* C15.4 step 8: the writes. 0 ok, 1 on failure (ex_err set). */
+static int ex_writes(void)
+{
+    char txtp[660];
+    int i, pi;
+    ex_chg_sort();
+    for (i = 0; i < ex_nchg; i++) {
+        char *p = ex_team_path(g_lgdir, ex_chg[i]);
+        uint8_t *d;
+        long l = V20_SIZE;
+        if (!p)
+            continue;
+        d = ex_map_get(ex_chg[i]);
+        if (!d) {
+            d = ex_reg_read(p, &l);
+            if (!d)
+                return 1;
+        }
+        if (!ex_put(p, d, (size_t)l))
+            return 1;
+    }
+    for (pi = 0; pi < POOL_FILES; pi++) {
+        char nm[16], pp[660];
+        if (!ex_chg_pool[pi] || !ex_pool[pi])
+            continue;
+        sprintf(nm, "POOL%d.V20", pi + 1);
+        if (!path_join(pp, sizeof pp, g_lgdir, nm))
+            return 1;
+        if (!ex_put(pp, ex_pool[pi], (size_t)ex_pool_len[pi]))
+            return 1;
+    }
+    if (ex_tab_changed) {
+        char tp2[660];
+        const char *dst;
+        if (ex_tab_found && ex_tab_path[0]) {
+            dst = ex_tab_path;
+        } else {
+            if (!path_join(tp2, sizeof tp2, g_lgdir, "TEAMID.DAT"))
+                return 1;
+            dst = tp2;
+        }
+        if (!ex_put(dst, ex_tab, TI_TABLE_SIZE))
+            return 1;
+    }
+    ex_build_lines();
+    if (ex_nout > 0) {
+        char *ci = ex_file_ci(g_lgdir, "ROSTERS.TXT");
+        const char *dst;
+        if (ci) {
+            dst = ci;
+        } else if (path_join(txtp, sizeof txtp, g_lgdir, "ROSTERS.TXT")) {
+            dst = txtp;
+        } else {
+            return 1;
+        }
+        if (!ex_put_txt(dst))
+            return 1;
+    }
+    return 0;
+}
+
+/* free the expand scratch (the registered buffers, the event log, the lines
+ * and the caches). The TMP registrations in g_tmps/g_fins go with free_all. */
+static void ex_free(void)
+{
+    int i;
+    for (i = 0; i < ex_nreg; i++)
+        free(ex_reg[i]);
+    ex_nreg = 0;
+    ex_err = 0;
+    for (i = 0; i < ex_nel; i++)
+        free(ex_el[i]);
+    free(ex_el);
+    ex_el = NULL;
+    ex_nel = 0;
+    ex_elcap = 0;
+    for (i = 0; i < ex_nout; i++)
+        free(ex_out[i]);
+    free(ex_out);
+    ex_out = NULL;
+    ex_nout = 0;
+    ex_outcap = 0;
+    ex_nteamcache = 0;
+    ex_nchg = 0;
+    ex_nmap = 0;
+    memset(ex_chg_pool, 0, sizeof ex_chg_pool);
+    ex_wrote = 0;
+}
+
+/* ROSTERS /EXPAND: C15.4. 0 anything written, 1 nothing (no event), 2 error
+ * (no file changed). No rng, no draws, no HISTORY writes. */
+static int do_expand(void)
+{
+    int rc = 2;
+    do {
+        /* the current MAJ: the first *.MAJ of the league dir (sorted) */
+        {
+            static char names[EX_LIST_MAX][32];
+            int n, i, found = 0;
+            n = ex_list(g_lgdir, names, EX_LIST_MAX);
+            for (i = 0; i < n && !found; i++) {
+                size_t l = strlen(names[i]);
+                if (l <= 4 || strcmp(names[i] + l - 4, ".MAJ") != 0)
+                    continue;
+                if (path_join(g_majpath, sizeof g_majpath, g_lgdir, names[i]))
+                    found = 1;
+            }
+            if (!found)
+                break;
+        }
+        ex_cur_maj = ex_reg_read(g_majpath, &ex_cur_maj_len);
+        if (!ex_cur_maj)
+            break;                     /* any read failure: 2 */
+        if (ex_cur_maj_len != MAJ_SIZE)
+            break;                     /* short = 2 (raw < 59771); long = 2
+                                          (the maj.Maj size assert) */
+        ex_nd_cur = ti_ndiv(ex_cur_maj, ex_cur_maj_len);
+        ex_ncur = ti_maj_teams(ex_cur_maj, ex_cur_maj_len, ex_curT);
+        {
+            int i;
+            for (i = 0; i < ex_ncur; i++)
+                ex_stem_lc(ex_curT[i].stem, ex_cur_lc[i]);
+        }
+        /* the snapshot MAJ: the file named like the current MAJ (any case),
+         * used only when exactly 59771 B */
+        {
+            static char names[EX_LIST_MAX][32];
+            char upbase[32];
+            int n, i;
+            {
+                const char *sep = NULL, *q;
+                for (q = g_majpath; *q; q++)
+                    if (*q == '/' || *q == '\\')
+                        sep = q;
+                fit_copy(upbase, sizeof upbase, sep ? sep + 1 : g_majpath);
+            }
+            to_upper_str(upbase);
+            n = ex_list(g_snapdir, names, EX_LIST_MAX);
+            for (i = 0; i < n; i++) {
+                char up[32], sp[640];
+                long len;
+                uint8_t *b;
+                fit_copy(up, sizeof up, names[i]);
+                to_upper_str(up);
+                if (strcmp(up, upbase) != 0)
+                    continue;
+                if (!path_join(sp, sizeof sp, g_snapdir, names[i]))
+                    break;
+                if (!ex_isfile(sp))
+                    continue;
+                b = ex_reg_read(sp, &len);
+                if (!b)
+                    break;
+                if (len == MAJ_SIZE) {
+                    ex_snap_maj = b;
+                    ex_snap_maj_len = len;
+                    ex_has_snap = 1;
+                } else if (len > MAJ_SIZE) {
+                    ex_err = 1;        /* the maj.Maj size assert */
+                }
+                break;
+            }
+            if (ex_err)
+                break;
+        }
+        if (ex_has_snap) {
+            int si, ci;
+            ex_nd_snap = ti_ndiv(ex_snap_maj, ex_snap_maj_len);
+            ex_nsnap = ti_maj_teams(ex_snap_maj, ex_snap_maj_len, ex_snapT);
+            for (ci = 0; ci < ex_nsnap; ci++)
+                ex_stem_lc(ex_snapT[ci].stem, ex_snap_lc[ci]);
+            for (si = 0; si < ex_nsnap; si++) {
+                int found = 0;
+                for (ci = 0; ci < ex_ncur && !found; ci++)
+                    if (strcmp(ex_snap_lc[si], ex_cur_lc[ci]) == 0)
+                        found = 1;
+                if (!found)
+                    ex_contracted[ex_ncon++] = si;
+            }
+            for (si = 0; si < ex_nsnap; si++) {
+                for (ci = 0; ci < ex_ncur; ci++) {
+                    if (strcmp(ex_snap_lc[si], ex_cur_lc[ci]) != 0)
+                        continue;
+                    if (ti_slot_to_engine(ex_curT[ci].L, ex_curT[ci].slot,
+                                          ex_nd_cur)
+                        != ti_slot_to_engine(ex_snapT[si].L, ex_snapT[si].slot,
+                                             ex_nd_snap))
+                        ex_nmv++;
+                    break;
+                }
+            }
+        }
+        /* expansion: a team file with no real player in slots 0..39 */
+        {
+            int ci, s;
+            for (ci = 0; ci < ex_ncur; ci++) {
+                uint8_t *img = ex_team_img(ex_cur_lc[ci]);
+                int any = 0;
+                if (ex_err)
+                    break;
+                if (!img)
+                    continue;
+                for (s = 0; s < 40 && !any; s++)
+                    if (ex_real(img, s))
+                        any = 1;
+                if (!any)
+                    ex_expansion[ex_nexp++] = ci;
+            }
+            if (ex_err)
+                break;
+        }
+        /* ---- C15.3 stable ids ---- */
+        {
+            static char names[EX_LIST_MAX][32];
+            int n, i, found = 0;
+            n = ex_list(g_lgdir, names, EX_LIST_MAX);
+            for (i = 0; i < n && !found; i++) {
+                char up[32];
+                fit_copy(up, sizeof up, names[i]);
+                to_upper_str(up);
+                if (strcmp(up, "TEAMID.DAT") != 0)
+                    continue;
+                if (path_join(ex_tab_path, sizeof ex_tab_path, g_lgdir,
+                              names[i]))
+                    found = 1;
+            }
+            ex_tab_found = found;
+            if (ex_tab_found) {
+                FILE *f = fopen(ex_tab_path, "rb");
+                size_t got, want;
+                if (!f)
+                    break;             /* open raises: exit 2 */
+                if (fseek(f, 0, SEEK_END) != 0) { fclose(f); break; }
+                ex_tab_size = ftell(f);
+                if (ex_tab_size < 0) { fclose(f); break; }
+                if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); break; }
+                want = (ex_tab_size < (long)TI_TABLE_SIZE)
+                     ? (size_t)ex_tab_size : (size_t)TI_TABLE_SIZE;
+                got = fread(ex_tab_old, 1, want, f);
+                fclose(f);
+                if (got != want)
+                    break;
+                if (ex_tab_size == TI_TABLE_SIZE) {
+                    memcpy(ex_tab, ex_tab_old, TI_TABLE_SIZE);
+                    ex_tab_valid = 1;
+                    ex_tab_existed = 1;
+                }
+            }
+        }
+        if (!ex_tab_valid && (ex_ncon || ex_nexp || ex_nmv)) {
+            if (ex_has_snap) {
+                ti_make_table(ex_snap_maj, ex_snap_maj_len, ex_tab);
+            } else {
+                int ei, j, kk;
+                ti_make_table(ex_cur_maj, ex_cur_maj_len, ex_tab);
+                for (ei = 0; ei < ex_nexp; ei++) {
+                    kk = (int)ti_slot_to_engine(ex_curT[ex_expansion[ei]].L,
+                                                ex_curT[ex_expansion[ei]].slot,
+                                                ex_nd_cur);
+                    if (kk < 32)
+                        for (j = 0; j < 8; j++)
+                            ex_tab[8 * kk + j] = 0;
+                }
+            }
+            ex_tab_valid = 1;
+        }
+        if (ex_tab_valid) {
+            int ci;
+            for (ci = 0; ci < ex_ncur; ci++) {
+                int k0, k;
+                if (ti_id_of_stem(ex_tab, ex_curT[ci].stem) >= 0)
+                    continue;
+                k0 = ex_curT[ci].L * 16;
+                for (k = k0; k < k0 + 16; k++)
+                    if (ex_tab[8 * k] == 0)
+                        break;
+                if (k >= k0 + 16)
+                    continue;          /* no free k: no id */
+                memcpy(ex_tab + 8 * k, ex_curT[ci].stem, 8);
+            }
+            ex_tab_changed = !ex_tab_existed
+                || memcmp(ex_tab, ex_tab_old, TI_TABLE_SIZE) != 0;
+        }
+        if (!ex_ncon && !ex_nexp) {
+            /* moved only: the ids above are the whole event (step 1); the
+             * made or extended table is written, nothing else */
+            if (ex_tab_valid && ex_tab_changed) {
+                char dstp[660];
+                const char *dst;
+                if (ex_tab_found && ex_tab_path[0]) {
+                    dst = ex_tab_path;
+                } else if (path_join(dstp, sizeof dstp, g_lgdir,
+                                     "TEAMID.DAT")) {
+                    dst = dstp;
+                } else {
+                    break;
+                }
+                if (!ex_put(dst, ex_tab, TI_TABLE_SIZE))
+                    break;
+            }
+            if (ex_err)
+                break;
+            {
+                int cret = commit_tmps();
+                if (cret != 0)
+                    break;             /* rc stays 2 */
+            }
+            rc = ex_wrote ? 0 : 1;
+            break;
+        }
+        /* ---- the mask: HISTORY bytes 12..15, u32 LE (any read error = 0) -- */
+        {
+            uint32_t mask = 0;
+            FILE *f = fopen(g_histpath, "rb");
+            if (f) {
+                uint8_t hb[16];
+                size_t got = fread(hb, 1, 16, f);
+                if (!ferror(f) && got >= 16)
+                    mask = rd32(hb + 12);
+                fclose(f);
+            }
+            ex_pools_setup();
+            if (ex_err)
+                break;
+            ex_dispersal();
+            if (ex_err)
+                break;
+            ex_draft_setup(mask);
+            if (ex_err)
+                break;
+            ex_draft();
+            if (ex_err)
+                break;
+            ex_poolsign();
+            if (ex_err)
+                break;
+            ex_floor();
+            ex_rebuild();
+            if (ex_err)
+                break;
+            if (ex_writes() != 0)
+                break;
+            {
+                int cret = commit_tmps();
+                if (cret != 0)
+                    break;             /* rc stays 2 */
+            }
+            rc = ex_wrote ? 0 : 1;
+        }
+    } while (0);
+    if (rc != 0)
+        cleanup_tmps();                /* removes every TMP written */
+    ex_free();
+    free_all();
+    return rc;
 }
