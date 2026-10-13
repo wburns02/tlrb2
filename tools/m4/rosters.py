@@ -23,6 +23,8 @@ T is one module-level dict so a harness can override any constant.
 File wrapper run(league_dir, snap_dir, hist_path, retired_path) -> 0 ok,
 2 error (files untouched on error). usage:
   rosters.py LEAGUE_DIR SNAP_DIR HIST_PATH RETIRED_PATH
+  rosters.py /EXPAND LEAGUE_DIR SNAP_DIR HIST_PATH     (C15: expansion,
+  contraction, stable ids; appended ROSTERS.TXT, TEAMID.DAT, pool writes)
 """
 import glob
 import os
@@ -1119,6 +1121,461 @@ def refresh_allstars(league_dir):
 
 
 # ---------------------------------------------------------------------------
+# C15 expansion / contraction (ROSTERS /EXPAND)
+# ---------------------------------------------------------------------------
+
+EMPTY_NAME = b'EMPTY' + bytes(15)
+
+
+def is_placeholder(img, slot):
+    """Placeholder record (C15.1): byte 0 != 0 and bytes 0..19 = b'EMPTY' + 15
+    NUL (the roster record i drives it)."""
+    base = HDR + REC * slot
+    return img[base] != 0 and bytes(img[base:base + 20]) == EMPTY_NAME
+
+
+def real_player(img, slot):
+    """Real player (C15.1): byte 0 != 0 and not a placeholder."""
+    return img[HDR + REC * slot] != 0 and not is_placeholder(img, slot)
+
+
+def team_file_of(league_dir, stem8):
+    """Team file of a stem (C15.1): <stem>.V20 in the league dir, any case,
+    exactly 11735 B; else None. stem8 = 8 B NUL padded."""
+    stem = stem8.rstrip(b'\0').decode('latin-1').lower()
+    tp = _team_path(league_dir, stem)
+    if tp and os.path.getsize(tp) == HDR + REC * 80:
+        return tp
+    return None
+
+
+def count_real(img, lo, hi):
+    """Real players in roster slots lo..hi-1 (roster half only)."""
+    return sum(1 for s in range(lo, hi) if real_player(img, s))
+
+
+def expand(league_dir, snap_dir, hist_path):
+    """C15.4: the /EXPAND step. Returns 0 anything written, 1 nothing (no
+    event), 2 error (no file changed). No rng, no draws, no HISTORY writes."""
+    try:
+        mp = history_mod.maj_or_none(league_dir)
+        if mp is None:
+            return 2
+        raw = open(mp, 'rb').read()
+        if len(raw) < 59771:
+            return 2
+        m = maj_load(mp)
+        cur = list(teamids.maj_teams(m.d))
+        nd = teamids.ndiv(m.d)
+        # snapshot MAJ: the file named like the current MAJ (any case), >= 59771 B
+        snap_m = None
+        if os.path.isdir(snap_dir):
+            for f in sorted(os.listdir(snap_dir)):
+                if f.upper() == os.path.basename(mp).upper() \
+                        and os.path.isfile(os.path.join(snap_dir, f)):
+                    sp = os.path.join(snap_dir, f)
+                    sb = open(sp, 'rb').read()
+                    if len(sb) >= 59771:
+                        snap_m = maj_load(sp)
+                    break
+        # ---- C15.2 detection ----
+        contracted = []
+        if snap_m is not None:
+            cur_stems = {st.rstrip(b'\0').lower() for _, _, st in cur}
+            for L, slot, st in teamids.maj_teams(snap_m.d):
+                if st.rstrip(b'\0').lower() not in cur_stems:
+                    contracted.append((L, slot, st))
+        expansion = []
+        for L, slot, st in cur:
+            tp = _team_path(league_dir, st.rstrip(b'\0').decode('latin-1').lower())
+            if tp and os.path.getsize(tp) == HDR + REC * 80:
+                img = open(tp, 'rb').read()
+                if not any(real_player(bytearray(img), s) for s in range(40)):
+                    expansion.append((L, slot, st))
+        moved = []
+        if snap_m is not None:
+            cur_e = {st.rstrip(b'\0').lower(): teamids.slot_to_engine(L, slot, nd)
+                     for L, slot, st in cur}
+            for L, slot, st in teamids.maj_teams(snap_m.d):
+                k = st.rstrip(b'\0').lower()
+                if k in cur_e and cur_e[k] != teamids.slot_to_engine(
+                        L, slot, teamids.ndiv(snap_m.d)):
+                    moved.append((L, slot, st))
+        # ---- C15.3 stable ids ----
+        table = teamids.load_table(league_dir)
+        table_existed = table is not None
+        if table is None and (contracted or expansion or moved):
+            if snap_m is not None:
+                tab = teamids.make_table(snap_m.d)
+            else:
+                tab = bytearray(teamids.make_table(m.d))
+                for L, slot, st in expansion:
+                    k = teamids.slot_to_engine(L, slot, nd)
+                    if k < 32:
+                        tab[8 * k:8 * k + 8] = bytes(8)
+            table = [bytes(tab[8 * k:8 * k + 8]) for k in range(32)]
+        if table is not None:
+            for L, slot, st in cur:
+                if _id_of_stem8(table, st) is not None:
+                    continue
+                free = None
+                for k in range(L * 16, L * 16 + 16):
+                    if table[k][:1] == b'\0':
+                        free = k
+                        break
+                if free is None:
+                    continue                        # no free k: no id
+                table[free] = bytes(st)
+        table_changed = table is not None and (
+            not table_existed
+            or bytes(b''.join(table)) != open(teamids.table_path(league_dir),
+                                              'rb').read())
+        if not contracted and not expansion:
+            # moved only: the ids above are the whole event (C15.4 step 1); the
+            # made or extended table is written, nothing else
+            tmps = []
+            try:
+                t_out = bytes(b''.join(table)) if table_changed else None
+                if t_out is not None:
+                    tp0 = teamids.table_path(league_dir)
+                    p = tp0 or os.path.join(league_dir, teamids.TABLE_NAME)
+                    tp = p + '.TMP'
+                    with open(tp, 'wb') as f:
+                        f.write(t_out)
+                    tmps.append((tp, p))
+            except Exception:
+                for tp, _p in tmps:
+                    if os.path.exists(tp):
+                        os.remove(tp)
+                raise
+            for tp, p in tmps:
+                os.replace(tp, p)
+            return 0 if tmps else 1
+        # ---- mask (HISTORY bytes 12..15, u32 LE) ----
+        mask = 0
+        try:
+            hb = open(hist_path, 'rb').read()
+            if len(hb) >= 16:
+                mask = struct.unpack_from('<I', hb, 12)[0]
+        except Exception:
+            mask = 0
+
+        def team_img(stem8):
+            tp = team_file_of(league_dir, stem8)
+            return bytearray(open(tp, 'rb').read()) if tp else None
+
+        def snap_img(stem8):
+            stem = stem8.rstrip(b'\0').decode('latin-1').lower()
+            if not os.path.isdir(snap_dir):
+                return None
+            for f in sorted(os.listdir(snap_dir)):
+                if f.upper().endswith('.V20') \
+                        and os.path.basename(f)[:-4].lower() == stem \
+                        and os.path.isfile(os.path.join(snap_dir, f)) \
+                        and os.path.getsize(os.path.join(snap_dir, f)) == HDR + REC * 80:
+                    return bytearray(open(os.path.join(snap_dir, f), 'rb').read())
+            return None
+        # ---- pool ----
+        first_team = None
+        for k, L, slot, st in sorted(teamids.teams(m.d, table)):
+            img = team_img(st)
+            if img is not None:
+                first_team = img
+                break
+        pool_imgs = []
+        for name in POOL_FILES:
+            pp = os.path.join(league_dir, name)
+            pool_imgs.append(bytearray(open(pp, 'rb').read())
+                             if os.path.isfile(pp)
+                             else (pool_blank(first_team) if first_team else None))
+        changed_team = set()                    # lower stems
+        changed_pool = set()                    # pool indices
+        ev = []
+
+        vcache = {}
+
+        def V(rec):
+            k = bytes(rec)
+            v = vcache.get(k)
+            if v is None:
+                v = vcache[k] = value(rec)
+            return v
+
+        # ---- 2. dispersal ----
+        team_img_by_stem = {}       # lower stem -> the image that gets written
+        for L, slot, st in contracted:
+            stem_u = st.rstrip(b'\0').decode('latin-1').upper()
+            stem_l = stem_u.lower()
+            img = team_img(st)
+            if img is None:
+                img = snap_img(st)
+            ev.append(('CONTRACT', (stem_u,)))
+            if img is None:
+                continue
+            players = [(s, img[HDR + REC * s:HDR + REC * (s + 1)])
+                       for s in range(40) if real_player(img, s)]
+            players.sort(key=lambda t: (-V(t[1]), t[0]))
+            tp = _team_path(league_dir, stem_l)
+            has_file = tp and os.path.getsize(tp) == HDR + REC * 80
+            for s, rec in players:
+                pitch = is_pitcher(rec)
+                placed = False
+                for pi, pimg in enumerate(pool_imgs):
+                    if pimg is None:
+                        continue
+                    for pslot in (range(16) if pitch else range(16, 40)):
+                        if pimg[HDR + REC * pslot] == 0:
+                            write_pair(pimg, pslot, copy_pair(img, s))
+                            write_pool_years(pimg, pslot, 0)
+                            changed_pool.add(pi)
+                            placed = True
+                            break
+                    if placed:
+                        break
+                name = pname(rec)
+                ev.append(('REL', (stem_u, name)) if placed
+                          else ('POOLRET', (name,)))
+            if has_file:
+                for s in range(40):
+                    if real_player(img, s):
+                        vacate(img, s)
+                changed_team.add(stem_l)
+                team_img_by_stem[stem_l] = img
+        # ---- 3. draft ----
+        def id_of(L, slot, st):
+            if table is None:
+                return teamids.slot_to_engine(L, slot, nd)
+            return _id_of_stem8(table, st)
+
+        E = sorted((k, L, slot, st) for L, slot, st in expansion
+                   if (k := id_of(L, slot, st)) is not None)
+        E_ids = {k for k, _, _, _ in E}
+
+        def stem_u_of(stem8):
+            return stem8.rstrip(b'\0').decode('latin-1').upper()
+
+        sources = []
+        for L, slot, st in cur:
+            k = id_of(L, slot, st)
+            if k is None or k in E_ids:
+                continue
+            if (mask >> k) & 1:
+                continue                        # a managed team loses nobody
+            if team_img(st) is None:
+                continue
+            sources.append((k, L, slot, st))
+        sources.sort()
+        src_img = {k: team_img(st) for k, _L, _s, st in sources}
+        e_img = {k: team_img(st) for k, _L, _s, st in E}
+        for _k, _L, _s, st in E:
+            team_img_by_stem[stem_u_of(st).lower()] = e_img[_k]
+        for k, _L, _s, st in sources:
+            team_img_by_stem[stem_u_of(st).lower()] = src_img[k]
+        e_name = {k: stem_u_of(st) for k, _L, _s, st in E}
+        src_name = {k: stem_u_of(st) for k, _L, _s, st in sources}
+        prot = {}
+        for k, _L, _s, _st in sources:
+            img = src_img[k]
+            named = [s for s in range(40) if real_player(img, s)]
+            prot[k] = set(sorted(named, key=lambda s: (
+                -V(img[HDR + REC * s:HDR + REC * (s + 1)]), s))[:15])
+        cap = {k: 2 * len(E) for k, _L, _s, _st in sources}
+        got = {k: 0 for k, _L, _s, _st in E}
+
+        def e_needs(k):
+            need = []
+            if count_real(e_img[k], 0, 16) < 10:
+                need.append(True)
+            if count_real(e_img[k], 16, 40) < 15:
+                need.append(False)
+            return need
+
+        while True:
+            acted = False
+            for k, _L, _s, _st in E:
+                img = e_img[k]
+                need = e_needs(k)
+                if not need:
+                    continue
+                best = None
+                for sk, _sL, _ss, _sst in sources:
+                    if cap[sk] <= 0:
+                        continue
+                    simg = src_img[sk]
+                    for s in range(40):
+                        if not real_player(simg, s) or s in prot[sk]:
+                            continue
+                        rec = simg[HDR + REC * s:HDR + REC * (s + 1)]
+                        pit = is_pitcher(rec)
+                        if not (pit and True in need or not pit and False in need):
+                            continue
+                        key = (-V(rec), sk, s)
+                        if best is None or key < best[0]:
+                            best = (key, sk, s)
+                if best is None:
+                    continue
+                _key, sk, s = best
+                rec = src_img[sk][HDR + REC * s:HDR + REC * (s + 1)]
+                dst = next((d for d in (range(16) if is_pitcher(rec)
+                                        else range(16, 40))
+                            if not real_player(img, d)), None)
+                if dst is None:
+                    continue
+                write_pair(img, dst, copy_pair(src_img[sk], s))
+                write_pool_years(img, dst, 0)
+                vacate(src_img[sk], s)
+                cap[sk] -= 1
+                got[k] += 1
+                ev.append(('SIGN', (e_name[k], pname(rec), src_name[sk])))
+                changed_team.add(e_name[k].lower())
+                changed_team.add(src_name[sk].lower())
+                acted = True
+            if not acted:
+                break
+        # ---- 4. pool signing ----
+        while True:
+            acted = False
+            for k, _L, _s, _st in E:
+                img = e_img[k]
+                need = []
+                if any(not real_player(img, d) for d in range(16)):
+                    need.append(True)
+                if any(not real_player(img, d) for d in range(16, 40)):
+                    need.append(False)
+                if not need:
+                    continue
+                best = None
+                for pi, pimg in enumerate(pool_imgs):
+                    if pimg is None:
+                        continue
+                    for pslot in range(40):
+                        if pimg[HDR + REC * pslot] == 0:
+                            continue
+                        rec = pimg[HDR + REC * pslot:HDR + REC * (pslot + 1)]
+                        if is_pitcher(rec) not in need:
+                            continue
+                        key = (-V(rec), pi, pslot)
+                        if best is None or key < best[0]:
+                            best = (key, pi, pslot, rec)
+                if best is None:
+                    continue
+                _key, pi, pslot, rec = best
+                dst = next(d for d in (range(16) if is_pitcher(rec)
+                                       else range(16, 40))
+                           if not real_player(img, d))
+                write_pair(img, dst, copy_pair(pool_imgs[pi], pslot))
+                write_pool_years(img, dst, 0)
+                vacate(pool_imgs[pi], pslot)
+                changed_pool.add(pi)
+                changed_team.add(e_name[k].lower())
+                got[k] += 1
+                ev.append(('SIGN', (e_name[k], pname(rec), 'pool')))
+                acted = True
+            if not acted:
+                break
+        # ---- 5. floor ----
+        for k, _L, _s, _st in E:
+            img = e_img[k]
+            for lo, hi, floor in ((0, 16, 10), (16, 40, 15)):
+                keep_n = max(0, floor - count_real(img, lo, hi))
+                seen = 0
+                for s in range(lo, hi):
+                    if is_placeholder(img, s):
+                        if seen < keep_n:
+                            seen += 1
+                        else:
+                            vacate(img, s)
+                    elif not real_player(img, s):
+                        vacate(img, s)
+        # ---- 6. depth rebuild ----
+        for k, _L, _s, _st in E:
+            if got[k]:
+                depth_rebuild(e_img[k], None)
+        lost = {k for k in cap if cap[k] < 2 * len(E)}
+        for k in sorted(lost):
+            if k in src_img:
+                depth_rebuild(src_img[k], None)
+        # ---- 8. writes ----
+        tp0 = teamids.table_path(league_dir)
+        table_out = bytes(b''.join(table)) if table_changed else None
+        tmps = []
+        try:
+            def put(path, data):
+                tp = path + '.TMP'
+                with open(tp, 'wb') as f:
+                    f.write(bytes(data))
+                tmps.append((tp, path))
+            for stem_l in sorted(changed_team):
+                p = _team_path(league_dir, stem_l)
+                if p:
+                    data = team_img_by_stem.get(stem_l)
+                    if data is None:
+                        data = bytearray(open(p, 'rb').read())
+                    put(p, data)
+            for pi in sorted(changed_pool):
+                if pool_imgs[pi] is not None:
+                    put(os.path.join(league_dir, POOL_FILES[pi]), pool_imgs[pi])
+            if table_out is not None:
+                p = tp0 or os.path.join(league_dir, teamids.TABLE_NAME)
+                put(p, table_out)
+            txt_p = _file_ci(league_dir, 'ROSTERS.TXT') \
+                or os.path.join(league_dir, 'ROSTERS.TXT')
+            existing = open(txt_p, 'rb').read() if os.path.isfile(txt_p) else b''
+            # ROSTERS.TXT is appended (C6 run() overwrites it; /EXPAND appends), CRLF,
+            # in order: per contracted stem CONTRACT then its REL / POOLRET lines; per
+            # E team that got a player EXPAND; the draft SIGN lines in pick order;
+            # the pool SIGN lines
+            out_lines = []
+            seg = []
+            for code, parts in ev:
+                if code == 'CONTRACT':
+                    if seg:
+                        out_lines.extend(seg)
+                        seg = []
+                    out_lines.append('CONTRACT %s' % parts[0])
+                elif code == 'REL':
+                    seg.append('REL %s %s' % (parts[0].upper(), parts[1]))
+                elif code == 'POOLRET':
+                    seg.append('POOLRET %s' % parts[0])
+            if seg:
+                out_lines.extend(seg)
+            for k, _L, _s, st in E:
+                if got[k]:
+                    out_lines.append('EXPAND %s' % e_name[k])
+            for code, parts in ev:
+                if code == 'SIGN' and parts[2] != 'pool':
+                    out_lines.append('SIGN %s %s %s'
+                                     % (parts[0].upper(), parts[1], parts[2]))
+            for code, parts in ev:
+                if code == 'SIGN' and parts[2] == 'pool':
+                    out_lines.append('SIGN %s %s %s'
+                                     % (parts[0].upper(), parts[1], parts[2]))
+            if out_lines:
+                body = b'\r\n'.join(l.encode('latin-1') for l in out_lines) + b'\r\n'
+                put(txt_p, existing + body)
+        except Exception:
+            for tp, _p in tmps:
+                if os.path.exists(tp):
+                    os.remove(tp)
+            raise
+        for tp, p in tmps:
+            os.replace(tp, p)
+        return 0 if tmps else 1
+    except Exception:
+        return 2
+
+
+def _id_of_stem8(table, stem8):
+    """The lowest k whose table entry matches the stem (ASCII case-insensitive,
+    trailing NULs ignored), or None."""
+    want = stem8.rstrip(b'\0').lower()
+    for k, e in enumerate(table):
+        if e[:1] != b'\0' and e.rstrip(b'\0').lower() == want:
+            return k
+    return None
+
+
+# ---------------------------------------------------------------------------
 # File wrapper. 0 ok, 2 error (files untouched on error).
 # ---------------------------------------------------------------------------
 
@@ -1295,7 +1752,8 @@ def maj_load(path):
 
 def rosters_txt(ev):
     """ROSTERS.TXT body: CRLF, one line per event in order, names on every
-    line. FORMAT events (C12.6) are 'FORMAT n' or 'FORMAT REFUSED reason'."""
+    line. FORMAT events (C12.6) are 'FORMAT n' or 'FORMAT REFUSED reason'.
+    CONTRACT events (C15) are 'CONTRACT <STEM>'; EXPAND events 'EXPAND <STEM>'."""
     lines = []
     for code, parts in ev:
         if code == 'FORMAT':
@@ -1309,11 +1767,18 @@ def rosters_txt(ev):
                                                 parts[2].upper(), parts[3]))
         elif code == 'POOLRET':
             lines.append('POOLRET %s' % parts[0])
+        elif code == 'CONTRACT':
+            lines.append('CONTRACT %s' % parts[0])
+        elif code == 'EXPAND':
+            lines.append('EXPAND %s' % parts[0])
     return b'\r\n'.join(l.encode('latin-1') for l in lines) + (b'\r\n' if lines else b'')
 
 
 def main(argv):
-    usage = 'usage: rosters.py LEAGUE_DIR SNAP_DIR HIST_PATH RETIRED_PATH'
+    usage = 'usage: rosters.py LEAGUE_DIR SNAP_DIR HIST_PATH RETIRED_PATH\n' \
+            '       rosters.py /EXPAND LEAGUE_DIR SNAP_DIR HIST_PATH'
+    if len(argv) == 5 and argv[1].upper() == '/EXPAND':
+        return expand(argv[2], argv[3], argv[4])
     if len(argv) != 5:
         print(usage)
         return 2
