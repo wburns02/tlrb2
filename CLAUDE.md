@@ -32,4 +32,8 @@ Project: full reverse engineering of Tony La Russa Baseball II (1993 DOS) and in
   placeholder-only team in the MAJ.
 - Rig typing: rig.key sends --window (synthetic) events, which DOSBox-X ignores; use rig.type_text or a plain
   `xdotool key`. A stock text field drops the first key typed right after the click that focuses it.
+- Rig BAT flow: every program switch (MAIN to UTIL, MANAGE, BACK, the frontend PLAY) passes through `:start`, so
+  ROSTERS /EXPAND runs on each one. Stock UTIL started by hand from the DOS prompt shows a black screen (it needs
+  the frontend handoff); reach it through MAIN > UTILITIES. To capture a pre-/EXPAND state on a throwaway install,
+  set a flag file in the `:util` route and copy the league dir at `:start` when it exists.
 - Be terse in reports: what changed, test output tail, anything you could not do.
