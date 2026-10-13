@@ -3251,7 +3251,8 @@ static void ex_map_add(const char *stem, uint8_t *img)
         fit_copy(ex_map_stem[ex_nmap], 9, stem);
         ex_map_img[ex_nmap] = img;
         ex_nmap++;
-    }
+    } else
+        ex_err = 1;                    /* a dropped image would write the stale file */
 }
 
 static uint8_t *ex_map_get(const char *stem)
@@ -4259,7 +4260,7 @@ static int do_expand(void)
             ex_rebuild();
             if (ex_err)
                 break;
-            if (ex_writes() != 0)
+            if (ex_writes() != 0 || ex_err)
                 break;
             {
                 int cret = commit_tmps();
