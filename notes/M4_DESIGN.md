@@ -258,3 +258,14 @@ Falls back to a MAIN menu patch only if key-wait/UX in the standalone renderer p
   sign only the draft class (C6 step 5). Accepted; the pools fill from the second roll on.
 - HISTWR never copies a file onto itself under any spelling (TRUENAME on DOS, st_dev/st_ino on the host).
 - Known data quirk left alone: NEGRO'LG.MAJ (old 58789 B format) carries junk stems in slots 9..13.
+
+## Number of teams (brain, 2026-10-13)
+
+- No new team editor. Stock UTIL > SETUP LEAGUES already adds (NEW TEAM, then place it in a division), removes and
+  deletes teams, and the engine plays any count it schedules (proofs: 14 + 14 on 162 GAMES-28 TEAMS, 14 + 12 on
+  GENERATED). The dynasty side is ROSTERS /EXPAND at every BAT start, before HISTWR /SNAP (C15.4, C15.5).
+- Draft rule, decided for Will: an expansion team drafts from AI teams only (each protects its top 15 by V, loses at
+  most 2 per expansion team), up to 10 P and 15 B, then signs free agents from the pool; managed teams lose nobody.
+  Placeholder slots the draft could not fill stay EMPTY so the game still has a playable roster.
+- A removed team's players go to the free-agent pool in V order (dispersal); a full pool retires the rest (POOLRET).
+- Detection is level triggered (a team file with no real player is an expansion team), so a second start finds nothing.

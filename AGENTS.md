@@ -27,4 +27,9 @@ Project: full reverse engineering of Tony La Russa Baseball II (1993 DOS) and in
   storedZip). The overlay then counts as a changed file and rides along in the slot's saved changes.
 - Browser walks (Playwright + js-dos) need a 6G capped limit; at 3G the wasm build traps with
   "RuntimeError: unreachable" on some boots, which looks like a black screen, not a game bug.
+- C15: a team file whose 40 slots hold no real player (only `EMPTY` placeholders or vacant) is an expansion team, and
+  ROSTERS /EXPAND drafts for it at the next BAT start. Test fixtures that want an untouched league must not leave a
+  placeholder-only team in the MAJ.
+- Rig typing: rig.key sends --window (synthetic) events, which DOSBox-X ignores; use rig.type_text or a plain
+  `xdotool key`. A stock text field drops the first key typed right after the click that focuses it.
 - Be terse in reports: what changed, test output tail, anything you could not do.
