@@ -678,6 +678,8 @@ which a realignment never changes:
   the lowest such k; a MAJ team whose stem is in no entry has no id and is skipped wherever ALLSTAR files are.
 - Only the realignment (C12.5) creates TEAMID.DAT, from the pre-realignment MAJ by the no-file rule, and only when
   it is missing. Nothing rewrites an existing one.
+  (Amended 2026-10-13: ROSTERS /EXPAND also creates it when teams are added, removed or moved, and adds an entry for
+  every MAJ team without one; entries are never cleared or rewritten. C15.3.)
 - An id < 16 is AL (a realignment never moves a team between leagues).
 Helpers (Python tools/m4/teamids.py, C tools/m4/teamids.h; identical results):
 - `teams(maj, table)` -> [(id, L, slot, stem)] sorted by id (ties impossible: the lowest k rule, duplicates skipped
@@ -825,6 +827,7 @@ The screen state gains a cursor: the absolute index of the highlighted row. On H
 SEASON AWARDS and the offseason RETIREMENTS phase: UP / DOWN move it by one within the list (page follows:
 page = cursor // 12), PGUP / PGDN move the page and put the cursor on the page's first row; the highlighted row is
 drawn as the SETTINGS cursor row is (C_TITLE_RED bar, white text). Every other screen keeps its current keys.
+(Amended 2026-10-13, C15.8: a one-column message row is never highlighted.)
 ENTER on a highlighted row whose row names a player entry opens PLAYER CARD for that entry (AWARDS rows whose entry
 is 0xffff or a team, and empty lists, do nothing). On the offseason ENTER keeps its walk meaning; the card opens there
 with `C` (67, 99).
@@ -961,6 +964,122 @@ built from client text except a validated id and k.
 - Writes send the existing WRITE headers.
 
 
+## C15. Number of teams: expansion and contraction (added 2026-10-13)
+
+Will, 2026-10-12: change the number of teams, with an expansion draft. Found 2026-10-13 on the rig: stock UTIL > SETUP
+LEAGUES already adds and removes teams. NEW TEAM (left list, under CHOOSE FROM CLASSIC TEAMS) asks TEAM NAME and TEAM
+ABBR and writes TEAMS\<L>\CLAS<n>.V20 at once (header name, abbr, stadium GRASS; a placeholder roster, below); click the
+team in the left list, then an empty division row, to place it; the MAJ is written when UTIL is left (slot stem, name,
+abbreviation, counts S + 0x298 + d and 0x20e + 3 * L + d; the day byte is not changed). Clicking a placed team removes it
+from its division; UTIL then compacts the division (the teams below move up one slot, so their engine ids change; W, L and
+GB are not moved). DELETE TEAM deletes the V20 at once, and only for a team no division holds (a placed team gets `SORRY,
+BUT THIS TEAM IS CURRENTLY BEING USED IN THE LEAGUE`). Proof seasons: two new NL teams (14 + 14) played a full season on
+`162 GAMES-28 TEAMS` (placeholder rosters, 5-157 and 7-155, 162 G each in HISTORY); a 14 + 12 league (NL 7 / 5) on
+GENERATED. The dynasty side is ROSTERS /EXPAND, which runs at every BAT
+start and turns what UTIL did into a dynasty event: an expansion draft for new teams, a dispersal for removed ones,
+and stable ids for both. Draft rule (decided for Will, 2026-10-13): new teams draft unprotected players from AI teams,
+then sign free agents from the pool; managed teams lose nobody.
+
+### C15.1 Definitions
+- Placeholder record: byte 0 != 0 and bytes 0..19 = `EMPTY` followed by 15 NUL (stock NEW TEAM writes these in pitcher
+  slots 0..9 and batter slots 16..30, both halves; ratings 7). Real player: a slot whose roster record (i) has byte 0 != 0
+  and is not a placeholder. Slots 0..15 pitchers, 16..39 batters (C6).
+- MAJ teams and ids: C12.3 (`teamids.teams(maj, table)`; table = TEAMID.DAT or none).
+- Current MAJ: the league's MAJ (C16.1 'maj'). Snapshot MAJ: the file in the snap dir whose name equals the current MAJ's
+  base name (any case), when readable and at least 59771 B; else none.
+- Team file of a stem: `<stem>.V20` in the league dir (any case), exactly 11735 B; else none.
+- V, is_pitcher, write_pair, vacate, byte 141 (pool years), pool files and pool_blank: C6.
+
+### C15.2 Detection
+- Contracted stems: the snapshot MAJ's teams (C12.3 maj_teams, L 0 then 1, slot ascending) whose stem (cut at the first
+  NUL, ASCII case-insensitive) is not the stem of any current MAJ team. No snapshot MAJ: none. Edge triggered (the BAT's
+  HISTWR /SNAP right after ROSTERS /EXPAND makes the snapshot current).
+- Expansion teams: current MAJ teams whose team file exists and whose slots 0..39 hold no real player. Level triggered.
+- Moved (only matters with no TEAMID.DAT): a stem present in both MAJs whose engine id (C12.1) differs between them.
+
+### C15.3 Stable ids (amends C12.3: ROSTERS /EXPAND also creates and extends TEAMID.DAT)
+- table = load_table. When table is none and there is a contracted stem, an expansion team or a moved stem: table =
+  make_table(snapshot MAJ), or when there is no snapshot MAJ, make_table(current MAJ) with every entry equal to an
+  expansion team's stem zeroed.
+- When table is not none (loaded or made): every current MAJ team (maj_teams order) whose stem matches no entry gets the
+  lowest k in L * 16 .. L * 16 + 15 whose entry's first byte is NUL; entry k = its stem (8 B, NUL padded, case as in the
+  MAJ). None free: the team stays without an id (skipped as C12.3 says, never drafted for).
+- Entries are never cleared: a contracted team keeps its id, so its history keeps its name; ids are never reused.
+- TEAMID.DAT is written only when its bytes change (or it was made).
+
+### C15.4 ROSTERS /EXPAND
+`ROSTERS /EXPAND [LEAGUE_DIR SNAP_DIR HIST_PATH]` (switch any case; no paths: C16.1 dir, snap, hist). Python
+`rosters.expand(league_dir, snap_dir, hist_path) -> code`, CLI `rosters.py /EXPAND LEAGUE_DIR SNAP_DIR HIST_PATH`.
+Exit 0 when anything was written, 1 when nothing (the common case: no event), 2 on error (the current MAJ unreadable or
+shorter than 59771 B, a read or write failure); on 2 no file is changed. No rng, no draws, no HISTORY writes.
+- mask = HISTORY bytes 12..15 (u32 LE) when HIST_PATH is readable and at least 16 B, else 0 (all AI).
+- Pool: POOL1..POOL4.V20 as C6 (missing: pool_blank of the first existing team file of the current MAJ teams, sorted
+  file order as C6 run()).
+Steps, in order:
+1. Ids (C15.3).
+2. Dispersal, for each contracted stem in snapshot order: its image = the team file when it exists, else the snap dir's
+   `<stem>.V20` (any case, 11735 B), else none (only the CONTRACT line). Its real players sorted by V descending, ties
+   slot ascending: each goes to the lowest vacant (byte 0 == 0) pool slot of its type, POOL1 first, slots ascending,
+   both halves, byte 141 = 0, line `REL <STEM> <name>`; no vacant slot: line `POOLRET <name>`. When the team file
+   exists, every real player's pair in it is vacated (header unchanged) and the file is written; a missing team file is
+   not recreated.
+3. Draft. E = expansion teams with an id, ascending id. Sources = current MAJ teams with an id that are not in E, whose
+   mask bit is clear and whose team file exists, ascending id. Each source protects its top 15 real players by V (both
+   types together), ties slot ascending, fixed before the first pick. Cap per source = 2 * |E| picks in total.
+   Need of an E team: pitchers while it has fewer than 10 real pitchers, batters while fewer than 15 real batters.
+   Rounds: each E team in order makes at most one pick: among every source below its cap, the unprotected real player
+   still on it of a type E needs, max V, ties lowest source id, then lowest slot. The pair goes to E's lowest slot of its
+   type that holds no real player (write_pair; byte 141 = 0 both halves), the source slot is vacated, line
+   `SIGN <E> <name> <SOURCE STEM>`. Rounds repeat until a full round picks nobody.
+4. Pool signing. Rounds: each E team in order with a slot holding no real player takes the max V pool player of a type
+   it has such a slot for (pool order: POOL1..POOL4, slots ascending; ties earliest), to its lowest such slot, byte 141
+   = 0, pool slot vacated, line `SIGN <E> <name> pool`. Rounds repeat until a full round signs nobody.
+5. Floor. In each E team: placeholders in pitcher slots ascending, keep the first max(0, 10 - real pitchers) and vacate
+   the rest; batters the same with 15. Every other slot holding no real player and not a kept placeholder is vacated
+   (both halves zero). The team keeps a playable 25 when the league and pool could not fill it (known gap: a kept
+   placeholder then stays a player for the C6 offseason).
+6. depth_rebuild(image, form none) (C6 step 7, no draws) for every E team that got at least one player and every source
+   that lost one.
+7. An E team that got no player is left untouched and gets no line. ROSTERS.TXT (league dir, any case; created when
+   missing) gets the lines appended (CRLF), in order: per contracted stem `CONTRACT <STEM>` then its REL / POOLRET
+   lines; per E team that got a player `EXPAND <STEM>`; the draft SIGN lines in pick order; the pool SIGN lines.
+   Team stems upper case, names "First Last" (C6 pname).
+8. Writes: every changed team file, pool file (a pool file made blank and never changed is not written), TEAMID.DAT and
+   ROSTERS.TXT, each to `<path>.TMP` first, then all replaced (C6 run order and rule).
+
+### C15.5 TONY2.BAT (amends C16.4)
+`:start` becomes `:start` / `rosters /expand` / `histwr /snap` / `dynasty` / ... (the rest unchanged). ROSTERS /EXPAND's
+exit code is not tested by the BAT (the next line, HISTWR /SNAP, does not depend on it). Every earlier patched form
+upgrades in place; --revert restores stock.
+
+### C15.6 Displays
+- DYNVIEW team names: unchanged (stable id -> TEAMID stem -> the V20 header name, else the stem upper case). A contracted
+  team whose file UTIL deleted shows its stem.
+- OFFSEASON screen: the /EXPAND SIGN lines show with the free agent signings (the parser already takes SIGN lines);
+  CONTRACT and EXPAND lines are skipped as unknown kinds.
+- ABOUT THE MODS: after the row `START YEAR: DYNASTY SETTINGS, LEFT RIGHT.` and the empty row after it, ten rows
+  (the last one empty):
+  `NUMBER OF TEAMS`
+  `UTILITIES > SETUP LEAGUES: NEW TEAM, THEN`
+  `CLICK IT AND AN EMPTY DIVISION ROW.`
+  `CLICK A PLACED TEAM TO REMOVE IT. NEW`
+  `TEAMS DRAFT FROM AI TEAMS, WHICH KEEP 15`
+  `EACH, THEN SIGN FREE AGENTS. PLAYERS OF`
+  `A REMOVED TEAM BECOME FREE AGENTS. START`
+  `THE SEASON WITH A SCHEDULE THAT FITS,`
+  `ELSE GENERATED.`
+  ``
+
+### C15.7 Schedules (stock, for the record)
+Start New Season lists the templates with their REQUIRED LEAGUE SETUP: 162 GAMES-26 TEAMS (7/6/7/6), 162 GAMES-28 TEAMS
+(7/7/7/7), 162 GAMES(2)-26; ROUND ROBIN and GENERATED fit other counts (GENERATED: an even count per league, at most 8
+a division). Not a mod setting.
+
+### C15.8 Row cursor on a message row (amends C13.4)
+On a cursor screen whose body uses the one-column message layout (COLS_SINGLE: `NO DYNASTY HISTORY YET`,
+`NO SEASON LINES RECORDED YET.` and any other single message row), no row is highlighted: every row is drawn on
+C_ROW_TAN. Keys are unchanged (UP / DOWN cannot move in a one-row list; ENTER finds no player entry).
+
 ## C16. Dynasty tools follow the current league (added 2026-10-12)
 
 Will, 2026-10-12: add more leagues. Stock UTIL > SETUP LEAGUES already makes them (NEW SOURCE LEAGUE, NEW LEAGUE asks
@@ -1013,4 +1132,5 @@ league, and CLASSIC keeps every path it had, so an existing CLASSIC dynasty is u
   :start / histwr /snap / dynasty / if errorlevel 1 goto rolled / goto ctl / :rolled / histwr /archive / histwr /
   rosters / dynview /offseason / :ctl / control
 (only the copy line and `call archive` change). Every earlier patched form upgrades in place; --revert restores stock.
+(Amended 2026-10-13, C15.5: `rosters /expand` runs first, before `histwr /snap`.)
 ARCHIVE.BAT is still written (unused) so a revert to an older bundle keeps working.
