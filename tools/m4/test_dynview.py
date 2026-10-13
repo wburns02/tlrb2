@@ -975,7 +975,7 @@ def test_hub_keys_open_settings_and_about(tmp_path):
     assert dynview.step((SET, 0, 0), dynview.KEY_ESC, data) == (HUB, 0)
     assert dynview.step((ABOUT, 0, 0), dynview.KEY_ESC, data) == (HUB, 0)
     assert dynview.screen_title((SET, 0, 0), data) == 'DYNASTY SETTINGS'
-    assert dynview.screen_title((ABOUT, 0, 0), data) == 'ABOUT THE MODS 1/4'
+    assert dynview.screen_title((ABOUT, 0, 0), data) == 'ABOUT THE MODS 1/5'
     assert dynview.footer_text((SET, 0, 0)) == 'UP DOWN MOVE   ENTER CHANGE   ESC MENU'
     assert dynview.footer_text((ABOUT, 0, 0)) == 'PGUP PGDN   ESC MENU'
 
@@ -1157,25 +1157,30 @@ def test_about_paging(tmp_path):
     ldir = tmp_path / 'empty'
     ldir.mkdir()
     data = dynview.load_data(str(ldir))
-    assert len(dynview.ABOUT_ROWS) == 47
+    assert len(dynview.ABOUT_ROWS) == 57
     s = (ABOUT, 0, 0)
     assert dynview.rows(s, data)[0] == ('DYNASTY MODE',)
     assert len(dynview.rows(s, data)) == 12
-    assert dynview.total_rows(s, data) == 47
+    assert dynview.total_rows(s, data) == 57
     assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
     s = press(s, dynview.KEY_PGDN, data)
-    assert s == (ABOUT, 1, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 2/4'
+    assert s == (ABOUT, 1, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 2/5'
     assert dynview.rows(s, data)[0] == (dynview.ABOUT_ROWS[12],)
     s = press(s, dynview.KEY_PGDN, data)
-    assert s == (ABOUT, 2, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 3/4'
+    assert s == (ABOUT, 2, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 3/5'
     assert len(dynview.rows(s, data)) == 12
     s = press(s, dynview.KEY_PGDN, data)
-    assert s == (ABOUT, 3, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 4/4'
-    assert len(dynview.rows(s, data)) == 11
-    assert press(s, dynview.KEY_PGDN, data) == (ABOUT, 3, 0)   # last page stays
-    s = press(s, dynview.KEY_PGUP, data)
-    assert s == (ABOUT, 2, 0)
-    assert press(press(s, dynview.KEY_PGUP, data), dynview.KEY_PGUP, data) == (ABOUT, 0, 0)
+    assert s == (ABOUT, 3, 0) and dynview.screen_title(s, data) == 'ABOUT THE MODS 4/5'
+    assert len(dynview.rows(s, data)) == 12
+    assert press(s, dynview.KEY_PGDN, data) == (ABOUT, 4, 0)
+    assert len(dynview.rows((ABOUT, 4, 0), data)) == 9
+    assert press((ABOUT, 4, 0), dynview.KEY_PGDN, data) == (ABOUT, 4, 0)   # last page stays
+    s = press((ABOUT, 4, 0), dynview.KEY_PGUP, data)
+    assert s == (ABOUT, 3, 0)
+    s = press(press(s, dynview.KEY_PGUP, data), dynview.KEY_PGUP, data)
+    assert s == (ABOUT, 1, 0)
+    s = press(press(s, dynview.KEY_PGUP, data), dynview.KEY_PGUP, data)
+    assert s == (ABOUT, 0, 0)
     # ABOUT shows its rows with a season recorded too; ENTER does nothing there
     (tmp_path / 'hist').mkdir()
     hdir, _ = make_data(tmp_path / 'hist')
@@ -1395,6 +1400,19 @@ def test_awards_milestones_and_review_skip_award_records(tmp_path):
     assert dynview.ABOUT_ROWS[10:13] == ['SHOWS HISTORY, HALL OF FAME, LEADERS,',
                                          'MILESTONES, SEASON AWARDS, STANDINGS',
                                          'AND THE LAST OFFSEASON.']
+    assert dynview.ABOUT_ROWS[38] == 'START YEAR: DYNASTY SETTINGS, LEFT RIGHT.'
+    assert dynview.ABOUT_ROWS[39] == ''
+    assert dynview.ABOUT_ROWS[40:50] == [
+        'NUMBER OF TEAMS',
+        'UTILITIES > SETUP LEAGUES: NEW TEAM, THEN',
+        'CLICK IT AND AN EMPTY DIVISION ROW.',
+        'CLICK A PLACED TEAM TO REMOVE IT. NEW',
+        'TEAMS DRAFT FROM AI TEAMS, WHICH KEEP 15',
+        'EACH, THEN SIGN FREE AGENTS. PLAYERS OF',
+        'A REMOVED TEAM BECOME FREE AGENTS. START',
+        'THE SEASON WITH A SCHEDULE THAT FITS,',
+        'ELSE GENERATED.',
+        '']
 
 
 def test_awards_season3_rows_exact(tmp_path):
@@ -2053,7 +2071,7 @@ def test_standings_full_36_rows(tmp_path):
 
 
 def test_standings_about_rows_and_columns_fit():
-    assert len(dynview.ABOUT_ROWS) == 47
+    assert len(dynview.ABOUT_ROWS) == 57
     assert dynview.ABOUT_ROWS[11:13] == ['MILESTONES, SEASON AWARDS, STANDINGS',
                                          'AND THE LAST OFFSEASON.']
     assert dynview.FOOTERS[SS] == STAND_FOOTER

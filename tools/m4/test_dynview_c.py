@@ -668,7 +668,8 @@ def test_settings_and_about_no_history_file(tmp_path):
 
 
 ABOUT_SEQS = [[56], [56, PGDN], [56, PGDN, PGDN], [56, PGDN, PGDN, PGDN],
-              [56, PGDN, PGUP, PGUP, PGUP], [56, ENTER, DOWN, UP]]
+              [56, PGDN, PGDN, PGDN, PGDN], [56, PGDN, PGDN, PGDN, PGDN, PGDN],
+              [56, PGDN, PGUP, PGUP, PGUP, PGUP], [56, ENTER, DOWN, UP]]
 
 
 def test_about_pages_parity(tmp_path):

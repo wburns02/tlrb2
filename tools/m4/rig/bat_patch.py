@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-r"""Patch TONY2.BAT to run the dynasty programs before control (contract C7, C16.4).
+r"""Patch TONY2.BAT to run the dynasty programs before control (contract C7, C15.5).
 
 Replaces the stock `:start` / `control` with:
   :start
+  rosters /expand
   histwr /snap
   dynasty
   if errorlevel 1 goto rolled
@@ -14,8 +15,9 @@ Replaces the stock `:start` / `control` with:
   dynview /offseason
   :ctl
   control
-(C16.4: `histwr /snap` copies the current league's dir (SYSTEM, league.h) into its snap dir, which is
-C:\DYNSNAP for CLASSIC; `histwr /archive` replaces `call archive`, the same copy into the first free slot.)
+(C15.5: `rosters /expand` runs the offseason expansion before the season; `histwr /snap` copies
+the current league's dir (SYSTEM, league.h) into its snap dir, which is C:\DYNSNAP for CLASSIC;
+`histwr /archive` replaces `call archive`, the same copy into the first free slot.)
 
 and, when the stock `:frontend` / `play` is present, runs the DYNASTY MODE screen at boot:
   :frontend
@@ -52,6 +54,7 @@ STOCK_START = (
 
 PATCHED_START = (
     ':start\r\n'
+    'rosters /expand\r\n'
     'histwr /snap\r\n'
     'dynasty\r\n'
     'if errorlevel 1 goto rolled\r\n'
@@ -88,6 +91,18 @@ PATCHED_LABELS_C10 = ('goto frontend\r\n\r\n'          # before C13: upgraded in
 
 # earlier patched forms, newest first: upgraded in place by patch()
 EARLIER_FORMS = (
+    (':start\r\n'                       # C16.4: no `rosters /expand`
+     'histwr /snap\r\n'
+     'dynasty\r\n'
+     'if errorlevel 1 goto rolled\r\n'
+     'goto ctl\r\n'
+     ':rolled\r\n'
+     'histwr /archive\r\n'
+     'histwr\r\n'
+     'rosters\r\n'
+     'dynview /offseason\r\n'
+     ':ctl\r\n'
+     'control\r\n'),
     (':start\r\n'                       # C7 to C16.3: the copy line and `call archive`
      'copy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\n'
      'dynasty\r\n'

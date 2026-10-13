@@ -188,6 +188,16 @@ ABOUT_ROWS = ['DYNASTY MODE',
               'PLAYER OPENS HIS CARD.',
               'START YEAR: DYNASTY SETTINGS, LEFT RIGHT.',
               '',
+              'NUMBER OF TEAMS',
+              'UTILITIES > SETUP LEAGUES: NEW TEAM, THEN',
+              'CLICK IT AND AN EMPTY DIVISION ROW.',
+              'CLICK A PLACED TEAM TO REMOVE IT. NEW',
+              'TEAMS DRAFT FROM AI TEAMS, WHICH KEEP 15',
+              'EACH, THEN SIGN FREE AGENTS. PLAYERS OF',
+              'A REMOVED TEAM BECOME FREE AGENTS. START',
+              'THE SEASON WITH A SCHEDULE THAT FITS,',
+              'ELSE GENERATED.',
+              '',
               'NEW FACES',
               '323 NEW FACES JOIN THE 30 STOCK ONES.',
               'ROOKIES AND CREATED PLAYERS USE THEM.',
@@ -2300,10 +2310,10 @@ def render(state, data):
         return fb
     cols = body_cols(state, data)
     # the highlighted row of the page: SETTINGS' cat row, the cursor row (C13.4) on the cursor
-    # screens
+    # screens, none on a single message row (C15.8)
     if screen == SCREEN_SETTINGS:
         hot = cat - page * ROWS_PER_PAGE
-    elif cursor_screen(s):
+    elif cursor_screen(s) and cols is not COLS_SINGLE:
         hot = s[3] - page * ROWS_PER_PAGE
     else:
         hot = -1

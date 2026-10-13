@@ -146,7 +146,7 @@
 
 /* the hub rows (SCREEN_MENU) and the ABOUT THE MODS rows */
 #define N_MENU_ROWS 11
-#define N_ABOUT_ROWS 47
+#define N_ABOUT_ROWS 57
 #define N_TITLE_ROWS 11
 
 /* MILESTON.DAT kinds from AWARD_KIND_MIN up are award and leader records (C7), not
@@ -476,6 +476,16 @@ static const char *ABOUT_LINES[N_ABOUT_ROWS] = {
     "YEAR. TAB SWITCHES. ENTER OR A CLICK ON A",
     "PLAYER OPENS HIS CARD.",
     "START YEAR: DYNASTY SETTINGS, LEFT RIGHT.",
+    "",
+    "NUMBER OF TEAMS",
+    "UTILITIES > SETUP LEAGUES: NEW TEAM, THEN",
+    "CLICK IT AND AN EMPTY DIVISION ROW.",
+    "CLICK A PLACED TEAM TO REMOVE IT. NEW",
+    "TEAMS DRAFT FROM AI TEAMS, WHICH KEEP 15",
+    "EACH, THEN SIGN FREE AGENTS. PLAYERS OF",
+    "A REMOVED TEAM BECOME FREE AGENTS. START",
+    "THE SEASON WITH A SCHEDULE THAT FITS,",
+    "ELSE GENERATED.",
     "",
     "NEW FACES",
     "323 NEW FACES JOIN THE 30 STOCK ONES.",
@@ -4328,14 +4338,14 @@ static void render(State st)
         return;
     }
     /* the highlighted row of the page: SETTINGS' cat row, the cursor row (C13.4) on the cursor
-     * screens */
+     * screens, none on a single message row (C15.8) */
+    g_nrows = refresh_rows(st, &cols);
     if (st.screen == SCREEN_SETTINGS)
-        hot = st.cat - st.page * ROWS_PER_PAGE;
-    else if (cursor_screen(st))
-        hot = st.row - st.page * ROWS_PER_PAGE;
+        hot = st.cat - (int)st.page * ROWS_PER_PAGE;
+    else if (cursor_screen(st) && cols != COLS_SINGLE)
+        hot = (int)st.row - (int)st.page * ROWS_PER_PAGE;
     else
         hot = -1;
-    g_nrows = refresh_rows(st, &cols);
     rect_fb(8, 24, 311, 33, C_HEADER_GOLD);
     draw_headers(cols, n_cols(cols), 26);
     for (r = 0; r < g_nrows; r++) {
