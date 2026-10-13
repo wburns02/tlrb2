@@ -74,10 +74,11 @@ class TestBatPatch:
             assert bat.read_bytes().decode('cp437') == content
 
     def test_c7_form_upgrades_every_earlier_form(self):
-        """C7 and C16.4: rolled seasons run histwr /archive, histwr, rosters and dynview /offseason; every
-        earlier patched form upgrades in place and reverts to stock."""
+        """C7, C16.4 and C15.5: every start runs rosters /expand and histwr /snap; rolled seasons run
+        histwr /archive, histwr, rosters and dynview /offseason; every earlier patched form upgrades in place and reverts to
+        stock."""
         body = bat_patch.PATCHED_START.replace('\r\n', '\n')
-        assert body == (':start\nhistwr /snap\ndynasty\n'
+        assert body == (':start\nrosters /expand\nhistwr /snap\ndynasty\n'
                         'if errorlevel 1 goto rolled\ngoto ctl\n:rolled\nhistwr /archive\nhistwr\nrosters\n'
                         'dynview /offseason\n:ctl\ncontrol\n')
         for old in bat_patch.EARLIER_FORMS:
@@ -94,8 +95,8 @@ class TestBatPatch:
                     'echo off\r\n' + bat_patch.STOCK_START + 'goto x\r\n')
 
     def test_c16_upgrades_the_c7_form(self):
-        """C16.4: an install patched with the C7 form (copy line, `call archive`) upgrades to the C16 form
-        in place; idempotent; revert restores stock."""
+        """C16.4: an install patched with the C7 form (copy line, `call archive`) upgrades to the C16
+        form in place (and then the C15.5 form); idempotent; revert restores stock."""
         c7 = ('REM START MAIN LOOP\r\n:start\r\ncopy TEAMS\\CLASSIC\\*.* C:\\DYNSNAP > NUL\r\ndynasty\r\n'
               'if errorlevel 1 goto rolled\r\ngoto ctl\r\n:rolled\r\ncall archive\r\nhistwr\r\nrosters\r\n'
               'dynview /offseason\r\n:ctl\r\ncontrol\r\n')
@@ -108,7 +109,29 @@ class TestBatPatch:
             content = bat.read_bytes().decode('cp437')
             assert content == 'REM START MAIN LOOP\r\n' + bat_patch.PATCHED_START
             assert 'histwr /snap' in content and 'histwr /archive' in content
+            assert 'rosters /expand' in content
             assert 'call archive' not in content and 'copy TEAMS' not in content
+            assert bat_patch.patch(str(install), revert=False)
+            assert bat.read_bytes().decode('cp437') == content
+            assert bat_patch.patch(str(install), revert=True)
+            assert bat.read_bytes().decode('cp437') == 'REM START MAIN LOOP\r\n' + bat_patch.STOCK_START
+
+    def test_c15_upgrades_the_c16_form(self):
+        """C15.5: an install patched with the C16.4 form (no `rosters /expand`) upgrades to the new form
+        in place; idempotent; revert restores stock."""
+        c16 = ('REM START MAIN LOOP\r\n:start\r\nhistwr /snap\r\ndynasty\r\n'
+               'if errorlevel 1 goto rolled\r\ngoto ctl\r\n:rolled\r\nhistwr /archive\r\nhistwr\r\n'
+               'rosters\r\ndynview /offseason\r\n:ctl\r\ncontrol\r\n')
+        assert c16 == 'REM START MAIN LOOP\r\n' + bat_patch.EARLIER_FORMS[0]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            install = Path(tmpdir) / 'TONY2'
+            install.mkdir()
+            bat = install / 'TONY2.BAT'
+            bat.write_bytes(c16.encode('cp437'))
+            assert bat_patch.patch(str(install), revert=False)
+            content = bat.read_bytes().decode('cp437')
+            assert content == 'REM START MAIN LOOP\r\n' + bat_patch.PATCHED_START
+            assert 'rosters /expand' in content
             assert bat_patch.patch(str(install), revert=False)
             assert bat.read_bytes().decode('cp437') == content
             assert bat_patch.patch(str(install), revert=True)
