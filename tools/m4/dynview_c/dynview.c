@@ -897,6 +897,8 @@ static int posraw_of(const uint8_t *s, int n, uint8_t **out)
     int i, found = 0;
     uint8_t *cache = NULL;
     *out = NULL;
+    if (n < 1 || n > 8)                     /* no V20 stem is longer than 8 */
+        return 1;
     for (i = 0; i < g_npostok && !found; i++) {
         if (g_postok[i][n] == 0 && memcmp(g_postok[i], s, (size_t)n) == 0) {
             cache = g_posraw[i];
