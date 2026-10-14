@@ -733,8 +733,9 @@ def test_offseason_phase_rows(tmp_path):
                        ('TIE, ONE', '33', '9', '5.0', ''),
                        ('NEGWAR, Q', '38', '3', '-0.5', '')]
     assert dynview.body_cols((SO, 0, oc(1)), data) == dynview.COLS_RETIRE
-    assert body(2) == [('#1', 'SEATTLE', 'Bobby Holmes'), ('#2', 'CLASNLE4', 'Bobby Holmes'),
-                       ('#3', 'CLASALE1', 'Lou Green')]
+    assert body(2) == [('#1', 'SEATTLE', '', 'Bobby Holmes'),
+                       ('#2', 'CLASNLE4', '', 'Bobby Holmes'),
+                       ('#3', 'CLASALE1', '', 'Lou Green')]
     assert dynview.body_cols((SO, 0, oc(2)), data) == dynview.COLS_DRAFT
     assert body(3) == [('CLASALE1', 'Duke Snider', 'NEW YORK N'),
                        ('NEW YORK N', 'TONY BERNAZARD', 'CLASALE1'),
@@ -904,6 +905,198 @@ def test_offseason_no_history_ignores_dangling_rosters(tmp_path):
     (ldir / 'ROSTERS.TXT').write_bytes(ROSTER_BODY)
     data = dynview.load_data(str(ldir))
     assert dynview.rows((SO, 0, oc(4)), data) == [('NO DYNASTY HISTORY YET',)]
+
+
+# ---------------------------------------------------------------- C17 draft POS, managed cells
+def write_team_v20_full(ldir, stem, records, name=None):
+    """A full-size <STEM>.V20 (HDR + REC * 80 B, the v20.Rec layout) whose header name
+    bytes 0..13 hold name (like write_team): records is {slot: (name, pos1)} with name
+    'First Last' as ROSTERS.TXT spells it; other slots stay off (first byte 0). The
+    record keeps byte 0 set and the name at bytes 1..19 (the V20 convention, so
+    rosters.pname reads First Last)."""
+    import v20
+    d = bytearray(v20.HDR + v20.REC * 80)
+    if name is not None:
+        d[0:14] = name.encode('latin-1').ljust(14, b'\0')[:14]
+    for slot, (pname, pos1) in records.items():
+        first, _, last = pname.partition(' ')
+        off = v20.HDR + v20.REC * slot
+        d[off:off + 12] = last.encode('latin-1').ljust(12, b'\0')[:12]
+        d[off + 12:off + 20] = first.encode('latin-1').ljust(8, b'\0')[:8]
+        b, kind = v20.F['pos1']                         # byte 0x1f of the record, low nibble
+        if kind == 'lo':
+            d[off + b] |= pos1 & 15
+        elif kind == 'hi':
+            d[off + b] |= (pos1 & 15) << 4
+        elif kind == 'u8' or kind == 'u16':
+            d[off + b] = pos1 & 255
+    (ldir / (stem + '.V20')).write_bytes(bytes(d))
+
+
+def test_draft_pos_from_team_file(tmp_path):
+    """C17.1: POS is the pos1 of the first on slot whose name matches exactly; an off
+    slot with the same name is skipped."""
+    ldir = make_offseason(tmp_path, rosters=b'DRAFT CLASALE1 Bobby Green\r\n'
+                                         b'DRAFT CLASALE1 Pat Smol\r\n'
+                                         b'SIGN CLASALW7 Bobby Green CLASALE1\r\n'
+                                         b'SIGN CLASALW2 Pat Smol CLASALE1\r\n')
+    write_team_v20_full(ldir, 'CLASALW7', {0: ('Lou Green', 5), 1: ('Bobby Green', 0)},
+                        name='SEATTLE')
+    write_team_v20_full(ldir, 'CLASALW2', {3: ('Bobby Holms', 0), 5: ('Pat Smol', 4)})
+    data = dynview.load_data(str(ldir))
+    rows = dynview.offseason_body((SO, 0, oc(2)), data)[1]
+    assert rows == [('#1', 'SEATTLE', 'P', 'Bobby Green'),
+                    ('#2', 'CLASALW2', '3B', 'Pat Smol')]
+
+
+def test_draft_pos_rules(tmp_path):
+    """C17.1: a pick on an off slot is skipped, two same-name records take the lower
+    slot, a short file (< HDR + REC * 40) and a missing file give ''."""
+    import v20
+    ldir = make_offseason(tmp_path, rosters=b'DRAFT CLASALE1 Lou Green\r\n'
+                                         b'DRAFT CLASALE1 Lou Green\r\n'
+                                         b'DRAFT CLASALE1 Sam Twice\r\n'
+                                         b'DRAFT CLASALE1 Short One\r\n'
+                                         b'SIGN CLASALW7 Lou Green CLASALE1\r\n'
+                                         b'SIGN CLASALW2 Lou Green CLASALE1\r\n'
+                                         b'SIGN CLASNLW4 Sam Twice CLASALE1\r\n'
+                                         b'SIGN SHORTONE Short One CLASALE1\r\n')
+    write_team_v20_full(ldir, 'CLASALW7', {0: ('Lou Green', 5)}, name='SEATTLE')
+    dd = bytearray((ldir / 'CLASALW7.V20').read_bytes())
+    dd[v20.HDR] = 0                                   # slot 0 off: the pick is not on it
+    (ldir / 'CLASALW7.V20').write_bytes(bytes(dd))
+    write_team_v20_full(ldir, 'CLASALW2', {0: ('Lou Green', 1), 2: ('Lou Green', 6)},
+                        name='BOSTON')
+    dd = bytearray((ldir / 'CLASALW2.V20').read_bytes())
+    dd[v20.HDR] = 0                                   # slot 0 off, slot 2 on
+    (ldir / 'CLASALW2.V20').write_bytes(bytes(dd))
+    write_team_v20_full(ldir, 'CLASNLW4', {3: ('Sam Twice', 2), 7: ('Sam Twice', 9)},
+                        name='NEW YORK N')
+    # a short file (< HDR + REC * 40): POS ''
+    (ldir / 'SHORTONE.V20').write_bytes(bytes(20))
+    data = dynview.load_data(str(ldir))
+    rows = dynview.offseason_body((SO, 0, oc(2)), data)[1]
+    assert rows == [('#1', 'SEATTLE', '', 'Lou Green'),        # off slot with the name
+                    ('#2', 'BOSTON', 'LF', 'Lou Green'),       # lower of the two slots
+                    ('#3', 'NEW YORK N', '1B', 'Sam Twice'),
+                    ('#4', 'SHORTONE', '', 'Short One')]       # short file: ''
+    # a missing team file: POS ''
+    (tmp_path / 'nofile').mkdir()
+    ldir = make_offseason(tmp_path / 'nofile',
+                          rosters=b'DRAFT CLASALE1 Bobby Green\r\n'
+                                  b'SIGN CLASALW7 Bobby Green CLASALE1\r\n')
+    rows = dynview.offseason_body((SO, 0, oc(2)),
+                                  dynview.load_data(str(ldir)))[1]
+    assert rows == [('#1', 'SEATTLE', '', 'Bobby Green')]
+
+
+def draft_managed_test_league(tmp_path, rosters, mask):
+    """make_offseason league with a MAJ of the three teams (SEATTLE, BOSTON and the
+    poolless CPU teams) and HISTORY mask mask: the team ids 0 (BOSTON), 7 (SEATTLE) and
+    20 (NEW YORK N) are the NL/AL-slot engine ids of the C12 layout."""
+    ldir = make_offseason(tmp_path, rosters=rosters)
+    write_maj(ldir, {0: b'CLASALW2', 7: b'CLASALW7', 20: b'CLASNLW4'})
+    hp = ldir / 'HISTORY.DAT'
+    d = bytearray(hp.read_bytes())
+    d[12:16] = mask.to_bytes(4, 'little')
+    hp.write_bytes(bytes(d))
+    return ldir
+
+
+DRAFT17 = (b'DRAFT CLASALE1 Bobby Holmes\r\n'
+           b'DRAFT CLASALW2 Bobby Holmes\r\n'
+           b'DRAFT CLASNLE3 Lou Green\r\n'
+           b'SIGN CLASALW7 Bobby Holmes CLASALE1\r\n'
+           b'SIGN CLASALW2 Bobby Holmes CLASALW2\r\n'
+           b'SIGN CLASNLW4 Lou Green CLASNLE3\r\n')
+FA17 = (b'DRAFT CLASNLE3 Lou Green\r\n'
+        b'SIGN CLASALW7 Lou Green pool\r\n'
+        b'SIGN CLASALW2 Bobby Holmes CLASNLW4\r\n'
+        b'SIGN CLASNLW4 Lou Green pool\r\n')
+TRADE17 = (b'TRADE CLASALW7 Duke Snider CLASNLW4 TONY BERNAZARD\r\n'
+           b'TRADE CLASALW2 Lou Green CLASNLW4 Old Yeller\r\n')
+
+
+def test_managed_marks_draft_trades_fa(tmp_path):
+    """C17.2: a managed team's TEAM cell starts with '*' on the draft, trades and free
+    agent phases; the star lives in the cell text, cut to the column width like any long
+    cell."""
+    ldir = draft_managed_test_league(tmp_path, DRAFT17 + FA17 + TRADE17, 1 << 7)
+    data = dynview.load_data(str(ldir))
+    # the mask bit 7 is SEATTLE's id (AL slot 7); BOSTON (0) and NEW YORK N (20) are not
+    assert dynview.settings_rows(data)[3:] == [('BOSTON', 'AI MANAGES'),
+                                               ('SEATTLE', 'YOU MANAGE'),
+                                               ('NEW YORK N', 'AI MANAGES')]
+    assert dynview.offseason_body((SO, 0, oc(2)), data)[1] == [
+        ('#1', '*SEATTLE', '', 'Bobby Holmes'),
+        ('#2', 'BOSTON', '', 'Bobby Holmes'),
+        ('#3', 'NEW YORK N', '', 'Lou Green')]
+    assert dynview.offseason_body((SO, 0, oc(3)), data)[1] == [
+        ('*SEATTLE', 'Duke Snider', 'NEW YORK N'),
+        ('NEW YORK N', 'TONY BERNAZARD', 'SEATTLE'),
+        ('BOSTON', 'Lou Green', 'NEW YORK N'),
+        ('NEW YORK N', 'Old Yeller', 'BOSTON')]
+    assert dynview.offseason_body((SO, 0, oc(4)), data)[1] == [
+        ('*SEATTLE', 'Lou Green', 'FREE AGENT'),
+        ('BOSTON', 'Bobby Holmes', 'NEW YORK N'),
+        ('NEW YORK N', 'Lou Green', 'FREE AGENT')]
+
+
+def test_managed_by_stem_not_display(tmp_path):
+    """C17.2: the match is by stable id from the team token (the STEM map), never by
+    display-name equality: two teams whose V20 header names are equal with only one
+    managed mark only that team's rows."""
+    rosters = (b'DRAFT CLASALE1 Bobby Holmes\r\n'
+               b'DRAFT CLASALE1 Bobby Holmes\r\n'
+               b'SIGN CLASALW7 Bobby Holmes CLASALE1\r\n'
+               b'SIGN CLASALW2 Bobby Holmes CLASALE1\r\n')
+    ldir = draft_managed_test_league(tmp_path, rosters, 1 << 7)
+    write_team(ldir, 'CLASALW2', 'SEATTLE')             # same display as CLASALW7
+    data = dynview.load_data(str(ldir))
+    assert data['team_stems'] == {'CLASALW2': 0, 'CLASALW7': 7, 'CLASNLW4': 20}
+    assert dynview.offseason_body((SO, 0, oc(2)), data)[1] == [
+        ('#1', '*SEATTLE', '', 'Bobby Holmes'), ('#2', 'SEATTLE', '', 'Bobby Holmes')]
+
+
+def test_managed_mask_zero_and_no_id(tmp_path):
+    """C17.2: mask 0 marks nothing; a token whose team has no V20 file has no stable id
+    and is never managed, even with its mask bit set."""
+    ldir = draft_managed_test_league(tmp_path, DRAFT17, 0)
+    data = dynview.load_data(str(ldir))
+    assert dynview.offseason_body((SO, 0, oc(2)), data)[1] == [
+        ('#1', 'SEATTLE', '', 'Bobby Holmes'), ('#2', 'BOSTON', '', 'Bobby Holmes'),
+        ('#3', 'NEW YORK N', '', 'Lou Green')]
+    # all bits set: every team with an id is managed
+    (tmp_path / 'all').mkdir()
+    data = dynview.load_data(draft_managed_test_league(
+        tmp_path / 'all', DRAFT17, 0xffffffff))
+    rows = dynview.offseason_body((SO, 0, oc(2)), data)[1]
+    assert [r[1] for r in rows] == ['*SEATTLE', '*BOSTON', '*NEW YORK N']
+    # a token with no team file has no id: a NO SUCH TEAM pick is unmarked with all
+    # bits set
+    (tmp_path / 'noid').mkdir()
+    ldir = draft_managed_test_league(
+        tmp_path / 'noid', b'DRAFT CLASALE1 A Guy\r\n'
+                           b'SIGN NOSUCHTEAM A Guy CLASALE1\r\n', 0xffffffff)
+    rows = dynview.offseason_body((SO, 0, oc(2)),
+                                  dynview.load_data(str(ldir)))[1]
+    assert rows == [('#1', 'NOSUCHTEAM', '', 'A Guy')]
+
+
+def test_draft_columns_changed_others_untouched(tmp_path):
+    """the other column tables and the FROM columns are untouched by C17; a trade row's
+    third column never starts with '*'"""
+    assert dynview.COLS_MOVE == [('TEAM', dynview._cx(0), 13, 'L'),
+                                 ('PLAYER', dynview._cx(14), 15, 'L'),
+                                 ('FROM', dynview._cx(30), 12, 'L')]
+    assert [h for h, _x, _w, _a in dynview.COLS_DRAFT] == ['#', 'TEAM', 'POS', 'PLAYER']
+    assert dynview.COLS_DRAFT[-1][1] + 20 * dynview.CHAR_W <= dynview._cx(42)
+    ldir = draft_managed_test_league(
+        tmp_path, b'TRADE CLASALW7 Duke Snider CLASNLW4 TONY BERNAZARD\r\n',
+        0xffffffff)
+    rows = dynview.offseason_body((SO, 0, oc(3)),
+                                  dynview.load_data(str(ldir)))[1]
+    assert not any(r[2].startswith('*') for r in rows)
 
 
 # ---------------------------------------------------------------- hub / settings / about

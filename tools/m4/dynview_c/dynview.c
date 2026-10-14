@@ -188,6 +188,11 @@
 #define MAJ_S_NL 0x758c
 #define MAJ_O_STEM 0x1d7
 #define MAJ_MIN (MAJ_S_NL + MAJ_O_STEM + 128L)
+/* the team .V20 file layout (v20.HDR, v20.REC; C17 draft POS reads 40 records):
+ * record byte 0x1f low nibble is pos1 */
+#define V20_HDR 295
+#define V20_REC 143
+#define V20_SCAN (V20_HDR + V20_REC * 40)
 /* the bytes load_teams reads of a MAJ: every stem of both leagues (24 slots each) */
 #define TEAM_SPAN (TI_S_NL + TI_O_STEM + 8L * TI_SLOTS)
 #define N_TEAM_MAX 32
@@ -417,6 +422,9 @@ static uint32_t g_mask;
 static int g_nteams;
 static uint8_t g_tlg[N_TEAM_MAX];
 static char g_tdisp[N_TEAM_MAX][16];
+/* C17.2 mapped stems (the same walk load_teams does): the ASCII upper case stem of
+ * every listed team and its stable id, matched by the ROSTERS.TXT token */
+static char g_tstem[N_TEAM_MAX][9];
 static int g_fmt_wanted, g_fmt_now;
 static int g_dirty;
 
@@ -424,6 +432,22 @@ static int g_dirty;
 static uint8_t g_abid[TI_MAX_TEAMS];
 static char g_abtxt[TI_MAX_TEAMS][4];
 static int g_nab;
+
+/* C17 draft POS: the raw bytes of every team token's V20 the screen read so far
+ * (NULL for a token with no readable file); the file is read at most once per build */
+static char g_postok[DRAFT_KEEP][16];
+static uint8_t *g_posraw[DRAFT_KEEP];
+static int g_npostok;
+
+/* the cache of one draft screen build: freed and cleared before the rows are made */
+static void pos_cache_reset(void)
+{
+    int i;
+    for (i = 0; i < g_npostok; i++)
+        if (g_posraw[i])
+            free(g_posraw[i]);
+    g_npostok = 0;
+}
 
 /* /ANMS:dir (PORTRAIT.ANM) and /GAME:dir (OLDPORT.ANM) */
 static char g_anms[260] = DEF_ANMS;
@@ -523,6 +547,7 @@ static const int INFO_Y[5] = { 26, 37, 48, 59, 70 };
 int main(int argc, char **argv);
 static void render(State st);
 static void build_no_hist_rows(void);
+static const char *pos_name(int p);
 static const ColDef *body_cols(State st);
 static int offseason_body(State st, int page, const ColDef **cols);
 static int awards_body(State st, int page, const ColDef **cols);
@@ -844,6 +869,127 @@ static void stem_display(const uint8_t *stem8, char *dst)
     for (i = 0; dst[i]; i++)
         if (dst[i] >= 'a' && dst[i] <= 'z')
             dst[i] = (char)(dst[i] - 32);
+}
+
+/* C17 draft POS name of a record: rosters.pname = First Last from the record bytes
+ * (last 0..12, first 12..20), into dst */
+static void rec_pname(const uint8_t *rec, char *dst)
+{
+    char last[13], first[9];
+    int i, n = 0;
+    field_of(rec, 12, last);
+    field_of(rec + 12, 8, first);
+    for (i = 0; first[i]; i++)
+        dst[n++] = first[i];
+    if (first[0] && last[0])
+        dst[n++] = ' ';
+    for (i = 0; last[i]; i++)
+        dst[n++] = last[i];
+    dst[n] = 0;
+}
+
+/* C17 draft POS column of a pick on team token s (n bytes): the v20 pos1 (record byte
+ * 0x1f low nibble) of the first on slot (record byte 0 non-zero) 0..39 of the team file
+ * whose rosters.pname equals name (nname bytes), "" when the file is missing, shorter
+ * than V20_SCAN or no slot matches. The team file is read at most once per screen. */
+static int posraw_of(const uint8_t *s, int n, uint8_t **out)
+{
+    int i, found = 0;
+    uint8_t *cache = NULL;
+    *out = NULL;
+    if (n < 1 || n > 8)                     /* no V20 stem is longer than 8 */
+        return 1;
+    for (i = 0; i < g_npostok && !found; i++) {
+        if (g_postok[i][n] == 0 && memcmp(g_postok[i], s, (size_t)n) == 0) {
+            cache = g_posraw[i];
+            found = 1;
+        }
+    }
+    if (found) {
+        *out = cache;
+        return 1;
+    }
+    if (g_npostok >= DRAFT_KEEP)
+        return 1;
+    memcpy(g_postok[g_npostok], s, (size_t)n);
+    g_postok[g_npostok][n] = 0;
+    if (1) {
+        FILE *f = open_v20(s, n);
+        if (f) {
+            uint8_t *d = (uint8_t *)malloc((size_t)V20_SCAN);
+            if (d) {
+                memset(d, 0, (size_t)V20_SCAN);
+                if (fread(d, 1, (size_t)V20_SCAN, f) == (size_t)V20_SCAN)
+                    *out = d;
+                else
+                    free(d);
+            }
+            fclose(f);
+        }
+    }
+    g_posraw[g_npostok] = *out;
+    g_npostok++;
+    return 1;
+}
+
+static void draft_pos(const uint8_t *s, int n, const uint8_t *name, int nname, char *dst)
+{
+    uint8_t *raw;
+    int slot, i;
+    dst[0] = 0;
+    posraw_of(s, n, &raw);
+    if (!raw)
+        return;
+    for (slot = 0; slot < 40; slot++) {
+        const uint8_t *rec = raw + (long)V20_HDR + (long)V20_REC * slot;
+        char pn[32];
+        if (rec[0] == 0)
+            continue;
+        rec_pname(rec, pn);
+        if ((int)strlen(pn) != nname)
+            continue;
+        for (i = 0; i < nname && pn[i] == (char)name[i]; i++)
+            ;
+        if (i < nname)
+            continue;
+        strcpy(dst, pos_name(rec[0x1f] & 15));
+        return;
+    }
+}
+
+/* C17 managed mark of a team token (n bytes): 1 when its ASCII upper case equals a
+ * mapped stem (g_tstem, built with g_tdisp/g_tlg by load_teams) and the bit of that
+ * stem's stable id is set in g_mask. A token with no stem match is not managed. */
+static int team_managed(const uint8_t *s, int n)
+{
+    char up[9];
+    int i, m, tid;
+    if (n < 1 || n > 8)
+        return 0;
+    for (m = 0; m < n; m++) {
+        if (s[m] == 0)
+            return 0;
+        up[m] = (char)ascii_up(s[m]);
+    }
+    up[m] = 0;
+    for (i = 0; i < g_nteams; i++) {
+        if (strcmp(g_tstem[i], up) != 0)
+            continue;
+        tid = g_tlg[i];
+        return tid < 32 && ((g_mask >> tid) & 1u) != 0;
+    }
+    return 0;
+}
+
+/* C17 '*' prefix of a TEAM cell, the text kept NUL terminated within SLEN. */
+static void star_cell(char *c)
+{
+    size_t n = strlen(c);
+    if (n > SLEN - 2)
+        n = SLEN - 2;
+    memmove(c + 1, c, n);
+    c[0] = '*';
+    c[n + 1] = 0;
 }
 
 static void fmt_count(int32_t v, char *dst)
@@ -1317,6 +1463,9 @@ static void load_teams(void)
             continue;
         g_tlg[g_nteams] = t[i].id;
         team_disp(t[i].stem, m, g_tdisp[g_nteams]);
+        for (m = 0; m < 8 && t[i].stem[m]; m++)
+            g_tstem[g_nteams][m] = (char)ascii_up(t[i].stem[m]);
+        g_tstem[g_nteams][m] = 0;
         g_nteams++;
     }
 }
@@ -1783,8 +1932,12 @@ static void roster_pass(int phase, int page)
                     Row *r = &g_rows[s];
                     sprintf(r->cells[0], "#%lu", (unsigned long)(ord + 1));
                     team_disp(buf + toff[1], tlen[1], r->cells[1]);
-                    put_cell(r->cells[2], nm, nname);
-                    r->ncells = 3;
+                    if (team_managed(buf + toff[1], tlen[1]))
+                        star_cell(r->cells[1]);
+                    draft_pos(buf + toff[1], tlen[1], (const uint8_t *)nm, nname,
+                              r->cells[2]);
+                    put_cell(r->cells[3], nm, nname);
+                    r->ncells = 4;
                 }
             } else {
                 uint32_t ord = g_rc.fa++;
@@ -1792,6 +1945,8 @@ static void roster_pass(int phase, int page)
                 if (s >= 0) {
                     Row *r = &g_rows[s];
                     team_disp(buf + toff[1], tlen[1], r->cells[0]);
+                    if (team_managed(buf + toff[1], tlen[1]))
+                        star_cell(r->cells[0]);
                     put_cell(r->cells[1], nm, nname);
                     if (tok_eq(buf + toff[n - 1], nfrom, "POOL", 1))
                         strcpy(r->cells[2], "FREE AGENT");
@@ -1815,6 +1970,8 @@ static void roster_pass(int phase, int page)
                     Row *r = &g_rows[sa];
                     int xl = join_toks(buf, toff, tlen, 2, j, nm);
                     team_disp(buf + toff[1], tlen[1], r->cells[0]);
+                    if (team_managed(buf + toff[1], tlen[1]))
+                        star_cell(r->cells[0]);
                     put_cell(r->cells[1], nm, xl);
                     team_disp(buf + toff[j], tlen[j], r->cells[2]);
                     r->ncells = 3;
@@ -1823,6 +1980,8 @@ static void roster_pass(int phase, int page)
                     Row *r = &g_rows[sb];
                     int yl = join_toks(buf, toff, tlen, j + 1, n, nm);
                     team_disp(buf + toff[j], tlen[j], r->cells[0]);
+                    if (team_managed(buf + toff[j], tlen[j]))
+                        star_cell(r->cells[0]);
                     put_cell(r->cells[1], nm, yl);
                     team_disp(buf + toff[1], tlen[1], r->cells[2]);
                     r->ncells = 3;
@@ -3583,7 +3742,8 @@ static const ColDef COLS_SETTINGS[] = {
     { "SETTING", CX(0), 24, 0 }, { "VALUE", CX(26), 16, 0 } };
 
 static const ColDef COLS_DRAFT[] = {
-    { "#", CX(0), 4, 0 }, { "TEAM", CX(4), 15, 0 }, { "PLAYER", CX(19), 23, 0 } };
+    { "#", CX(0), 4, 0 }, { "TEAM", CX(4), 13, 0 }, { "POS", CX(18), 3, 0 },
+    { "PLAYER", CX(22), 20, 0 } };
 
 static const ColDef COLS_MOVE[] = {
     { "TEAM", CX(0), 13, 0 }, { "PLAYER", CX(14), 15, 0 }, { "FROM", CX(30), 12, 0 } };
@@ -3742,6 +3902,7 @@ static int offseason_body(State st, int page, const ColDef **cols)
         *cols = COLS_RETIRE;
         return (int)total;
     case OFF_DRAFT:
+        pos_cache_reset();
         roster_pass(OFF_DRAFT, page);
         total = capped(g_rc.picks);
         if (total == 0)
