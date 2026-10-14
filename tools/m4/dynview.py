@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from collections import Counter
 import history
 import realign
+import rosters
 import teamids
 from assets import parse_fnt
 
@@ -290,6 +291,7 @@ def load_data(league_dir, font_dir=None, game_dir='.', anms_dir='ANMS'):
     return {'hist': hist, 'ms': ms, 'fonts': fonts, 'league_dir': league_dir,
             'events': parse_rosters(league_dir), 'era': era, 'mask': mask,
             'teams': settings_teams(league_dir), 'box': load_box(league_dir),
+            'team_stems': settings_team_stems(league_dir),
             'fmt': realign.wanted_for_dir(league_dir),
             'lines': load_lines(league_dir), 'abbrs': team_abbrs(league_dir),
             'game_dir': game_dir, 'anms_dir': anms_dir}
@@ -409,6 +411,37 @@ def team_disp(league_dir, stem):
     return team_name(league_dir, stem.encode('latin-1')) or ascii_upper(stem)
 
 
+def draft_pos(league_dir, stem, name, cache=None):
+    """POS column of an offseason DRAFT pick (C17): the v20.F pos1 field of the first
+    record slot 0..39 of the drafting team's <STEM>.V20 that is on (first byte non-zero)
+    and whose rosters.pname matches the pick name exactly, as dynview.pos_name. '' when
+    the file is missing, shorter than HDR + REC * 40, or no slot matches. The team file
+    is read at most once per screen build (cache maps the token to its raw bytes, None
+    when there is no readable file)."""
+    if cache is not None and stem in cache:
+        raw = cache[stem]
+    else:
+        path = v20_path(league_dir, stem.encode('latin-1'))
+        raw = None
+        if path is not None:
+            try:
+                with open(path, 'rb') as fh:
+                    raw = fh.read()
+            except OSError:
+                raw = None
+        if cache is not None:
+            cache[stem] = raw
+    if raw is None or len(raw) < rosters.HDR + rosters.REC * 40:
+        return ''
+    for slot in range(40):
+        off = rosters.HDR + rosters.REC * slot
+        rec = raw[off:off + rosters.REC]
+        if rec[0] == 0 or rosters.pname(rec) != name:
+            continue
+        return pos_name(rosters._get(rec, *rosters.F['pos1']) & 15)
+    return ''
+
+
 def parse_rosters(league_dir):
     """ROSTERS.TXT as offseason events, in file order: ('DRAFT', stem, name) for the
     first DRAFT_KEEP valid DRAFT lines; ('SIGN', team, name, frm); ('TRADE', a, x, b,
@@ -488,6 +521,32 @@ def settings_teams(league_dir):
         if not stem or v20_path(league_dir, stem) is None:
             continue
         out.append((tid, team_disp(league_dir, stem.decode('latin-1'))))
+    return out
+
+
+def settings_team_stems(league_dir):
+    """{ASCII upper case stem: stable id} of the MAJ teams (C17.2): the same walk
+    settings_teams does (teamids.teams with the league's TEAMID.DAT, a team whose stem
+    is empty or has no V20 file skipped), so the map holds exactly the listed teams.
+    {} with no MAJ, on a read error or a MAJ shorter than MAJ_MIN."""
+    mp = history.maj_or_none(league_dir)
+    if mp is None:
+        return {}
+    try:
+        with open(mp, 'rb') as fh:
+            d = fh.read()
+        table = teamids.load_table(league_dir)
+    except OSError:
+        return {}
+    if len(d) < MAJ_MIN:
+        return {}
+    d = d.ljust(TEAM_SPAN, b'\0')
+    out = {}
+    for tid, _L, _slot, st in teamids.teams(d, table):
+        stem = st.split(b'\0')[0]
+        if not stem or v20_path(league_dir, stem) is None:
+            continue
+        out[ascii_upper(stem.decode('latin-1'))] = tid
     return out
 
 
@@ -1511,6 +1570,19 @@ def sign_split(events):
     return picks, fa
 
 
+def draft_managed(data, team):
+    """True when a team token (latin-1) is managed (C17.2): a mapped stem of
+    data['team_stems'] (the settings_teams walk, built once per data load) whose ASCII
+    upper case equals the token's, and bit tid of the HISTORY mask is set (tid < 32)."""
+    tid = data.get('team_stems', {}).get(ascii_upper(team))
+    return tid is not None and tid < 32 and ((data['mask'] >> tid) & 1) != 0
+
+
+def managed_cell(data, team, text):
+    """TEAM column cell of a managed team (C17): '*' + the display text."""
+    return ('*' if draft_managed(data, team) else '') + text
+
+
 def ready_lines(data, launched):
     """The six counts and the closing line of phase 5 (uncapped totals)."""
     hist = data['hist']
@@ -1560,7 +1632,9 @@ def offseason_body(state, data):
     elif phase == OFF_DRAFT:
         cols, msg = COLS_DRAFT, 'NO DRAFT PICKS'
         picks, _fa = sign_split(ev)
-        rows = [('#%d' % k, disp(team), name)
+        cache = {}                                # team token -> V20 bytes, once per build
+        rows = [('#%d' % k, managed_cell(data, team, disp(team)),
+                 draft_pos(ld, team, name, cache), name)
                 for k, (team, name) in enumerate(picks[:LIST_MAX], 1)]
     elif phase == OFF_TRADES:
         cols, msg = COLS_MOVE, 'NO TRADES'
@@ -1568,13 +1642,14 @@ def offseason_body(state, data):
         for e in ev:
             if e[0] == 'TRADE':
                 _k, a, x, b, y = e
-                rows.append((disp(a), x, disp(b)))
-                rows.append((disp(b), y, disp(a)))
+                rows.append((managed_cell(data, a, disp(a)), x, disp(b)))
+                rows.append((managed_cell(data, b, disp(b)), y, disp(a)))
         rows = rows[:LIST_MAX]
     else:
         cols, msg = COLS_MOVE, 'NO FREE AGENT SIGNINGS'
         _picks, fa = sign_split(ev)
-        rows = [(disp(team), name, 'FREE AGENT' if ascii_upper(frm) == 'POOL' else disp(frm))
+        rows = [(managed_cell(data, team, disp(team)),
+                 name, 'FREE AGENT' if ascii_upper(frm) == 'POOL' else disp(frm))
                 for team, name, frm in fa[:LIST_MAX]]
     if not rows:
         return COLS_SINGLE, [(msg,)]
@@ -2086,7 +2161,8 @@ COLS_MILESTONES = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
                    ('EVENT', _cx(22), 20, 'L')]
 COLS_RETIRE = [('NAME', _cx(0), 18, 'L'), ('AGE', _cx(18), 5, 'R'), ('YRS', _cx(23), 5, 'R'),
                ('WAR', _cx(28), 7, 'R'), ('HOF', _cx(36), 6, 'R')]
-COLS_DRAFT = [('#', _cx(0), 4, 'L'), ('TEAM', _cx(4), 15, 'L'), ('PLAYER', _cx(19), 23, 'L')]
+COLS_DRAFT = [('#', _cx(0), 4, 'L'), ('TEAM', _cx(4), 13, 'L'), ('POS', _cx(18), 3, 'L'),
+              ('PLAYER', _cx(22), 20, 'L')]
 COLS_MOVE = [('TEAM', _cx(0), 13, 'L'), ('PLAYER', _cx(14), 15, 'L'), ('FROM', _cx(30), 12, 'L')]
 COLS_AWARDS = [('AWARD', _cx(0), 13, 'L'), ('NAME', _cx(14), 16, 'L'),
                ('VALUE', _cx(30), 12, 'R')]

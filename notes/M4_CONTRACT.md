@@ -1134,3 +1134,41 @@ league, and CLASSIC keeps every path it had, so an existing CLASSIC dynasty is u
 (only the copy line and `call archive` change). Every earlier patched form upgrades in place; --revert restores stock.
 (Amended 2026-10-13, C15.5: `rosters /expand` runs first, before `histwr /snap`.)
 ARCHIVE.BAT is still written (unused) so a revert to an older bundle keeps working.
+
+## C17. Offseason draft: position and your teams (added 2026-10-13)
+
+Will, 2026-10-13: show each ROOKIE DRAFT pick's position, and mark the teams you manage on the offseason list
+phases. Python tools/m4/dynview.py is the reference; the C port dynview_c/dynview.c must render byte-identical
+framebuffers.
+
+### C17.1 The POS column (phase 2, 3/6 ROOKIE DRAFT)
+- Columns become exactly COLS_DRAFT = [('#', _cx(0), 4, 'L'), ('TEAM', _cx(4), 13, 'L'), ('POS', _cx(18), 3, 'L'),
+  ('PLAYER', _cx(22), 20, 'L')]; rows become 4-tuples ('#k', TEAM, POS, PLAYER) (TEAM and PLAYER as today,
+  disp(team) the SIGN line's team token and the name, only narrower columns).
+- POS: the drafting team's team file (the SIGN line's 2nd token, the team token; the same case-insensitive
+  file lookup team_disp/team_name uses, <STEM>.V20 in the league dir). Scan record slots 0..39 in order; the
+  first slot that is on (first byte of the record non-zero, like rosters.is_on) and whose
+  rosters.pname(record) equals the pick name exactly (pname = First Last from the record bytes, last 12 B at
+  0 then first 8 B at 12) gives POS = dynview.pos_name(rosters.pos1f(record)) (pos1 field of v20.F, byte 0x1f
+  low nibble). Missing file, a file shorter than v20.HDR + v20.REC * 40, or no matching slot: POS = ''.
+- Record offsets v20.HDR (295), v20.REC (143), v20.F['pos1'] (0x1f, lo) and v20._get (as rosters.py imports
+  them). Each team file is read at most once per screen build.
+
+### C17.2 Your teams marked
+- Let mask be the HISTORY mask DYNASTY SETTINGS already uses (data['mask'] in Python; HISTORY.DAT bytes
+  12..15 u32 LE in C, g_mask). A ROSTERS.TXT team token is managed when its ASCII upper case equals a mapped
+  stem's ASCII upper case and bit tid of mask is set (tid < 32). The map from the team STEM to its stable id
+  is built once per data load with the same MAJ walk settings_teams uses (teamids.teams with the league's
+  TEAMID.DAT yields (tid, L, slot, stem); stem = st.split(b'\0')[0]; empty stems and stems with no V20
+  file are skipped, exactly the teams settings_teams lists). Python: data['team_stems'] =
+  {stem_upper_str: tid} built in load_data, draft_managed uses it. C: the g_tstem table stored next to
+  g_tdisp/g_tlg by load_teams, the token compared upper-cased. Tokens with no stem match are not managed.
+  Two teams may share a display name; the match is by stem, never by display.
+- In the TEAM column (the first team column) of the phase 2 ROOKIE DRAFT, phase 3 TRADES and phase 4 FREE
+  AGENTS rows, a managed team's cell is '*' + the display text; the cell is then cut to the column width by
+  the existing cell drawing, exactly as any long cell is today. Only the first column of a trade row is
+  marked: the third column stays exactly what it was before C17 (disp(b) / disp(a), no '*'). FROM columns
+  are unchanged.
+
+### C17.3 Nothing else changes
+- Other screens, footers, titles, counts, ABOUT rows, key handling and the card opening are untouched.

@@ -30,7 +30,9 @@ from m4.test_dynview import (make_data, write_player, write_season,
                              FULL_SEASON, award_recs, award_league_ms,
                              lead_league_ms, LEAD_3, make_series, series_recs,
                              SERIES6, SERIES7, UNFINISHED5, TIED4, box_rec, write_box,
-                             BOX_G0, write_team, write_standings)
+                             BOX_G0, write_team, write_standings,
+                             write_team_v20_full, draft_managed_test_league,
+                             DRAFT17, TRADE17, oc)
 from test_teamids import build_maj, CLASSIC
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
@@ -1491,6 +1493,95 @@ def test_dos_series_parity(tmp_path):
                  if dos_raw[k] != py[k])
         pytest.fail(f'dos series: first diff at pixel ({i % 320}, {i // 320}): '
                     f'python {py[i]} c {dos_raw[i]}')
+
+
+# ---------------- C17: offseason draft POS and the managed-team marks ----------------
+
+C17_ROSTERS = (DRAFT17 + TRADE17
+               + b'SIGN CLASALW7 Lou Green pool\r\n'
+                 b'SIGN CLASALW2 Bobby Holmes CLASNLW4\r\n'
+                 b'SIGN CLASNLW4 Lou Green pool\r\n')
+
+
+def c17_league(tmp_path, tag, records, mask, rosters=C17_ROSTERS):
+    """make_offseason league with the SEATTLE team file full size (records), a MAJ of
+    the three teams (BOSTON 0, SEATTLE 7, NEW YORK N 20) and HISTORY mask mask."""
+    (tmp_path / tag).mkdir()
+    ldir = draft_managed_test_league(tmp_path / tag, rosters, mask)
+    write_team_v20_full(ldir, 'CLASALW7', records, name='SEATTLE')
+    return ldir
+
+
+def test_c17_draft_pos_parity(tmp_path):
+    """Python vs host framebuffers on the draft screen: the full-file fixture (a found
+    pick gets its POS name, one without a match ''), mask 0 and the mask set, and a pick
+    whose team file is missing (POS '')."""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    # mask 0, one record found (slot 0) and one not on the file (the CLASALW2 pick)
+    ldir = c17_league(tmp_path, 'c17 zero', {0: ('Lou Green', 5), 1: ('Bobby Holmes', 0)}, 0)
+    check_offseason(ldir, tmp_path, 'c17_zero_draft', 2)
+    # the same with SEATTLE's mask bit set
+    ldir = c17_league(tmp_path, 'c17 set', {0: ('Lou Green', 5), 1: ('Bobby Holmes', 0)},
+                      1 << 7)
+    check_offseason(ldir, tmp_path, 'c17_set_draft', 2)
+    # a pick whose team file is missing: POS ''
+    tmp2 = tmp_path / 'c17 missing'
+    tmp2.mkdir()
+    ldir2 = draft_managed_test_league(tmp2, b'DRAFT CLASALE1 Bobby Green\r\n'
+                                            b'SIGN CLASALW7 Bobby Green CLASALE1\r\n',
+                                      1 << 7)
+    check_offseason(ldir2, tmp_path, 'c17_nofile_draft', 2)
+
+
+@pytest.mark.parametrize('phase', [3, 4])
+def test_c17_managed_trades_fa_parity(tmp_path, phase):
+    """Python vs host on the TRADES and FREE AGENTS screens: the mask 0 (no stars) and
+    the SEATTLE mask bit set ('*' + the display cut to the 13 char TEAM column; only the
+    first trade column is marked)."""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = c17_league(tmp_path, 'c17 f%d' % phase,
+                      {0: ('Lou Green', 5), 1: ('Bobby Holmes', 0)}, 0)
+    check_offseason(ldir, tmp_path, 'c17_zero_p%d' % phase, phase)
+    ldir = c17_league(tmp_path, 'c17 s%d' % phase,
+                      {0: ('Lou Green', 5), 1: ('Bobby Holmes', 0)}, 1 << 7)
+    check_offseason(ldir, tmp_path, 'c17_set_p%d' % phase, phase)
+    # every bit set: BOSTON and NEW YORK N are marked too
+    tmp3 = tmp_path / ('c17 f%d s' % phase)
+    tmp3.mkdir()
+    ldir3 = draft_managed_test_league(tmp3, C17_ROSTERS, 0xffffffff)
+    write_team_v20_full(ldir3, 'CLASALW7', {0: ('Lou Green', 5), 1: ('Bobby Holmes', 0)},
+                        name='SEATTLE')
+    check_offseason(ldir3, tmp_path, 'c17_all_p%d' % phase, phase)
+
+
+def test_c17_managed_by_stem_parity(tmp_path):
+    """Two teams whose V20 header names are equal (same display) with only one managed:
+    only that team's rows get '*' in Python and on the host, and a trade row's third
+    column never starts with '*'."""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    rosters = (b'DRAFT CLASALE1 Bobby Holmes\r\n'
+               b'DRAFT CLASALE1 Bobby Holmes\r\n'
+               b'SIGN CLASALW7 Bobby Holmes CLASALE1\r\n'
+               b'SIGN CLASALW2 Bobby Holmes CLASALE1\r\n'
+               b'TRADE CLASALW7 Duke Snider CLASALW2 TONY BERNAZARD\r\n')
+    tmp2 = tmp_path / 'c17 twin'
+    tmp2.mkdir()
+    ldir = draft_managed_test_league(tmp2, rosters, 1 << 7)
+    write_team_v20_full(ldir, 'CLASALW7', {0: ('Lou Green', 5)}, name='SEATTLE')
+    write_team_v20_full(ldir, 'CLASALW2', {0: ('Lou Green', 5)}, name='SEATTLE')
+    data = dynview.load_data(str(ldir), FILES)
+    assert data['teams'] == [(0, 'SEATTLE'), (7, 'SEATTLE'), (20, 'NEW YORK N')]
+    rows = dynview.offseason_body((dynview.SCREEN_OFFSEASON, 0, oc(2)), data)[1]
+    assert rows == [('#1', '*SEATTLE', '', 'Bobby Holmes'),
+                    ('#2', 'SEATTLE', '', 'Bobby Holmes')]
+    trade = dynview.offseason_body((dynview.SCREEN_OFFSEASON, 0, oc(3)), data)[1]
+    assert trade == [('*SEATTLE', 'Duke Snider', 'SEATTLE'),
+                     ('SEATTLE', 'TONY BERNAZARD', 'SEATTLE')]
+    check_offseason(ldir, tmp_path, 'c17_twin_draft', 2)
+    check_offseason(ldir, tmp_path, 'c17_twin_trades', 3)
 
 
 # ---------------- three divisions: DYNASTY SETTINGS, PLAYOFF FORMAT, SEASON STANDINGS ----------------
