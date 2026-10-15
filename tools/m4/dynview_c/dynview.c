@@ -65,6 +65,8 @@
 #define KEY_PGDN 0x5100
 #define KEY_UP 0x4800
 #define KEY_DOWN 0x5000
+#define KEY_HOME 0x4700
+#define KEY_END 0x4f00
 
 #define SCREEN_MENU 0
 #define SCREEN_HISTORY 1
@@ -4878,7 +4880,8 @@ static State cursor_state(State st, int32_t row)
 }
 
 /* UP / DOWN move the cursor one row within the list; PGUP / PGDN move the page and put the cursor
- * on its first row, only when the page changes (dynview.cursor_move) */
+ * on its first row, only when the page changes; HOME / END jump to the first and last
+ * row (dynview.cursor_move) */
 static State cursor_move(State st, int32_t key)
 {
     int32_t n = total_rows(st), row = st.row;
@@ -4891,6 +4894,10 @@ static State cursor_move(State st, int32_t key)
         row = (page + 1) * ROWS_PER_PAGE;
     else if (key == KEY_PGUP && page > 0)
         row = (page - 1) * ROWS_PER_PAGE;
+    else if (key == KEY_HOME && row > 0)
+        row = 0;
+    else if (key == KEY_END && row < n - 1)
+        row = n - 1;
     else
         return st;
     return cursor_state(st, row);
@@ -5267,11 +5274,11 @@ static State step(State in, int32_t key)
         }
         return s;
     }
-    /* the row cursor (C13.4): UP / DOWN / PGUP / PGDN move it; ENTER opens the card of
+    /* the row cursor (C13.4): UP / DOWN / PGUP / PGDN / HOME / END move it; ENTER opens the card of
      * its row, except on SEASON HISTORY, where it opens the season's STANDINGS (C56),
      * and on SEASON STANDINGS, where it opens the row team's TEAM HISTORY (C57) */
     if (cursor_screen(s) && (key == KEY_UP || key == KEY_DOWN || key == KEY_PGUP
-                             || key == KEY_PGDN))
+                             || key == KEY_PGDN || key == KEY_HOME || key == KEY_END))
         return cursor_move(s, key);
     if (cursor_screen(s) && key == KEY_ENTER) {
         if (s.screen == SCREEN_HISTORY) {

@@ -37,8 +37,9 @@ ESC, ENTER, TAB = dynview.KEY_ESC, dynview.KEY_ENTER, dynview.KEY_TAB
 UP, DOWN = dynview.KEY_UP, dynview.KEY_DOWN
 LEFT, RIGHT = dynview.KEY_LEFT, dynview.KEY_RIGHT
 PGUP, PGDN = dynview.KEY_PGUP, dynview.KEY_PGDN
+HOME, END = dynview.KEY_HOME, dynview.KEY_END
 MINUS, PLUS, EQUALS = dynview.KEY_MINUS, dynview.KEY_PLUS, dynview.KEY_EQUALS
-ARROWS = (LEFT, RIGHT, UP, DOWN, PGUP, PGDN)
+ARROWS = (LEFT, RIGHT, UP, DOWN, PGUP, PGDN, HOME, END)
 K1, K2, K3, K4, K7, K9 = (ord(c) for c in '123479')     # hub rows: history, HoF, leaders,
                                                         # milestones, settings, awards
 MENU, LEAD, SET, CARD = (dynview.SCREEN_MENU, dynview.SCREEN_LEADERS,
@@ -1598,6 +1599,50 @@ def test_c60_teamhist_cursor_standings_parity(tmp_path):
         [('NO SEASONS RECORDED',)]
     check(ldir, tmp_path, 'c60_teamhist_message', msg + [ENTER])
 
+
+# ---------------------------------------------------------------- C63 HOME and END
+@needs_fonts
+def test_c63_home_end_parity(tmp_path):
+    """HOME jumps to row 0 and END to row n - 1 with the page following the row:
+    HALL OF FAME after END and back after HOME, SEASON STANDINGS after END. Every
+    frame matches Python."""
+    # HALL OF FAME of a 5-member league: END from row 0 to row 4 (one page: same frame),
+    # then HOME back; check on the SS filter (three members, second page exists is fine
+    # at any size: the frames come from both sides)
+    ldir = league(tmp_path, hof_players_c53(), seasons=4, start=1990, name='c63hof')
+    check(ldir, tmp_path, 'c63_hof_end', [K2, END])
+    assert py_run(ldir, tmp_path, [K2, END])[0] == (dynview.SCREEN_HOF, 0, 0, 4)
+    assert check(ldir, tmp_path, 'c63_hof_home', [K2, END, HOME]) == \
+        check(ldir, tmp_path, 'c63_hof_plain', [K2])
+    # the ALL page with the cursor mid-list (DOWN twice) HOMEs back to the plain frame
+    assert check(ldir, tmp_path, 'c63_hof_mid_home', [K2, DOWN, DOWN, HOME]) == \
+        check(ldir, tmp_path, 'c63_hof_plain', [K2])
+    # a filter with fewer rows: END is a no-op already at row 0
+    assert check(ldir, tmp_path, 'c63_hof_p_end', [K2, TAB, END]) == \
+        check(ldir, tmp_path, 'c63_hof_p_plain', [K2, TAB])
+    # SEASON STANDINGS of three full seasons (36 rows a page 0 state): END from row 0
+    # to row 35, page 2
+    from test_dynview import make_standings
+    sub = tmp_path / 'c63st'
+    sub.mkdir()
+    sldir = make_standings(sub)
+    keys = [ord('0'), LEFT, LEFT]
+    st, data = py_run(sldir, tmp_path, keys)
+    assert st == (dynview.SCREEN_STANDINGS, 0, 2)
+    assert dynview.total_rows(st, data) > 24      # more than two pages of rows
+    check(sldir, tmp_path, 'c63_st_end', keys + [END])
+    assert py_run(sldir, tmp_path, keys + [END])[0][3] == \
+        dynview.total_rows(st, data) - 1
+    check(sldir, tmp_path, 'c63_st_home', keys + [END, HOME])
+    assert py_run(sldir, tmp_path, keys + [END, HOME])[0] == (st[0], 0, st[2])
+    assert check(sldir, tmp_path, 'c63_st_home_plain', keys + [END, HOME]) == \
+        check(sldir, tmp_path, 'c63_st_plain', keys)
+    # HOME and END do nothing on the MENU (not a cursor screen): the plain hub frame
+    hub = league(tmp_path, name='c63menu')
+    assert check(hub, tmp_path, 'c63_menu_home', [HOME]) == \
+        check(hub, tmp_path, 'c63_menu_plain', ())
+    assert check(hub, tmp_path, 'c63_menu_end', [END]) == \
+        check(hub, tmp_path, 'c63_menu_plain', ())
 
 # ---------------------------------------------------------------- C64 WORLD SERIES row cursor
 SERIES_LEAGUE_MS = [(3, 5 * 256 + 3, 192, 5 * 256 + 3),          # game 1: BOS at ATL, 5-3
