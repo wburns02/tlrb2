@@ -1016,9 +1016,9 @@ def test_hub_rows_and_key_p(tmp_path):
 
 
 def test_playoffs_keys_titles_and_walk_no_fonts(tmp_path):
-    """C23c state machine without fonts: LEFT and RIGHT seasons, PGUP and PGDN, ENTER's
-    box choice by page, the PBOX walk and ESC, LEFT from the WS box into the PBOX, the
-    empty season's keys and the titles"""
+    """C23c/C65 state machine without fonts: LEFT and RIGHT seasons, PGUP and PGDN on the
+    row cursor, ENTER on a GAME row opens that game's PBOX, the PBOX walk and ESC, LEFT
+    from the WS box into the PBOX, the empty season's keys and the titles"""
     ldir = tmp_path / 'pl'
     write_league(ldir, player_set(), seasons=3, ms=[(3, 0, 192, 5 * 256 + 3)])
     write_box(ldir, [
@@ -1040,7 +1040,7 @@ def test_playoffs_keys_titles_and_walk_no_fonts(tmp_path):
     assert rows[0][0] == 'AL DIVISION SERIES'
     assert rows[1] == ('GAME 1', '', '', '', '')
     assert rows[-1] == ('SERIES', '', '', '', 'TIED 1-1')
-    assert dynview.step((SP, 0, 0), ENTER, data) == ((SPB, 0, 0), 0)
+    assert dynview.step((SP, 0, 0, 1), ENTER, data) == ((SPB, 0, 0), 0)
     # ESC from PBOX to PLAYOFFS, LEFT and RIGHT walk the round games
     assert dynview.step((SPB, 0, 1), ESC, data) == ((SP, 0, 0), 0)
     assert dynview.step((SPB, 0, 0), RIGHT, data) == ((SPB, 0, 1), 0)
@@ -1054,9 +1054,16 @@ def test_playoffs_keys_titles_and_walk_no_fonts(tmp_path):
     assert dynview.step((SP, 0, 1), LEFT, data) == ((SP, 0, 2), 0)
     assert dynview.step((SP, 0, 2), RIGHT, data) == ((SP, 0, 1), 0)
     assert dynview.step((SP, 0, 0), RIGHT, data) == ((SP, 0, 0), 0)
-    # PGUP and PGDN page as every list screen
+    # C65: PGUP and PGDN move the cursor (6 rows, one page: no page to go to)
     assert dynview.step((SP, 0, 0), PGDN, data) == ((SP, 0, 0), 0)
     assert dynview.screen_title((SPB, 0, 0), data) == '1995 AL DS GAME 1'
+    # playoff_row_games aligns with the rows: g on the GAME, visitor and home rows only
+    rows = dynview.playoffs_body((SP, 0, 0), data)[1]
+    games = dynview.playoff_row_games(data['hist'], data['box'], 3)
+    assert len(games) == len(rows) == 8
+    assert games == [None, 16, 16, 16, 17, 17, 17, None]
+    # DOWN to the GAME 2 visitor row and ENTER opens that game's PBOX (cat g - 16 = 1)
+    assert dynview.step((SP, 0, 0, 4), ENTER, data) == ((SPB, 0, 1), 0)
 
 
 # ---------------------------------------------------------------- C26 POSTSEASON row

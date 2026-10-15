@@ -2024,13 +2024,20 @@ def test_playoffs_sparse_g_and_long_box_parity(tmp_path):
     recs += T.BOX_G0
     T.write_box(ldir, recs)
     check_parity(ldir, tmp_path, 'sp_p1_enter', keys=[80, PGDN, ENTER])
-    check_parity(ldir, tmp_path, 'sp_long_p0', keys=[80, ENTER, RIGHT])
+    # C65: row 0 is the series title row (ENTER a no-op), so DOWN puts the cursor on the
+    # first GAME row before ENTER opens the long box
+    check_parity(ldir, tmp_path, 'sp_long_p0', keys=[80, DOWN, ENTER, RIGHT])
     for k in range(1, 5):
-        check_parity(ldir, tmp_path, 'sp_long_p%d' % k, keys=[80, ENTER, RIGHT] + [PGDN] * k)
-    check_parity(ldir, tmp_path, 'sp_long_back', keys=[80, ENTER, RIGHT, PGDN, PGDN, PGUP])
+        check_parity(ldir, tmp_path, 'sp_long_p%d' % k,
+                     keys=[80, DOWN, ENTER, RIGHT] + [PGDN] * k)
+    check_parity(ldir, tmp_path, 'sp_long_back',
+                 keys=[80, DOWN, ENTER, RIGHT, PGDN, PGDN, PGUP])
+    # C65: PGDN puts the cursor on page 1's first row (row 12, the AL LCS GAME 1 visitor
+    # row) and ENTER opens that game's PBOX (g 30), not the old first-GAME-row-on-the-
+    # page rule (g 40)
     data = dynview.load_data(str(ldir))
-    s = (dynview.SCREEN_PLAYOFFS, 1, 0)
-    assert dynview.step(s, dynview.KEY_ENTER, data)[0] == (dynview.SCREEN_PBOX, 0, 24)
+    assert dynview.step((dynview.SCREEN_PLAYOFFS, 1, 0, 12), dynview.KEY_ENTER,
+                        data)[0] == (dynview.SCREEN_PBOX, 0, 30 - 16)
 
 
 # ---------------------------------------------------------------- C27 MILESTONES WATCH

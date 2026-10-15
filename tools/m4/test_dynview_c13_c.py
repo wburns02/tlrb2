@@ -697,17 +697,21 @@ def test_box_pbox_row_cursor_parity(tmp_path):
     check(ldir, tmp_path, 'c62_box_right_reset', [87, 49, DOWN, RIGHT])
     assert py_run(ldir, tmp_path, [87, 49, DOWN, RIGHT])[0] == (dynview.SCREEN_BOX, 0, 1)
     check(ldir, tmp_path, 'c62_box_left_back', [87, 49, RIGHT, LEFT])
-    # the round game's player rows open their cards: CHARLIE (entry 2), GOLF (entry 6)
-    check(ldir, tmp_path, 'c62_pbox', [KP, ENTER])
-    check(ldir, tmp_path, 'c62_pbox_cursor', [KP, ENTER, DOWN])
-    check(ldir, tmp_path, 'c62_pbox_card', [KP, ENTER, DOWN, ENTER])
-    assert py_run(ldir, tmp_path, [KP, ENTER, DOWN, ENTER])[0] == (CARD, 0, 2)
-    check(ldir, tmp_path, 'c62_pbox_card_pit', [KP, ENTER, DOWN, DOWN, DOWN, ENTER])
-    assert py_run(ldir, tmp_path, [KP, ENTER, DOWN, DOWN, DOWN, ENTER])[0] == (CARD, 0, 6)
-    check(ldir, tmp_path, 'c62_pbox_esc', [KP, ENTER, DOWN, ENTER, ESC])
+    # the round game's player rows open their cards: CHARLIE (entry 2), GOLF (entry 6);
+    # C65: ENTER on PLAYOFFS row 1 (the GAME 1 row) opens the round game's PBOX
+    check(ldir, tmp_path, 'c62_pbox', [KP, DOWN, ENTER])
+    check(ldir, tmp_path, 'c62_pbox_cursor', [KP, DOWN, ENTER, DOWN])
+    check(ldir, tmp_path, 'c62_pbox_card', [KP, DOWN, ENTER, DOWN, ENTER])
+    assert py_run(ldir, tmp_path, [KP, DOWN, ENTER, DOWN, ENTER])[0] == (CARD, 0, 2)
+    check(ldir, tmp_path, 'c62_pbox_card_pit', [KP, DOWN, ENTER, DOWN, DOWN, DOWN, ENTER])
+    assert py_run(ldir, tmp_path, [KP, DOWN, ENTER, DOWN, DOWN, DOWN, ENTER])[0] == \
+        (CARD, 0, 6)
+    check(ldir, tmp_path, 'c62_pbox_esc', [KP, DOWN, ENTER, DOWN, ENTER, ESC])
     # a header row names no card
     assert dynview.row_entry((dynview.SCREEN_PBOX, 0, 0, 0),
-                             py_run(ldir, tmp_path, [KP, ENTER])[1]) is None
+                             py_run(ldir, tmp_path, [KP, DOWN, ENTER])[1]) is None
+    # the PLAYOFFS title row opens no card: the no-op keeps the 3-tuple state
+    assert py_run(ldir, tmp_path, [KP, ENTER])[0] == (dynview.SCREEN_PLAYOFFS, 0, 0)
 
 
 # ---------------------------------------------------------------- C26 PLAYER CARD POST row
@@ -1695,3 +1699,53 @@ def test_c64_series_row_cursor_parity(tmp_path):
     # LEFT to season 2 (no games: the message row), the row reset; ENTER nothing
     check(ldir, tmp_path, 'c64_series_left_message', ws + [DOWN] * 4 + [LEFT])
     check(ldir, tmp_path, 'c64_series_left_enter', ws + [DOWN] * 4 + [LEFT, ENTER])
+
+
+# ---------------------------------------------------------------- C65 PLAYOFFS row cursor
+def playoff_cursor_league(tmp_path, name='c65'):
+    """3-season league (start 1990) with the series-cursor league's WS games plus two
+    AL DS round games of season 3 (g 16 game 1 BOS at ATL 5-3, g 17 game 2 2-6) with
+    their '?' box rows, so the PLAYOFFS rows show two series of one team pair"""
+    ldir = series_cursor_league(tmp_path, name=name)
+    write_box(ldir, [
+        box_rec(3, 16, 4, 0 * 256 + 16, (5, 3, 9, 7, 1, 0, 0, 0), b=1, i=1),
+        box_rec(3, 16, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)),
+        box_rec(3, 16, 2, 0xffff, (80, 5, 2, 2, 1, 1, 8, 30)),
+        box_rec(3, 17, 4, 0 * 256 + 16, (2, 6, 8, 6, 0, 1, 0, 0), b=1, i=2),
+        box_rec(3, 17, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)),
+        box_rec(3, 17, 2, 0xffff, (80, 5, 2, 2, 1, 1, 8, 30)),
+    ])
+    return ldir
+
+
+@needs_fonts
+def test_c65_playoffs_row_cursor_parity(tmp_path):
+    """C65 frame parity: the PLAYOFFS cursor on the second series' visitor row, the PBOX
+    opened by ENTER there, ESC back with the cursor kept, ENTER on the summary row (the
+    unchanged frame) and on the title row"""
+    ldir = playoff_cursor_league(tmp_path)
+    kp = [ord('P')]
+    po, data = py_run(ldir, tmp_path, kp)
+    assert po == (dynview.SCREEN_PLAYOFFS, 0, 0)
+    rows = dynview.rows(po, data)
+    n = dynview.total_rows(po, data)
+    assert n == len(rows) == 8
+    # one AL DS series of two games: the title, GAME 1 with its two sides, GAME 2 with
+    # its two sides and the TIED summary; the round gs 16 and 17 on the game rows
+    games = dynview.playoff_row_games(data['hist'], data['box'], 3)
+    assert games == [None, 16, 16, 16, 17, 17, 17, None]
+    assert rows[0] == ('AL DIVISION SERIES', '', '', '', '')
+    check(ldir, tmp_path, 'c65_playoffs_footer', kp)
+    # DOWN x3: the cursor on game 1's home (ATLANTA) row
+    check(ldir, tmp_path, 'c65_playoffs_cursor', kp + [DOWN] * 3)
+    # ENTER there opens the g 16 PBOX (cat 0)
+    assert py_run(ldir, tmp_path, kp + [DOWN] * 3 + [ENTER])[0] == \
+        (dynview.SCREEN_PBOX, 0, 0)
+    check(ldir, tmp_path, 'c65_playoffs_enter_pbox', kp + [DOWN] * 3 + [ENTER])
+    # ESC back to PLAYOFFS (the ESC-on-PBOX rule resets the cursor to row 0, C65)
+    assert py_run(ldir, tmp_path, kp + [DOWN] * 3 + [ENTER, ESC])[0] == \
+        (dynview.SCREEN_PLAYOFFS, 0, 0)
+    check(ldir, tmp_path, 'c65_playoffs_esc_back', kp + [DOWN] * 3 + [ENTER, ESC])
+    # the summary row (row 7) and the title row (row 0): ENTER is the unchanged frame
+    check(ldir, tmp_path, 'c65_playoffs_enter_summary', kp + [DOWN] * 7 + [ENTER])
+    check(ldir, tmp_path, 'c65_playoffs_enter_title', kp + [ENTER])

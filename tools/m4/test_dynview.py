@@ -3781,22 +3781,36 @@ def test_playoffs_hub_title_footer_and_keys(tmp_path):
     assert s == (SP, 0, 1)
     assert dynview.step(s, dynview.KEY_RIGHT, data)[0] == (SP, 0, 0)
     assert dynview.step((SP, 0, 0), dynview.KEY_RIGHT, data)[0] == (SP, 0, 0)
-    # PGUP and PGDN page as every list screen (50 rows: 5 pages)
+    # PGUP and PGDN move the cursor (C13.4: PGDN to the next page's first row, the page
+    # following), LEFT and RIGHT still step the seasons with the page and row reset
     s = dynview.step((SP, 0, 0), dynview.KEY_PGDN, data)[0]
-    assert s == (SP, 1, 0)
+    assert s == (SP, 1, 0, 12)
     assert dynview.step(s, dynview.KEY_PGUP, data)[0] == (SP, 0, 0)
     assert dynview.step((SP, 4, 0), dynview.KEY_PGDN, data)[0] == (SP, 4, 0)
-    # ENTER opens the first game on the page: the nth GAME row of the season (the rows
-    # come in the games' order) is the nth playoff game. Page 0's first GAME row is the
-    # season's first game (g 16)
-    assert dynview.step((SP, 0, 0), dynview.KEY_ENTER, data) == ((SPB, 0, 0), 0)
-    # page 1 (rows 12..23): three GAME rows sat before it, so series 1's GAME 1 (g 19)
-    assert dynview.step((SP, 1, 0), dynview.KEY_ENTER, data) == ((SPB, 0, 3), 0)
-    # page 3 (rows 36..47): eleven GAME rows sat before it, so NL LCS GAME 1 (g 27)
-    assert dynview.step((SP, 3, 0), dynview.KEY_ENTER, data) == ((SPB, 0, 11), 0)
-    # page 4 (rows 48..49): no GAME row, so the season's first round game (cat 0)
-    assert dynview.step((SP, 4, 0), dynview.KEY_ENTER, data) == ((SPB, 0, 0), 0)
-    assert dynview.step((SP, 0, 1), dynview.KEY_ENTER, data) == ((SP, 0, 1), 0)
+    # the season steps reset the page and the row
+    assert dynview.step((SP, 1, 0, 12), dynview.KEY_LEFT, data)[0] == (SP, 0, 1)
+    # RIGHT at the newest season is a no-op keeping the row
+    assert dynview.step((SP, 1, 0, 12), dynview.KEY_RIGHT, data)[0] == (SP, 1, 0, 12)
+    # C65: PGUP and PGDN now move the cursor to the page's first row like every cursor
+    # screen (DOWN the one page they reach; the five 60-row pages take PGDN over the
+    # cursor), and ENTER opens the cursor row's game's PBOX. Rows 1..9 are series 0's
+    # GAME 1 (row 1), its sides and GAME 2's rows (row 4): ENTER on the GAME row and on
+    # each side row opens that game (g 16)
+    assert dynview.step((SP, 0, 0, 1), dynview.KEY_ENTER, data) == ((SPB, 0, 0), 0)
+    assert dynview.step((SP, 0, 0, 3), dynview.KEY_ENTER, data) == ((SPB, 0, 0), 0)
+    # series 0's GAME 2 at row 4 (g 17)
+    assert dynview.step((SP, 0, 0, 4), dynview.KEY_ENTER, data) == ((SPB, 0, 1), 0)
+    # page 1's first row (row 12) is series 1's GAME 1 (g 19)
+    assert dynview.step((SP, 1, 0, 12), dynview.KEY_ENTER, data) == ((SPB, 0, 3), 0)
+    # page 3's first row (row 36) is a game row too (the AL LCS GAME 4 visitor side)
+    assert dynview.step((SP, 3, 0, 36), dynview.KEY_ENTER, data) == ((SPB, 0, 10), 0)
+    # the title rows (0, 11), the summaries (10, 24) and the leaders (50+) are no-ops,
+    # and so is a row past the end
+    for r in (0, 10, 11, 24, 50, 55):
+        assert dynview.step((SP, 0, 0, r), dynview.KEY_ENTER, data)[0] == (SP, 0, 0, r)
+    assert dynview.step((SPB, 0, 0), dynview.KEY_ESC, data) == ((SP, 0, 0), 0)
+    # the empty season's ENTER does nothing
+    assert dynview.step((SP, 0, 1, 0), dynview.KEY_ENTER, data) == ((SP, 0, 1, 0), 0)
 
 
 def test_playoff_box_walk_and_esc(tmp_path):
@@ -4596,7 +4610,7 @@ def test_c30_season_rows_ws_and_rounds_categories_texts(tmp_path):
 
 def test_c30_leaders_cap_top3_and_pages(tmp_path):
     """at most 3 rows per category, ties by entry index; the leaders ride the last page
-    and ENTER on it still opens the season's first round game"""
+    and the ENTER on the cursor's GAME row opens the round game's box (C65)"""
     pre, lead = post_leaders_rows(tmp_path, [
         box_rec(3, 16, 0, e, (1, 0, 3, 0, 0, 0, 0, 0)) for e in range(1, 6)
     ], name='c30d')
@@ -4622,7 +4636,8 @@ def test_c30_leaders_cap_top3_and_pages(tmp_path):
     assert dynview.total_rows((SP, 0, 0), data) == 12
     assert dynview.rows((SP, 0, 0), data)[-1] == ('PLAYER02, B', '', '', '', '20 H')
     assert dynview.rows((SP, 1, 0), data) == []
-    s, _ex = dynview.step((SP, 0, 0), dynview.KEY_ENTER, data)
+    # C65: row 1 is GAME 1 (g 16); ENTER opens that game's PBOX
+    s, _ex = dynview.step((SP, 0, 0, 1), dynview.KEY_ENTER, data)
     assert s == (SPB, 0, 0)
     # the 13-row league (a 4th H-20 batter below the top 3 keeps: 3 leaders, the SO of
     # entry 0's 1, IP and ERA rows) still never spills past 12
@@ -4638,12 +4653,87 @@ def test_c30_leaders_cap_top3_and_pages(tmp_path):
     data = dynview.load_data(str(ldir))
     assert dynview.total_rows((SP, 0, 0), data) == 17
     assert dynview.rows((SP, 1, 0), data)[-1] == ('PLAYER01, B', '', '', '', '1.00 ERA')
-    s, _ex = dynview.step((SP, 1, 0), dynview.KEY_ENTER, data)
-    assert s == (SPB, 0, 0)                                    # the leaders never enter
+    # C65: the leaders ride page 1 (page = 1, row 12 the first leader): ENTER is a no-op
+    s, _ex = dynview.step((SP, 1, 0, 12), dynview.KEY_ENTER, data)
+    assert s == (SP, 1, 0, 12)                                 # the leaders never enter
     # the multi-page rows round-trip through rows()
     all_rows = playoffs_all_rows((SP, 0, 0), data)
     assert all_rows[:12] == dynview.rows((SP, 0, 0), data)
     assert all_rows[12:] == dynview.rows((SP, 1, 0), data)
+
+
+# ---------------------------------------------------------------- C65 PLAYOFFS row cursor
+def test_playoff_row_games_align(tmp_path):
+    """playoff_row_games is the game g per playoff_rows row of the season: the flags-4
+    header's g on the GAME, visitor and home rows of each game, None on the series title
+    rows, the summary rows, the POSTSEASON LEADERS title and rows and the message rows;
+    two series keep the alignment"""
+    ldir = make_playoffs(tmp_path)
+    data = dynview.load_data(str(ldir))
+    rows = playoffs_all_rows((SP, 0, 0), data)
+    games = dynview.playoff_row_games(data['hist'], data['box'],
+                                      data['hist'].seasons_recorded)
+    assert len(games) == len(rows) == 60
+    # every GAME row carries its g and each side row follows; everything else is None
+    seen_g = []
+    for r, g in zip(rows, games):
+        if r[0].startswith('GAME '):
+            assert g is not None
+            seen_g.append(g)
+        elif r[1] and r[1].isdigit():
+            assert g == seen_g[-1]
+        else:
+            assert g is None
+    assert seen_g == list(range(16, 30))
+    # the leaders block (from the title on) is all-None
+    i = [r[0] for r in rows].index('POSTSEASON LEADERS')
+    assert all(g is None for g in games[i:])
+    # the message rows (a season with no rounds, one past the table): [None]
+    assert dynview.playoff_row_games(data['hist'], data['box'], 1) == [None]
+    assert dynview.playoff_row_games(data['hist'], data['box'], 99) == [None]
+    # rows of the season-1 message and playoff_rows agree with the games walk
+    rows2 = dynview.playoff_rows(data['hist'], data['box'], data['teams'], 1)
+    assert rows2 == [('NO PLAYOFF ROUNDS RECORDED',)]
+    assert len(dynview.playoff_row_games(data['hist'], data['box'], 1)) == 1
+
+
+def test_playoffs_enter_opens_row_game(tmp_path):
+    """C65: PLAYOFFS is a cursor screen; ENTER on a GAME, visitor or home row opens that
+    game's PBOX (cat * 64 + g - 16); a title, summary and leaders row, a row past the
+    end, no history and an empty season are no-ops; DOWN moves the cursor; LEFT and
+    RIGHT step the season and reset the page and row; row_entry returns None"""
+    ldir = make_playoffs(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.cursor_screen((SP, 0, 0)) is True
+    assert dynview.row_entry((SP, 0, 0, 2), data) is None
+    # series 1's GAME 1 sits at row 12 (g 19); its visitor (13) and home (14) rows and
+    # its GAME 2 rows (15..17, g 20) open their own boxes
+    assert dynview.step((SP, 1, 0, 12), ENTER, data) == ((SPB, 0, 3), 0)
+    assert dynview.step((SP, 1, 0, 13), ENTER, data) == ((SPB, 0, 3), 0)
+    assert dynview.step((SP, 1, 0, 14), ENTER, data) == ((SPB, 0, 3), 0)
+    assert dynview.step((SP, 1, 0, 15), ENTER, data) == ((SPB, 0, 4), 0)
+    assert dynview.step((SP, 1, 0, 17), ENTER, data) == ((SPB, 0, 4), 0)
+    # the title rows (0, 11, 25, 39), the summaries (10, 24, 38, 49) and the leaders
+    # (50 and on) plus a row past the end: no-ops keeping the row
+    for r in (0, 10, 11, 24, 25, 38, 39, 49, 50, 59, 60):
+        assert dynview.step((SP, 0, 0, r), ENTER, data) == ((SP, 0, 0, r), 0)
+    # DOWN moves the cursor (60 rows: 5 pages, so PGDN walks pages with the cursor)
+    assert press((SP, 0, 0), DOWN, data) == (SP, 0, 0, 1)
+    assert press((SP, 0, 0), dynview.KEY_PGDN, data) == (SP, 1, 0, 12)
+    assert press((SP, 0, 0), dynview.KEY_HOME, data) == (SP, 0, 0)
+    assert press((SP, 0, 0), dynview.KEY_END, data) == (SP, 4, 0, 59)
+    # LEFT and RIGHT reset the page and row (LEFT stops at the oldest season)
+    s = press((SP, 1, 0, 15), LEFT, data)
+    assert s == (SP, 0, 1)
+    assert press((SP, 0, 0, 15), RIGHT, data) == (SP, 0, 0, 15)
+    # an empty season's message row: ENTER nothing; ESC back from PBOX to PLAYOFFS row 0
+    assert dynview.step((SP, 0, 1, 0), ENTER, data) == ((SP, 0, 1, 0), 0)
+    assert dynview.step((SPB, 0, 4), ESC, data) == ((SP, 0, 0), 0)
+    # no history at all: nothing
+    empty = tmp_path / 'nohist'
+    empty.mkdir()
+    data3 = dynview.load_data(str(empty))
+    assert dynview.step((SP, 0, 0), ENTER, data3) == ((SP, 0, 0), 0)
 
 
 def test_c30_cap_257_entries(tmp_path):

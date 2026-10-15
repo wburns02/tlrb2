@@ -2166,3 +2166,30 @@ SCREEN_SERIES, row_entry excludes it, the ENTER branch reads the row's game from
 g_ser_game (an 8-bit-per-row table of at most 3 * SERIES_GAMES + 1 entries, -1 on the
 summary and message rows, filled by build_series as it builds the rows), the footer
 follows Python's. Reads only; writes nothing.
+
+## C65. DYNVIEW PLAYOFFS row cursor (added 2026-10-15)
+PLAYOFFS (SCREEN_PLAYOFFS = 14, state (14, page, cat, row)) is a cursor screen like
+WORLD SERIES (C64). The state's cat is the season's distance back from the newest
+(season = hist.seasons_recorded - cat) and the row walks the rows of
+playoff_rows(hist, box, teams, season, team_stems, mask) for that season. Dynview
+grows playoff_row_games(hist, box, season): a list the same length as that season's
+playoff_rows rows, built on the same walk (playoff_rows' loop now returns a (rows,
+games) pair both read), so the two can never drift. Item r is the game's BOXSCORE.DAT
+g (the flags-4 round header's g, >= 16) on the GAME, visitor and home rows of that
+game and None on a series title row, a summary row, the POSTSEASON LEADERS title and
+rows and the message row. UP / DOWN move the cursor and PGUP / PGDN page it
+(cursor_move, page = row // 12), HOME / END jump, LEFT and RIGHT still step the season
+with page and row reset, ESC is unchanged. ENTER on a row whose game is not None opens
+that game's PLAYOFF BOX, state (SCREEN_PBOX, 0, cat * 64 + g - 16) (the old
+page-based ENTER rule, the box of the first GAME row on the page, is gone); a title,
+summary, POSTSEASON LEADERS or message row, a row past the end, no history and a
+season with no round game leave the state unchanged. row_entry returns None for
+SCREEN_PLAYOFFS (no player card there). FOOTERS[SCREEN_PLAYOFFS] stays 'ENTER BOX
+LEFT RIGHT SEASON  PGUP PGDN  ESC'. ESC from the PLAYOFF BOX still returns to
+PLAYOFFS with the row cursor reset to 0. C port: cursor_screen gains SCREEN_PLAYOFFS,
+row_entry excludes it, and the ENTER branch derives the game from g_pser with no new
+static array: the row at s.row, s.row - 1 or s.row - 2 (whichever of those, checked in
+that order, has cells[0] starting with "GAME ") names the GAME row (a summary row
+sits 3 below a GAME row and a title row directly above one, so neither ever matches,
+and neither do the message or leaders rows); k = the number of GAME rows before it and
+g = g_pl[k].g. Reads only; writes nothing.

@@ -4855,14 +4855,15 @@ static int leader_ncats(int mode)
 /* the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode), SEASON AWARDS,
  * AWARD HISTORY (C28), SEASON HISTORY (C56), SEASON STANDINGS (C57), TEAM HISTORY (C60),
  * the offseason RETIREMENTS phase, MILESTONES (C27/C61: cat 0 the milestones list,
- * cat 1 WATCH) and WORLD SERIES (C64) */
+ * cat 1 WATCH), WORLD SERIES (C64) and PLAYOFFS (C65) */
 static int cursor_screen(State st)
 {
     if (st.screen == SCREEN_HOF || st.screen == SCREEN_LEADERS
         || st.screen == SCREEN_AWARDS || st.screen == SCREEN_AWHIST
         || st.screen == SCREEN_HISTORY || st.screen == SCREEN_STANDINGS
         || st.screen == SCREEN_BOX || st.screen == SCREEN_PBOX
-        || st.screen == SCREEN_TEAMHIST || st.screen == SCREEN_SERIES)
+        || st.screen == SCREEN_TEAMHIST || st.screen == SCREEN_SERIES
+        || st.screen == SCREEN_PLAYOFFS)
         return 1;
     if (st.screen == SCREEN_MILESTONES)
         return 1;
@@ -4943,6 +4944,8 @@ static int32_t row_entry(State st)
     if (st.screen == SCREEN_STANDINGS || st.screen == SCREEN_TEAMHIST
         || st.screen == SCREEN_SERIES)
         return -1;              /* C57, C60: no player card; C64: the WS ENTER opens a box */
+    if (st.screen == SCREEN_PLAYOFFS)
+        return -1;              /* C65: the PLAYOFFS ENTER opens the row game's PBOX */
     if (st.screen == SCREEN_HOF) {
         hof_scan(&g_hofl, (int)st.cat);
         return row < (int32_t)g_hofl.n ? (int32_t)g_hofl.idx[row] : -1;
@@ -5342,6 +5345,40 @@ static State step(State in, int32_t key)
             }
             return s;
         }
+        if (s.screen == SCREEN_PLAYOFFS) {
+            /* C65: the row game's PLAYOFF BOX (the row's GAME, visitor or home row); a
+             * title, summary, POSTSEASON LEADERS or message row, a row past the end, no
+             * history and no round game keep the state. No static table: the GAME row is
+             * the row itself, row - 1 or row - 2 (the first of those whose first cell
+             * starts with "GAME "; a summary row is 3 below a GAME row, a title row sits
+             * directly above one, so neither ever matches), and k = the number of GAME
+             * rows before it: build_playoffs's rows come in the games' order, so the
+             * GAME row count before a game's GAME row is the game's g_pl index. */
+            const ColDef *cols;
+            int n, gr = -1, seen = 0, i;
+            if (!g_hdr_seasons)
+                return s;
+            n = playoffs_body(s, -1, &cols);
+            if (s.row >= n)
+                return s;
+            if (strncmp(g_pser[s.row].cells[0], "GAME ", 5) == 0)
+                gr = (int)s.row;
+            else if (s.row >= 1
+                     && strncmp(g_pser[s.row - 1].cells[0], "GAME ", 5) == 0)
+                gr = (int)s.row - 1;
+            else if (s.row >= 2
+                     && strncmp(g_pser[s.row - 2].cells[0], "GAME ", 5) == 0)
+                gr = (int)s.row - 2;
+            if (gr < 0)
+                return s;
+            for (i = 0; i < gr; i++)
+                if (strncmp(g_pser[i].cells[0], "GAME ", 5) == 0)
+                    seen++;
+            if (seen < g_pl_n)
+                return mk_state(SCREEN_PBOX, 0,
+                                (int32_t)(s.cat * 64 + g_pl[seen].g - PLAYOFF_G_MIN));
+            return s;
+        }
         {
             int32_t entry = row_entry(s);
             if (entry >= 0)
@@ -5461,33 +5498,6 @@ static State step(State in, int32_t key)
         }
         if (to >= PLAYOFF_G_MIN)
             return mk_state(SCREEN_PBOX, 0, (int32_t)((s.cat >> 6) * 64 + to - PLAYOFF_G_MIN));
-        return s;
-    }
-    if (s.screen == SCREEN_PLAYOFFS && key == KEY_ENTER) {
-        /* the box of the first game whose GAME row is on the page (the season's first
-         * round game when none is), when the season has one. The GAME rows come in the
-         * games' order, so the nth GAME row of the season is the nth playoff game. */
-        long season = (long)g_hdr_seasons - s.cat;
-        int count, before = 0, i, n = 0, to = -1;
-        const ColDef *cols;
-        if (season >= 1 && season <= SEASON_COUNT
-            && playoff_headers(season) > 0
-            && (count = playoffs_body(s, -1, &cols)) > 0) {
-            n = count;
-            for (i = 0; i < s.page * ROWS_PER_PAGE && i < n; i++)
-                if (strncmp(g_pser[i].cells[0], "GAME ", 5) == 0)
-                    before++;
-            for (i = s.page * ROWS_PER_PAGE;
-                 i < n && i < s.page * ROWS_PER_PAGE + ROWS_PER_PAGE; i++)
-                if (strncmp(g_pser[i].cells[0], "GAME ", 5) == 0) {
-                    to = before;            /* the nth GAME row, the nth game */
-                    break;
-                }
-            if (to < 0 || to >= g_pl_n)
-                to = 0;                     /* no GAME row on the page: the first game */
-            return mk_state(SCREEN_PBOX, 0,
-                            (int32_t)(s.cat * 64 + g_pl[to].g - PLAYOFF_G_MIN));
-        }
         return s;
     }
 
@@ -5800,7 +5810,11 @@ static const ColDef *body_cols(State st)
         return COLS_SERIES;
     case SCREEN_BOX:
         return COLS_BOX;
-    case SCREEN_PLAYOFFS:
+    case SCREEN_PLAYOFFS: {
+        const ColDef *c2;
+        playoffs_body(st, -1, &c2);
+        return c2;
+    }
     case SCREEN_PBOX:
         return COLS_SERIES;
     case SCREEN_TEAMHIST: {
