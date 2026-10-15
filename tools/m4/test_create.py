@@ -1467,6 +1467,89 @@ def test_random_name_leaves_ratings_cursor_budget(tmp_path):
                 assert st['cursor'] == row + 1
 
 
+# ---------------------------------------------------------------- C68: unique name
+def _picks(n):
+    """The first n C37 (last, first) picks from seed 1 and the seed after them:
+    pick 1 is ('Russell', 'Marvin'), the seed it leaves is 377401575."""
+    out = []
+    seed = 1
+    for _ in range(n):
+        seed = _lcg(seed)
+        last = rookies.LAST_NAMES[(seed >> 16) % len(rookies.LAST_NAMES)]
+        seed = _lcg(seed)
+        first = rookies.FIRST_NAMES[(seed >> 16) % len(rookies.FIRST_NAMES)]
+        out.append((last, first))
+    return out, seed
+
+
+def test_random_name_skips_planted_other_team_c68(tmp_path):
+    """C68: N on a non-name row skips a pick that equals a named roster record of
+    another league team (planted in DET slot 20) and keeps exactly the second
+    pick with its seed; a clean league keeps the C37 pick byte-identical."""
+    picks, _ = _picks(2)
+    assert picks[0] == ('Russell', 'Marvin')
+    assert _picks(1)[1] == 377401575
+    recs = {**TEAM_RECS, 2: {**TEAM_RECS[2], 20: named_rec('Russell', 'Marvin', 25, 4)}}
+    ctx = ctx_for(make_league(str(tmp_path / 'L'), recs=recs))
+    st = to_edit(ctx, 0, 0)                        # P1 of BOS, the selected team
+    st, _ = walk(ctx, [DOWN] * 2 + [N_KEY], st)    # POSITION row, one N press
+    assert (st['form']['last'], st['form']['first']) != ('Russell', 'Marvin')
+    assert (st['form']['last'], st['form']['first']) == picks[1]
+    assert st['seed'] == _lcg(_lcg(377401575))     # the seed after the kept draw
+    ctx2 = ctx_for(make_league(str(tmp_path / 'clean')))
+    st2 = to_edit(ctx2, 0, 0)
+    st2, _ = walk(ctx2, [DOWN] * 2 + [N_KEY], st2)
+    assert (st2['form']['last'], st2['form']['first'], st2['seed']) \
+        == ('Russell', 'Marvin', 377401575)        # collision-free: C37 unchanged
+
+
+def test_random_name_plant_variants_c68(tmp_path):
+    """C68: a plant in the SELECTED team's own image collides too; with all of
+    pick1..pick8 planted in another team the 8th pick is kept after 16 draws;
+    N typed on a name row is still the letter, seed untouched."""
+    picks, seed8 = _picks(8)
+    recs = {**TEAM_RECS, 0: {**TEAM_RECS[0], 1: named_rec('Russell', 'Marvin', 25, 0)}}
+    ctx = ctx_for(make_league(str(tmp_path / 'self'), recs=recs))
+    st = to_edit(ctx, 0, 1)                        # P2, the plant sits in the image
+    st, _ = walk(ctx, [DOWN] * 2 + [N_KEY], st)
+    assert (st['form']['last'], st['form']['first']) == picks[1]
+    assert st['seed'] == _lcg(_lcg(377401575))
+    recs8 = {**TEAM_RECS, 2: {20 + i: named_rec(p[0], p[1], 25, 4)
+                              for i, p in enumerate(picks)}}
+    ctx8 = ctx_for(make_league(str(tmp_path / 'all'), recs=recs8))
+    st8 = to_edit(ctx8, 0, 0)
+    st8, _ = walk(ctx8, [DOWN] * 2 + [N_KEY], st8)
+    assert (st8['form']['last'], st8['form']['first']) == picks[7]
+    assert st8['seed'] == seed8
+    ctx3 = ctx_for(make_league(str(tmp_path / 'plain')))
+    st3 = to_edit(ctx3, 0, 0)
+    st3, _ = walk(ctx3, [N_KEY], st3)              # cursor still on LAST NAME
+    assert (st3['form']['last'], st3['form']['first'], st3['seed']) == ('N', '', 1)
+
+
+
+def test_random_name_selected_team_is_the_list_index_c68(tmp_path):
+    """C68 (brain): st['team'] is the team list index, not the stable id. With ids
+    0, 2, 15, 16, 17 the selected NYA (index 2, id 15) is checked from its image and
+    DET (index 1, id 2) from its file: a plant in DET's file collides, and a plant
+    only in the in-memory NYA image collides; a deleted DET file is skipped."""
+    picks, _ = _picks(2)
+    recs = {**TEAM_RECS, 2: {20: named_rec('Russell', 'Marvin', 25, 4)}}
+    ctx = ctx_for(make_league(str(tmp_path / 'det'), recs=recs))
+    st = to_edit(ctx, 2, 0)
+    st, _ = walk(ctx, [DOWN] * 2 + [N_KEY], st)
+    assert (st['form']['last'], st['form']['first']) == picks[1]
+    ctx2 = ctx_for(make_league(str(tmp_path / 'img')))
+    st2 = to_edit(ctx2, 2, 0)
+    img = bytearray(st2['image'])
+    img[295 + 143 * 30:295 + 143 * 31] = named_rec('Russell', 'Marvin', 25, 4)
+    st2['image'] = bytes(img)
+    st2, _ = walk(ctx2, [DOWN] * 2 + [N_KEY], st2)
+    assert (st2['form']['last'], st2['form']['first']) == picks[1]
+    os.remove(os.path.join(str(tmp_path / 'det'), 'DET.V20'))
+    st3 = to_edit(ctx, 2, 0)
+    st3, _ = walk(ctx, [DOWN] * 2 + [N_KEY], st3)
+    assert (st3['form']['last'], st3['form']['first']) == picks[0]
 
 def write_table(d, entries):
     """TEAMID.DAT of d: entries = {k: stem} (k 0..31), every other entry NUL."""

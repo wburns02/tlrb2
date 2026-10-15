@@ -2204,3 +2204,22 @@ are no-ops at the ends and on empty screens (page 0). The cursor screens keep th
 behaviour (they never reach the generic pager); the hub MENU, FIND typing, SETTINGS
 and every screen that returns before the generic pager are unchanged. No footer
 changes, C89 only, no new static data. Reads only; writes nothing.
+
+## C68. CREATE random name is unique in the league (added 2026-10-15)
+Key N on the CREATE A PLAYER edit screen (not on a name field) draws a (last,
+first) pair from the rookie pools with the session seed exactly as C37
+(seed = (seed * 1103515245 + 12345) % 2**31, last =
+LAST_NAMES[(seed >> 16) % len(LAST_NAMES)], then again for first =
+FIRST_NAMES[(seed >> 16) % len(FIRST_NAMES)]), then repeats the draw while the
+pick collides: a collision is any named roster record (byte 0 != 0, slots
+0..39, roster half only) of any team of ctx['teams'] whose last and first
+names (each cut at the first 0 byte) equal the pick exactly. The selected
+team is checked in st['image'], every other team from its V20 file; a team
+whose file is missing or too short contributes no records. Up to 8 picks in
+continuing sequence; the first non-colliding pick is kept, and when all 8
+collide the 8th pick is kept. st['seed'] holds the seed after the last draw
+used, so a following N, A or save continues from there. On a collision-free
+league the result and seed are byte-identical to C37. The C port reads the
+other teams' names without a league-sized buffer: per team it opens the V20
+and freads only the 21 name span bytes (byte 0 plus OFF_LAST..OFF_AGE) of
+each roster slot into a small stack buffer.

@@ -620,6 +620,48 @@ def test_name_tables_match_python_lists():
     assert firsts == rookies.FIRST_NAMES, 'C37_FIRST_NAMES differs from rookies.FIRST_NAMES'
 
 
+# ---------------------------------------------------------------- parity: C68 unique name
+def _c68_picks(n):
+    """The first n C37 (last, first) picks from seed 1 and the seed after them:
+    pick 1 is ('Russell', 'Marvin'), the seed it leaves is 377401575."""
+    out = []
+    seed = 1
+    for _ in range(n):
+        seed = (seed * 1103515245 + 12345) % 2 ** 31
+        last = rookies.LAST_NAMES[(seed >> 16) % len(rookies.LAST_NAMES)]
+        seed = (seed * 1103515245 + 12345) % 2 ** 31
+        first = rookies.FIRST_NAMES[(seed >> 16) % len(rookies.FIRST_NAMES)]
+        out.append((last, first))
+    return out, seed
+
+
+def test_parity_random_name_unique_c68(tmp_path):
+    """C68: the N pick skips names already in the league on both sides - a plant in
+    another team's V20 (DET slot 20), one in the selected team's own image, and all
+    eight picks planted (the 8th kept) - while a clean league stays byte-identical
+    to C37, and a save after the skip writes the same V20 bytes."""
+    picks, _ = _c68_picks(8)
+    assert picks[0] == ('Russell', 'Marvin')
+    fonts = synth_fonts(os.path.join(str(tmp_path), 'c68fonts'))
+    pit = [ENTER, ENTER] + [DOWN] * 2 + [ord('N')]     # P1, POSITION row, one N
+    other = make_league(str(tmp_path / 'other'),
+                        recs={2: {20: named_rec('Russell', 'Marvin', 25, 4)}})
+    parity(tmp_path, pit, base=other, fonts=fonts)
+    own = make_league(str(tmp_path / 'own'),
+                      recs={0: {1: named_rec('Russell', 'Marvin', 25, 0)}})
+    parity(tmp_path, [ENTER, DOWN, ENTER] + [DOWN] * 2 + [ord('N')], base=own,
+           fonts=fonts)
+    all8 = make_league(str(tmp_path / 'all8'),
+                       recs={2: {20 + i: named_rec(p[0], p[1], 25, 4)
+                                 for i, p in enumerate(picks)}})
+    parity(tmp_path, pit, base=all8, fonts=fonts)      # all 8 collide: the 8th kept
+    parity(tmp_path, pit, fonts=fonts)                 # clean league: the C37 pick
+    st, _ = parity(tmp_path, [ENTER, DOWN, ENTER] + [DOWN] * 2 + [ord('N')]
+                   + [DOWN] * 7 + [ENTER], base=other, fonts=fonts)
+    assert st['screen'] == cr.S_DONE                   # a save after the skip
+    assert (st['form']['last'], st['form']['first']) == picks[1]
+
+
 # ---------------------------------------------------------------- 3 divisions: team list (C12.3)
 # These run without the game fonts: synthetic MAIN.FNT / BOLD.FNT of the same layout (glyph
 # shapes do not matter, both sides draw the same ones), so the host team list is always checked.

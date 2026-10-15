@@ -1251,17 +1251,81 @@ static uint32_t autofill(State *st)
     return seed;
 }
 
-/* C37: key N picks a random name from the rookie pools with the session seed
- * (create.py _random_name): seed = (seed * 1103515245 + 12345) % 2^31, last =
- * C37_LAST_NAMES[(seed >> 16) % LAST_POOL_N], then again for first =
- * C37_FIRST_NAMES[(seed >> 16) % FIRST_POOL_N]. The final seed is kept. */
+/* C68: 1 when the n name bytes at b hold exactly s (the bytes up to the first
+ * NUL equal the NUL ended s) */
+static int name_eq(const uint8_t *b, int n, const char *s)
+{
+    int i = 0;
+    while (i < n && b[i] != 0)
+        i++;
+    return i == (int)strlen(s) && memcmp(b, s, (size_t)i) == 0;
+}
+
+/* C68: 1 when some named roster record (byte 0 != 0, slots 0..39, roster half
+ * only) of any league team has both names equal to the pick exactly (each cut
+ * at the first NUL). The picked team (g_state.team) is checked in g_image,
+ * every other team from its V20 file; a team whose file is missing or too
+ * short contributes no records. Per team the file needs no league-sized
+ * buffer: each roster slot reads only its 21 name span bytes (byte 0 plus
+ * OFF_LAST..OFF_AGE) into a small stack buffer. */
+static int name_used(const char *last, const char *first)
+{
+    int t, r;
+    for (t = 0; t < g_nteams; t++) {
+        FILE *f;
+        if (t == g_state.team) {
+            for (r = 0; r < ROSTER_SLOTS; r++) {
+                const uint8_t *rec = g_image + HEADER_LEN + RECORD_LEN * r;
+                if (rec[0] && name_eq(rec, 12, last)
+                        && name_eq(rec + 12, 8, first))
+                    return 1;
+            }
+            continue;
+        }
+        f = v20_fopen((const uint8_t *)g_teams[t].stem,
+                      (int)strlen(g_teams[t].stem), "rb");
+        if (!f)
+            continue;
+        for (r = 0; r < ROSTER_SLOTS; r++) {
+            uint8_t buf[21];
+            if (fseek(f, (long)(HEADER_LEN + RECORD_LEN * r), SEEK_SET) != 0
+                    || fread(buf, 1, sizeof buf, f) != sizeof buf)
+                break;              /* short file: the remaining slots are absent */
+            if (buf[0] && name_eq(buf, 12, last)
+                    && name_eq(buf + 12, 8, first)) {
+                fclose(f);
+                return 1;
+            }
+        }
+        fclose(f);
+    }
+    return 0;
+}
+
+/* C37 + C68: key N picks a random name from the rookie pools with the session
+ * seed exactly as C37 (create.py _random_name): seed = (seed * 1103515245 +
+ * 12345) % 2^31, last = C37_LAST_NAMES[(seed >> 16) % LAST_POOL_N], then again
+ * for first = C37_FIRST_NAMES[(seed >> 16) % FIRST_POOL_N], then repeats the
+ * draw while the pick collides (name_used). Up to 8 picks in continuing
+ * sequence; the first non-colliding pick is kept, and when all 8 collide the
+ * 8th is kept. The final seed is kept, so a following N, A or save continues
+ * from there. */
 static void random_name(State *st)
 {
-    uint32_t seed = (st->seed * 1103515245u + 12345u) % 0x80000000u;
-    strcpy(st->form.last, C37_LAST_NAMES[(seed >> 16) % LAST_POOL_N]);
-    seed = (seed * 1103515245u + 12345u) % 0x80000000u;
-    strcpy(st->form.first, C37_FIRST_NAMES[(seed >> 16) % FIRST_POOL_N]);
+    uint32_t seed = st->seed;
+    const char *last = "", *first = "";
+    int pick;
+    for (pick = 0; pick < 8; pick++) {
+        seed = (seed * 1103515245u + 12345u) % 0x80000000u;
+        last = C37_LAST_NAMES[(seed >> 16) % LAST_POOL_N];
+        seed = (seed * 1103515245u + 12345u) % 0x80000000u;
+        first = C37_FIRST_NAMES[(seed >> 16) % FIRST_POOL_N];
+        if (pick == 7 || !name_used(last, first))
+            break;
+    }
     st->seed = seed;
+    strcpy(st->form.last, last);
+    strcpy(st->form.first, first);
 }
 
 static int step_edit(State *st, int32_t key)

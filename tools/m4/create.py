@@ -537,17 +537,52 @@ def _autofill(st):
     st['form']['r'][:n] = r
 
 
-def _random_name(st):
-    """C37: key N picks a random name from the rookie pools with the session
-    seed: seed = (seed * 1103515245 + 12345) % 2**31, last =
-    rookies.LAST_NAMES[(seed >> 16) % len(LAST_NAMES)], then again for first =
-    rookies.FIRST_NAMES[(seed >> 16) % len(FIRST_NAMES)]. st['seed'] keeps the
-    final value. Nothing else in the state changes."""
-    seed = (st['seed'] * 1103515245 + 12345) % 2 ** 31
-    st['form']['last'] = rookies.LAST_NAMES[(seed >> 16) % len(rookies.LAST_NAMES)]
-    seed = (seed * 1103515245 + 12345) % 2 ** 31
-    st['form']['first'] = rookies.FIRST_NAMES[(seed >> 16) % len(rookies.FIRST_NAMES)]
+def _random_name(st, ctx):
+    """C68: C37, then draw again when the pick collides with a named roster
+    record (slots 0..39, roster halves only) of any league team: last and
+    first both equal the pick exactly (after the cut at the first 0 byte).
+    The selected team is checked in st['image'], every other team from its
+    V20 file through read_v20 (missing or unusable file = no records, no
+    collision). Up to 8 picks in sequence; when all 8 collide the 8th is
+    kept anyway. st['seed'] keeps the seed after the last draw used."""
+    seed = st['seed']
+    for pick in range(8):
+        seed = (seed * 1103515245 + 12345) % 2 ** 31
+        last = rookies.LAST_NAMES[(seed >> 16) % len(rookies.LAST_NAMES)]
+        seed = (seed * 1103515245 + 12345) % 2 ** 31
+        first = rookies.FIRST_NAMES[(seed >> 16) % len(rookies.FIRST_NAMES)]
+        if pick == 7 or not _name_collides(st, ctx, last, first):
+            break
     st['seed'] = seed
+    st['form']['last'], st['form']['first'] = last, first
+
+
+def _name_collides(st, ctx, last, first):
+    """True when some named roster record of any ctx['teams'] team has both
+    names equal to the pick."""
+    for i, (_k, stem, _d) in enumerate(ctx['teams']):
+        if i == st['team']:                  # st['team'] is the list index, not the id
+            image = st['image']
+        else:
+            u2 = HEADER_LEN + ROSTER_SLOTS * RECORD_LEN
+            path = v20_path(ctx['league_dir'], stem.encode('latin-1'))
+            data = b''
+            if path is not None:
+                try:
+                    with open(path, 'rb') as fh:
+                        data = fh.read()
+                except OSError:
+                    data = b''
+            image = data.ljust(u2, b'\0')
+        for r in range(ROSTER_SLOTS):
+            rec = record(image, r)
+            if not rec[0]:
+                continue
+            rl = rec[rookies.OFF_LAST:rookies.OFF_FIRST].split(b'\0', 1)[0]
+            rf = rec[rookies.OFF_FIRST:rookies.OFF_AGE].split(b'\0', 1)[0]
+            if rl == last.encode('ascii') and rf == first.encode('ascii'):
+                return True
+    return False
 
 
 def _step_edit(st, key, ctx):
@@ -563,7 +598,7 @@ def _step_edit(st, key, ctx):
     elif key in (65, 97) and fld not in ('last', 'first'):
         _autofill(st)                                      # C34: the A auto-fill
     elif key in (78, 110) and fld not in ('last', 'first'):
-        _random_name(st)                                   # C37: the N random name
+        _random_name(st, ctx)                              # C37/C68: the N random name
     elif key == KEY_ENTER:
         if fld == 'save':
             if form['last'] == '':
