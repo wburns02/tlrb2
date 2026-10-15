@@ -50,6 +50,16 @@ and missed the small arrows (START NEW SEASON). The 'mouse' job makes the range 
 0..199 (0x00c7013f), so the host pointer and the game cursor agree everywhere. Cost: in the last 15 px on the
 right the game's cursor sprite wraps a few pixels onto the next row's left edge (cosmetic, verified on the rig).
 
+PLAYOFFS (2026-10-14, C23): BACK 3000:97e6 (overlay 3953:02b6, stock 265 B) runs when the MAJ day (0x20a) equals
+0x216, 0x217 or 0x218 (postseason start and each round boundary). Stock it removes TEAMS\\<dir>\\PLAYOFFS.AL and .NL,
+so only the last round's games (the World Series) survive to the roll. The 'playoffs' job rewrites the function in
+place: one pass per league file (DS string 0x21fa "\playoffs.al", then + 0x17 = 0x2211 "\playoffs.nl", the pass
+counter at bp-6) and, where the stock removed an existing file, a near call to a helper that renames it to the
+first free PLAYOFFS.A1..A4 (N1..N4) with INT 21h 56h (copy of the path at bp-0x23) and deletes it only when all four
+are taken. The helper sits in the freed second block between the 13 overlay fixup words, which keep their bytes
+(dead code around them); the name copy becomes lds/rep movsw. The in-game playoff viewer is unchanged (each round
+still starts a fresh file). HISTWR reads the archives at the roll and deletes them (C23).
+
 usage: menu_patch.py INSTALL_DIR [--revert]   (INSTALL_DIR holds MAIN, BACK, MANAGE, UTIL, CONTROL, BB, DRAFT.EXE)
 Idempotent; checks every file is stock or patched before writing any; refuses the pristine tree.
 """
@@ -229,6 +239,16 @@ MOUSE_SITES = {name: [(MOUSE_PAT, 2, bytes.fromhex('3f 01 c7 00'))]
                for name in ('MAIN.EXE', 'BACK.EXE', 'MANAGE.EXE', 'UTIL.EXE', 'BB.EXE', 'DRAFT.EXE')}
 
 
+# PLAYOFFS (C23): the whole stock function, replaced in place (see the module notes)
+PLAYOFF_OLD = bytes.fromhex(
+    '558bec83ec54b100eb1d8ac1b4008d56d403c28ad1b600c41eea5003da268a178bd8368817fec180f90872dec646dc001e68f321168d46ac509af545000083c408168d46d450168d46ac509ab645000083c4081e68fa21168d46ac509ab645000083c4081e680722168d46ac509a3736000083c4088956fe8946fc66837efc00741752509afd31000083c404168d46ac509a8217000083c4041e680a22168d46ac509af545000083c408168d46d450168d46ac509ab645000083c4081e681122168d46ac509ab645000083c4081e681e22168d46ac509a3736000083c4088956fe8946fc66837efc00741752509afd31000083c404168d46ac509a8217000083c4049a25007001c9cb')
+PLAYOFF_NEW = bytes.fromhex(
+    '558bec83ec541e5657c536ea5016078d7ed4b90400f3a526880d5f5e1fc746fafa21eb0c9090909090909090909090901e68f321168d46ac509af545000083c408168d46d450168d46ac509ab645000083c4081eff76fa168d46ac509ab645000083c4081e680722168d46ac509a3736000083c4088956fe8946fc66837efc00741752509afd31000083c404e81800eb089a8217000083c4048346fa17807efa28728deb5d00001e5657161f16078d76ac8d7eddeb0345000089f2acaa08c075fa8d5dfeeb04b6450000c607308d7eddfe07803f35740aeb020000b456cd2172efb441cd215f5e1fc3741752509afd31000083c404168d46ac509a8217000083c4049a25007001c9cb')
+PLAYOFF_FIXUPS = (0x2f2, 0x304, 0x315, 0x326, 0x33d, 0x34a, 0x35b, 0x36d, 0x37e, 0x38f, 0x3a6, 0x3b3, 0x3bb)
+PLAYOFF_BASE = 0x2b6                 # overlay offset of the first byte
+PLAYOFF_SITES = {'BACK.EXE': [(PLAYOFF_OLD, 0, PLAYOFF_NEW)]}
+
+
 def _patched_pattern(pat, off, new):
     return pat[:off] + new + pat[off + len(new):]
 
@@ -262,6 +282,11 @@ def div3_sites(exe, name, table=None):
 def div3_patch(exe, name, revert=False, check_only=False):
     """Patch (or revert) one DIV3 job's file; same return values as patch_file."""
     return patch_file(exe, [], revert, div3_sites(exe, name), check_only=check_only)
+
+
+def playoff_patch(exe, name, revert=False, check_only=False):
+    """Patch (or revert) the PLAYOFFS job's file; same return values as patch_file."""
+    return patch_file(exe, [], revert, div3_sites(exe, name, PLAYOFF_SITES), check_only=check_only)
 
 
 def mouse_patch(exe, name, revert=False, check_only=False):
@@ -314,7 +339,7 @@ def find_exe(root, name):
 
 
 def patch(install, revert=False):
-    """Patch (or revert) MAIN, BACK, MANAGE, UTIL and CONTROL in install, and the DIV3 and MOUSE jobs;
+    """Patch (or revert) MAIN, BACK, MANAGE, UTIL and CONTROL in install, and the DIV3, MOUSE and PLAYOFFS jobs;
     -> {job: state}."""
     root = os.path.abspath(install)
     if 'pristine' in root.split(os.sep):
@@ -327,9 +352,12 @@ def patch(install, revert=False):
         div3_patch(find_exe(root, name), name, revert, check_only=True)
     for name in MOUSE_SITES:
         mouse_patch(find_exe(root, name), name, revert, check_only=True)
+    for name in PLAYOFF_SITES:
+        playoff_patch(find_exe(root, name), name, revert, check_only=True)
     out = {name: patch_file(find_exe(root, name), pats, revert, hdr) for name, pats, hdr in jobs}
     out.update({f'{name} div3': div3_patch(find_exe(root, name), name, revert) for name in DIV3_SITES})
     out.update({f'{name} mouse': mouse_patch(find_exe(root, name), name, revert) for name in MOUSE_SITES})
+    out.update({f'{name} playoffs': playoff_patch(find_exe(root, name), name, revert) for name in PLAYOFF_SITES})
     return out
 
 

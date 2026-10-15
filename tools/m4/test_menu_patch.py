@@ -22,6 +22,7 @@ MENU_EXES = sorted(mp.EXES)
 ALL_EXES = MENU_EXES + ['CONTROL.EXE']
 DIV3_JOBS = [f'{name} div3' for name in mp.DIV3_SITES]
 MOUSE_JOBS = [f'{name} mouse' for name in mp.MOUSE_SITES]
+PLAYOFF_JOBS = [f'{name} playoffs' for name in mp.PLAYOFF_SITES]
 MOUSE_ONLY = ['BB.EXE', 'DRAFT.EXE']             # carry a MOUSE job and nothing else
 
 
@@ -186,12 +187,12 @@ def _copy(tmp_path):
 def test_patch_already_revert_roundtrip(tmp_path):
     d = _copy(tmp_path)
     stock = {n: (d / n).read_bytes() for n in ALL_EXES}
-    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS, 'patched')
+    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS + PLAYOFF_JOBS, 'patched')
     patched = {n: (d / n).read_bytes() for n in stock}
     assert all(patched[n] != stock[n] and len(patched[n]) == len(stock[n]) for n in stock)
-    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS, 'already')
+    assert mp.patch(str(d)) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS + PLAYOFF_JOBS, 'already')
     assert {n: (d / n).read_bytes() for n in stock} == patched
-    assert mp.patch(str(d), revert=True) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS, 'reverted')
+    assert mp.patch(str(d), revert=True) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS + PLAYOFF_JOBS, 'reverted')
     assert {n: (d / n).read_bytes() for n in stock} == stock
     assert not [f for f in os.listdir(d) if f.endswith('.bak')]
 
@@ -202,16 +203,16 @@ def test_c10_only_install_upgrades_in_place(tmp_path):
     stock = {n: (d / n).read_bytes() for n in ALL_EXES}
     mp.patch(str(d))
     full = {n: (d / n).read_bytes() for n in ALL_EXES}
-    for table in (mp.DIV3_SITES, mp.MOUSE_SITES):   # back to a C10-only install: stock bytes at the job sites
+    for table in (mp.DIV3_SITES, mp.MOUSE_SITES, mp.PLAYOFF_SITES):   # back to a C10-only install: stock bytes at the job sites
         for name in table:
             p = d / name
             b = bytearray(p.read_bytes())
             for fo, old, new in mp.div3_sites(str(p), name, table):
                 b[fo:fo + len(old)] = old
             p.write_bytes(bytes(b))
-    assert mp.patch(str(d)) == {**dict.fromkeys(ALL_EXES, 'already'), **dict.fromkeys(DIV3_JOBS + MOUSE_JOBS, 'patched')}
+    assert mp.patch(str(d)) == {**dict.fromkeys(ALL_EXES, 'already'), **dict.fromkeys(DIV3_JOBS + MOUSE_JOBS + PLAYOFF_JOBS, 'patched')}
     assert {n: (d / n).read_bytes() for n in ALL_EXES} == full
-    assert mp.patch(str(d), revert=True) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS, 'reverted')
+    assert mp.patch(str(d), revert=True) == dict.fromkeys(ALL_EXES + DIV3_JOBS + MOUSE_JOBS + PLAYOFF_JOBS, 'reverted')
     assert {n: (d / n).read_bytes() for n in ALL_EXES} == stock
 
 
@@ -271,6 +272,9 @@ def test_patched_header_and_bytes(tmp_path, exe):
             named.update(range(fo, fo + len(old)))
     if exe in mp.MOUSE_SITES:
         for fo, old, new in mp.div3_sites(str(d / exe), exe, mp.MOUSE_SITES):
+            named.update(range(fo, fo + len(old)))
+    if exe in mp.PLAYOFF_SITES:
+        for fo, old, new in mp.div3_sites(str(d / exe), exe, mp.PLAYOFF_SITES):
             named.update(range(fo, fo + len(old)))
     assert {i for i in range(len(s)) if s[i] != b[i]} <= named
 
@@ -339,3 +343,149 @@ def test_mouse_twice_refuses(tmp_path):
 def test_mouse_site_once_in_each_pristine_exe(exe):
     data = open(os.path.join(PRISTINE, exe), 'rb').read()
     assert data.count(mp.MOUSE_PAT) == 1
+
+
+# ---------------------------------------------------------------- PLAYOFFS (C23)
+def test_playoff_patch_keeps_every_fixup_word():
+    old, new = mp.PLAYOFF_OLD, mp.PLAYOFF_NEW
+    assert len(old) == len(new) == 0x3bf - mp.PLAYOFF_BASE
+    for f in mp.PLAYOFF_FIXUPS:
+        o = f - mp.PLAYOFF_BASE
+        assert new[o:o + 2] == old[o:o + 2]
+
+
+@needs_game
+def test_playoff_function_once_in_pristine_back_at_the_overlay():
+    data = open(os.path.join(PRISTINE, 'BACK.EXE'), 'rb').read()
+    assert data.count(mp.PLAYOFF_OLD) == 1 and data.count(mp.PLAYOFF_NEW) == 0
+    assert data.find(mp.PLAYOFF_OLD) == 176598
+
+
+def test_playoff_roundtrip_on_a_fake_file(tmp_path):
+    p = tmp_path / 'BACK.EXE'
+    p.write_bytes(_body(mp.PLAYOFF_OLD))
+    before = p.read_bytes()
+    assert mp.playoff_patch(str(p), 'BACK.EXE') == 'patched'
+    assert p.read_bytes() == before.replace(mp.PLAYOFF_OLD, mp.PLAYOFF_NEW)
+    assert mp.playoff_patch(str(p), 'BACK.EXE') == 'already'
+    assert mp.playoff_patch(str(p), 'BACK.EXE', revert=True) == 'reverted'
+    assert p.read_bytes() == before
+
+
+# Emulation of the whole function (unicorn): code at CS:0x2b6, DS strings at their offsets, the far calls
+# (seg word 0 in the file: strcpy 45f5, strcat 45b6, fopen 3637, fclose 31fd, remove 1782; 170:25 the
+# existence check) stubbed in Python, INT 21h 56h / 41h over a dict of file names.
+CS, DS, SS, STUB = 0x2000, 0x3000, 0x4000, 0x0000
+DIR = b'CLASSIC'
+
+
+def _run_fn(code, files, name=DIR):
+    uc_mod = pytest.importorskip('unicorn')
+    from unicorn import x86_const as X
+    uc = uc_mod.Uc(uc_mod.UC_ARCH_X86, uc_mod.UC_MODE_16)
+    uc.mem_map(0, 0x100000)
+    uc.mem_write(CS * 16 + 0x2b6, code)
+    for off, sv in ((0x21f3, b'teams\\\0'), (0x21fa, b'\\playoffs.al\0'), (0x2207, b'rb\0'),
+                    (0x220a, b'teams\\\0'), (0x2211, b'\\playoffs.nl\0'), (0x221e, b'rb\0')):
+        uc.mem_write(DS * 16 + off, sv)
+    uc.mem_write(DS * 16 + 0x6000, name.ljust(8, b'\0')[:8] + b'XYZ')   # 8-char dir, then junk
+    uc.mem_write(DS * 16 + 0x50ea, struct.pack('<HH', 0x6000, DS))
+    stubs = {0x45f5: 'strcpy', 0x45b6: 'strcat', 0x3637: 'fopen', 0x31fd: 'fclose', 0x1782: 'remove'}
+    log = []
+
+    def cstr(seg, off):
+        b = bytes(uc.mem_read(seg * 16 + off, 64))
+        return b[:b.index(0)]
+
+    def retf():
+        sp = uc.reg_read(X.UC_X86_REG_SP)
+        ip, cs = struct.unpack('<HH', uc.mem_read(SS * 16 + sp, 4))
+        uc.reg_write(X.UC_X86_REG_SP, sp + 4)
+        uc.reg_write(X.UC_X86_REG_CS, cs)
+        uc.reg_write(X.UC_X86_REG_IP, ip)
+
+    def hook_code(uc, addr, size, _):
+        if addr // 16 < 0x1000 and addr < 0x10000:
+            sp = uc.reg_read(X.UC_X86_REG_SP)
+            a = struct.unpack('<4H', uc.mem_read(SS * 16 + sp + 4, 8))
+            what = stubs.get(addr - STUB * 16, 'check' if addr == 0x170 * 16 + 0x25 else None)
+            if what in ('strcpy', 'strcat'):
+                dst = (a[1], a[0])
+                src = cstr(a[3], a[2])
+                cur = b'' if what == 'strcpy' else cstr(*dst)
+                uc.mem_write(dst[0] * 16 + dst[1], cur + src + b'\0')
+            elif what == 'fopen':
+                path = cstr(a[1], a[0]).lower()
+                uc.reg_write(X.UC_X86_REG_AX, 0x99 if path in files else 0)
+                uc.reg_write(X.UC_X86_REG_DX, 0x1 if path in files else 0)
+            elif what in ('fclose', 'check'):
+                pass
+            elif what == 'remove':
+                raise AssertionError('remove reached')
+            log.append(what)
+            retf()
+
+    def hook_int(uc, intno, _):
+        assert intno == 0x21
+        ah = uc.reg_read(X.UC_X86_REG_AH)
+        src = cstr(uc.reg_read(X.UC_X86_REG_DS), uc.reg_read(X.UC_X86_REG_DX)).lower()
+        fl = uc.reg_read(X.UC_X86_REG_EFLAGS) & ~1
+        if ah == 0x56:
+            dst = cstr(uc.reg_read(X.UC_X86_REG_ES), uc.reg_read(X.UC_X86_REG_DI)).lower()
+            ok = src in files and dst not in files
+            if ok:
+                files[dst] = files.pop(src)
+            log.append(('ren', src, dst, ok))
+        else:
+            assert ah == 0x41
+            ok = src in files
+            files.pop(src, None)
+            log.append(('del', src, ok))
+        # the INT pushed FLAGS: set CF in the copy IRET restores
+        uc.reg_write(X.UC_X86_REG_EFLAGS, fl | (0 if ok else 1))
+    uc.hook_add(uc_mod.UC_HOOK_CODE, hook_code, begin=0, end=0xffff)
+    uc.hook_add(uc_mod.UC_HOOK_INTR, hook_int)
+    # caller: far call into the function, then hlt
+    caller = CS * 16 + 0x100
+    uc.mem_write(caller, bytes.fromhex('9a b6 02 00 20 f4'))     # call far 2000:02b6; hlt
+    uc.mem_write(0x170 * 16 + 0x25, b'\xcb')
+    for r, v in ((X.UC_X86_REG_CS, CS), (X.UC_X86_REG_DS, DS), (X.UC_X86_REG_SS, SS), (X.UC_X86_REG_ES, 0),
+                 (X.UC_X86_REG_SP, 0xfff0), (X.UC_X86_REG_BP, 0x1234), (X.UC_X86_REG_SI, 0x5151),
+                 (X.UC_X86_REG_DI, 0x7171)):
+        uc.reg_write(r, v)
+    uc.emu_start(caller, caller + 5, count=20000)
+    regs = {k: uc.reg_read(getattr(X, 'UC_X86_REG_' + k)) for k in ('SP', 'BP', 'SI', 'DI', 'DS', 'SS')}
+    return log, regs
+
+
+def _pre(*exts):
+    return {b'teams\\classic\\playoffs.' + e: e for e in exts}
+
+
+def test_playoff_emulated_archives_both_files_and_keeps_registers():
+    files = _pre(b'al', b'nl')
+    log, regs = _run_fn(mp.PLAYOFF_NEW, files)
+    assert files == {b'teams\\classic\\playoffs.a1': b'al', b'teams\\classic\\playoffs.n1': b'nl'}
+    assert regs == {'SP': 0xfff0, 'BP': 0x1234, 'SI': 0x5151, 'DI': 0x7171, 'DS': DS, 'SS': SS}
+    assert log[-1] == 'check' and log.count('fopen') == 2 and 'remove' not in log
+
+
+def test_playoff_emulated_takes_the_first_free_suffix_and_deletes_when_full():
+    files = _pre(b'al', b'a1', b'a3', b'nl', b'n1', b'n2', b'n3', b'n4')
+    _run_fn(mp.PLAYOFF_NEW, files)
+    assert sorted(files) == sorted(_pre(b'a1', b'a2', b'a3', b'n1', b'n2', b'n3', b'n4'))
+    assert files[b'teams\\classic\\playoffs.a2'] == b'al'
+
+
+def test_playoff_emulated_missing_files_and_short_dir_name():
+    files = {}
+    log, _ = _run_fn(mp.PLAYOFF_NEW, files, name=b'AB')
+    assert files == {} and not [e for e in log if isinstance(e, tuple)]
+    files = {b'teams\\ab\\playoffs.nl': 1}
+    _run_fn(mp.PLAYOFF_NEW, files, name=b'AB')
+    assert files == {b'teams\\ab\\playoffs.n1': 1}
+
+
+def test_playoff_emulated_stock_function_removes():
+    with pytest.raises(AssertionError, match='remove reached'):
+        _run_fn(mp.PLAYOFF_OLD, _pre(b'al'))
