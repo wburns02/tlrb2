@@ -1231,17 +1231,22 @@ def line_seasons(lines):
     return sorted({ln['season'] for ln in lines})
 
 
+def milestone_items(hist, ms):
+    """[(season, idx, kind, value)] of MILESTON.DAT records with kind < AWARD_KIND_MIN,
+    newest season first, within a season in file order, at most LIST_MAX."""
+    items = []
+    for pos, (season, idx, kind, value) in enumerate(ms):
+        if kind < AWARD_KIND_MIN:
+            items.append((season, idx, kind, value, pos))
+    items.sort(key=lambda t: (-t[0], t[4]))
+    return [(s, i, k, v) for s, i, k, v, _p in items[:LIST_MAX]]
+
+
 def milestone_rows(hist, ms):
     """MILESTON.DAT records (award records skipped), newest season first, within a
     season in file order: YEAR, NAME, EVENT."""
-    items = []
-    for pos, rec in enumerate(ms):
-        season, _idx, kind, _value = rec
-        if kind < AWARD_KIND_MIN:
-            items.append((-season, pos, rec))
-    items.sort(key=lambda t: (t[0], t[1]))
     out = []
-    for _s, _p, (season, idx, kind, value) in items[:LIST_MAX]:
+    for season, idx, kind, value in milestone_items(hist, ms):
         out.append((year_text(hist, season), entry_name(hist, idx, 16),
                     event_text(kind, value)))
     return out
@@ -2137,12 +2142,12 @@ def unpack(state):
 def cursor_screen(s):
     """True on the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode),
     SEASON AWARDS, AWARD HISTORY (C28), SEASON HISTORY (C56), SEASON STANDINGS (C57),
-    the offseason RETIREMENTS phase and MILESTONES WATCH (C27, cat 1; the milestones
-    mode 0 has none)."""
+    the offseason RETIREMENTS phase and MILESTONES (C27/C61: cat 0 the milestones list,
+    cat 1 WATCH)."""
     if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_AWHIST,
                 SCREEN_HISTORY, SCREEN_STANDINGS):
         return True
-    if s[0] == SCREEN_MILESTONES and s[2] == 1:
+    if s[0] == SCREEN_MILESTONES:
         return True
     if s[0] == SCREEN_FIND:
         return True
@@ -2317,6 +2322,12 @@ def row_entry(s, data):
     if s[0] == SCREEN_MILESTONES and s[2] == 1:
         items = watch_items(hist)
         return items[row][3] if row < len(items) else None
+    if s[0] == SCREEN_MILESTONES:
+        items = milestone_items(hist, data['ms'])
+        idx = items[row][1] if row < len(items) else None
+        if idx is None or idx >= n_entries(hist) or idx == history.NO_AWARD:
+            return None
+        return idx
     if s[0] == SCREEN_FIND:
         q = data.get('find', '')
         items = [t for t in _find_order(hist, q)]
@@ -2349,7 +2360,7 @@ def _find_order(hist, q):
 def open_card(s, entry, data):
     """(PLAYER CARD state, 0) for entry. The list state s is kept in data (one level, C13.5) so
     ESC returns to it exactly."""
-    data['card_back'] = pack(s[0], s[1], s[2], s[3], s[4])
+    data['card_back'] = pack(*unpack(s))
     return (SCREEN_CARD, 0, entry), 0
 
 
@@ -2826,6 +2837,22 @@ def step(state, key, data):
         # 6 with a POST row, else CARD_SEASON_ROWS), HONORS HONOR_ROWS lines a page.
         if key in KEY_VIEW:
             return pack(SCREEN_CARD, 0, cat, 0 if s[3] else 1), 0
+        if key in (KEY_LEFT, KEY_RIGHT):
+            # C58: browse the entry rows of the list the card was opened from: the next
+            # (RIGHT) or previous (LEFT) row whose row_entry names a player, the view
+            # kept, the page reset, card_back following the row. No cursor back: no-op.
+            b = unpack(data['card_back']) if 'card_back' in data else None
+            if b is not None and cursor_screen(b):
+                d = -1 if key == KEY_LEFT else 1
+                r = b[3] + d
+                n = total_rows(b, data)
+                while 0 <= r < n:
+                    e = row_entry(cursor_state(b, r), data)
+                    if e is not None:
+                        data['card_back'] = cursor_state(b, r)
+                        return pack(SCREEN_CARD, 0, e, s[3]), 0
+                    r += d
+            return state, 0
         if s[3] == 1:
             n = len(honors_rows(data['hist'], data['ms'], cat))
             if key == KEY_PGDN and (page + 1) * HONOR_ROWS < n:
@@ -3186,8 +3213,8 @@ FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
            SCREEN_HISTORY: 'ENTER STANDINGS   PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'TAB POSITION   PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD',
-           SCREEN_CARD: 'PGUP PGDN SEASONS  H HONORS  ESC BACK',
-           SCREEN_MILESTONES: 'LEFT RIGHT WATCH   PGUP PGDN   ESC MENU',
+           SCREEN_CARD: 'LEFT RIGHT  PGUP PGDN  H HONORS  ESC',
+           SCREEN_MILESTONES: 'ENTER CARD  LEFT RIGHT WATCH  PGUP PGDN  ESC',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU',
            SCREEN_SETTINGS: 'UP DOWN MOVE   ENTER CHANGE   ESC MENU',
            SCREEN_ABOUT: 'PGUP PGDN   ESC MENU',
@@ -3217,7 +3244,7 @@ def footer_text(state, data=None):
     if screen == SCREEN_MILESTONES and cat == 1:
         return 'ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC'
     if screen == SCREEN_CARD and s[3] == 1:
-        return 'PGUP PGDN  H SEASONS  ESC BACK'
+        return 'LEFT RIGHT  PGUP PGDN  H SEASONS  ESC'
     if screen == SCREEN_LEADERS and cat >> 5 == MODE_BYYEAR:
         return 'LEFT RIGHT STAT  - + YEAR  TAB MODE'
     if screen == SCREEN_MENU and cat >> 4:

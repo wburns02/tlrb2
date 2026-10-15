@@ -4830,14 +4830,14 @@ static int leader_ncats(int mode)
 
 /* the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode), SEASON AWARDS,
  * AWARD HISTORY (C28), SEASON HISTORY (C56), the offseason RETIREMENTS phase and
- * MILESTONES WATCH (C27, cat 1; milestones mode 0 has none) */
+ * MILESTONES (C27/C61: cat 0 the milestones list, cat 1 WATCH) */
 static int cursor_screen(State st)
 {
     if (st.screen == SCREEN_HOF || st.screen == SCREEN_LEADERS
         || st.screen == SCREEN_AWARDS || st.screen == SCREEN_AWHIST
         || st.screen == SCREEN_HISTORY || st.screen == SCREEN_STANDINGS)
         return 1;
-    if (st.screen == SCREEN_MILESTONES && st.cat == 1)
+    if (st.screen == SCREEN_MILESTONES)
         return 1;
     if (st.screen == SCREEN_FIND)
         return 1;
@@ -4916,6 +4916,16 @@ static int32_t row_entry(State st)
     if (st.screen == SCREEN_MILESTONES && st.cat == 1) {
         watch_scan();
         return row < g_nwatch ? (int32_t)g_watch[row].entry : -1;
+    }
+    if (st.screen == SCREEN_MILESTONES) {
+        int32_t idx;
+        ms_scan(&g_msl);
+        if (row >= (int32_t)g_msl.n)
+            return -1;
+        idx = (int32_t)g_ms[g_msl.idx[row]].idx;
+        if (idx == NO_AWARD || (uint32_t)idx >= n_entries())
+            return -1;
+        return idx;
     }
     if (st.screen == SCREEN_OFFSEASON) {
         uint32_t nret = 0, nhof = 0;
@@ -5151,12 +5161,35 @@ static State step(State in, int32_t key)
     }
     /* PLAYER CARD (C40): H or h toggles the view (row 0 SEASONS 7 rows a page, C13.5 and
      * C26; row 1 HONORS HONOR_ROWS rows a page), page reset; ESC returns card_back from
-     * both views. PGUP/PGDN page the view (the season table card_rows lines a page). */
+     * both views. PGUP/PGDN page the view (the season table card_rows lines a page).
+     * C58: LEFT and RIGHT browse the entry rows of the list the card was opened from. */
     if (s.screen == SCREEN_CARD) {
         int per = post_totals(s.cat) > 0 ? 6 : CARD_SEASON_ROWS;
         if (key == 'H' || key == 'h') {
             s.row = s.row ? 0 : 1;
             s.page = 0;
+            return s;
+        }
+        if (key == KEY_LEFT || key == KEY_RIGHT) {
+            /* C58: the next (RIGHT) or previous (LEFT) row of g_card_back whose row_entry
+             * names a player: the card's entry and the view, page reset; the back state
+             * follows the row. No cursor back (never opened, or a non-cursor screen):
+             * the state is unchanged. */
+            int dir = (key == KEY_RIGHT) ? 1 : -1;
+            if (cursor_screen(g_card_back)) {
+                int32_t r = g_card_back.row + dir;
+                int n = total_rows(g_card_back);
+                while (r >= 0 && r < n) {
+                    int32_t e = row_entry(cursor_state(g_card_back, r));
+                    if (e >= 0) {
+                        g_card_back = cursor_state(g_card_back, r);
+                        s.page = 0;
+                        s.cat = e;
+                        return s;
+                    }
+                    r += dir;
+                }
+            }
             return s;
         }
         if (s.row) {
@@ -6198,7 +6231,7 @@ static const char *footer_of(State st)
         "ENTER STANDINGS   PGUP PGDN   ESC MENU",
         "TAB POSITION   PGUP PGDN   ESC MENU",
         "LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD",
-        "LEFT RIGHT WATCH   PGUP PGDN   ESC MENU",
+        "ENTER CARD  LEFT RIGHT WATCH  PGUP PGDN  ESC",
         "ENTER MENU   ESC MENU" };
     if (st.screen == SCREEN_FIND)
         return g_find_q[0] ? "TYPE NAME  BKSP  ENTER CARD  ESC CLEAR"
@@ -6208,8 +6241,8 @@ static const char *footer_of(State st)
     if (st.screen == SCREEN_MILESTONES && st.cat == 1)
         return "ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC";
     if (st.screen == SCREEN_CARD)
-        return st.row ? "PGUP PGDN  H SEASONS  ESC BACK"
-                      : "PGUP PGDN SEASONS  H HONORS  ESC BACK";
+        return st.row ? "LEFT RIGHT  PGUP PGDN  H SEASONS  ESC"
+                      : "LEFT RIGHT  PGUP PGDN  H HONORS  ESC";
     if (st.screen == SCREEN_MENU && (st.cat >> 4))
         return g_hdr_seasons == 0 ? "ENTER PLAY BALL" : "0-9 W SELECT   ENTER PLAY BALL";
     if (st.screen == SCREEN_SETTINGS)
