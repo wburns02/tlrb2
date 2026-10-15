@@ -53,7 +53,7 @@ def named_batters(t):
 
 
 def test_files_and_alignment(league):
-    assert sorted(os.listdir(TEMPLATE) + ['HISTORY.DAT']) == sorted(os.listdir(league))
+    assert sorted(os.listdir(TEMPLATE) + ['HISTORY.DAT', 'REAL.DAT']) == sorted(os.listdir(league))
     for stem, _ in BUILT:
         with open(os.path.join(TEMPLATE, stem.upper() + '.V20'), 'rb') as f:
             s = f.read()
@@ -734,7 +734,8 @@ def test_1993_files_and_teamids(league93):
         assert (stem.upper() + '.V20') in names, stem
     assert names.count('ALLSTAR1.V20') == 1 and names.count('ALLSTAR2.V20') == 1
     assert names.count('CLASSIC.MAJ') == 1
-    assert len(names) == len(os.listdir(TEMPLATE)) + 3          # 28 V20 + ALLSTAR1/2 + MAJ + HISTORY.DAT
+    assert len(names) == len(os.listdir(TEMPLATE)) + 4          # 28 V20 + ALLSTAR1/2 + MAJ + HISTORY.DAT + REAL.DAT (C74)
+    assert names.count('REAL.DAT') == 1
     assert len(build_season.team_list(1993)) == 28
     import m4.teamids as teamids
     teams = teamids.maj_teams(open(os.path.join(str(league93), 'CLASSIC.MAJ'), 'rb').read())
@@ -1029,3 +1030,76 @@ def test_1998_nl_allstar_entry_restored(league30):
             a = s + o + n * 15
             assert d[a:a + n] == t[a:a + n], (L, o)
     assert d[teamids.S[1] + teamids.O_STEM + 8 * 15] == 0
+
+
+# ---------------------------------------------------------------- C74 REAL.DAT
+@pytest.fixture(scope='module')
+def real93(tmp_path_factory):
+    """a 1993 build and the `placed` list build_league returned for it"""
+    out = tmp_path_factory.mktemp('league') / 'real1993'
+    orig, box = build_season.build_league, []
+
+    def spy(*a, **k):
+        box.append(orig(*a, **k))
+        return box[-1]
+    build_season.build_league = spy
+    try:
+        rc = build_season.main(['build_season.py', '1993', str(out)])
+    finally:
+        build_season.build_league = orig
+    assert rc == 0, out
+    return out, box[0]
+
+
+def check_real_dat(raw, year, placed, db):
+    """REAL.DAT bytes of a real build against the Lahman db: header, one team record per team of
+    team_list(year) with the db's W and L, one player record per placed player in order, and the
+    totals of every 40th player against the db's sums over all his stints"""
+    import struct
+    tl = build_season.team_list(year)
+    assert raw[0:4] == b'RL\x01\x00' and struct.unpack_from('<H', raw, 4)[0] == year
+    t, p = raw[6], struct.unpack_from('<H', raw, 8)[0]
+    assert raw[7] == 0 and raw[10:16] == bytes(6)
+    assert (t, p) == (len(tl), len(placed))
+    assert len(raw) == 16 + 8 * t + 80 * p
+    c = sqlite3.connect('file:%s?mode=ro' % db, uri=True)
+    want = {}
+    for stem, tid, slot in tl:
+        k = slot + (0 if stem.startswith('clasal') else 16)
+        w, l = c.execute('select W, L from teams where yearID=? and teamID=?', (year, tid)).fetchone()
+        want[k] = (w, l)
+    got = {}
+    for i in range(t):
+        k, z, w, l, z2 = struct.unpack_from('<BBHHH', raw, 16 + 8 * i)
+        assert (z, z2) == (0, 0)
+        got[k] = (w, l)
+    assert got == want
+    assert list(got) == sorted(got)
+    base = 16 + 8 * t
+    for i, (name20, birth, pid, pos1, age) in enumerate(placed):
+        r = raw[base + 80 * i:base + 80 * (i + 1)]
+        assert r[0:20] == name20 and struct.unpack_from('<H', r, 20)[0] == birth
+        assert r[22] in want and r[23] == (1 if pos1 == 0 else 0) and r[74:80] == bytes(6)
+        if i % 40:
+            continue
+        tot = struct.unpack_from('<25H', r, 24)
+        ab, h, hr = c.execute('select sum(AB), sum(H), sum(HR) from batting where playerID=?'
+                              ' and yearID=?', (pid, year)).fetchone()
+        assert (tot[1], tot[2], tot[5]) == (min(ab or 0, 0xffff), min(h or 0, 0xffff),
+                                            min(hr or 0, 0xffff)), pid
+        w, outs, er, g = c.execute('select sum(W), sum(IPouts), sum(ER), sum(G) from pitching where'
+                                   ' playerID=? and yearID=?', (pid, year)).fetchone()
+        assert (tot[13], tot[19], tot[20]) == (w or 0, outs or 0, er or 0), pid
+        if pos1 == 0:
+            assert tot[0] == (g or 0), pid
+    c.close()
+
+
+def test_1993_real_dat(real93):
+    """C74: a 1993 build writes REAL.DAT last: 28 team records (the db's W and L), one player
+    record per placed player, the header year 1993"""
+    out, placed = real93
+    raw = open(os.path.join(str(out), 'REAL.DAT'), 'rb').read()
+    assert raw[6] == 28
+    assert len(placed) > 700
+    check_real_dat(raw, 1993, placed, build_season.DB)

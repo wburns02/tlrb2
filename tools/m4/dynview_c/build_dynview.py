@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Build DYNVIEW: the host binary tools/m4/dynview_c/dynview_host with gcc
 (always rebuilt), and the DOS program tools/m4/dynview_c/DYNVIEW.EXE with
-OpenWatcom when /mnt/nvme/tools/openwatcom exists (env WATCOM, wcl -bt=dos -ml)."""
+OpenWatcom when /mnt/nvme/tools/openwatcom exists (env WATCOM, wcl -bt=dos -ml -zm: one code segment per function, the
+module outgrew one 64 KB code segment at C74)."""
 import os
 import subprocess
 
@@ -25,7 +26,7 @@ def build_dos():
     env['WATCOM'] = WATCOM
     env['PATH'] = os.path.join(WATCOM, 'binl64') + os.pathsep + env.get('PATH', '')
     env['INCLUDE'] = os.path.join(WATCOM, 'h')
-    r = subprocess.run(['wcl', '-q', '-bt=dos', '-ml', '-0', '-os', '-wx', '-we',
+    r = subprocess.run(['wcl', '-q', '-bt=dos', '-ml', '-0', '-os', '-zm', '-wx', '-we',
                         '-k32768', 'dynview.c', '-fe=DYNVIEW.EXE'],
                        cwd=HERE, env=env)
     for leftover in ('dynview.o', 'dynview.obj', 'dynview.err'):

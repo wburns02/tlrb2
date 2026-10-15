@@ -1262,6 +1262,27 @@ def test_dos_build():
     os.remove(exe2)
 
 
+# DOSBox-X's default DOS ("Largest executable program size 622,288 bytes" in MEM) is the
+# conventional memory DYNVIEW.EXE loads into; what the image, its BSS and its stack leave is
+# the far heap. The heap must hold the MAJ realign buffer (MAJ_APPLY_MAX, 60000 B), the team
+# table (TEAM_SPAN, 30755 B) and both fonts at once. C74 found the DOS build at 42 KB of heap:
+# the team malloc failed and DYNASTY SETTINGS lost its teams with no error.
+DOS_FREE = 622288
+DOS_HEAP_MIN = 94000
+
+
+def test_dos_heap_headroom():
+    if not os.path.isdir(WATCOM):
+        pytest.skip('OpenWatcom missing')
+    assert os.path.exists(EXE), 'DYNVIEW.EXE not built'
+    h = open(EXE, 'rb').read(14)
+    sig, cblp, cp, _crlc, cparhdr, minalloc = struct.unpack('<2sHHHHH', h[:12])
+    assert sig == b'MZ'
+    image = cp * 512 - ((512 - cblp) if cblp else 0) - cparhdr * 16
+    heap = DOS_FREE - 256 - image - minalloc * 16      # 256: the PSP
+    assert heap >= DOS_HEAP_MIN, f'DOS heap {heap} B < {DOS_HEAP_MIN} B: move far data into a shared pool'
+
+
 def run_dos(cdir, bat_lines):
     """Write cdir/RUN.BAT (CRLF), run it under dosbox-x, return int(RC.TXT)."""
     shutil.copy2(EXE, os.path.join(cdir, 'DYNVIEW.EXE'))
@@ -2448,3 +2469,202 @@ def test_dos_c30_high_er_parity(tmp_path):
                  if dos_raw[k] != py[k])
         pytest.fail(f'dos c30: first diff at pixel ({i % 320}, {i // 320}): '
                     f'python {py[i]} c {dos_raw[i]}')
+
+
+# ---------------- C74: REPLAY parity (synthetic fonts, nothing from /mnt/nvme) ----------------
+from m4.test_dynview import (replay_league, replay_collision_league, replay_big_league,  # noqa: E402
+                             rp_real, rp_real_players, rp_write_league, rp_line, rp_name,
+                             rp_lines, RP_REAL_TEAMS, RP_YEAR, RP_ENTRIES, RP_SIM_WL, WL_CLASSIC,
+                             write_standings)
+
+RP_R = ord('R')
+RP_UP, RP_DOWN = dynview.KEY_UP, dynview.KEY_DOWN
+RP_LEFT, RP_RIGHT = dynview.KEY_LEFT, dynview.KEY_RIGHT
+RP_PGUP, RP_PGDN = dynview.KEY_PGUP, dynview.KEY_PGDN
+RP_HOME, RP_END = dynview.KEY_HOME, dynview.KEY_END
+TOT_AB, TOT_H, TOT_HR, TOT_W, TOT_OUTS, TOT_ER = 1, 2, 5, 13, 19, 20
+
+
+def rp_fonts(tmp_path):
+    """MAIN.FNT and BOLD.FNT of 95 distinct glyphs each: the stock synthetic fonts repeat two
+    patterns, which would let a wrong digit through a pixel comparison"""
+    d = tmp_path / 'rpfonts'
+    d.mkdir(exist_ok=True)
+
+    def fnt(rows, bits, adv):
+        out, seen = bytearray(struct.pack('<H', 95)), set()
+        for k in range(95):
+            pat = bytes((((k + 1) * (r + 3) * 0x2f) + k * 7 + r * 13) & 0xf8 for r in range(rows))
+            assert pat not in seen
+            seen.add(pat)
+            out += bytes([rows, bits, adv]) + pat
+        return bytes(out)
+    (d / 'MAIN.FNT').write_bytes(fnt(7, 5, 7))
+    (d / 'BOLD.FNT').write_bytes(fnt(8, 6, 8))
+    return str(d)
+
+
+def rp_check(ldir, tmp_path, tag, keys, **kw):
+    """the host frame of the keys, equal to Python's (check_parity), with the distinct-glyph fonts"""
+    return check_parity(ldir, tmp_path, tag, keys=keys, font_dir=rp_fonts(tmp_path), **kw)
+
+
+def test_replay_parity_hub_and_tabs(tmp_path):
+    """the hub with its 13th row, R and r, the three tabs, LEFT and RIGHT wrapping both ways"""
+    ldir = replay_league(tmp_path)
+    hub = rp_check(ldir, tmp_path, 'rp_hub', [])
+    st = rp_check(ldir, tmp_path, 'rp_st', [RP_R])
+    bat = rp_check(ldir, tmp_path, 'rp_bat', [RP_R, RP_RIGHT])
+    pit = rp_check(ldir, tmp_path, 'rp_pit', [RP_R, RP_RIGHT, RP_RIGHT])
+    assert len({hub, st, bat, pit}) == 4
+    assert rp_check(ldir, tmp_path, 'rp_lower', [ord('r')]) == st
+    assert rp_check(ldir, tmp_path, 'rp_wrap_l', [RP_R, RP_LEFT]) == pit
+    assert rp_check(ldir, tmp_path, 'rp_wrap_r', [RP_R, RP_RIGHT, RP_RIGHT, RP_RIGHT]) == st
+    assert rp_check(ldir, tmp_path, 'rp_back_l', [RP_R, RP_RIGHT, RP_LEFT]) == st
+    # ESC returns to the hub
+    assert rp_check(ldir, tmp_path, 'rp_esc', [RP_R, RP_RIGHT, dynview.KEY_ESC]) == hub
+
+
+def test_replay_parity_hub_cursor_and_clicks(tmp_path):
+    """the cursor reaches the 13th hub row (drawn on it), ENTER opens REPLAY; clicks on that row, on
+    the title band, on a list row and on the footer"""
+    ldir = replay_league(tmp_path)
+    st = rp_check(ldir, tmp_path, 'rp_c_st', [RP_R])
+    bat = rp_check(ldir, tmp_path, 'rp_c_bat', [RP_R, RP_RIGHT])
+    pit = rp_check(ldir, tmp_path, 'rp_c_pit', [RP_R, RP_LEFT])
+    row12 = rp_check(ldir, tmp_path, 'rp_c_row12', [RP_DOWN] * 12)
+    assert row12 != rp_check(ldir, tmp_path, 'rp_c_row11', [RP_DOWN] * 11)
+    assert rp_check(ldir, tmp_path, 'rp_c_clamp', [RP_DOWN] * 15) == row12
+    assert rp_check(ldir, tmp_path, 'rp_c_end', [RP_END]) == row12
+    assert rp_check(ldir, tmp_path, 'rp_c_enter', [RP_DOWN] * 12 + [dynview.KEY_ENTER]) == st
+    assert rp_check(ldir, tmp_path, 'rp_c_click12', [('L', 100, 35 + 12 * 11 + 3)]) == st
+    rp_check(ldir, tmp_path, 'rp_c_click_gap', [('L', 100, 35 + 12 * 11 + 10)])      # the grid line
+    rp_check(ldir, tmp_path, 'rp_c_click_13', [('L', 100, 35 + 13 * 11 + 3)])        # no 14th row
+    assert rp_check(ldir, tmp_path, 'rp_c_title_r', [RP_R, ('L', 250, 14)]) == bat
+    assert rp_check(ldir, tmp_path, 'rp_c_title_l', [RP_R, ('L', 20, 14)]) == pit
+    rp_check(ldir, tmp_path, 'rp_c_row', [RP_R, RP_RIGHT, ('L', 100, 35 + 3 * 11 + 2)])
+    rp_check(ldir, tmp_path, 'rp_c_row_past', [RP_R, RP_RIGHT, ('L', 100, 35 + 8 * 11 + 2)])
+    rp_check(ldir, tmp_path, 'rp_c_foot', [RP_R, RP_RIGHT, ('L', 250, 190)])
+    # the /TITLE menu of a league with seasons takes R too
+    rp_check(ldir, tmp_path, 'rp_c_title_menu', [RP_R], title=True)
+
+
+def test_replay_parity_paging(tmp_path):
+    """35 BATTERS rows on 3 pages: every cursor key, the cursor row drawn; sequences that end on one
+    state give one frame"""
+    ldir = replay_league(tmp_path, many=30)
+    base = [RP_R, RP_RIGHT]
+    seqs = {'top': [], 'down3': [RP_DOWN] * 3, 'pg1': [RP_PGDN], 'pg2': [RP_PGDN, RP_PGDN],
+            'pg3': [RP_PGDN] * 3, 'end': [RP_END], 'end_up': [RP_END, RP_UP],
+            'end_pgup': [RP_END, RP_PGUP], 'end_home': [RP_END, RP_HOME], 'pg_up': [RP_PGDN, RP_UP],
+            'pg_pgup': [RP_PGDN, RP_PGUP], 'up_pgup': [RP_UP, RP_PGUP], 'pg_right': [RP_PGDN, RP_RIGHT],
+            'enter': [dynview.KEY_ENTER], 'down_enter': [RP_DOWN, dynview.KEY_ENTER]}
+    f = {tag: rp_check(ldir, tmp_path, 'rp_pg_' + tag, base + keys) for tag, keys in seqs.items()}
+    assert f['pg3'] == f['pg2'] and f['end_pgup'] == f['pg1'] and f['end_home'] == f['top']
+    assert f['pg_pgup'] == f['top'] and f['up_pgup'] == f['top'] and f['enter'] == f['top']
+    assert f['down_enter'] != f['top'] and f['pg_right'] != f['pg1']
+    assert len(set(f.values())) == 9
+
+
+def test_replay_parity_messages(tmp_path):
+    """every message row: a missing, short and bad REAL.DAT, a year no season has, no recorded season, no
+    player to compare, no SEASLINE.DAT, no HISTORY.DAT"""
+    good = rp_real(RP_YEAR, RP_REAL_TEAMS, rp_real_players())
+    cases = {'missing': False, 'empty': b'', 'header_short': good[:15], 'body_short': good[:-1],
+             'bad_magic': b'XL' + good[2:], 'bad_magic2': b'RX' + good[2:], 'bad_version': good[:2] + b'\x02' + good[3:]}
+    frames = set()
+    for i, (tag, raw) in enumerate(cases.items()):
+        ldir = replay_league(tmp_path, real=raw, name='rpm%d' % i)
+        for tab in (0, 1, 2) if i == 0 else (0,):
+            frames.add(rp_check(ldir, tmp_path, 'rp_m_%s_%d' % (tag, tab), [RP_R] + [RP_RIGHT] * tab))
+    assert len(frames) == 1                       # the same message under the same title REPLAY
+    assert frames != {rp_check(replay_league(tmp_path, name='rpgood'), tmp_path, 'rp_m_good', [RP_R])}
+    for i, (year, seasons) in enumerate(((1990, 3), (1996, 3), (1994, 2), (RP_YEAR, 0), (RP_YEAR, 1))):
+        ldir = replay_league(tmp_path, real=rp_real(year, RP_REAL_TEAMS, rp_real_players()),
+                             seasons=seasons, name='rpn%d' % i)
+        for tab in (0, 2):
+            rp_check(ldir, tmp_path, 'rp_n%d_%d' % (i, tab), [RP_R] + [RP_RIGHT] * tab)
+    raw = rp_real(RP_YEAR, RP_REAL_TEAMS, [(rp_name('STRANGER', 'S'), 999, 0, 0, {TOT_AB: 400})])
+    ldir = replay_league(tmp_path, real=raw, name='rpnp')
+    for tab in (0, 1, 2):
+        rp_check(ldir, tmp_path, 'rp_np%d' % tab, [RP_R] + [RP_RIGHT] * tab)
+    ldir = replay_league(tmp_path, name='rpnl')
+    os.remove(str(ldir / 'SEASLINE.DAT'))
+    for tab in (0, 1, 2):
+        rp_check(ldir, tmp_path, 'rp_nl%d' % tab, [RP_R] + [RP_RIGHT] * tab)
+    os.remove(str(ldir / 'HISTORY.DAT'))
+    for tab in (0, 1):
+        rp_check(ldir, tmp_path, 'rp_nh%d' % tab, [RP_R] + [RP_RIGHT] * tab)
+    rp_check(ldir, tmp_path, 'rp_nh_title', [RP_R], title=True)
+
+
+def test_replay_parity_colliding_identities(tmp_path):
+    """two identities with equal hashes, and one entry named by two records"""
+    for both in (True, False):
+        ldir = replay_collision_league(tmp_path, both=both, name='coll%d' % both)
+        rp_check(ldir, tmp_path, 'rp_coll%d' % both, [RP_R, RP_RIGHT])
+        rp_check(ldir, tmp_path, 'rp_coll%d_p' % both, [RP_R, RP_LEFT])
+
+
+def test_replay_parity_more_than_list_max(tmp_path):
+    """1300 qualifying batters are joined 1200 at a time: the same 1200 rows, first page, last page"""
+    ldir = replay_big_league(tmp_path)
+    seen = set()
+    for n, keys in enumerate([[], [RP_END], [RP_END, RP_UP], [RP_END, RP_PGUP], [RP_PGDN] * 3,
+                              [RP_PGDN] * 100]):
+        seen.add(rp_check(ldir, tmp_path, 'rp_big%d' % n, [RP_R, RP_RIGHT] + keys))
+    assert len(seen) == 6
+    rp_check(ldir, tmp_path, 'rp_big_st', [RP_R])
+    rp_check(ldir, tmp_path, 'rp_big_pit', [RP_R, RP_LEFT])
+
+
+def test_replay_parity_standings_blank_row_and_pages(tmp_path):
+    """the CLASSIC season: 31 rows with the blank before NL EAST, three pages, the cursor on rows"""
+    ldir = replay_league(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    write_standings(d, 2, WL_CLASSIC)
+    p.write_bytes(bytes(d))
+    for n, keys in enumerate([[], [RP_PGDN], [RP_PGDN, RP_PGDN], [RP_END], [RP_DOWN] * 11,
+                              [RP_PGDN, RP_END, RP_HOME]]):
+        rp_check(ldir, tmp_path, 'rp_cl%d' % n, [RP_R] + keys)
+
+
+def test_replay_parity_big_numbers(tmp_path):
+    """u16 extremes in REAL.DAT and the lines: W-L 65535, AB 65535, a negative diff, sums of several lines"""
+    teams = [(0, 65535, 65535), (1, 0, 0), (8, 95, 67), (16, 255, 255), (24, 300, 5)]
+    players = [(rp_name('AARON', 'H'), 940, 0, 0, {TOT_AB: 65535, TOT_H: 65535, TOT_HR: 65535}),
+               (rp_name('BONDS', 'B'), 960, 1, 0, {TOT_AB: 100, TOT_H: 100, TOT_HR: 0}),
+               (rp_name('CLEMENS', 'R'), 962, 1, 1, {TOT_OUTS: 65535, TOT_ER: 65535, TOT_W: 65535}),
+               (rp_name('KOUFAX', 'S'), 968, 2, 1, {TOT_OUTS: 150, TOT_ER: 0, TOT_W: 0})]
+    lines = [rp_line(0, 2, {TOT_AB: 60000, TOT_H: 60000, TOT_HR: 60000}),
+             rp_line(0, 2, {TOT_AB: 60000, TOT_H: 1, TOT_HR: 60000}),
+             rp_line(1, 2, {TOT_AB: 5, TOT_H: 9}),
+             rp_line(2, 2, {TOT_OUTS: 60000, TOT_ER: 60000, TOT_W: 60000}),
+             rp_line(2, 2, {TOT_OUTS: 1, TOT_ER: 0, TOT_W: 60000}),
+             rp_line(10, 2, {TOT_OUTS: 3, TOT_ER: 9})]
+    ldir = rp_write_league(tmp_path / 'rpbig', list(RP_ENTRIES), lines,
+                           rp_real(RP_YEAR, teams, players), wl=RP_SIM_WL)
+    for tab in (0, 1, 2):
+        rp_check(ldir, tmp_path, 'rp_bn%d' % tab, [RP_R] + [RP_RIGHT] * tab)
+
+
+def test_replay_parity_first_history_entry_wins(tmp_path):
+    """two HISTORY entries of one identity: the first is the one joined, in the C port's hash scan too"""
+    from m4.test_dynview import replay_duplicate_history_league
+    f1 = rp_check(replay_duplicate_history_league(tmp_path, 1, name='dup1'), tmp_path, 'rp_dup1',
+                  [RP_R, RP_RIGHT])
+    f0 = rp_check(replay_duplicate_history_league(tmp_path, 0, name='dup0'), tmp_path, 'rp_dup0',
+                  [RP_R, RP_RIGHT])
+    assert f0 != f1
+
+
+def test_replay_parity_team_record_details(tmp_path):
+    """the first of two team records with one id counts; ids past 31 are ignored; a team id the MAJ does not
+    know shows ?; flags bits other than bit0 do not matter"""
+    raw = rp_real(RP_YEAR, [(0, 91, 71), (0, 1, 1), (200, 5, 5), (1, 80, 82), (8, 92, 70), (24, 72, 90)],
+                  [(rp_name('BONDS', 'B'), 960, 77, 2, {TOT_AB: 600, TOT_H: 200, TOT_HR: 45}),
+                   (rp_name('CLEMENS', 'R'), 962, 1, 3, {TOT_OUTS: 600, TOT_ER: 70, TOT_W: 20})])
+    ldir = replay_league(tmp_path, real=raw, name='rptd')
+    seen = {rp_check(ldir, tmp_path, 'rp_td%d' % tab, [RP_R] + [RP_RIGHT] * tab) for tab in (0, 1, 2)}
+    assert len(seen) == 3

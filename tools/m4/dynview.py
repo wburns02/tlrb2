@@ -85,6 +85,10 @@ FIND_MAX = 12
 FIND_LIST = 300
 
 SCREEN_TEAMHIST = 17
+# REPLAY (C74): R on the hub opens the sim season next to the real one (REAL.DAT); cat is the
+# tab, 0 STANDINGS, 1 BATTERS, 2 PITCHERS
+SCREEN_REPLAY = 19
+REPLAY_TABS = ['STANDINGS', 'BATTERS', 'PITCHERS']
 # LEADERS modes (C13.3, C39): cat = mode * 32 + category index
 MODE_CAREER, MODE_SEASON, MODE_BYYEAR, MODE_POST = 0, 1, 2, 3
 MODE_SHIFT = 32
@@ -103,7 +107,7 @@ SET_START = 2
 # MILESTONES (C27): LEFT/RIGHT toggle the mode (cat 0 milestones, cat 1 WATCH)
 LEFT_RIGHT_SCREENS = (SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_STANDINGS, SCREEN_SERIES,
                       SCREEN_BOX, SCREEN_PLAYOFFS, SCREEN_MILESTONES, SCREEN_AWHIST,
-                      SCREEN_TEAMHIST)
+                      SCREEN_TEAMHIST, SCREEN_REPLAY)
 N_CATS = 18
 
 # MILESTON.DAT kinds from this one up are award and leader records (C7), not milestones
@@ -112,12 +116,12 @@ AWARD_KIND_MIN = 64
 AWARD_MAX = 64
 
 # the hub (SCREEN_MENU) rows: key 1..9 opens screen key - 48, key 0 SEASON STANDINGS,
-# key W (87 or 119) WORLD SERIES, key P (80 or 112) PLAYOFFS; row r's ENTER sends the
-# same key (C67, step's ENTER rule)
+# key W (87 or 119) WORLD SERIES, key P (80 or 112) PLAYOFFS, key R (82 or 114) REPLAY (C74);
+# row r's ENTER sends the same key (C67, step's ENTER rule)
 MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  LEADERS',
              '4  MILESTONES', '5  LAST SEASON REVIEW', '6  OFFSEASON',
              '7  DYNASTY SETTINGS', '8  ABOUT THE MODS', '9  SEASON AWARDS',
-             '0  SEASON STANDINGS', 'W  WORLD SERIES', 'P  PLAYOFFS']
+             '0  SEASON STANDINGS', 'W  WORLD SERIES', 'P  PLAYOFFS', 'R  REPLAY']
 
 # HISTORY.DAT header fields used by DYNASTY SETTINGS: byte 10 era, bytes 12..15 mask
 HDR_SIZE = 32
@@ -1679,6 +1683,163 @@ def standings_body(state, data):
     return COLS_STANDINGS, rows
 
 
+# ---------------------------------------------------------------- replay
+# REPLAY (C74): REAL.DAT, written next to HISTORY.DAT by tools/lahman/build_season.py, holds what
+# really happened in the league's year: a 16 B header ('RL', version 1, u16 year at 4, u8 team
+# record count T at 6, u16 player record count P at 8), T 8 B team records (u8 stable id, u16 W at
+# 2, u16 L at 4) and P 80 B player records (20 B name, u16 birth at 20, u8 team id at 22, u8
+# flags at 23 with bit0 pitcher, 25 u16 season totals at 24 in history.TOTALS order). The screen
+# sets the sim season next to it on three tabs, REPLAY_TABS
+REAL_FILE, REAL_HDR, REAL_TEAM, REAL_PLAYER, REAL_VERSION = 'REAL.DAT', 16, 8, 80, 1
+# a batter needs this many real AB, a pitcher this many real OUTS (50 IP), to be compared
+REPLAY_BAT_AB, REPLAY_PIT_OUTS = 100, 150
+NO_REAL_TEXT = 'NO REAL SEASON ON FILE'
+NOT_PLAYED_TEXT = 'SEASON NOT PLAYED YET'
+NO_COMPARE_TEXT = 'NO PLAYERS TO COMPARE'
+
+
+def load_real(league_dir):
+    """REAL.DAT of league_dir as {'year', 'teams': {stable id: (W, L)}, 'players': [(name20, birth,
+    team id, pitcher flag, 25 totals)]} (file order; of two team records with one id the first
+    counts), or None for a missing or unreadable file, a header under 16 B, a magic other than
+    'RL', a version other than 1, or a file shorter than its header says. Longer files are fine."""
+    if not league_dir:
+        return None
+    try:
+        with open(os.path.join(league_dir, REAL_FILE), 'rb') as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    if len(raw) < REAL_HDR or raw[0:2] != b'RL' or raw[2] != REAL_VERSION:
+        return None
+    t = raw[6]
+    p = int.from_bytes(raw[8:10], 'little')
+    if len(raw) < REAL_HDR + REAL_TEAM * t + REAL_PLAYER * p:
+        return None
+    teams = {}
+    for k in range(t):
+        o = REAL_HDR + REAL_TEAM * k
+        teams.setdefault(raw[o], (int.from_bytes(raw[o + 2:o + 4], 'little'),
+                                  int.from_bytes(raw[o + 4:o + 6], 'little')))
+    players = []
+    base = REAL_HDR + REAL_TEAM * t
+    for k in range(p):
+        o = base + REAL_PLAYER * k
+        players.append((raw[o:o + 20], int.from_bytes(raw[o + 20:o + 22], 'little'), raw[o + 22],
+                        raw[o + 23] & 1, list(struct.unpack_from('<25H', raw, o + 24))))
+    return {'year': int.from_bytes(raw[4:6], 'little'), 'teams': teams, 'players': players}
+
+
+def replay_season(hist, year):
+    """The lowest recorded season (1..seasons_recorded) whose calendar year (year_of) is year, else
+    None."""
+    if hist is None:
+        return None
+    n = year - start_year(hist) + 1
+    return n if 1 <= n <= hist.seasons_recorded else None
+
+
+def replay_standings(data, hist, season, real):
+    """(cols, rows) of the STANDINGS tab: standings_walk's rows of the season (the same team order,
+    division blocks, header rows and managed star), as TEAM, SIM (W-L), REAL (W-L of REAL.DAT, '-'
+    for a team with no team record there) and DIFF (sim W minus real W as '+3', '-2', '0'; blank
+    without a real record). A header or blank row keeps only its first cell; a lone message row of
+    the walk stays a message."""
+    rows, team_ids = standings_walk(hist, data['teams'], season, data.get('team_stems'), data['mask'])
+    if len(rows) == 1 and len(rows[0]) == 1:
+        return COLS_SINGLE, rows
+    wl = hist.read_season_entry(season)['w_l']
+    out = []
+    for row, t in zip(rows, team_ids):
+        if t is None:
+            out.append((row[0], '', '', ''))
+            continue
+        w, l = wl[t]
+        rw = real['teams'].get(t)
+        if rw is None:
+            out.append((row[0], '%d-%d' % (w, l), '-', ''))
+        else:
+            d = w - rw[0]
+            out.append((row[0], '%d-%d' % (w, l), '%d-%d' % rw, '0' if d == 0 else '%+d' % d))
+    return COLS_REPLAY_STANDINGS, out
+
+
+def replay_identities(hist):
+    """{(name20, birth): the first entry index} over every entry of the file: what
+    history.find_entry finds, for all of them in one pass."""
+    out = {}
+    for i in range(len(hist._entries)):
+        o = hist.entry_offset(i)
+        out.setdefault((bytes(hist.d[o:o + 20]), hist.d[o + 20] | hist.d[o + 21] << 8), i)
+    return out
+
+
+def replay_players(data, hist, season, real, pitchers):
+    """(cols, rows) of the BATTERS (pitchers False) or PITCHERS tab. One row per REAL.DAT player of
+    that kind (flags bit0 clear or set) with real AB >= REPLAY_BAT_AB (OUTS >= REPLAY_PIT_OUTS)
+    whose (name, birth) is a HISTORY.DAT entry e (history.find_entry) that has a SEASLINE line of
+    the season; the lines of the season of e are summed. Cells: PLAYER (entry_name, as LEADERS),
+    TM (the abbreviation of the REAL.DAT team id), then sim and real AVG and HR (ERA and W):
+    AVG = fmt_avg(H * 1000 // AB), ERA = fmt_era100(ER * 2700 // OUTS), '-' when AB (OUTS) is 0.
+    Order: real AB (OUTS) descending, then entry index ascending, then REAL.DAT order; at most
+    LIST_MAX rows; none gives the single NO_COMPARE_TEXT row."""
+    sums = {}
+    for ln in data.get('lines', []):
+        if ln['season'] == season:
+            acc = sums.setdefault(ln['entry'], [0] * 25)
+            for k, v in enumerate(ln['totals']):
+                acc[k] += v
+    ident = replay_identities(hist)
+    need, key_at = (REPLAY_PIT_OUTS, 19) if pitchers else (REPLAY_BAT_AB, 1)
+    items = []
+    for name20, birth, team, pit, tot in real['players']:
+        if bool(pit) != pitchers or tot[key_at] < need:
+            continue
+        e = ident.get((name20, birth))
+        if e is not None and e in sums:
+            items.append((-tot[key_at], e, team, tot))
+    items.sort(key=lambda it: (it[0], it[1]))
+    abbrs = data.get('abbrs', {})
+    out = []
+    for _neg, e, team, tot in items[:LIST_MAX]:
+        sim = sums[e]
+        if pitchers:
+            stat = [replay_era(sim), replay_era(tot), '%d' % sim[13], '%d' % tot[13]]
+        else:
+            stat = [replay_avg(sim), replay_avg(tot), '%d' % sim[5], '%d' % tot[5]]
+        out.append((entry_name(hist, e, 16), abbrs.get(team, '?')) + tuple(stat))
+    if not out:
+        return COLS_SINGLE, [(NO_COMPARE_TEXT,)]
+    return (COLS_REPLAY_PIT if pitchers else COLS_REPLAY_BAT), out
+
+
+def replay_avg(t):
+    """AVG cell of a totals list: fmt_avg(H * 1000 // AB), '-' with no AB."""
+    return fmt_avg(t[2] * 1000 // t[1]) if t[1] else '-'
+
+
+def replay_era(t):
+    """ERA cell of a totals list: fmt_era100(ER * 2700 // OUTS), '-' with no OUTS."""
+    return fmt_era100(t[20] * 2700 // t[19]) if t[19] else '-'
+
+
+def replay_body(state, data):
+    """(cols, rows) of REPLAY, every row (the caller pages them), for the tab cat of state. A
+    single message row uses COLS_SINGLE: NO_REAL_TEXT when REAL.DAT is missing or malformed (load_real),
+    else NOT_PLAYED_TEXT when no recorded season has REAL.DAT's year. REAL.DAT is read at each call."""
+    tab = unpack(state)[2] % len(REPLAY_TABS)
+    real = load_real(data.get('league_dir'))
+    if real is None:
+        return COLS_SINGLE, [(NO_REAL_TEXT,)]
+    hist = data['hist']
+    season = replay_season(hist, real['year'])
+    if season is None:
+        return COLS_SINGLE, [(NOT_PLAYED_TEXT,)]
+    if tab == 0:
+        return replay_standings(data, hist, season, real)
+    return replay_players(data, hist, season, real, tab == 2)
+
+
 # ---------------------------------------------------------------- world series
 # WORLD SERIES (C7 third amendment): MILESTON.DAT kind 192 + g (g 0..6) is game g + 1, idx =
 # visitor id * 256 + home id, value = visitor runs * 256 + home runs; kind 200 + g is the
@@ -2288,11 +2449,11 @@ def cursor_screen(s):
     SEASON AWARDS, AWARD HISTORY (C28), SEASON HISTORY (C56), SEASON STANDINGS (C57),
     TEAM HISTORY (C60), the offseason RETIREMENTS phase, MILESTONES (C27/C61: cat 0 the
     milestones list, cat 1 WATCH), the BOX SCORE and PLAYOFF BOX (C62), WORLD SERIES
-    (C64) and PLAYOFFS (C65). The hub MENU keeps its own cursor (C67, step and
+    (C64), PLAYOFFS (C65) and REPLAY (C74). The hub MENU keeps its own cursor (C67, step and
     _hub_cursor)."""
     if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_AWHIST,
                 SCREEN_HISTORY, SCREEN_STANDINGS, SCREEN_BOX, SCREEN_PBOX,
-                SCREEN_TEAMHIST, SCREEN_SERIES, SCREEN_PLAYOFFS):
+                SCREEN_TEAMHIST, SCREEN_SERIES, SCREEN_PLAYOFFS, SCREEN_REPLAY):
         return True
     if s[0] == SCREEN_MILESTONES:
         return True
@@ -2783,6 +2944,8 @@ def total_rows(state, data):
         n = pbox_body(s, data)[1]
     elif screen == SCREEN_TEAMHIST:
         n = teamhist_body(s, data)[1]
+    elif screen == SCREEN_REPLAY:
+        n = replay_body(s, data)[1]
     elif screen == SCREEN_SETTINGS:
         n = settings_rows(data)
     elif screen == SCREEN_ABOUT:
@@ -2826,6 +2989,8 @@ def rows(state, data):
         n = len(find_rows(hist, q))
         return [c for _i, c in find_rows(hist, q)][page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE] \
             if n else FIND_ROWS_NONE
+    if screen == SCREEN_REPLAY:
+        return replay_body(s, data)[1][page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if hist is None or hist.seasons_recorded == 0:
         return [('NO DYNASTY HISTORY YET',)]
     if screen == SCREEN_LEADERS:
@@ -2942,6 +3107,8 @@ def step(state, key, data):
             return (SCREEN_SERIES, 0, 0), 0
         if key in (80, 112):
             return (SCREEN_PLAYOFFS, 0, 0), 0
+        if key in (82, 114):
+            return (SCREEN_REPLAY, 0, 0), 0
         if key in (70, 102):
             # C50 FIND PLAYER: the state is (18, 0, 0) packed, the query in data['find']; no
             # card is open, so any open one keeps its stored back (open_card overwrites
@@ -2961,7 +3128,7 @@ def step(state, key, data):
             last = len(MENU_ROWS) - 1
             row = {KEY_UP: max(s[3] - 1, 0), KEY_DOWN: min(s[3] + 1, last),
                    KEY_HOME: 0, KEY_PGUP: 0}.get(key, last)
-            return (state if row == s[3] else cursor_state(s, row)), 0
+            return (state if row == s[3] else pack(SCREEN_MENU, 0, cat, row)), 0
         return state, 0
     if screen == SCREEN_FIND:
         q = data.get('find', '')
@@ -3257,6 +3424,10 @@ def step(state, key, data):
             data['th_back'] = pack(screen, page, cat, s[3])
             return (SCREEN_TEAMHIST, 0, tid), 0
         return state, 0
+    if screen == SCREEN_REPLAY and key in (KEY_LEFT, KEY_RIGHT):
+        # C74: LEFT / RIGHT cycle the tab STANDINGS, BATTERS, PITCHERS (wrapping); page and row reset
+        d = -1 if key == KEY_LEFT else 1
+        return (SCREEN_REPLAY, 0, (cat + d) % len(REPLAY_TABS)), 0
     if screen == SCREEN_TEAMHIST and key in (KEY_LEFT, KEY_RIGHT):
         # LEFT / RIGHT step to the previous / next id of data['teams'] (wrapping)
         ids = [t for t, _disp in data['teams']]
@@ -3307,6 +3478,13 @@ COLS_AWARDS = [('AWARD', _cx(0), 13, 'L'), ('NAME', _cx(14), 16, 'L'),
 COLS_STANDINGS = [('TEAM', _cx(0), 17, 'L'), ('W', _cx(17), 5, 'R'),
                   ('L', _cx(22), 5, 'R'), ('PCT', _cx(27), 6, 'R'),
                   ('GB', _cx(33), 6, 'R'), (' ', _cx(39), 3, 'R')]
+# REPLAY (C74): S = the sim season, R = the real one
+COLS_REPLAY_STANDINGS = [('TEAM', _cx(0), 17, 'L'), ('SIM', _cx(17), 8, 'R'),
+                         ('REAL', _cx(25), 8, 'R'), ('DIFF', _cx(33), 6, 'R')]
+COLS_REPLAY_BAT = [('PLAYER', _cx(0), 16, 'L'), ('TM', _cx(16), 4, 'R'), ('S AVG', _cx(20), 6, 'R'),
+                   ('R AVG', _cx(26), 6, 'R'), ('S HR', _cx(32), 5, 'R'), ('R HR', _cx(37), 5, 'R')]
+COLS_REPLAY_PIT = [('PLAYER', _cx(0), 16, 'L'), ('TM', _cx(16), 4, 'R'), ('S ERA', _cx(20), 6, 'R'),
+                   ('R ERA', _cx(26), 6, 'R'), ('S W', _cx(32), 5, 'R'), ('R W', _cx(37), 5, 'R')]
 COLS_SERIES = [('TEAM', _cx(0), 17, 'L'), ('R', _cx(17), 5, 'R'), ('H', _cx(22), 5, 'R'),
                ('E', _cx(27), 5, 'R'), (' ', _cx(32), 10, 'R')]
 COLS_BOX = [(' ', _cx(0), 18, 'L')] + [(' ', _cx(18 + 4 * k), 4, 'R') for k in range(6)]
@@ -3456,7 +3634,8 @@ FOOTERS = {SCREEN_MENU: 'ENTER 0-9 W P F SELECT   ESC EXIT',
            SCREEN_BOX: 'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC',
            SCREEN_PLAYOFFS: 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
            SCREEN_PBOX: 'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC',
-           SCREEN_FIND: 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'}
+           SCREEN_FIND: 'TYPE NAME  BKSP  ENTER CARD  ESC MENU',
+           SCREEN_REPLAY: 'LEFT RIGHT TAB  S SIM  R REAL  PGUP PGDN ESC'}
 
 
 TITLE_FOOTER = 'ENTER 0-9 W SELECT   C PLAY BALL'
@@ -3537,6 +3716,10 @@ def screen_title(state, data):
         lg = 1 if cat >= 20 else 0
         return ('%s HISTORY' % award_label((64, 96)[lg] + cat - lg * 20)) if n \
             else 'AWARD HISTORY'
+    if screen == SCREEN_REPLAY:
+        real = load_real(data.get('league_dir'))
+        return 'REPLAY %d  %s' % (real['year'], REPLAY_TABS[cat % len(REPLAY_TABS)]) if real \
+            else 'REPLAY'
     n = data['hist'].seasons_recorded
     # A league with no recorded season has no season number to show (it would read SEASON 0).
     if screen == SCREEN_BOX:
@@ -3580,6 +3763,8 @@ def body_cols(state, data):
     ABOUT show their rows with no history too."""
     if state[0] == SCREEN_SETTINGS:
         return COLS_SETTINGS
+    if state[0] == SCREEN_REPLAY:
+        return replay_body(state, data)[0]
     hist = data['hist']
     if state[0] == SCREEN_ABOUT or hist is None or hist.seasons_recorded == 0:
         return COLS_SINGLE
@@ -3780,13 +3965,13 @@ def parse_keys(s):
     return out
 
 
-def _band(y):
-    """The body row of the page (0..ROWS_PER_PAGE - 1) whose band (35 + 11r .. 35 + 11r + 9)
-    holds y, else None."""
+def _band(y, n=ROWS_PER_PAGE):
+    """The body row (0..n - 1, a page's ROWS_PER_PAGE by default) whose band (35 + 11r ..
+    35 + 11r + 9) holds y, else None."""
     if y < BODY_Y0:
         return None
     r, off = divmod(y - BODY_Y0, ROW_H)
-    return r if off <= 9 and r < ROWS_PER_PAGE else None
+    return r if off <= 9 and r < n else None
 
 
 def click_to_key(state, data, x, y):
@@ -3799,7 +3984,7 @@ def click_to_key(state, data, x, y):
     cursor moves). (None, None) when the click does nothing."""
     s = unpack(state)
     screen, page = s[0], s[1]
-    r = _band(y)
+    r = _band(y, len(MENU_ROWS) if screen == SCREEN_MENU else ROWS_PER_PAGE)   # the hub is one page
     hist = data['hist']
     title_menu = (hist is None or hist.seasons_recorded == 0) and s[2] >> 4
     if screen == SCREEN_MENU and r is not None and r < len(MENU_ROWS) and not title_menu:

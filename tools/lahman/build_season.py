@@ -8,11 +8,13 @@ renames: 1997 CAL to ANAHEIM/ANA, 2005 LA ANGELS/LAA and WASHINGTON/WAS, 2012 MI
 seed_history), then rebuilds ALLSTAR1/2 from them (C9, rosters.refresh_allstars). 1994+ adds TEAMID.DAT
 (from the pre-realignment MAJ) and realigns the MAJ to 3 divisions with the Lahman alignment (C38,
 realign_lahman). MAJ and every V20 header bytes 0..110 are kept from the template (1993/1998: the
-MAJ expansion slot entries and division counts are patched, C15's UTIL NEW TEAM fields). Exit 0 ok, 2
+MAJ expansion slot entries and division counts are patched, C15's UTIL NEW TEAM fields). The last step
+writes REAL.DAT, the real standings and player lines of YEAR (C74, write_real). Exit 0 ok, 2
 on any error."""
 import os
 import shutil
 import sqlite3
+import struct
 import sys
 import unicodedata
 
@@ -507,18 +509,20 @@ def build_league(db, year, out_dir, template):
     return placed
 
 
+# (table, columns, first history.TOTALS index): batting G AB H 2B 3B HR R RBI BB SO SB CS = 0..11,
+# fielding E = 12, pitching W L SV GS CG SHO OUTS ER PH PBB PSO PHR = 13..24
+TOTAL_TABLES = (
+    ('batting', ('G', 'AB', 'H', '2B', '3B', 'HR', 'R', 'RBI', 'BB', 'SO', 'SB', 'CS'), 0),
+    ('fielding', ('E',), 12),
+    ('pitching', ('W', 'L', 'SV', 'GS', 'CG', 'SHO', 'IPouts', 'ER', 'H', 'BB', 'SO', 'HR'), 13))
+
+
 def _career_rows(c, year):
     """(pid -> year set, pid -> [25] totals sums) with yearID < year (NULL counts as 0), in
-    history.TOTALS order: batting G AB H 2B 3B HR R RBI BB SO SB CS = 0..11, fielding E = 12,
-    pitching W L SV GS CG SHO OUTS ER PH PBB PSO PHR = 13..24. The year set holds the years of
-    batting and pitching rows only."""
+    history.TOTALS order (TOTAL_TABLES). The year set holds the years of batting and pitching
+    rows only."""
     years, sums = {}, {}
-    for tab, cols, base in (
-            ('batting', ('G', 'AB', 'H', '2B', '3B', 'HR', 'R', 'RBI', 'BB', 'SO',
-                         'SB', 'CS'), 0),
-            ('fielding', ('E',), 12),
-            ('pitching', ('W', 'L', 'SV', 'GS', 'CG', 'SHO', 'IPouts', 'ER',
-                          'H', 'BB', 'SO', 'HR'), 13)):
+    for tab, cols, base in TOTAL_TABLES:
         sel = ', '.join('"%s"' % x for x in cols)
         for r in c.execute('select playerID, yearID, %s from %s where yearID<?' % (sel, tab),
                            (year,)):
@@ -634,6 +638,67 @@ def realign_lahman(db, year, out_dir, template=None):
     open(hp, 'wb').write(bytes(img))
 
 
+REAL_NAME = 'REAL.DAT'
+REAL_HDR, REAL_TEAM, REAL_PLAYER = 16, 8, 80
+
+
+def _season_totals(c, year):
+    """(pid -> [25] sums, pid -> pitching G) over every stint of yearID == year, in history.TOTALS
+    order (TOTAL_TABLES); a missing row or a NULL cell counts 0. Slot 0 (G) is the batting G."""
+    sums, pit_g = {}, {}
+    for tab, cols, base in TOTAL_TABLES:
+        sel = ', '.join('"%s"' % x for x in cols)
+        for r in c.execute('select playerID, %s from %s where yearID=?' % (sel, tab), (year,)):
+            acc = sums.setdefault(r[0], [0] * 25)
+            for j, v in enumerate(r[1:]):
+                acc[base + j] += v or 0
+    for pid, g in c.execute('select playerID, G from pitching where yearID=?', (year,)):
+        pit_g[pid] = pit_g.get(pid, 0) + (g or 0)
+    return sums, pit_g
+
+
+def write_real(db, year, out_dir, placed):
+    """C74: write OUT_DIR/REAL.DAT, what really happened in YEAR (16 B header 'RL', version 1, year,
+    team record count T, player record count P; T 8 B team records (stable id, real W, real L) in
+    id order; P 80 B player records, one per placed player in placed order: name20, birth key, the
+    stable id of the team he was placed on, flags (bit0 pitcher: pos1 0), 25 u16 real season
+    totals in history.TOTALS order summed over all his stints, capped at 0xffff; a pitcher's G is
+    his pitching G). The stable ids are the league's own (MAJ and TEAMID.DAT), so this runs after
+    realign_lahman. A team with no Lahman teams row gets no team record; a player whose team has
+    no stable id gets 0xff."""
+    c = sqlite3.connect('file:%s?mode=ro' % db, uri=True)
+    try:
+        sums, pit_g = _season_totals(c, year)
+        team_of = {pid: tid for tid, rows in select(c, year).items() for pid, _cur in rows}
+        wl = {tid: (w or 0, l or 0) for tid, w, l in
+              c.execute('select teamID, W, L from teams where yearID=?', (year,))}
+    finally:
+        c.close()
+    d = open(_maj_path(out_dir), 'rb').read()
+    ids = {st.rstrip(b'\0').decode('latin-1').lower(): k
+           for k, _L, _slot, st in teamids.teams(d, teamids.load_table(out_dir))}
+    sid = {tid: ids[stem.lower()] for stem, tid, _slot in team_list(year) if stem.lower() in ids}
+    teams = sorted((sid[tid], wl[tid]) for tid in sid if tid in wl)
+    out = bytearray(REAL_HDR + REAL_TEAM * len(teams) + REAL_PLAYER * len(placed))
+    struct.pack_into('<2sBBHBBH', out, 0, b'RL', 1, 0, year, len(teams), 0, len(placed))
+    off = REAL_HDR
+    for k, (w, l) in teams:
+        struct.pack_into('<BBHHH', out, off, k, 0, min(w, 0xffff), min(l, 0xffff), 0)
+        off += REAL_TEAM
+    for name20, birth, pid, pos1, _age in (r[:5] for r in placed):
+        pitcher = (pos1 & 15) == 0
+        tot = list(sums.get(pid, [0] * 25))
+        if pitcher:
+            tot[0] = pit_g.get(pid, 0)
+        out[off:off + 20] = bytes(name20)[:20].ljust(20, b'\0')
+        struct.pack_into('<HBB', out, off + 20, birth, sid.get(team_of.get(pid), 0xff),
+                         1 if pitcher else 0)
+        struct.pack_into('<25H', out, off + 24, *(min(v, 0xffff) for v in tot))
+        off += REAL_PLAYER
+    with open(os.path.join(out_dir, REAL_NAME), 'wb') as f:
+        f.write(bytes(out))
+
+
 def main(argv):
     usage = 'usage: build_season.py YEAR OUT_DIR [--db PATH] [--template DIR]'
     year, out, db, template = None, None, DB, TEMPLATE
@@ -696,6 +761,7 @@ def main(argv):
         rosters.refresh_allstars(out)               # else the template's classic stars play the first All-Star game
         if year >= 1994:
             realign_lahman(db, year, out, template)
+        write_real(db, year, out, placed)           # C74: last, the stable ids are final now
         if year >= 1998:
             # C71 (rig, 2026-10-15): 16 teams overflow the engine's 15 team indexes a league, and
             # GENERATED refuses an odd (15/15) split, so a 30-team league does not play in-game yet
