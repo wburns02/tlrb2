@@ -2139,3 +2139,22 @@ STANDINGS returns the TEAM HISTORY state with the row kept through the existing
 st_back rule (data['th_back'] is untouched); ESC on the returned TEAM HISTORY goes to
 th_back. FOOTERS[17] = 'ENTER SEASON  LEFT RIGHT TEAM  PGUP PGDN ESC'. teamhist_title
 counts titles and pennants from the shared walk. Reads only; writes nothing.
+
+## C64. DYNVIEW WORLD SERIES row cursor (added 2026-10-15)
+WORLD SERIES (SCREEN_SERIES = 11, state (11, page, cat, row)) is a cursor screen. The
+state is cat seasons back from the newest (season = hist.seasons_recorded - cat) and
+row walks series_rows(...) for that season. Dynview grows series_games(hist, ms,
+season), built on the same walk as series_rows: a list the length of that season's
+rows with the game number 0-based g on the header, visitor and home rows of game g and
+None on the summary row and the message row, so the two can never drift. UP and DOWN
+move the cursor and PGUP/PGDN page it (cursor_move, the page = row // 12 rule); LEFT
+and RIGHT still step the season with page and row reset. ENTER on a game row opens
+that game's BOX SCORE state (12, 0, cat * 8 + g), exactly what key '1' + g gives; the
+summary row, the message row, a row past the end and no history leave the state
+unchanged. Keys '1'..'7' are unchanged. row_entry returns None for SCREEN_SERIES (no
+player card there, like SEASON STANDINGS and TEAM HISTORY). FOOTERS[SCREEN_SERIES] =
+'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'. C port: cursor_screen gains
+SCREEN_SERIES, row_entry excludes it, the ENTER branch reads the row's game from
+g_ser_game (an 8-bit-per-row table of at most 3 * SERIES_GAMES + 1 entries, -1 on the
+summary and message rows, filled by build_series as it builds the rows), the footer
+follows Python's. Reads only; writes nothing.

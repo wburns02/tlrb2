@@ -1597,3 +1597,56 @@ def test_c60_teamhist_cursor_standings_parity(tmp_path):
     assert dynview.team_history_rows(_data['hist'], _data['box'], 3) == \
         [('NO SEASONS RECORDED',)]
     check(ldir, tmp_path, 'c60_teamhist_message', msg + [ENTER])
+
+
+# ---------------------------------------------------------------- C64 WORLD SERIES row cursor
+SERIES_LEAGUE_MS = [(3, 5 * 256 + 3, 192, 5 * 256 + 3),          # game 1: BOS at ATL, 5-3
+                    (3, 7 * 256 + 9, 200, 8 * 256 + 6),
+                    (3, 0, 193, 4 * 256 + 2),                    # game 2: BOS at ATL, 4-2
+                    (3, 9 * 256 + 7, 201, 9 * 256 + 5),
+                    (3, 1, 194, 6 * 256 + 1),                    # game 3: ATL at BOS, 6-1
+                    (3, 10 * 256 + 4, 202, 7 * 256 + 3)]
+
+
+def series_cursor_league(tmp_path, name='c64'):
+    """3-season league (start 1990, so season 3 is 1992) with 2 teams per league
+    (BOS, DET in the AL; ATL id 16 in the NL) and BOS-ATL WS games 1..3 of season 3"""
+    return league(tmp_path, seasons=3, start=1990, name=name,
+                  ms=SERIES_LEAGUE_MS,
+                  teams={0: [(0, 'BOS'), (3, 'DET')], 1: [(0, 'ATL')]})
+
+
+@needs_fonts
+def test_c64_series_row_cursor_parity(tmp_path):
+    """C64 frame parity: the new WORLD SERIES footer, the cursor on row 4 (game 2's
+    header), the BOX SCORE opened by ENTER there (what key '2' gives), ESC back to the
+    identical series frame with the cursor kept, ENTER on the summary row (the unchanged
+    frame), PGDN paging with the cursor, LEFT (the season step, the row reset)"""
+    ldir = series_cursor_league(tmp_path)
+    ws = [87]                                     # W on the hub: the newest season (3)
+    # 3 games of 3 rows plus the summary: 10 rows
+    sw, data = py_run(ldir, tmp_path, ws)
+    assert sw == (dynview.SCREEN_SERIES, 0, 0)
+    n = dynview.total_rows(sw, data)
+    assert n == 10 == len(dynview.series_rows(data['hist'], data['ms'], data['teams'], 3))
+    assert dynview.series_games(data['hist'], data['ms'], 3) == [0, 0, 0, 1, 1, 1, 2, 2, 2, None]
+    assert dynview.footer_text(sw, data) == 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
+    check(ldir, tmp_path, 'c64_series_footer', ws)
+    # DOWN x4: the cursor on row 4, game 2's header
+    check(ldir, tmp_path, 'c64_series_cursor_row4', ws + [DOWN] * 4)
+    # ENTER there opens game 2's BOX SCORE, exactly what key '2' gives
+    assert py_run(ldir, tmp_path, ws + [DOWN] * 4 + [ENTER])[0] == \
+        (dynview.SCREEN_BOX, 0, 1)
+    check(ldir, tmp_path, 'c64_series_enter_box', ws + [DOWN] * 4 + [ENTER])
+    assert py_run(ldir, tmp_path, ws + [50])[0] == (dynview.SCREEN_BOX, 0, 1)
+    # ESC back to the series (the ESC-on-BOX rule keeps its no-row state, unchanged)
+    st, _data = py_run(ldir, tmp_path, ws + [DOWN] * 4 + [ENTER, ESC])
+    assert st == (dynview.SCREEN_SERIES, 0, 0)
+    check(ldir, tmp_path, 'c64_series_esc_back', ws + [DOWN] * 4 + [ENTER, ESC])
+    # DOWN x5 more: the summary row; its ENTER is the unchanged frame
+    check(ldir, tmp_path, 'c64_series_enter_summary', ws + [DOWN] * 9 + [ENTER])
+    # PGDN: the cursor to page 1's first row (row 12 is past the end: the page stays)
+    check(ldir, tmp_path, 'c64_series_pgup_stays', ws + [PGUP])
+    # LEFT to season 2 (no games: the message row), the row reset; ENTER nothing
+    check(ldir, tmp_path, 'c64_series_left_message', ws + [DOWN] * 4 + [LEFT])
+    check(ldir, tmp_path, 'c64_series_left_enter', ws + [DOWN] * 4 + [LEFT, ENTER])

@@ -514,8 +514,11 @@ static uint8_t g_stnd_tid[STAND_MAX];
 static WatchItem FARDATA g_watch[WATCH_MAX];
 static int32_t g_nwatch;
 
-/* WORLD SERIES: the rows of the season (SERIES_MAX at most) */
+/* WORLD SERIES: the rows of the season (SERIES_MAX at most); per row the game number
+ * (C64): g on the header, visitor and home rows of game g, -1 on the summary and
+ * message rows */
 static Row FARDATA g_ser[SERIES_MAX];
+static int8_t FARDATA g_ser_game[SERIES_MAX];
 
 /* PLAYOFFS (C23c): the rows of one season's rounds (PLAYOFF_ROWS_MAX at most: six
  * series of a title, 7 games of 3 rows and the summary) */
@@ -3559,6 +3562,7 @@ static int series_message(void)
 {
     strcpy(g_ser[0].cells[0], "NO WORLD SERIES RECORDED");
     g_ser[0].ncells = 1;
+    g_ser_game[0] = -1;
     return 1;
 }
 
@@ -3596,8 +3600,11 @@ static int build_series(long season)
         }
         sprintf(tmp, "GAME %d", g + 1);
         ser_put(n++, tmp, "", "", "", "");
+        g_ser_game[n - 1] = (int8_t)g;
         ser_team(n++, v, vr, he, hidx >> 8, hval >> 8, vr > hr);
+        g_ser_game[n - 1] = (int8_t)g;
         ser_team(n++, h, hr, he, hidx & 255, hval & 255, hr > vr);
+        g_ser_game[n - 1] = (int8_t)g;
     }
     if (games == 0)
         return series_message();
@@ -3610,6 +3617,7 @@ static int build_series(long season)
         sprintf(tmp, "%s %d-%d", a >= 4 ? "WINS" : "LEADS", a, b);
         ser_put(n++, nm, "", "", "", tmp);
     }
+    g_ser_game[n - 1] = -1;
     return n;
 }
 
@@ -4844,15 +4852,15 @@ static int leader_ncats(int mode)
 
 /* the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode), SEASON AWARDS,
  * AWARD HISTORY (C28), SEASON HISTORY (C56), SEASON STANDINGS (C57), TEAM HISTORY (C60),
- * the offseason RETIREMENTS phase and MILESTONES (C27/C61: cat 0 the milestones list,
- * cat 1 WATCH) */
+ * the offseason RETIREMENTS phase, MILESTONES (C27/C61: cat 0 the milestones list,
+ * cat 1 WATCH) and WORLD SERIES (C64) */
 static int cursor_screen(State st)
 {
     if (st.screen == SCREEN_HOF || st.screen == SCREEN_LEADERS
         || st.screen == SCREEN_AWARDS || st.screen == SCREEN_AWHIST
         || st.screen == SCREEN_HISTORY || st.screen == SCREEN_STANDINGS
         || st.screen == SCREEN_BOX || st.screen == SCREEN_PBOX
-        || st.screen == SCREEN_TEAMHIST)
+        || st.screen == SCREEN_TEAMHIST || st.screen == SCREEN_SERIES)
         return 1;
     if (st.screen == SCREEN_MILESTONES)
         return 1;
@@ -4925,8 +4933,9 @@ static int32_t row_entry(State st)
     int32_t row = st.row;
     if (g_hdr_seasons == 0)
         return -1;
-    if (st.screen == SCREEN_STANDINGS || st.screen == SCREEN_TEAMHIST)
-        return -1;              /* C57, C60: no player card from these screens */
+    if (st.screen == SCREEN_STANDINGS || st.screen == SCREEN_TEAMHIST
+        || st.screen == SCREEN_SERIES)
+        return -1;              /* C57, C60: no player card; C64: the WS ENTER opens a box */
     if (st.screen == SCREEN_HOF) {
         hof_scan(&g_hofl, (int)st.cat);
         return row < (int32_t)g_hofl.n ? (int32_t)g_hofl.idx[row] : -1;
@@ -5017,17 +5026,21 @@ static State step(State in, int32_t key)
     int tid = 0;
     if (key == KEY_ESC) {
         if (s.screen == SCREEN_BOX) {
-            /* the box score goes back to its season's WORLD SERIES, not the hub */
+            /* the box score goes back to its season's WORLD SERIES, not the hub
+             * (a 3-tuple in dynview.step: the row cursor resets, C64) */
             s.screen = SCREEN_SERIES;
             s.page = 0;
             s.cat = (int16_t)(s.cat >> 3);
+            s.row = 0;
             return s;
         }
         if (s.screen == SCREEN_PBOX) {
-            /* the round box goes back to its season's PLAYOFFS, not the hub */
+            /* the round box goes back to its season's PLAYOFFS, not the hub
+             * (a 3-tuple in dynview.step: the row cursor resets, C64) */
             s.screen = SCREEN_PLAYOFFS;
             s.page = 0;
             s.cat = (int16_t)(s.cat >> 6);
+            s.row = 0;
             return s;
         }
         /* the PLAYER CARD goes back to the list state it was opened from (C13.5) */
@@ -5306,6 +5319,19 @@ static State step(State in, int32_t key)
                     g_st_have = 1;
                     return mk_state(SCREEN_STANDINGS, 0, c);
                 }
+            }
+            return s;
+        }
+        if (s.screen == SCREEN_SERIES) {
+            /* C64: the row's game opens its BOX SCORE, exactly what key '1' + g gives; the
+             * summary row, the message row, a row past the end and no history do nothing */
+            const ColDef *cols;
+            if (!g_hdr_seasons)
+                return s;
+            {
+                int n = series_body(s, -1, &cols);
+                if (s.row < n && g_ser_game[s.row] >= 0)
+                    return mk_state(SCREEN_BOX, 0, s.cat * 8 + g_ser_game[s.row]);
             }
             return s;
         }
@@ -6343,7 +6369,7 @@ static const char *footer_of(State st)
     if (st.screen == SCREEN_TEAMHIST)
         return "ENTER SEASON  LEFT RIGHT TEAM  PGUP PGDN ESC";
     if (st.screen == SCREEN_SERIES)
-        return "1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC";
+        return "ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC";
     if (st.screen == SCREEN_BOX)
         return "ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC";
     if (st.screen == SCREEN_PLAYOFFS)

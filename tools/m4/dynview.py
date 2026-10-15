@@ -1714,6 +1714,19 @@ def series_rows(hist, ms, teams, season, stems=None, mask=0):
     return out
 
 
+def series_games(hist, ms, season):
+    """The game number of each series_rows row of season (C64): 0-based g on the header,
+    visitor and home rows of game g, None on the summary row and the message row. The
+    same walk as series_rows, so the two can never drift."""
+    if season > history.SEASON_COUNT:
+        return [None]
+    games = [g for g in range(SERIES_GAMES)
+             if first_record(ms, season, SERIES_GAME_KIND + g) is not None]
+    if not games:
+        return [None]
+    return [g for g in games for _ in range(3)] + [None]
+
+
 def series_body(state, data):
     """(cols, rows) of WORLD SERIES: the season cat seasons back from the newest. A lone
     message row uses COLS_SINGLE (as SEASON STANDINGS'); no history gives no rows."""
@@ -2197,10 +2210,11 @@ def cursor_screen(s):
     """True on the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode),
     SEASON AWARDS, AWARD HISTORY (C28), SEASON HISTORY (C56), SEASON STANDINGS (C57),
     TEAM HISTORY (C60), the offseason RETIREMENTS phase, MILESTONES (C27/C61: cat 0 the
-    milestones list, cat 1 WATCH) and the BOX SCORE and PLAYOFF BOX (C62)."""
+    milestones list, cat 1 WATCH), the BOX SCORE and PLAYOFF BOX (C62) and WORLD SERIES
+    (C64)."""
     if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_AWHIST,
                 SCREEN_HISTORY, SCREEN_STANDINGS, SCREEN_BOX, SCREEN_PBOX,
-                SCREEN_TEAMHIST):
+                SCREEN_TEAMHIST, SCREEN_SERIES):
         return True
     if s[0] == SCREEN_MILESTONES:
         return True
@@ -2351,11 +2365,12 @@ def row_entry(s, data):
     """The player entry named by the cursor row of s (C13.4), or None: a message row, an award
     with no player, an empty list, no history, or a BOX SCORE / PLAYOFF BOX row that is not a
     player row (C62). SEASON STANDINGS has no player card (C57); neither has TEAM HISTORY
-    (C60, its ENTER opens the season's standings)."""
+    (C60, its ENTER opens the season's standings), and WORLD SERIES has none either (C64:
+    its ENTER opens the row game's BOX SCORE in step)."""
     hist = data['hist']
     if hist.seasons_recorded == 0:
         return None
-    if s[0] in (SCREEN_STANDINGS, SCREEN_TEAMHIST):
+    if s[0] in (SCREEN_STANDINGS, SCREEN_TEAMHIST, SCREEN_SERIES):
         return None
     row = unpack(s)[3]
     if s[0] == SCREEN_HOF:
@@ -2794,8 +2809,10 @@ def step(state, key, data):
     kept standings state. ENTER on REVIEW goes to MENU. ENTER walks the offseason phases;
     past the last one it exits when the offseason was launched (cat >> 4) and goes to MENU
     otherwise. ENTER on the /TITLE menu (cat >> 4) exits. Key 0 on the hub opens SEASON STANDINGS, W or w
-    WORLD SERIES. On WORLD SERIES keys 1..7 open the BOX SCORE of that game; ESC there
-    goes back to the series, LEFT and RIGHT step between the season's games.
+    WORLD SERIES. WORLD SERIES is a cursor screen (C64): UP, DOWN and the pages move the
+    cursor and ENTER on a game row opens its BOX SCORE (keys 1..7 do the same for their
+    game); ESC there goes back to the series, LEFT and RIGHT step between the season's
+    games (the row resets).
     SETTINGS: cat is the cursor, 0 ERA RULES, 1 PLAYOFF FORMAT, 2 START YEAR (LEFT RIGHT
     -1 +1, '-' -10, '+' or '=' +10), c >= 3 the team c - 3."""
     s = unpack(state)
@@ -2974,6 +2991,18 @@ def step(state, key, data):
                         data['st_back'] = pack(s[0], s[1], s[2], s[3])
                         return pack(SCREEN_STANDINGS, 0,
                                     hist.seasons_recorded - season), 0
+            return state, 0
+        if s[0] == SCREEN_SERIES:
+            # C64: the row's game opens its BOX SCORE, exactly what key '1' + g gives; the
+            # summary row, the message row, a row past the end and no history do nothing
+            hist = data['hist']
+            if hist.seasons_recorded:
+                rows = series_body(s, data)[1]
+                if s[3] < len(rows):
+                    g = series_games(hist, data['ms'],
+                                     hist.seasons_recorded - s[2])[s[3]]
+                    if g is not None:
+                        return (SCREEN_BOX, 0, s[2] * 8 + g), 0
             return state, 0
         entry = row_entry(s, data)
         if entry is not None:
@@ -3319,7 +3348,7 @@ FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
            SCREEN_AWARDS: 'H HISTORY  LEFT RIGHT SEASON  PGUP PGDN  ESC',
            SCREEN_AWHIST: 'ENTER CARD  LEFT RIGHT AWARD  PGUP PGDN  ESC',
            SCREEN_STANDINGS: 'ENTER TEAM  LEFT RIGHT SEASON  PGUP PGDN ESC',
-           SCREEN_SERIES: '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
+           SCREEN_SERIES: 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
            SCREEN_BOX: 'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC',
            SCREEN_PLAYOFFS: 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
            SCREEN_PBOX: 'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC',

@@ -2528,7 +2528,7 @@ def test_standings_cursor_render_title_rows(tmp_path):
 
 # ---------------------------------------------------------------- world series
 SW = dynview.SCREEN_SERIES
-SERIES_FOOTER = '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
+SERIES_FOOTER = 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
 # a game: (visitor id, home id, visitor runs, home runs, (visitor hits, home hits),
 # (visitor errors, home errors)). AL ids 0..15 (BOSTON 0), NL 16..31 (ATLANTA 16)
 SERIES6 = [(0, 16, 3, 5, (7, 9), (1, 0)), (0, 16, 6, 1, (9, 4), (0, 2)),
@@ -2621,8 +2621,8 @@ def test_series_hub_key_and_footers(tmp_path):
     assert dynview.footer_text(HUB, data) == '0-9 W P F SELECT   ESC EXIT'
     assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
     assert dynview.TITLE_FOOTER == '0-9 W SELECT   ENTER PLAY BALL'
-    # ENTER does nothing on WORLD SERIES
-    assert dynview.step((SW, 0, 0), ENTER, data) == ((SW, 0, 0), 0)
+    # C64: ENTER on the first GAME row opens that game's BOX SCORE
+    assert dynview.step((SW, 0, 0), ENTER, data) == ((SB, 0, 0), 0)
 
 
 def test_series_no_history(tmp_path):
@@ -2657,10 +2657,10 @@ def test_series_six_game_rows_exact(tmp_path):
         assert len(row) == len(dynview.COLS_SERIES), row
         for cell, (_h, _x, w, _a) in zip(row, dynview.COLS_SERIES):
             assert len(cell) <= w, cell
-    # PGDN stops on the last page, PGUP goes back
+    # PGDN puts the cursor on page 1's first row and stops on the last page, PGUP goes back
     s = press((SW, 0, 0), dynview.KEY_PGDN, data)
-    assert s == (SW, 1, 0)
-    assert press(s, dynview.KEY_PGDN, data) == (SW, 1, 0)
+    assert s == (SW, 1, 0, 12)
+    assert press(s, dynview.KEY_PGDN, data) == s
     assert dynview.rows(s, data)[-1] == ('BOSTON', '', '', '', 'WINS 4-2')
     assert press(s, dynview.KEY_PGUP, data) == (SW, 0, 0)
 
@@ -2775,6 +2775,87 @@ def test_series_team_name_fallback(tmp_path):
         ('SAN DIEGO', '2', '6', '1', ''), ('TEAM 5', '', '', '', 'LEADS 1-0')]
 
 
+# ---------------------------------------------------------------- C64 series row cursor
+UP, DOWN = dynview.KEY_UP, dynview.KEY_DOWN
+LEFT, RIGHT = dynview.KEY_LEFT, dynview.KEY_RIGHT
+
+
+def test_series_games_aligns_with_series_rows(tmp_path):
+    """series_games is the game number per series_rows row: g on the 3 rows of each game,
+    None on the summary and message rows, and a missing middle game keeps the alignment"""
+    ldir = make_series(tmp_path, series_recs(2, UNFINISHED5) + series_recs(3, TIED4, no_he=(1,))
+                       + [(3, 0, 194, 7 * 256 + 2)])             # season 3 game 3 (192 + 2) only
+    data = dynview.load_data(str(ldir))
+    for cat, want_rows in ((0, TIED4_ROWS), (1, UNFINISHED5_ROWS)):
+        rows = dynview.series_body((SW, 0, cat), data)[1]
+        assert rows == want_rows
+        games = dynview.series_games(data['hist'], data['ms'],
+                                     data['hist'].seasons_recorded - cat)
+        assert len(games) == len(rows), (cat, len(games), len(rows))
+        assert games[-1] is None
+        # rebuild the expected pattern from the game records: 3 rows per game, the summary None
+        expect = []
+        for g in range(dynview.SERIES_GAMES):
+            if dynview.series_game(data['ms'], data['hist'].seasons_recorded - cat, g):
+                expect += [g, g, g]
+        expect.append(None)
+        assert games == expect, cat
+    # the message row (a season with no game records) is one None
+    assert dynview.series_games(data['hist'], data['ms'], 1) == [None]
+    # past the history table: one None as well
+    assert dynview.series_games(data['hist'], data['ms'],
+                                dynview.history.SEASON_COUNT + 1) == [None]
+
+
+def test_series_enter_row_opens_box_and_summary_stays(tmp_path):
+    """ENTER on each of the 3 rows of a game equals key '1' + g; the summary row, the
+    message row and a row past the end do nothing"""
+    ldir = make_series(tmp_path, series_recs(3, SERIES6) + series_recs(2, TIED4))
+    data = dynview.load_data(str(ldir))
+    # season 3, 6 games: 19 rows, the summary row 18
+    for row, g in ((0, 0), (1, 0), (2, 0), (3, 1), (15, 5)):
+        assert dynview.step((SW, 0, 0, row), ENTER, data) == ((SB, 0, g), 0)
+        # the same state the digit key of that game gives
+        assert press((SW, 0, 0), 49 + g, data) == (SB, 0, g)
+    assert dynview.step((SW, 0, 0, 18), ENTER, data) == ((SW, 0, 0, 18), 0)   # summary
+    assert dynview.step((SW, 0, 0, 19), ENTER, data) == ((SW, 0, 0, 19), 0)   # past the end
+    # season 2 (cat 1), 4 games, TIED summary at row 12
+    assert dynview.step((SW, 0, 1, 12), ENTER, data) == ((SW, 0, 1, 12), 0)
+    # the message row of a season with no games does nothing
+    (tmp_path / 'empty').mkdir()
+    ldir2 = make_series(tmp_path / 'empty', series_recs(3, SERIES6))
+    data2 = dynview.load_data(str(ldir2))
+    assert dynview.rows((SW, 0, 1), data2) == [('NO WORLD SERIES RECORDED',)]
+    assert dynview.step((SW, 0, 1, 0), ENTER, data2) == ((SW, 0, 1, 0), 0)
+    # no history at all: ENTER nothing
+    empty = tmp_path / 'nohist'
+    empty.mkdir()
+    data3 = dynview.load_data(str(empty))
+    assert dynview.step((SW, 0, 0), ENTER, data3) == ((SW, 0, 0), 0)
+
+
+def test_series_cursor_moves_and_left_right_reset_row(tmp_path):
+    """DOWN moves the cursor; LEFT and RIGHT step the season and reset page and row;
+    PGDN puts the cursor on the next page's first row, PGUP back"""
+    ldir = make_series(tmp_path, series_recs(3, SERIES6) + series_recs(2, SERIES7))
+    data = dynview.load_data(str(ldir))
+    assert press((SW, 0, 0), UP, data) == (SW, 0, 0)
+    assert press((SW, 0, 0), DOWN, data) == (SW, 0, 0, 1)
+    assert press((SW, 0, 0), dynview.KEY_PGDN, data) == (SW, 1, 0, 12)
+    assert press((SW, 1, 0, 12), dynview.KEY_PGUP, data) == (SW, 0, 0)
+    # LEFT and RIGHT step the season and reset the page and the row (LEFT stops at season 1)
+    s = press((SW, 1, 0, 5), LEFT, data)
+    assert s == (SW, 0, 1)
+    s = press(s, RIGHT, data)
+    assert s == (SW, 0, 0)
+    # RIGHT at the newest season stays (the row kept)
+    assert press((SW, 0, 0, 5), RIGHT, data) == (SW, 0, 0, 5)
+
+
+def test_series_row_cursor_footer():
+    assert dynview.FOOTERS[SW] == 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
+
+
 def test_series_kinds_never_on_other_screens(tmp_path):
     """kinds 192..207 (game, hits and errors records) change nothing on MILESTONES,
     LAST SEASON REVIEW or SEASON AWARDS"""
@@ -2856,8 +2937,8 @@ def box_all_rows(state, data):
 def test_box_ws_footer_and_box_footer(tmp_path):
     ldir = make_series(tmp_path, game_ms(3, (0,)))
     data = dynview.load_data(str(ldir))
-    assert SERIES_FOOTER == '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
-    assert len(SERIES_FOOTER) == 42
+    assert SERIES_FOOTER == 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
+    assert len(SERIES_FOOTER) == 44
     assert dynview.footer_text((SW, 0, 0), data) == SERIES_FOOTER
     assert dynview.FOOTERS[SB] == BOX_FOOTER
     assert dynview.footer_text((SB, 0, 0), data) == BOX_FOOTER
