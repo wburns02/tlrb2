@@ -274,6 +274,9 @@ typedef struct {
     uint8_t divmap[16];         /* C12.7 division nibbles: id k in byte k / 2, low nibble for even k */
 } SeasonEntry;
 
+/* C18 managed-id helper: 1 when stable id tid has its mask bit set */
+static int id_managed(int tid);
+
 /* one MILESTON.DAT record: u16 season, u16 idx, u8 kind, u8 zero, u16 value */
 typedef struct {
     uint16_t season, idx, value;
@@ -410,6 +413,9 @@ typedef struct {
     uint32_t picks, fa, trades, rel;
 } RosterCounts;
 static RosterCounts g_rc;
+/* base of the release ords on the phase OFF_FA screen: g_rc.fa of the roster_count
+ * pre-pass (the final free agent count), kept out of the row pass's own g_rc */
+static uint32_t g_fabase;
 
 static State g_state;
 static int g_exit;
@@ -871,6 +877,25 @@ static void stem_display(const uint8_t *stem8, char *dst)
             dst[i] = (char)(dst[i] - 32);
 }
 
+/* C18 champion star: 1 when se->champion_stem (ASCII upper case, stripped like
+ * dynview.stems_managed) maps through g_tstem (the same walk load_teams builds) to a
+ * managed stable id */
+static int champ_managed(const SeasonEntry *se)
+{
+    char stem[9];
+    int i, m;
+    field_of(se->champion_stem, 8, stem);       /* NUL-or-space cut, trailing spaces gone */
+    if (!stem[0])
+        return 0;                               /* '?' like stem_display; never managed */
+    for (m = 0; stem[m] && m < 8; m++)
+        stem[m] = (char)ascii_up((uint8_t)stem[m]);
+    stem[m] = 0;
+    for (i = 0; i < g_nteams; i++)
+        if (strcmp(g_tstem[i], stem) == 0)
+            return id_managed(g_tlg[i]);
+    return 0;
+}
+
 /* C17 draft POS name of a record: rosters.pname = First Last from the record bytes
  * (last 0..12, first 12..20), into dst */
 static void rec_pname(const uint8_t *rec, char *dst)
@@ -979,6 +1004,12 @@ static int team_managed(const uint8_t *s, int n)
         return tid < 32 && ((g_mask >> tid) & 1u) != 0;
     }
     return 0;
+}
+
+/* C18 managed-id helper: 1 when stable id tid has its mask bit set */
+static int id_managed(int tid)
+{
+    return tid < 32 && ((g_mask >> tid) & 1u) != 0;
 }
 
 /* C17 '*' prefix of a TEAM cell, the text kept NUL terminated within SLEN. */
@@ -1903,9 +1934,23 @@ static int row_slot(uint32_t ord, int page)
     return (int)(ord - lo);
 }
 
+/* the count pre-pass of the phase OFF_FA screen: roster_pass with page < 0 fills g_rc
+ * with the final counts, and g_fabase takes g_rc.fa so the release ords of the row pass
+ * are (final free agent count) + the file-order release index, like Python's rows. */
+static void roster_pass(int phase, int page);
+
+static void roster_count(void)
+{
+    g_fabase = 0;
+    roster_pass(-1, -1);
+    g_fabase = g_rc.fa;
+}
+
 /* one ROSTERS.TXT pass: every SIGN, TRADE and REL line is counted in g_rc (uncapped).
  * The rows of phase (OFF_DRAFT, OFF_TRADES or OFF_FA) that page shows go to g_rows;
- * any other phase or page < 0 only counts. */
+ * any other phase or page < 0 only counts. When a phase OFF_FA row pass follows
+ * roster_count, g_rc.fa is the final free agent count from the pre-pass and the
+ * release ords are right; any other use recomputes the counts from scratch. */
 static void roster_pass(int phase, int page)
 {
     char path[600];
@@ -1988,7 +2033,19 @@ static void roster_pass(int phase, int page)
                 }
             }
         } else if (n >= 3 && tok_eq(buf + toff[0], tlen[0], "REL", 0)) {
+            uint32_t ord2 = g_fabase + g_rc.rel;    /* free agent rows, then releases */
+            int s = phase == OFF_FA ? row_slot(ord2, page) : -1;
+            int nl = join_toks(buf, toff, tlen, 2, n, nm);
             g_rc.rel++;
+            if (s >= 0) {
+                Row *r = &g_rows[s];
+                team_disp(buf + toff[1], tlen[1], r->cells[0]);
+                if (team_managed(buf + toff[1], tlen[1]))
+                    star_cell(r->cells[0]);
+                put_cell(r->cells[1], (const uint8_t *)nm, nl);
+                strcpy(r->cells[2], "RELEASED");
+                r->ncells = 3;
+            }
         }
     }
     fclose(f);
@@ -2591,17 +2648,28 @@ static const char *STAND_SHORT[2] = { "AL", "NL" };
 static const int STAND_DIV_NUM[3] = { 2, 3, 1 };
 static const char *STAND_DIV_SUF[3] = { " WEST", " CENTRAL", " EAST" };
 
-/* the team column of league-global id t: its MAJ display name, else 'TEAM t' */
-static void stand_name(int t, char *dst)
+/* the team column of league-global id t: its MAJ display name, else 'TEAM t' (no star;
+ * stand_name adds the C18 managed star) */
+static void stand_name_plain(int t, char *dst)
 {
     int i;
     for (i = 0; i < g_nteams; i++) {
         if (g_tlg[i] == t) {
             strcpy(dst, g_tdisp[i]);
-            return;
+            break;
         }
     }
-    sprintf(dst, "TEAM %d", t);
+    if (i == g_nteams)
+        sprintf(dst, "TEAM %d", t);
+}
+
+/* stand_name with the C18 managed star (standings and series; the box score uses
+ * stand_name_plain, as Python's box rows carry no star) */
+static void stand_name(int t, char *dst)
+{
+    stand_name_plain(t, dst);
+    if (id_managed(t))
+        star_cell(dst);
 }
 
 /* standings order (dynview.standings_rows key): PCT desc, W desc, id asc; the PCT is
@@ -2863,6 +2931,8 @@ static int build_hist_rows(int page)
         read_season(&se, (int)g_histl.idx[r]);
         year_text(se.season_no, g_rows[n].cells[0]);
         stem_display(se.champion_stem, g_rows[n].cells[1]);
+        if (champ_managed(&se))
+            star_cell(g_rows[n].cells[1]);
         entry_name(se.awards[0], 11, nm);
         strcpy(g_rows[n].cells[2], nm);
         entry_name(se.awards[3], 11, nm);
@@ -3917,10 +3987,11 @@ static int offseason_body(State st, int page, const ColDef **cols)
         *cols = COLS_MOVE;
         return (int)total;
     case OFF_FA:
+        roster_count();             /* final fa count first: a release's ord is fa + k */
         roster_pass(OFF_FA, page);
-        total = capped(g_rc.fa);
+        total = capped(g_rc.fa + g_rc.rel);
         if (total == 0)
-            return msg_row(page, "NO FREE AGENT SIGNINGS");
+            return msg_row(page, "NO SIGNINGS OR RELEASES");
         *cols = COLS_MOVE;
         return (int)total;
     default:
@@ -4105,7 +4176,7 @@ static int box_body(State st, int page, const ColDef **cols)
         Row *row = box_next(&ord, page);
         if (row) {
             char nm[SLEN];
-            stand_name(tid, nm);
+            stand_name_plain(tid, nm);
             box_set(row, nm, "AB", "R", "H", "RBI", "BB", "SO");
         }
         for (pitch = 0; pitch < 2; pitch++) {
@@ -4260,7 +4331,7 @@ static void screen_title(State st, char *dst)
         else if (phase == OFF_TRADES)
             strcpy(dst, "4/6 TRADES");
         else if (phase == OFF_FA)
-            strcpy(dst, "5/6 FREE AGENT SIGNINGS");
+            strcpy(dst, "5/6 SIGNINGS AND RELEASES");
         else
             sprintf(dst, "6/6 %ld IS READY", (long)year_of((int32_t)g_hdr_seasons + 1));
     } else if (g_hdr_seasons)

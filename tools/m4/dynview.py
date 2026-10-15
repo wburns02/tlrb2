@@ -129,7 +129,7 @@ CONTROL_FILE = 'CONTROL'
 # offseason phases: cat & 15 is the phase, cat >> 4 the launched flag
 OFF_REVIEW, OFF_RETIRE, OFF_DRAFT, OFF_TRADES, OFF_FA, OFF_READY = range(6)
 OFF_TITLES = ['1/6 %d IN REVIEW', '2/6 RETIREMENTS', '3/6 ROOKIE DRAFT',
-              '4/6 TRADES', '5/6 FREE AGENT SIGNINGS', '6/6 %d IS READY']
+              '4/6 TRADES', '5/6 SIGNINGS AND RELEASES', '6/6 %d IS READY']
 OFF_LAUNCH_TEXT = 'ENTER: ON TO %d'
 OFF_STAY_TEXT = 'ENTER: BACK TO THE MENU'
 
@@ -445,9 +445,9 @@ def draft_pos(league_dir, stem, name, cache=None):
 def parse_rosters(league_dir):
     """ROSTERS.TXT as offseason events, in file order: ('DRAFT', stem, name) for the
     first DRAFT_KEEP valid DRAFT lines; ('SIGN', team, name, frm); ('TRADE', a, x, b,
-    y) where b is the first token from index 3 that names a team file; ('REL',).
-    LF lines with one trailing CR stripped; a line over ROSTER_LINE_MAX bytes is
-    ignored whole. A missing or unreadable file gives []."""
+    y) where b is the first token from index 3 that names a team file; ('REL', stem,
+    name) for `REL <stem> <name...>`. LF lines with one trailing CR stripped; a line over
+    ROSTER_LINE_MAX bytes is ignored whole. A missing or unreadable file gives []."""
     path = find_upper(league_dir, 'ROSTERS.TXT')
     if path is None:
         return []
@@ -481,7 +481,7 @@ def parse_rosters(league_dir):
                                 ' '.join(tok[j + 1:])))
                     break
         elif kind == 'REL' and n >= 3:
-            out.append(('REL',))
+            out.append(('REL', tok[1], ' '.join(tok[2:])))
     return out
 
 
@@ -1023,9 +1023,11 @@ def entry_name(hist, idx, cap):
     return name_display(hist.read_entry(idx)['name'], cap) or '?'
 
 
-def history_rows(hist, league_dir=None):
+def history_rows(hist, league_dir=None, stems=None, mask=0):
     """One row per season, newest first: YEAR, CHAMPION, AL MVP, NL MVP (the
-    runner-up is on REVIEW; dropping it leaves room for full team names)."""
+    runner-up is on REVIEW; dropping it leaves room for full team names). The
+    CHAMPION cell is starred when the champion stem maps through stems (the
+    settings_team_stems walk, C18) to a managed id (bit set in mask)."""
     n = min(hist.seasons_recorded, history.SEASON_COUNT)
     items = []
     for pos in range(1, n + 1):
@@ -1034,11 +1036,27 @@ def history_rows(hist, league_dir=None):
     items.sort(key=lambda t: (t[0], t[1]))
     out = []
     for _s, _p, se in items:
+        champ = stem_display(se['champion_stem'], league_dir)
+        if stems:
+            champ = managed_cell_id(stems, se['champion_stem'], mask, champ)
         out.append((year_text(hist, se['season_no']),
-                    stem_display(se['champion_stem'], league_dir),
+                    champ,
                     entry_name(hist, se['awards'][0], 11),
                     entry_name(hist, se['awards'][3], 11)))
     return out
+
+
+def stems_managed(stems, stem8, mask):
+    """True when the 8 byte champion stem (ASCII upper case, NUL cut) of se maps
+    through stems to a managed id (C18: tid < 32 and the mask bit set)."""
+    stem = stem8.split(b'\0')[0].decode('latin-1').strip()
+    tid = stems.get(ascii_upper(stem)) if stem else None
+    return tid is not None and tid < 32 and ((mask >> tid) & 1) != 0
+
+
+def managed_cell_id(stems, stem8, mask, text):
+    """CHAMPION cell of a managed team (C18): '*' + the display text."""
+    return ('*' if stems_managed(stems, stem8, mask) else '') + text
 
 
 def year_text(hist, n):
@@ -1319,10 +1337,10 @@ def gb_text(d):
     return '-' + s if d < 0 else s
 
 
-def standings_block(se, names, head, ids):
+def standings_block(se, names, head, ids, stems=None, mask=0):
     """header row head, then the teams ids (all with games) by (PCT desc, W desc, id asc):
     TEAM, W, L, PCT, GB from the block's first row, and the mark (WS champion, P a pennant
-    winner)."""
+    winner). A managed team id (bit set of mask, C18) has '*' prepended to its TEAM cell."""
     wl = se['w_l']
     pct = {t: wl[t][0] * 1000 // (wl[t][0] + wl[t][1]) for t in ids}
     ids = sorted(ids, key=lambda t: (-pct[t], -wl[t][0], t))
@@ -1336,18 +1354,22 @@ def standings_block(se, names, head, ids):
             mark = 'P'
         else:
             mark = ''
-        out.append((names.get(t, 'TEAM %d' % t), '%d' % w, '%d' % l, fmt_avg(pct[t]),
+        name = names.get(t, 'TEAM %d' % t)
+        if stems is not None and t < 32 and ((mask >> t) & 1) != 0:
+            name = '*' + name
+        out.append((name, '%d' % w, '%d' % l, fmt_avg(pct[t]),
                     gb_text((lw - w) + (l - ll)), mark))
     return out
 
 
-def standings_rows(hist, teams, season):
+def standings_rows(hist, teams, season, stems=None, mask=0):
     """SEASON STANDINGS rows of season. Per league the teams that played (W + L > 0) are
     grouped by division (history.division_of). When two or more divisions have such teams,
     one block per division in STAND_DIVS order (WEST, CENTRAL, EAST) under a header row
     `AL WEST` and so on; with one division, one block under the league's long name; none
     otherwise. A header that would fall on a page's last row gets a blank row before it.
-    Past the history table, or with no games in either league, one message row."""
+    Managed team ids have '*' prepended to their TEAM cell (C18). Past the history table,
+    or with no games in either league, one message row."""
     if season > history.SEASON_COUNT:
         return [('NO STANDINGS RECORDED',)]
     se = hist.read_season_entry(season)
@@ -1369,7 +1391,7 @@ def standings_rows(hist, teams, season):
         for head, ids in blocks:
             if len(out) % ROWS_PER_PAGE == ROWS_PER_PAGE - 1:
                 out.append(('', '', '', '', '', ''))     # no header alone on a page's last row
-            out += standings_block(se, names, head, ids)
+            out += standings_block(se, names, head, ids, stems, mask)
     return out or [('NO STANDINGS RECORDED',)]
 
 
@@ -1379,7 +1401,8 @@ def standings_body(state, data):
     hist = data['hist']
     if hist.seasons_recorded == 0:
         return COLS_SINGLE, []
-    rows = standings_rows(hist, data['teams'], hist.seasons_recorded - state[2])
+    rows = standings_rows(hist, data['teams'], hist.seasons_recorded - state[2],
+                          data.get('team_stems'), data['mask'])
     if len(rows) == 1 and len(rows[0]) == 1:
         return COLS_SINGLE, rows
     return COLS_STANDINGS, rows
@@ -1407,17 +1430,25 @@ def first_record(ms, season, kind):
     return None
 
 
-def series_rows(hist, ms, teams, season):
+def series_rows(hist, ms, teams, season, stems=None, mask=0):
     """WORLD SERIES rows of season: per game with a kind 192 + g record (g ascending),
     a header row GAME g+1, the visitor and home rows (R, then H and E from the kind
     200 + g record, empty without one, W in the last column of the side with more runs),
     then one summary row over the first game's two teams t1 (visitor) and t2 (home): the
     one with more game wins (WINS a-b with 4 or more, else LEADS a-b), or SERIES with
-    TIED a-a for equal wins. Past the history table or with no game record, one message
-    row."""
+    TIED a-a for equal wins. Managed team ids have '*' prepended to their TEAM cell,
+    game headers never (C18). Past the history table or with no game record, one
+    message row."""
     if season > history.SEASON_COUNT:
         return [('NO WORLD SERIES RECORDED',)]
     names = dict(teams)
+
+    def starred(t):
+        name = names.get(t, 'TEAM %d' % t)
+        if stems is not None and t < 32 and ((mask >> t) & 1) != 0:
+            name = '*' + name
+        return name
+
     games = []
     for g in range(SERIES_GAMES):
         game = first_record(ms, season, SERIES_GAME_KIND + g)
@@ -1436,9 +1467,9 @@ def series_rows(hist, ms, teams, season):
             hits = ('%d' % (he[0] >> 8), '%d' % (he[0] & 255))
             errs = ('%d' % (he[1] >> 8), '%d' % (he[1] & 255))
         out.append(('GAME %d' % (g + 1), '', '', '', ''))
-        out.append((names.get(v, 'TEAM %d' % v), '%d' % vr, hits[0], errs[0],
+        out.append((starred(v), '%d' % vr, hits[0], errs[0],
                     'W' if vr > hr else ''))
-        out.append((names.get(h, 'TEAM %d' % h), '%d' % hr, hits[1], errs[1],
+        out.append((starred(h), '%d' % hr, hits[1], errs[1],
                     'W' if hr > vr else ''))
         if vr != hr:
             wins[v if vr > hr else h] += 1
@@ -1448,7 +1479,7 @@ def series_rows(hist, ms, teams, season):
         out.append(('SERIES', '', '', '', 'TIED %d-%d' % (w1, w2)))
     else:
         lead, a, b = (t1, w1, w2) if w1 > w2 else (t2, w2, w1)
-        out.append((names.get(lead, 'TEAM %d' % lead), '', '', '',
+        out.append((starred(lead), '', '', '',
                     ('WINS %d-%d' if a >= 4 else 'LEADS %d-%d') % (a, b)))
     return out
 
@@ -1459,7 +1490,8 @@ def series_body(state, data):
     hist = data['hist']
     if hist.seasons_recorded == 0:
         return COLS_SINGLE, []
-    rows = series_rows(hist, data['ms'], data['teams'], hist.seasons_recorded - state[2])
+    rows = series_rows(hist, data['ms'], data['teams'], hist.seasons_recorded - state[2],
+                       data.get('team_stems'), data['mask'])
     if len(rows) == 1 and len(rows[0]) == 1:
         return COLS_SINGLE, rows
     return COLS_SERIES, rows
@@ -1645,12 +1677,16 @@ def offseason_body(state, data):
                 rows.append((managed_cell(data, a, disp(a)), x, disp(b)))
                 rows.append((managed_cell(data, b, disp(b)), y, disp(a)))
         rows = rows[:LIST_MAX]
-    else:
-        cols, msg = COLS_MOVE, 'NO FREE AGENT SIGNINGS'
+    elif phase == OFF_FA:
+        cols, msg = COLS_MOVE, 'NO SIGNINGS OR RELEASES'
         _picks, fa = sign_split(ev)
         rows = [(managed_cell(data, team, disp(team)),
                  name, 'FREE AGENT' if ascii_upper(frm) == 'POOL' else disp(frm))
                 for team, name, frm in fa[:LIST_MAX]]
+        for e in ev:
+            if e[0] == 'REL' and len(rows) < LIST_MAX:
+                rows.append((managed_cell(data, e[1], disp(e[1])), e[2], 'RELEASED'))
+        rows = rows[:LIST_MAX]
     if not rows:
         return COLS_SINGLE, [(msg,)]
     return cols, rows
@@ -1960,7 +1996,8 @@ def rows(state, data):
         body = box_body(state, data)[1]
         return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_HISTORY:
-        all_rows = history_rows(hist, data.get('league_dir'))
+        all_rows = history_rows(hist, data.get('league_dir'), data.get('team_stems'),
+                                data['mask'])
     elif screen == SCREEN_HOF:
         all_rows = hof_rows(hist)
     elif screen == SCREEN_MILESTONES:

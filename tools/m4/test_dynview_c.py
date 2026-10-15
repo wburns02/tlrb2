@@ -32,7 +32,7 @@ from m4.test_dynview import (make_data, write_player, write_season,
                              SERIES6, SERIES7, UNFINISHED5, TIED4, box_rec, write_box,
                              BOX_G0, write_team, write_standings,
                              write_team_v20_full, draft_managed_test_league,
-                             DRAFT17, TRADE17, oc)
+                             DRAFT17, TRADE17, oc, write_maj)
 from test_teamids import build_maj, CLASSIC
 
 WATCOM = '/mnt/nvme/tools/openwatcom'
@@ -1115,6 +1115,17 @@ def test_box_pages_parity(tmp_path):
     check_parity(ldir, tmp_path, 'box_g1_pgdn', keys=[87, 49, PGDN])
 
 
+def test_box_managed_mask_parity(tmp_path):
+    """C18: the box score's team header carries no managed star, in C as in Python,
+    with every mask bit set"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = box_ws_league(tmp_path)
+    write_mask(ldir, 0xFFFFFFFF)
+    check_parity(ldir, tmp_path, 'box_g1_mask', keys=[87, 49])
+    check_parity(ldir, tmp_path, 'box_g3_mask', keys=[87, 51])
+
+
 def test_box_ws_footer_and_message_parity(tmp_path):
     """WORLD SERIES with its new footer, the message row (game 2 has no box records, nor
     does a league whose BOXSCORE.DAT is missing), ESC back to the series of a box, and the
@@ -1761,3 +1772,96 @@ def test_default_league_dir_follows_system(tmp_path, name, system):
     assert r.returncode == 0, f'host rc {r.returncode}: {r.stderr[:400]}'
     named = run_host(str(ldir), str(tmp_path / 'named.raw'), keys=[55], font_dir=str(g))
     assert open(raw, 'rb').read() == named
+
+
+# ---------------- C18/C19 parity: starred teams and releases ----------------
+
+def write_mask(ldir, mask):
+    """HISTORY.DAT bytes 12..15 = mask (u32 LE)"""
+    p = os.path.join(ldir, 'HISTORY.DAT')
+    d = bytearray(open(p, 'rb').read())
+    d[12:16] = mask.to_bytes(4, 'little')
+    open(p, 'wb').write(bytes(d))
+    return d
+
+
+def test_c18_standings_series_history_star_parity(tmp_path):
+    """C18: STANDINGS, WORLD SERIES and SEASON HISTORY with one managed team: the star's
+    pixels match Python on every page; the same league with mask 0 matches too"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'stand').mkdir()
+    sld = make_standings(tmp_path / 'stand')
+    write_mask(sld, 1 << 1)                     # DETROIT, AL id 1
+    data = dynview.load_data(str(sld))
+    for pg in range(2):
+        check_parity(sld, tmp_path, 'c18_stand%d' % pg, keys=[48] + [PGDN] * pg)
+    # WORLD SERIES on the same league (BOSTON vs ATLANTA, a 6 game series)
+    (tmp_path / 'series').mkdir()
+    wld = make_series(tmp_path / 'series', series_recs(3, SERIES6))
+    write_mask(wld, 1 << 0)                     # BOSTON, AL id 0
+    for pg in range(2):
+        check_parity(wld, tmp_path, 'c18_series%d' % pg,
+                     keys=[87] + []
+                     if False else [ord('W')] + [PGDN] * pg)
+    # SEASON HISTORY with a managed champion stem (make_data champion ALA03)
+    (tmp_path / 'hist').mkdir()
+    hld = make_data(tmp_path / 'hist')[0]
+    write_team(hld, 'ALA03', 'MILWAUKEE')
+    write_maj(hld, {2: b'ALA03'})
+    write_mask(hld, 1 << 2)
+    check_parity(hld, tmp_path, 'c18_hist', keys=[49])
+    # mask 0 regression on each screen
+    write_mask(sld, 0)
+    check_parity(sld, tmp_path, 'c18_stand_m0', keys=[48])
+    write_mask(wld, 0)
+    check_parity(wld, tmp_path, 'c18_series_m0', keys=[ord('W')])
+    write_mask(hld, 0)
+    check_parity(hld, tmp_path, 'c18_hist_m0', keys=[49])
+
+
+def test_c18_standings_all_bits_parity(tmp_path):
+    """C18 tid >= 32 rule on the framebuffer: all history mask bits set stars nothing an
+    all-bits run would not; the frames match Python"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'full').mkdir()
+    ldir = make_standings(tmp_path / 'full')
+    write_mask(ldir, 0xffffffff)
+    data = dynview.load_data(str(ldir))
+    rows = [r for pg in range(3) for r in dynview.rows((dynview.SCREEN_STANDINGS, pg, 2),
+                                                       data)]
+    assert not any(r[0].startswith('*TEAM') and int(r[0][5:]) >= 32 for r in rows if r[1:])
+    for pg in range(3):
+        check_parity(ldir, tmp_path, 'c18_full%d' % pg, keys=[48] + [PGDN] * pg)
+
+
+def test_c19_signings_releases_parity(tmp_path):
+    """C19: offseason phase 4 with SIGN and REL lines: title, the SIGN rows then the
+    RELEASED rows in file order with a starred managed release, the empty phase message
+    and the mask 0 frames all match Python"""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = draft_managed_test_league(
+        tmp_path, b'SIGN CLASALW7 Sign One pool\r\n'
+                  b'SIGN CLASNLW4 Sign Two pool\r\n'
+                  b'REL CLASALW7 Cut One\r\n'
+                  b'REL CLASNLE4 Cut Two Words\r\n'
+                  b'REL BOSTON Cut Three\r\n', 1 << 7)
+    data = dynview.load_data(str(ldir))
+    rows = dynview.offseason_body((dynview.SCREEN_OFFSEASON, 0, oc(4)), data)[1]
+    assert rows == [('*SEATTLE', 'Sign One', 'FREE AGENT'),
+                    ('NEW YORK N', 'Sign Two', 'FREE AGENT'),
+                    ('*SEATTLE', 'Cut One', 'RELEASED'),
+                    ('CLASNLE4', 'Cut Two Words', 'RELEASED'),
+                    ('BOSTON', 'Cut Three', 'RELEASED')]
+    assert dynview.screen_title((dynview.SCREEN_OFFSEASON, 0, oc(4)), data) == \
+        '5/6 SIGNINGS AND RELEASES'
+    check_offseason(ldir, tmp_path, 'c19_fa', 4)
+    # the empty phase message and no-history league
+    (tmp_path / 'norost').mkdir()
+    nld = make_offseason(tmp_path / 'norost', rosters=None)
+    check_offseason(nld, tmp_path, 'c19_empty', 4)
+    # mask 0 regression
+    write_mask(ldir, 0)
+    check_offseason(ldir, tmp_path, 'c19_fa_m0', 4)

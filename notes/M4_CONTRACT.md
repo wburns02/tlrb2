@@ -1172,3 +1172,39 @@ framebuffers.
 
 ### C17.3 Nothing else changes
 - Other screens, footers, titles, counts, ABOUT rows, key handling and the card opening are untouched.
+## C18. Your teams on the season screens (added 2026-10-14)
+
+Will, 2026-10-14: mark the teams you manage on SEASON STANDINGS, WORLD SERIES and SEASON HISTORY. Python
+tools/m4/dynview.py is the reference; the C port dynview_c/dynview.c must render byte-identical framebuffers.
+
+- A team with stable id tid is managed when tid < 32 and bit tid of the HISTORY mask (data['mask'] in Python,
+  g_mask in C) is set. This is the same mask DYNASTY SETTINGS edits and C17.2 uses; a team id comes from the
+  data where one exists (SEASON STANDINGS and WORLD SERIES rows carry team ids directly, so mask-bit status needs
+  no stem match), and SEASON HISTORY walks the champion STEM through the C17.2 stem map (Python
+  data['team_stems'], one optional argument to history_rows, existing callers keep working; C the g_tstem
+  table, se's NUL-or-space cut champion stem ASCII upper cased).
+- SEASON STANDINGS: a managed team's first row cell ('TEAM %d' or the MAJ display) gets '*' prepended. Division
+  header rows and the blank spacer row are never starred.
+- WORLD SERIES: every visitor and home row and the summary row's team cell are starred when that team id is
+  managed. GAME n header rows and the SERIES TIED row are never starred.
+- SEASON HISTORY: the CHAMPION cell is starred when the champion stem maps to a managed id. A champion stem
+  with no mapped id is never starred even with bits set. Masks 0 render exactly as the pre-C18 screens (the
+  existing parity tests do not change).
+- The star lives in the cell text and is cut like every cell ('*DETROIT' may lose its tail in the narrow TEAM
+  column); the tid >= 32 ids are never starred, in Python and C.
+
+## C19. Releases on the offseason walk (added 2026-10-14)
+
+Will, 2026-10-14: show the releases on the 5/6 phase next to the free agent signings.
+
+- parse_rosters yields ('REL', stem, name) for `REL <stem> <name...>` lines (n >= 3 tokens, name =
+  ' '.join(tok[2:])); a missing or unreadable file gives []. The phase-6 count 'PLAYERS RELEASED: %d' is
+  unchanged (REL lines with 3 or more tokens).
+- The phase-5 title becomes '5/6 SIGNINGS AND RELEASES' (Python OFF_TITLES and the C screen_title). Its rows,
+  capped at LIST_MAX in total, are the existing free-agent SIGN rows first, then one row per REL event in file
+  order: (managed_cell(data, stem, disp(stem)), name, 'RELEASED'). Columns stay COLS_MOVE. The empty phase
+  message becomes 'NO SIGNINGS OR RELEASES'. C: the release row's name joins the tokens into a buffer and is
+  written bounded by SLEN; no new heap allocation per row.
+- The C port counts one RELEASE row per REL event with an ord of fa + rel (the free agent rows first, then the
+  releases), so paging and the caps are the combined list. The rows of a token with no team file show the token
+  upper cased, like every TEAM cell.
