@@ -1898,3 +1898,25 @@ g_lead_active, like the other session values) renders the same framebuffers.
   frame, a card from the ACTIVE list and ESC back, and A pressed in SEASON mode). The
   test that pinned the old footer text (the SEASON LEADERS column test of
   test_dynview_c13.py) pins the new one.
+
+## C59. DYNVIEW FIND ESC clears (added 2026-10-15)
+FIND PLAYER (SCREEN_FIND 18, state pack(18, page, 0, row); the query in data['find'], the
+C port's static g_find_q) gained a first ESC: ESC with a non-empty query clears it and
+resets the state to pack(SCREEN_FIND, 0, 0) (the prompt row). ESC with an empty query
+goes to (SCREEN_MENU, 0, 0) as before. The card round trip is untouched: ESC on a card
+opened from FIND still returns card_back with the query kept.
+- Footer: footer_text on FIND returns 'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR' while the
+  query is non-empty, otherwise FOOTERS[SCREEN_FIND] = 'TYPE NAME  BKSP  ENTER CARD
+  ESC MENU' (the constant keeps the MENU text).
+- Every other key on FIND is unchanged: letters append their upper case (FIND_MAX 12 at
+  most), BACKSPACE (8) removes the last char, either edit resets the state to
+  pack(SCREEN_FIND, 0, 0), digits, TAB, PGUP and PGDN do nothing.
+- C port: dynview.c step clears g_find_q in its ESC branch (before the generic
+  SCREEN_MENU fallthrough), footer_of returns the CLEAR text on g_find_q[0]; C89, no
+  new static array. Host binary rebuilt with gcc -Werror.
+- Tests: test_dynview.py (state and footer rules, ESC after the cursor moved, the card
+  round trip unchanged), test_dynview_c13_c.py (framebuffer parity: the typed frame with
+  the ESC CLEAR footer, ESC once back to the prompt frame, ESC twice to the hub, ESC
+  after DOWN). Two expectations updated: the C50 test that pinned ESC-from-a-typed-FIND
+  to MENU now pins the prompt row, and a C50 test that pinned the MENU footer on a
+  non-empty query pins the CLEAR footer.

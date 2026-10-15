@@ -2657,6 +2657,10 @@ def step(state, key, data):
             return data.get('awh_back', (SCREEN_AWARDS, 0, 0)), 0
         if screen == SCREEN_TEAMHIST:
             return data.get('th_back', (SCREEN_STANDINGS, 0, 0)), 0
+        if screen == SCREEN_FIND and data.get('find', ''):
+            # C59: a typed query clears first, the state resets to the prompt row
+            data['find'] = ''
+            return pack(SCREEN_FIND, 0, 0), 0
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_MENU:
         if key == 48:
@@ -3089,9 +3093,13 @@ TITLE_FOOTER_NEW = 'ENTER PLAY BALL'
 
 def footer_text(state, data=None):
     """Footer line of state; the offseason's ENTER label follows its phase, the /TITLE
-    menu's follows whether any season is recorded, MILESTONES WATCH its mode (C27)."""
+    menu's follows whether any season is recorded, MILESTONES WATCH its mode (C27),
+    FIND PLAYER's ESC label follows the query (C59)."""
     s = unpack(state)
     screen, cat = s[0], s[2]
+    if screen == SCREEN_FIND:
+        return 'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR' if data and data.get('find', '') \
+            else FOOTERS[SCREEN_FIND]
     if screen == SCREEN_MILESTONES and cat == 1:
         return 'ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC'
     if screen == SCREEN_CARD and s[3] == 1:

@@ -3887,8 +3887,46 @@ def test_find_open_edit_and_rows(tmp_path):
     s3 = (dynview.SCREEN_FIND, 0, 0)
     s4 = press(s3, ord('c'), data)
     assert s4 == (dynview.SCREEN_FIND, 0, 0)
-    # ESC back to the hub, query unchanged
-    assert dynview.step((dynview.SCREEN_FIND, 0, 0, 2), ESC, data) == (HUB, 0)
+    # ESC clears the typed query first (C59): reset to the prompt row, not the hub
+    assert dynview.step((dynview.SCREEN_FIND, 0, 0, 2), ESC, data) == \
+        ((dynview.SCREEN_FIND, 0, 0), 0)
+    assert data['find'] == ''
+
+
+def test_find_esc_clears_then_menu(tmp_path):
+    """C59: ESC on FIND with a non-empty query clears data['find'] and resets to the
+    prompt row (18, 0, 0); a second ESC goes to the MENU; ESC with an empty query goes
+    straight to the MENU; the footer labels the ESC key CLEAR only while the query has
+    text; ESC after moving the cursor resets it too."""
+    ldir = make_find(tmp_path, write_player)
+    data = dynview.load_data(str(ldir))
+    HUB = (dynview.SCREEN_MENU, 0, 0)
+    s, _ex = dynview.step(HUB, ord('F'), data)
+    s = press(s, ord('S'), data)
+    s = press(s, ord('M'), data)
+    assert data['find'] == 'SM'
+    assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR'
+    assert press(s, ESC, data) == (dynview.SCREEN_FIND, 0, 0)
+    assert data['find'] == ''
+    assert dynview.footer_text((dynview.SCREEN_FIND, 0, 0), data) == \
+        'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
+    assert dynview.step((dynview.SCREEN_FIND, 0, 0), ESC, data) == (HUB, 0)
+    # ESC on an empty query goes straight to the MENU
+    assert dynview.step((dynview.SCREEN_FIND, 0, 0), ESC, data) == (HUB, 0)
+    # ESC after moving the cursor resets it too
+    s = press(HUB, ord('f'), data)
+    s = press(s, ord('S'), data)
+    s = press((dynview.SCREEN_FIND, 0, 0, 2), ESC, data)
+    assert s == (dynview.SCREEN_FIND, 0, 0) and data['find'] == ''
+    # a card opened from FIND keeps the exact FIND state on ESC (unchanged)
+    s = press(s, ord('S'), data)
+    s = press(s, ord('M'), data)
+    card, _ex = dynview.step((dynview.SCREEN_FIND, 0, 0, 1), ENTER, data)
+    assert data['card_back'] == (dynview.SCREEN_FIND, 0, 0, 1)
+    assert dynview.step(card, ESC, data)[0] == (dynview.SCREEN_FIND, 0, 0, 1)
+    assert data['find'] == 'SM'
+    assert dynview.footer_text((dynview.SCREEN_FIND, 0, 0, 1), data) == \
+        'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR'
 
 
 def _find_cells(hist, q):

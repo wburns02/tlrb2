@@ -4892,6 +4892,11 @@ static State step(State in, int32_t key)
          * it was never opened: the default (STANDINGS, 0, 0) like Python's data.get */
         if (s.screen == SCREEN_TEAMHIST)
             return g_th_live ? g_th_back : mk_state(SCREEN_STANDINGS, 0, 0);
+        /* C59: a typed query clears first, the state resets to the prompt row */
+        if (s.screen == SCREEN_FIND && g_find_q[0]) {
+            g_find_q[0] = 0;
+            return mk_state(SCREEN_FIND, 0, 0);
+        }
         if (s.screen == SCREEN_MENU)
             g_exit = 1;
         return mk_state(SCREEN_MENU, 0, 0);
@@ -4931,7 +4936,8 @@ static State step(State in, int32_t key)
     }
     /* FIND PLAYER (C50): a letter appends its upper case (FIND_MAX at most), BACKSPACE
      * removes the last char; either edit resets page, cat and row. Other printable keys
-     * do nothing; the row cursor (below) and ESC (handled first) stay. */
+     * do nothing; the row cursor (below) and ESC (handled first, C59 clearing a typed
+     * query) stay. */
     if (s.screen == SCREEN_FIND && key >= 65 && key <= 90) {
         int n = (int)strlen(g_find_q);
         if (n < FIND_MAX) {
@@ -6032,7 +6038,8 @@ static int honors_rows(int32_t entry, int page)
     return r + at;
 }
 
-/* footer line: the offseason's ENTER label follows its phase */
+/* footer line: the offseason's ENTER label follows its phase, FIND PLAYER's ESC label
+ * follows the query (C59) */
 static const char *footer_of(State st)
 {
     static const char *footers[6] = {
@@ -6043,7 +6050,8 @@ static const char *footer_of(State st)
         "LEFT RIGHT WATCH   PGUP PGDN   ESC MENU",
         "ENTER MENU   ESC MENU" };
     if (st.screen == SCREEN_FIND)
-        return "TYPE NAME  BKSP  ENTER CARD  ESC MENU";
+        return g_find_q[0] ? "TYPE NAME  BKSP  ENTER CARD  ESC CLEAR"
+                           : "TYPE NAME  BKSP  ENTER CARD  ESC MENU";
     if (st.screen == SCREEN_LEADERS && (st.cat >> 5) == MODE_BYYEAR)
         return "LEFT RIGHT STAT  - + YEAR  TAB MODE";
     if (st.screen == SCREEN_MILESTONES && st.cat == 1)
