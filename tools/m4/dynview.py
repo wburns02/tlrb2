@@ -112,7 +112,8 @@ AWARD_KIND_MIN = 64
 AWARD_MAX = 64
 
 # the hub (SCREEN_MENU) rows: key 1..9 opens screen key - 48, key 0 SEASON STANDINGS,
-# key W (87 or 119) WORLD SERIES, key P (80 or 112) PLAYOFFS
+# key W (87 or 119) WORLD SERIES, key P (80 or 112) PLAYOFFS; row r's ENTER sends the
+# same key (C67, step's ENTER rule)
 MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  LEADERS',
              '4  MILESTONES', '5  LAST SEASON REVIEW', '6  OFFSEASON',
              '7  DYNASTY SETTINGS', '8  ABOUT THE MODS', '9  SEASON AWARDS',
@@ -152,8 +153,10 @@ OFF_TITLES = ['1/6 %d IN REVIEW', '2/6 RETIREMENTS', '3/6 ROOKIE DRAFT',
 OFF_LAUNCH_TEXT = 'ENTER: ON TO %d'
 OFF_STAY_TEXT = 'ENTER: BACK TO THE MENU'
 
-# /TITLE (run by TONY2.BAT at boot): the MENU with cat 16. ENTER or ESC goes on to the
-# game; a league with no recorded season shows TITLE_ROWS instead of the menu items
+# /TITLE (run by TONY2.BAT at boot): the MENU with cat 16. ESC goes on to the game
+# (C67: with a recorded season ENTER opens the cursor row and C or c exits with
+# flag 1); a league with no recorded season shows TITLE_ROWS, ENTER, ESC and both
+# cases of C exit with flag 1
 TITLE_FLAG = 16
 TITLE_ROWS = ['YOUR LEAGUE NOW PLAYS SEASON AFTER SEASON.',
               '',
@@ -2220,6 +2223,10 @@ def offseason_body(state, data):
 # ---------------------------------------------------------------- state helpers (C13)
 NO_CARD_TEXT = 'NO SEASON LINES RECORDED'
 NO_RATINGS_TEXT = 'NO RATINGS RECORDED'
+def _hub_cursor(hist, cat):
+    """True when the hub shows the MENU_ROWS cursor: not the /TITLE welcome mode,
+    where (hist is None or hist.seasons_recorded == 0) and cat >> 4 (C67)."""
+    return not ((hist is None or hist.seasons_recorded == 0) and cat >> 4)
 
 
 def pack(screen, page, cat, row=0, year=0):
@@ -2243,7 +2250,8 @@ def cursor_screen(s):
     SEASON AWARDS, AWARD HISTORY (C28), SEASON HISTORY (C56), SEASON STANDINGS (C57),
     TEAM HISTORY (C60), the offseason RETIREMENTS phase, MILESTONES (C27/C61: cat 0 the
     milestones list, cat 1 WATCH), the BOX SCORE and PLAYOFF BOX (C62), WORLD SERIES
-    (C64) and PLAYOFFS (C65)."""
+    (C64) and PLAYOFFS (C65). The hub MENU keeps its own cursor (C67, step and
+    _hub_cursor)."""
     if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_AWHIST,
                 SCREEN_HISTORY, SCREEN_STANDINGS, SCREEN_BOX, SCREEN_PBOX,
                 SCREEN_TEAMHIST, SCREEN_SERIES, SCREEN_PLAYOFFS):
@@ -2456,8 +2464,9 @@ def row_entry(s, data):
 
 
 def _find_order(hist, q):
-    """The FIND PLAYER search entries ((last_u, first_u, index, entry)) of q, in order."""
-    if not q:
+    """The FIND PLAYER search entries ((last_u, first_u, index, entry)) of q, in order
+    (none with no HISTORY.DAT)."""
+    if not q or hist is None:
         return []
     items = []
     for i in range(n_entries(hist)):
@@ -2845,7 +2854,12 @@ def step(state, key, data):
     (else the first); there LEFT and RIGHT step between listed teams and ESC returns to the
     kept standings state. ENTER on REVIEW goes to MENU. ENTER walks the offseason phases;
     past the last one it exits when the offseason was launched (cat >> 4) and goes to MENU
-    otherwise. ENTER on the /TITLE menu (cat >> 4) exits. Key 0 on the hub opens SEASON STANDINGS, W or w
+    otherwise. ESC exits from the /TITLE menu, and with a recorded season there C or c
+    exits too (C67) while ENTER opens the cursor row's screen (the hub's row key). The
+    plain hub is a cursor screen (C67): UP, DOWN, HOME, END, PGUP and PGDN move the
+    cursor over MENU_ROWS (PGUP and PGDN are HOME and END, one page), ENTER sends the
+    row's key (its first char), ESC and the row keys keep working from any row.
+    Key 0 on the hub opens SEASON STANDINGS, W or w
     WORLD SERIES. WORLD SERIES is a cursor screen (C64): UP, DOWN and the pages move the
     cursor and ENTER on a game row opens its BOX SCORE (keys 1..7 do the same for their
     game); ESC there goes back to the series, LEFT and RIGHT step between the season's
@@ -2877,6 +2891,10 @@ def step(state, key, data):
             return back, 0
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_MENU:
+        # C67: the /TITLE welcome mode (a league with no recorded season, cat >> 4)
+        # keeps its keys 1..9, 0, W, P and F, exits on ESC (above), ENTER and C or c;
+        # the MENU_ROWS hub is a cursor screen whose ENTER opens the cursor row's screen
+        hist = data['hist']
         if key == 48:
             data.pop('st_back', None)             # C56: another way in clears the back state
             return (SCREEN_STANDINGS, 0, 0), 0
@@ -2892,8 +2910,20 @@ def step(state, key, data):
             # it on the next ENTER)
             data['find'] = ''
             return pack(SCREEN_FIND, 0, 0), 0
-        if key == KEY_ENTER and cat >> 4:
-            return state, 1
+        if key == KEY_ENTER:
+            if not _hub_cursor(hist, cat):
+                return state, 1                   # the welcome text's PLAY BALL
+            return step(state, ord(MENU_ROWS[s[3]][0]), data)
+        # C67: C or c on the /TITLE menu (like ESC) goes on to the game with flag 1; the
+        # plain hub keeps both as no-ops
+        if key in KEY_CARD:
+            return state, 1 if cat >> 4 else 0
+        # C67: the cursor keys move the row (one page: PGUP is HOME, PGDN is END)
+        if key in CURSOR_KEYS and _hub_cursor(hist, cat):
+            last = len(MENU_ROWS) - 1
+            row = {KEY_UP: max(s[3] - 1, 0), KEY_DOWN: min(s[3] + 1, last),
+                   KEY_HOME: 0, KEY_PGUP: 0}.get(key, last)
+            return (state if row == s[3] else cursor_state(s, row)), 0
         return state, 0
     if screen == SCREEN_FIND:
         q = data.get('find', '')
@@ -3371,7 +3401,7 @@ OFF_COLS = [COLS_SINGLE, COLS_RETIRE, COLS_DRAFT, COLS_MOVE, COLS_MOVE, COLS_SIN
 COLS_AWHIST = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
                ('VALUE', _cx(22), 20, 'R')]
 
-FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
+FOOTERS = {SCREEN_MENU: 'ENTER 0-9 W P F SELECT   ESC EXIT',
            SCREEN_TEAMHIST: 'ENTER SEASON  LEFT RIGHT TEAM  PGUP PGDN ESC',
            SCREEN_HISTORY: 'ENTER STANDINGS   PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'TAB POSITION   PGUP PGDN   ESC MENU',
@@ -3391,7 +3421,7 @@ FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
            SCREEN_FIND: 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'}
 
 
-TITLE_FOOTER = '0-9 W SELECT   ENTER PLAY BALL'
+TITLE_FOOTER = 'ENTER 0-9 W SELECT   C PLAY BALL'
 TITLE_FOOTER_NEW = 'ENTER PLAY BALL'
 
 
@@ -3659,10 +3689,12 @@ def render(state, data):
         return fb
     cols = body_cols(state, data)
     # the highlighted row of the page: SETTINGS' cat row, the cursor row (C13.4) on the cursor
-    # screens, none on a single message row (C15.8)
+    # screens, none on a single message row (C15.8); the /TITLE welcome text has none (C67)
     if screen == SCREEN_SETTINGS:
         hot = cat - page * ROWS_PER_PAGE
     elif cursor_screen(s) and cols is not COLS_SINGLE:
+        hot = s[3] - page * ROWS_PER_PAGE
+    elif screen == SCREEN_MENU and _hub_cursor(data['hist'], s[2]):
         hot = s[3] - page * ROWS_PER_PAGE
     else:
         hot = -1
@@ -3720,12 +3752,13 @@ def _band(y):
 
 
 def click_to_key(state, data, x, y):
-    """(key, row) of a left click at (x, y), by the rules of C13.6 in order: a hub row band is
-    that row's key; a SETTINGS row band is the row with ENTER (START YEAR: LEFT when x < 160,
-    else RIGHT); a list row band of a cursor screen is the row with ENTER (the offseason
-    RETIREMENTS phase: C, as ENTER walks there); a title band on a screen where LEFT and RIGHT
-    act is LEFT or RIGHT; a footer band is PGUP or PGDN. row is the cursor row to set before the
-    key (None when no cursor moves). (None, None) when the click does nothing."""
+    """(key, row) of a left click at (x, y), by the rules of C13.6 in order: a hub row band
+    is that row's key (none on the /TITLE welcome text); a SETTINGS row
+    band is the row with ENTER (START YEAR: LEFT when x < 160, else RIGHT); a list row band
+    of a cursor screen is the row with ENTER (the offseason RETIREMENTS phase: C, as ENTER
+    walks there); a title band on a screen where LEFT and RIGHT act is LEFT or RIGHT; a
+    footer band is PGUP or PGDN. row is the cursor row to set before the key (None when no
+    cursor moves). (None, None) when the click does nothing."""
     s = unpack(state)
     screen, page = s[0], s[1]
     r = _band(y)

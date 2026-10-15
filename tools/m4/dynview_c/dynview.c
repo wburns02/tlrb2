@@ -4437,7 +4437,8 @@ done:
     return n;
 }
 
-/* the hub rows (dynview.MENU_ROWS): the key of row k is its first char */
+/* the hub rows (dynview.MENU_ROWS): the key of row k is its first char; the row's
+ * ENTER sends the same key (C67) */
 static const char *MENU_ITEMS[N_MENU_ROWS] = {
     "1  SEASON HISTORY", "2  HALL OF FAME", "3  LEADERS",
     "4  MILESTONES", "5  LAST SEASON REVIEW", "6  OFFSEASON",
@@ -4748,6 +4749,13 @@ static int total_rows(State st)
     }
 }
 
+/* the hub MENU_ROWS cursor (C67): true outside the /TITLE welcome mode, where a league
+ * with no recorded season and cat >> 4 shows TITLE_ROWS */
+static int hub_cursor(State st)
+{
+    return !(g_hdr_seasons == 0 && (st.cat >> 4));
+}
+
 /* rows of the current page into g_rows (matches dynview.rows; every screen
  * shows 'NO DYNASTY HISTORY YET' on a new file) and their columns into *cols */
 static int refresh_rows(State st, const ColDef **cols)
@@ -4768,6 +4776,14 @@ static int refresh_rows(State st, const ColDef **cols)
         }
         build_menu_rows();
         return N_MENU_ROWS;
+    }
+    /* FIND PLAYER shows its prompt and search with no recorded season too (dynview.rows),
+     * in COLS_SINGLE then (dynview.body_cols) */
+    if (st.screen == SCREEN_FIND) {
+        int n = find_body(st, st.page, cols);
+        if (g_hdr_seasons == 0)
+            *cols = COLS_SINGLE;
+        return n;
     }
     if (g_hdr_seasons == 0) {
         build_no_hist_rows();
@@ -4855,7 +4871,8 @@ static int leader_ncats(int mode)
 /* the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode), SEASON AWARDS,
  * AWARD HISTORY (C28), SEASON HISTORY (C56), SEASON STANDINGS (C57), TEAM HISTORY (C60),
  * the offseason RETIREMENTS phase, MILESTONES (C27/C61: cat 0 the milestones list,
- * cat 1 WATCH), WORLD SERIES (C64) and PLAYOFFS (C65) */
+ * cat 1 WATCH), WORLD SERIES (C64) and PLAYOFFS (C65); the hub MENU keeps its own
+ * cursor (C67, step and hub_cursor) */
 static int cursor_screen(State st)
 {
     if (st.screen == SCREEN_HOF || st.screen == SCREEN_LEADERS
@@ -5029,7 +5046,8 @@ static int season_screen(int screen)
  * 12; LEFT/RIGHT cycle the LEADERS category or step the SEASON AWARDS, SEASON
  * STANDINGS or WORLD SERIES season; key 0 on the hub opens SEASON STANDINGS, W or w
  * WORLD SERIES; keys 1..7 on WORLD SERIES open the BOX SCORE of that game (ESC there goes
- * back to the series, LEFT and RIGHT step between the season's games) */
+ * back to the series, LEFT and RIGHT step between the season's games); the hub is a
+ * cursor screen (C67) and its ENTER sends the cursor row's key */
 static State step(State in, int32_t key)
 {
     State s = in;
@@ -5086,25 +5104,32 @@ static State step(State in, int32_t key)
         return mk_state(SCREEN_MENU, 0, 0);
     }
     if (s.screen == SCREEN_MENU) {
+        /* C67 rule 2: outside the /TITLE welcome mode ENTER sends the cursor row's key */
+        if (key == KEY_ENTER && hub_cursor(s) && s.row < N_MENU_ROWS)
+            key = (int32_t)(unsigned char)MENU_ITEMS[s.row][0];
         if (key == 48) {
             g_st_have = 0;      /* C56: another way in clears the kept HISTORY back state */
             s.screen = SCREEN_STANDINGS;
             s.page = 0;
+            s.row = 0;
             s.cat = 0;
         } else if (49 <= key && key <= 57) {
             s.screen = (int16_t)(key - 48);
             s.page = 0;
             s.cat = 0;
+            s.row = 0;
         } else if (key == 87 || key == 119) {
             /* W or w: WORLD SERIES */
             s.screen = SCREEN_SERIES;
             s.page = 0;
             s.cat = 0;
+            s.row = 0;
         } else if (key == 80 || key == 112) {
             /* P or p: PLAYOFFS */
             s.screen = SCREEN_PLAYOFFS;
             s.page = 0;
             s.cat = 0;
+            s.row = 0;
         } else if (key == 70 || key == 102) {
             /* F or f: FIND PLAYER (C50), the query cleared */
             s.screen = SCREEN_FIND;
@@ -5113,9 +5138,26 @@ static State step(State in, int32_t key)
             s.row = 0;
             s.year = 0;
             g_find_q[0] = 0;
-        } else if (key == KEY_ENTER && (s.cat >> 4)) {
-            /* /TITLE: ENTER goes on to the game */
-            g_exit = 1;
+        } else if (key == KEY_ENTER || key == KEY_CARD_CAP || key == KEY_CARD_LOW) {
+            /* the welcome text's ENTER (ENTER elsewhere became the row's key above) and
+             * C or c (C67 rule 3): on /TITLE they go on to the game, else no-ops */
+            if (s.cat >> 4)
+                g_exit = 1;
+        } else if (hub_cursor(s) && (key == KEY_UP || key == KEY_DOWN || key == KEY_PGUP
+                                     || key == KEY_PGDN || key == KEY_HOME || key == KEY_END)) {
+            /* C67: the cursor keys move the row (one page: PGUP is HOME, PGDN is END) */
+            if (key == KEY_UP) {
+                if (s.row > 0)
+                    s.row--;
+            } else if (key == KEY_DOWN) {
+                if (s.row < N_MENU_ROWS - 1)
+                    s.row++;
+            } else if (key == KEY_HOME || key == KEY_PGUP) {
+                s.row = 0;
+            } else {
+                s.row = N_MENU_ROWS - 1;
+            }
+            s.page = 0;
         }
         return s;
     }
@@ -6369,7 +6411,7 @@ static int honors_rows(int32_t entry, int page)
 static const char *footer_of(State st)
 {
     static const char *footers[6] = {
-        "0-9 W P F SELECT   ESC EXIT",
+        "ENTER 0-9 W P F SELECT   ESC EXIT",
         "ENTER STANDINGS   PGUP PGDN   ESC MENU",
         "TAB POSITION   PGUP PGDN   ESC MENU",
         "LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD",
@@ -6386,7 +6428,8 @@ static const char *footer_of(State st)
         return st.row ? "LEFT RIGHT  PGUP PGDN  H SEASONS  ESC"
                       : "LEFT RIGHT  PGUP PGDN  H HONORS  ESC";
     if (st.screen == SCREEN_MENU && (st.cat >> 4))
-        return g_hdr_seasons == 0 ? "ENTER PLAY BALL" : "0-9 W SELECT   ENTER PLAY BALL";
+        return g_hdr_seasons == 0 ? "ENTER PLAY BALL"
+                                  : "ENTER 0-9 W SELECT   C PLAY BALL";
     if (st.screen == SCREEN_SETTINGS)
         return "UP DOWN MOVE   ENTER CHANGE   ESC MENU";
     if (st.screen == SCREEN_ABOUT)
@@ -6867,6 +6910,8 @@ static void render(State st)
         hot = st.cat - (int)st.page * ROWS_PER_PAGE;
     else if (cursor_screen(st) && cols != COLS_SINGLE)
         hot = (int)st.row - (int)st.page * ROWS_PER_PAGE;
+    else if (st.screen == SCREEN_MENU && hub_cursor(st))
+        hot = (int)st.row - (int)st.page * ROWS_PER_PAGE;   /* C67 */
     else
         hot = -1;
     rect_fb(8, 24, 311, 33, C_HEADER_GOLD);
@@ -7131,10 +7176,11 @@ static int left_right_screen(int screen)
 }
 
 /* the key of a left click at (x, y) (dynview.click_to_key, C13.6), in order: a hub row band is that
- * row's key; a SETTINGS row band is the row with ENTER (START YEAR: LEFT when x < 160, else RIGHT);
- * a band of a cursor screen row is the row with ENTER (the RETIREMENTS phase: C); a title band where
- * LEFT and RIGHT act is LEFT or RIGHT; a footer band is PGUP or PGDN. *row is the cursor row to set
- * first (-1: none), *key is -1 when the click does nothing */
+ * row's key (none on the /TITLE welcome text); a SETTINGS row band is the row with ENTER
+ * (START YEAR: LEFT when x < 160, else RIGHT); a band of a cursor screen row is the row with ENTER
+ * (the RETIREMENTS phase: C); a title band where LEFT and RIGHT act is LEFT or RIGHT; a footer band
+ * is PGUP or PGDN. *row is the cursor row to set first (-1: none), *key is -1 when the click does
+ * nothing */
 static void click_to_key(State st, int x, int y, int32_t *key, int32_t *row)
 {
     int r = band_row(y);
