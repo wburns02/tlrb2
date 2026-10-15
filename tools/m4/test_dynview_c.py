@@ -2031,3 +2031,69 @@ def test_playoffs_sparse_g_and_long_box_parity(tmp_path):
     data = dynview.load_data(str(ldir))
     s = (dynview.SCREEN_PLAYOFFS, 1, 0)
     assert dynview.step(s, dynview.KEY_ENTER, data)[0] == (dynview.SCREEN_PBOX, 0, 24)
+
+
+# ---------------------------------------------------------------- C27 MILESTONES WATCH
+from m4.test_dynview import G, AB, H, HR, R, RBI, BB, SO, SB, CS, E, W, L, \
+    SV, GS, CG, SHO, OUTS, ER, PH, PBB, PSO, PHR     # TOTALS indexes
+
+
+def watch_league_c(league_dir, empty=False):
+    """HISTORY.DAT for the C27 watch parity league: active batters at H 2950 (row) and
+    1700 (no row, 85%), HR 298 and HR 395 rows, a retired H 2990, a PSO 2995 pitcher,
+    H 3100 (no higher H mark); empty: one far-from-any-mark active player"""
+    d = bytearray(32 + 64 * 128 + (1 if empty else 7) * 160)
+    d[3] = 1
+    d[4], d[5] = 3, 0
+    d[6] = 1 if empty else 7
+    write_season(d, 1, b'ALA01', b'NL01')
+    write_season(d, 2, b'ALA02', b'NL02')
+    write_season(d, 3, b'ALA03', b'NL03')
+    tt = lambda: [0] * 25
+    if empty:
+        tw = tt()
+        tw[H], tw[AB] = 10, 50
+        write_player(d, 0, b'NONE', b'A', status=1, totals=tw)
+    else:
+        sets = [(b'HITE2950', 2950, 8000, 0, 0, 0),
+                (b'HITLOW', 1700, 5000, 0, 0, 0),
+                (b'HITDONE', 3100, 9000, 0, 0, 0),
+                (b'HRNEAR', 0, 3000, 298, 0, 0),
+                (b'HRNEAR2', 0, 3000, 395, 0, 0)]
+        for i, (last, h, ab, hr, pso, sb) in enumerate(sets):
+            tw = tt()
+            tw[H], tw[AB], tw[HR], tw[PSO], tw[SB] = h, ab, hr, pso, sb
+            write_player(d, i, last, b'A', status=1, totals=tw)
+        tw = tt()
+        tw[H], tw[AB] = 2990, 8000
+        write_player(d, 5, b'ORGUY', b'G', status=2, totals=tw)
+        tw = tt()
+        tw[PSO], tw[G], tw[OUTS] = 2995, 400, 8000
+        write_player(d, 6, b'KMAN', b'K', status=1, pitcher=1, totals=tw)
+    league_dir.mkdir(parents=True, exist_ok=True)
+    (league_dir / 'HISTORY.DAT').write_bytes(bytes(d))
+    return league_dir
+
+
+@pytest.mark.parametrize('empty', [False, True])
+def test_watch_screen_parity(tmp_path, empty):
+    """C27 MILESTONES mode 0 (new footer), WATCH (RIGHT), the cursor row and its card,
+    the empty message row, and the title click that toggles the mode"""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = watch_league_c(tmp_path / ('w1' if not empty else 'w0'), empty=empty)
+    check_parity(ldir, tmp_path, 'c27c_ms0', keys=[52])
+    check_parity(ldir, tmp_path, 'c27c_watch', keys=[52, dynview.KEY_RIGHT])
+    if not empty:
+        check_parity(ldir, tmp_path, 'c27c_watch_row1',
+                     keys=[52, dynview.KEY_RIGHT, dynview.KEY_DOWN])
+        check_parity(ldir, tmp_path, 'c27c_watch_enter',
+                     keys=[52, dynview.KEY_RIGHT, dynview.KEY_DOWN, 13])
+        check_parity(ldir, tmp_path, 'c27c_watch_esc',
+                     keys=[52, dynview.KEY_RIGHT, dynview.KEY_DOWN, 13, 27])
+        assert fb_python(ldir, keys=[52, dynview.KEY_RIGHT, dynview.KEY_DOWN, 13]) != \
+            fb_python(ldir, keys=[52, dynview.KEY_RIGHT, dynview.KEY_DOWN])
+    check_parity(ldir, tmp_path, 'c27c_title_click',
+                 keys=[52, ('L', 100, 14)])
+    assert fb_python(ldir, keys=[52, ('L', 100, 14)]) == \
+        fb_python(ldir, keys=[52, dynview.KEY_RIGHT])

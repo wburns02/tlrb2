@@ -84,9 +84,10 @@ NO_LINES_TEXT = 'NO SEASON LINES RECORDED YET.'
 BODY_Y0, TITLE_Y0, TITLE_Y1, FOOTER_Y0 = 35, 8, 20, 183
 # SETTINGS: START YEAR is the third row (cursor 2)
 SET_START = 2
-# the screens where LEFT and RIGHT step something (a title click there is LEFT or RIGHT)
+# the screens where LEFT and RIGHT step something (a title click there is LEFT or RIGHT).
+# MILESTONES (C27): LEFT/RIGHT toggle the mode (cat 0 milestones, cat 1 WATCH)
 LEFT_RIGHT_SCREENS = (SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_STANDINGS, SCREEN_SERIES,
-                      SCREEN_BOX, SCREEN_PLAYOFFS)
+                      SCREEN_BOX, SCREEN_PLAYOFFS, SCREEN_MILESTONES)
 N_CATS = 18
 
 # MILESTON.DAT kinds from this one up are award and leader records (C7), not milestones
@@ -1171,6 +1172,65 @@ def milestone_rows(hist, ms):
     return out
 
 
+# WATCH (C27): the stat labels of the WATCH MARK column; PSO is shown as SO.
+WATCH_LABELS = {'H': 'H', 'HR': 'HR', 'RBI': 'RBI', 'SB': 'SB', 'W': 'W',
+                'PSO': 'SO', 'SV': 'SV'}
+# MILESTONE_CAREER kind -> stat label ('PSO' shown as SO)
+WATCH_KIND_LABELS = {kind: WATCH_LABELS[key] for kind, key, _mark in history.MILESTONE_CAREER}
+
+
+def watch_rows(hist):
+    """WATCH rows (C27): one row per watch_items item, NAME, '%d %s' % (mark, label),
+    '%d' % now, '%d' % need (label = the item kind's stat key, PSO shown as SO). No item:
+    one COLS_SINGLE row 'NO ACTIVE PLAYER NEAR A MILESTONE'."""
+    out = []
+    for need, mark, kind, entry, now in watch_items(hist):
+        out.append((entry_name(hist, entry, 16), '%d %s' % (mark, WATCH_KIND_LABELS[kind]),
+                    '%d' % now, '%d' % need))
+    return out or [('NO ACTIVE PLAYER NEAR A MILESTONE',)]
+
+
+def watch_item_sort(item):
+    """The watch_items sort key: (need * 1000 // mark, need, entry, kind) ascending
+    (integer math; the C port must build the same key)."""
+    need, mark, kind, entry, _now = item
+    return (need * 1000 // mark, need, entry, kind)
+
+
+def watch_marks():
+    """The distinct stat keys of MILESTONE_CAREER in first-seen order."""
+    out = []
+    for _kind, key, _mark in history.MILESTONE_CAREER:
+        if key not in [k for _k, k in out]:
+            out.append((_kind, key))
+    return out
+
+
+def watch_items(hist):
+    """[(need, mark, kind, entry, now)] of the active players (status STATUS_ACTIVE) within
+    10% of an unreached MILESTONE_CAREER mark: for each entry and stat key the lowest mark
+    of that key with now < mark (now = the entry's career total of the key, via
+    history.TOTALS.index(key)); keep it when now * 10 >= mark * 9 (within 10%).
+    need = mark - now. Sorted by (need * 1000 // mark, need, entry, kind) ascending, at
+    most LIST_MAX."""
+    items = []
+    for i in range(n_entries(hist)):
+        e = hist.read_entry(i)
+        if e['status'] != history.STATUS_ACTIVE:
+            continue
+        for _kind, key in watch_marks():
+            now = e['totals'][history.TOTALS.index(key)]
+            above = [(m, k) for k, k2, m in history.MILESTONE_CAREER if k2 == key and now < m]
+            if not above:
+                continue
+            mark, mkind = min(above)                   # the lowest unreached mark and its kind
+            if now * 10 < mark * 9:
+                continue
+            items.append((mark - now, mark, mkind, i, now))
+    items.sort(key=watch_item_sort)
+    return items[:LIST_MAX]
+
+
 def review_rows(hist, ms, league_dir=None):
     """REVIEW lines for the last recorded season; None when there is no history.
     Champion/runner-up, six award lines, new HoF entries, that season's milestones
@@ -1840,8 +1900,11 @@ def unpack(state):
 
 def cursor_screen(s):
     """True on the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode),
-    SEASON AWARDS and the offseason RETIREMENTS phase."""
+    SEASON AWARDS, the offseason RETIREMENTS phase and MILESTONES WATCH (C27, cat 1;
+    the milestones mode 0 has none)."""
     if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS):
+        return True
+    if s[0] == SCREEN_MILESTONES and s[2] == 1:
         return True
     return s[0] == SCREEN_OFFSEASON and (s[2] & 15) == OFF_RETIRE
 
@@ -1935,6 +1998,9 @@ def row_entry(s, data):
     if s[0] == SCREEN_AWARDS:
         items = awards_items(hist, data['ms'], hist.seasons_recorded - s[2])
         return award_entry(hist, items[row][1]) if row < len(items) else None
+    if s[0] == SCREEN_MILESTONES and s[2] == 1:
+        items = watch_items(hist)
+        return items[row][3] if row < len(items) else None
     if s[0] == SCREEN_OFFSEASON:
         ret = retire_entries(hist)
         return ret[row][0] if row < len(ret) else None
@@ -2107,7 +2173,10 @@ def total_rows(state, data):
     elif screen == SCREEN_LEADERS:
         n = leaders_body(s, data)[1]
     elif screen == SCREEN_MILESTONES:
-        n = milestone_rows(hist, data['ms']) if hist.seasons_recorded else []
+        if hist.seasons_recorded:
+            n = watch_items(hist) if s[2] == 1 else milestone_rows(hist, data['ms'])
+        else:
+            n = []
     elif screen == SCREEN_REVIEW:
         n = review_rows(hist, data['ms']) or []
     elif screen == SCREEN_OFFSEASON:
@@ -2186,7 +2255,10 @@ def rows(state, data):
     elif screen == SCREEN_HOF:
         all_rows = hof_rows(hist)
     elif screen == SCREEN_MILESTONES:
-        all_rows = milestone_rows(hist, data['ms'])
+        if cat != 1:
+            all_rows = milestone_rows(hist, data['ms'])
+        else:
+            all_rows = watch_rows(hist)
     else:
         all_rows = review_rows(hist, data['ms'], data.get('league_dir'))
         if all_rows is None:
@@ -2402,6 +2474,9 @@ def step(state, key, data):
         if not newer:
             return state, 0
         return pack(SCREEN_LEADERS, 0, cat, 0, newer[0]), 0
+    if screen == SCREEN_MILESTONES and key in (KEY_LEFT, KEY_RIGHT):
+        # C27: the mode toggles (cat 0 milestones, cat 1 WATCH); page and row reset
+        return (SCREEN_MILESTONES, 0, 0 if cat == 1 else 1), 0
     if screen in (SCREEN_AWARDS, SCREEN_STANDINGS, SCREEN_SERIES, SCREEN_PLAYOFFS) \
             and key in (KEY_LEFT, KEY_RIGHT):
         # LEFT goes back a season while one is left (shown season > 1), RIGHT forward
@@ -2433,6 +2508,9 @@ COLS_LEADERS = [('#', _cx(0), 5, 'L'), ('NAME', _cx(5), 16, 'L'), (' ', _cx(22),
                 ('YRS', _cx(23), 5, 'R'), ('VALUE', _cx(28), 14, 'R')]
 COLS_MILESTONES = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
                    ('EVENT', _cx(22), 20, 'L')]
+# WATCH (C27)
+COLS_WATCH = [('NAME', _cx(0), 16, 'L'), ('MARK', _cx(17), 9, 'L'),
+              ('NOW', _cx(27), 6, 'R'), ('NEED', _cx(35), 6, 'R')]
 COLS_RETIRE = [('NAME', _cx(0), 18, 'L'), ('AGE', _cx(18), 5, 'R'), ('YRS', _cx(23), 5, 'R'),
                ('WAR', _cx(28), 7, 'R'), ('HOF', _cx(36), 6, 'R')]
 COLS_DRAFT = [('#', _cx(0), 4, 'L'), ('TEAM', _cx(4), 13, 'L'), ('POS', _cx(18), 3, 'L'),
@@ -2466,7 +2544,7 @@ FOOTERS = {SCREEN_MENU: '0-9 W SELECT   ESC EXIT',
            SCREEN_HOF: 'PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT STAT  TAB MODE  ENTER CARD',
            SCREEN_CARD: 'PGUP PGDN SEASONS   ESC BACK',
-           SCREEN_MILESTONES: 'PGUP PGDN   ESC MENU',
+           SCREEN_MILESTONES: 'LEFT RIGHT WATCH   PGUP PGDN   ESC MENU',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU',
            SCREEN_SETTINGS: 'UP DOWN MOVE   ENTER CHANGE   ESC MENU',
            SCREEN_ABOUT: 'PGUP PGDN   ESC MENU',
@@ -2484,9 +2562,11 @@ TITLE_FOOTER_NEW = 'ENTER PLAY BALL'
 
 def footer_text(state, data=None):
     """Footer line of state; the offseason's ENTER label follows its phase, the /TITLE
-    menu's follows whether any season is recorded."""
+    menu's follows whether any season is recorded, MILESTONES WATCH its mode (C27)."""
     s = unpack(state)
     screen, cat = s[0], s[2]
+    if screen == SCREEN_MILESTONES and cat == 1:
+        return 'ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC'
     if screen == SCREEN_LEADERS and cat >> 5 == MODE_BYYEAR:
         return 'LEFT RIGHT STAT  - + YEAR  TAB MODE'
     if screen == SCREEN_MENU and cat >> 4:
@@ -2524,7 +2604,7 @@ def screen_title(state, data):
     if screen == SCREEN_CARD:
         return card_title(s, data)
     if screen == SCREEN_MILESTONES:
-        return 'MILESTONES'
+        return 'MILESTONE WATCH' if cat == 1 else 'MILESTONES'
     if screen == SCREEN_OFFSEASON:
         n = data['hist'].seasons_recorded
         phase = cat & 15
@@ -2598,6 +2678,8 @@ def body_cols(state, data):
         return pbox_body(state, data)[0]
     if state[0] == SCREEN_LEADERS:
         return leaders_body(state, data)[0]
+    if state[0] == SCREEN_MILESTONES and unpack(state)[2] == 1:
+        return COLS_WATCH if watch_items(data['hist']) else COLS_SINGLE
     return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
             SCREEN_HOF: COLS_HOF, SCREEN_MILESTONES: COLS_MILESTONES,
             SCREEN_REVIEW: COLS_SINGLE, SCREEN_CARD: COLS_SINGLE}[state[0]]

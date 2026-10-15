@@ -164,6 +164,15 @@
 #define SERIES_HE_KIND 200
 #define SERIES_GAMES 7
 #define SERIES_MAX 22
+/* MILESTONES WATCH (C27): one (need, mark, kind, entry, now) item per active player
+ * within 10% of an unreached MILESTONE_CAREER mark, at most LIST_MAX */
+#define WATCH_MAX LIST_MAX
+typedef struct {
+    uint32_t need, mark, now;
+    uint8_t kind;               /* the MILESTONE_CAREER kind */
+    uint16_t key;               /* TOTALS index of the stat (H 2, HR 5, ...) */
+    uint32_t entry;
+} WatchItem;
 /* BOX SCORE (C7 fourth amendment BOXSCORE.DAT): the first BOX_MAX_RECS records of one
  * (season, game), in file order */
 #define BOX_MAX_RECS 112
@@ -408,6 +417,10 @@ static uint8_t FARDATA g_portrait[PORTRAIT_W * PORTRAIT_H];
 
 /* SEASON STANDINGS: the rows of the season (STAND_MAX at most) */
 static Row FARDATA g_stnd[STAND_MAX];
+
+/* MILESTONES WATCH (C27): the watch items in sorted order (WATCH_MAX at most) */
+static WatchItem FARDATA g_watch[WATCH_MAX];
+static int32_t g_nwatch;
 
 /* WORLD SERIES: the rows of the season (SERIES_MAX at most) */
 static Row FARDATA g_ser[SERIES_MAX];
@@ -2565,6 +2578,105 @@ static void ms_scan(List *b)
     }
 }
 
+/* ---------------- MILESTONES WATCH (C27) ---------------- */
+
+/* the MILESTONE_CAREER marks: (kind, TOTALS key index, mark) */
+static const uint8_t WATCH_KIND[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+                                      13, 14, 15, 16, 17 };
+static const uint8_t WATCH_KEY[] = { 2, 2, 5, 5, 5, 5, 5, 7, 7, 10, 13, 13,
+                                     23, 23, 23, 15, 15 };
+static const uint16_t WATCH_MARK[] = { 2000, 3000, 300, 400, 500, 600, 700, 1500, 2000,
+                                       500, 200, 300, 2000, 3000, 4000, 300, 400 };
+#define WATCH_NMARKS 17
+/* the WATCH_MARK indexes of the distinct keys, first occurrence per key (7 keys:
+ * H, HR, RBI, SB, W, PSO, SV); watch_items makes one item per key */
+static const uint8_t WATCH_KEYS0[7] = { 0, 2, 7, 9, 10, 12, 15 };
+#define WATCH_NKEYS 7
+/* the WATCH MARK label of each kind; PSO shown as SO */
+static const char *const WATCH_LABEL[] = {
+    "H", "H", "HR", "HR", "HR", "HR", "HR", "RBI", "RBI", "SB", "W", "W",
+    "SO", "SO", "SO", "SV", "SV" };
+
+/* watch_items: the active players within 10% of an unreached mark. For each entry and
+ * stat key the lowest mark of that key with now < mark is the item's mark; kept when
+ * now * 10 >= mark * 9. Sorted by (need * 1000 / mark, need, entry, kind) ascending
+ * (32-bit need per mille; the C keys are need < 1000 so the product fits 32 bits) */
+static int watch_lt(const WatchItem *a, const WatchItem *b)
+{
+    if (a->need * 1000u / a->mark != b->need * 1000u / b->mark)
+        return a->need * 1000u / a->mark < b->need * 1000u / b->mark;
+    if (a->need != b->need)
+        return a->need < b->need;
+    if (a->entry != b->entry)
+        return a->entry < b->entry;
+    return a->kind < b->kind;
+}
+
+static void watch_scan(void)
+{
+    uint32_t i;
+    int32_t j;
+    g_nwatch = 0;
+    for (i = 0; i < n_entries(); i++) {
+        Entry e;
+        WatchItem best[WATCH_NMARKS];
+        int nbest = 0;
+        read_entry(&e, i);
+        if (e.status != STATUS_ACTIVE)
+            continue;
+        for (j = 0; j < WATCH_NKEYS; j++) {
+            int ji = WATCH_KEYS0[j];
+            uint32_t now = e.tot[WATCH_KEY[ji]];
+            uint32_t lowest = 0;
+            int have = 0, k, lk = ji;
+            WatchItem it;
+            /* the lowest mark of this key with now < mark; skip when none */
+            for (k = 0; k < WATCH_NMARKS; k++) {
+                if (WATCH_KEY[k] == WATCH_KEY[ji] && now < WATCH_MARK[k]
+                    && (!have || WATCH_MARK[k] < lowest)) {
+                    lowest = WATCH_MARK[k];
+                    lk = k;
+                    have = 1;
+                }
+            }
+            if (!have)
+                continue;
+            if (now >= lowest)
+                continue;
+            if (now * 10u < lowest * 9u)
+                continue;
+            it.need = lowest - now;
+            it.mark = lowest;
+            it.now = now;
+            it.kind = WATCH_KIND[lk];      /* the kind of the chosen mark */
+            it.key = WATCH_KEY[ji];
+            it.entry = i;
+            best[nbest++] = it;
+        }
+        for (j = 0; j < nbest; j++) {
+            int32_t lo = 0, hi = g_nwatch, mid;
+            if (g_nwatch >= WATCH_MAX
+                && !watch_lt(&best[j], &g_watch[g_nwatch - 1]))
+                continue;
+            while (lo < hi) {
+                mid = (lo + hi) / 2;
+                if (watch_lt(&g_watch[mid], &best[j]))
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+            if (lo >= WATCH_MAX)
+                continue;
+            if (g_nwatch < WATCH_MAX)
+                g_nwatch++;
+            if (g_nwatch - 1 > lo)
+                memmove(&g_watch[lo + 1], &g_watch[lo],
+                        (size_t)(g_nwatch - 1 - lo) * sizeof(g_watch[0]));
+            g_watch[lo] = best[j];
+        }
+    }
+}
+
 /* history: one row per season, newest first (at most 64 seasons) */
 static void hist_scan(List *b)
 {
@@ -3033,6 +3145,7 @@ static int build_series(long season)
 static const ColDef COLS_SINGLE[1];
 static const ColDef COLS_SERIES[5];
 static const ColDef COLS_BOX[7];
+static const ColDef COLS_WATCH[4];      /* C27 WATCH */
 /* ---------------- PLAYOFFS (C23c round header records) ---------------- */
 
 /* the season's flags-4 round headers into g_pl (playoff_games), streamed from
@@ -3422,6 +3535,33 @@ static int build_ms_rows(int page)
     return n;
 }
 
+/* WATCH rows of page (C27): NAME, '%d %s' (mark, label), NOW, NEED; no item at all:
+ * one message row. Returns the drawn row count. */
+static int build_watch_rows(int page)
+{
+    int n = 0, k, r0 = page * ROWS_PER_PAGE, r;
+    for (r = r0; r < g_nwatch && r < (page + 1) * ROWS_PER_PAGE; r++, n++) {
+        const WatchItem *it = &g_watch[r];
+        char nm[NAME_CAP_MAX];
+        Row *row = &g_rows[n];
+        row->ncells = 4;
+        entry_name((uint16_t)it->entry, 16, nm);
+        strcpy(row->cells[0], nm);
+        sprintf(row->cells[1], "%lu %s", (unsigned long)it->mark,
+                WATCH_LABEL[it->kind - 1]);
+        sprintf(row->cells[2], "%lu", (unsigned long)it->now);
+        sprintf(row->cells[3], "%lu", (unsigned long)it->need);
+    }
+    if (n == 0 && page == 0) {
+        strcpy(g_rows[0].cells[0], "NO ACTIVE PLAYER NEAR A MILESTONE");
+        g_rows[0].ncells = 1;
+        n = 1;
+    }
+    for (k = n; k < MAX_ROWS; k++)
+        g_rows[k].ncells = 0;
+    return n;
+}
+
 /* REVIEW lines for the last recorded season; 0 lines when there is no
  * history; cut at 12 lines */
 static int build_review_rows(void)
@@ -3704,8 +3844,12 @@ static int total_rows(State st)
         List b;
         if (!g_hdr_seasons)
             return 0;
-        ms_scan(&b);
-        return (int)b.n;
+        if (st.cat != 1) {
+            ms_scan(&b);
+            return (int)b.n;
+        }
+        watch_scan();
+        return (int)g_nwatch;
     }
     case SCREEN_CARD:
         card_collect(st.cat);
@@ -3770,8 +3914,15 @@ static int refresh_rows(State st, const ColDef **cols)
         hof_scan(&g_hofl);
         return build_hof_rows(st.page);
     case SCREEN_MILESTONES:
-        ms_scan(&g_msl);
-        return build_ms_rows(st.page);
+        if (st.cat != 1) {
+            ms_scan(&g_msl);
+            return build_ms_rows(st.page);
+        }
+        *cols = COLS_WATCH;
+        watch_scan();
+        if (g_nwatch == 0)
+            *cols = COLS_SINGLE;
+        return build_watch_rows(st.page);
     case SCREEN_OFFSEASON:
         return page_rows(offseason_body(st, st.page, cols), st.page);
     case SCREEN_AWARDS:
@@ -3814,11 +3965,14 @@ static int leader_ncats(int mode)
     return mode == MODE_CAREER ? N_CAREER_CATS : N_SEASON_CATS;
 }
 
-/* the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode), SEASON AWARDS and the
- * offseason RETIREMENTS phase */
+/* the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode), SEASON AWARDS,
+ * the offseason RETIREMENTS phase and MILESTONES WATCH (C27, cat 1; milestones mode 0
+ * has none) */
 static int cursor_screen(State st)
 {
     if (st.screen == SCREEN_HOF || st.screen == SCREEN_LEADERS || st.screen == SCREEN_AWARDS)
+        return 1;
+    if (st.screen == SCREEN_MILESTONES && st.cat == 1)
         return 1;
     return st.screen == SCREEN_OFFSEASON && (st.cat & 15) == OFF_RETIRE;
 }
@@ -3883,6 +4037,10 @@ static int32_t row_entry(State st)
     if (st.screen == SCREEN_AWARDS) {
         int n = build_awards((long)g_hdr_seasons - st.cat);
         return row < n ? award_entry(g_awd_idx[row]) : -1;
+    }
+    if (st.screen == SCREEN_MILESTONES && st.cat == 1) {
+        watch_scan();
+        return row < g_nwatch ? (int32_t)g_watch[row].entry : -1;
     }
     if (st.screen == SCREEN_OFFSEASON) {
         uint32_t nret = 0, nhof = 0;
@@ -4221,6 +4379,10 @@ static State step(State in, int32_t key)
     /* SEASON AWARDS, SEASON STANDINGS and WORLD SERIES: LEFT goes back a season while the
      * shown one is above 1 (season = seasons recorded - cat), RIGHT forward; otherwise
      * the state is unchanged */
+    /* MILESTONES (C27): LEFT and RIGHT toggle the mode (cat 0 milestones, cat 1 WATCH);
+     * page and row reset. Other screens' season stepping first. */
+    if (s.screen == SCREEN_MILESTONES && (key == KEY_LEFT || key == KEY_RIGHT))
+        return mk_state(SCREEN_MILESTONES, 0, s.cat == 1 ? 0 : 1);
     if (season_screen(s.screen) && key == KEY_LEFT) {
         if ((long)g_hdr_seasons - s.cat > 1) {
             s.cat = (int16_t)(s.cat + 1);
@@ -4266,6 +4428,11 @@ static const ColDef COLS_LEADERS[] = {
 static const ColDef COLS_MILESTONES[] = {
     { "YEAR", CX(0), 4, 0 }, { "NAME", CX(5), 16, 0 },
     { "EVENT", CX(22), 20, 0 } };
+
+/* WATCH (C27) */
+static const ColDef COLS_WATCH[] = {
+    { "NAME", CX(0), 16, 0 }, { "MARK", CX(17), 9, 0 },
+    { "NOW", CX(27), 6, 1 }, { "NEED", CX(35), 6, 1 } };
 
 static const ColDef COLS_RETIRE[] = {
     { "NAME", CX(0), 18, 0 }, { "AGE", CX(18), 5, 1 }, { "YRS", CX(23), 5, 1 },
@@ -4320,6 +4487,8 @@ static int n_cols(const ColDef *cols)
 {
     if (cols == COLS_SINGLE)
         return NCOLS(COLS_SINGLE);
+    if (cols == COLS_WATCH)
+        return NCOLS(COLS_WATCH);
     if (cols == COLS_HISTORY)
         return NCOLS(COLS_HISTORY);
     if (cols == COLS_HOF)
@@ -4370,8 +4539,14 @@ static const ColDef *body_cols(State st)
         return COLS_HOF;
     case SCREEN_LEADERS:
         return COLS_LEADERS;
-    case SCREEN_MILESTONES:
+    case SCREEN_MILESTONES: {
+        /* WATCH: the message row (no item) uses COLS_SINGLE, as the cursors do (C15.8) */
+        if (st.cat == 1) {
+            watch_scan();
+            return g_nwatch ? COLS_WATCH : COLS_SINGLE;
+        }
         return COLS_MILESTONES;
+    }
     case SCREEN_AWARDS:
         return COLS_AWARDS;
     case SCREEN_STANDINGS:
@@ -4700,10 +4875,12 @@ static const char *footer_of(State st)
         "PGUP PGDN   ESC MENU",
         "PGUP PGDN   ESC MENU",
         "LEFT RIGHT STAT  TAB MODE  ENTER CARD",
-        "PGUP PGDN   ESC MENU",
+        "LEFT RIGHT WATCH   PGUP PGDN   ESC MENU",
         "ENTER MENU   ESC MENU" };
     if (st.screen == SCREEN_LEADERS && (st.cat >> 5) == MODE_BYYEAR)
         return "LEFT RIGHT STAT  - + YEAR  TAB MODE";
+    if (st.screen == SCREEN_MILESTONES && st.cat == 1)
+        return "ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC";
     if (st.screen == SCREEN_CARD)
         return "PGUP PGDN SEASONS   ESC BACK";
     if (st.screen == SCREEN_MENU && (st.cat >> 4))
@@ -4761,7 +4938,7 @@ static void screen_title(State st, char *dst)
             card_name(&e, dst);
         }
     } else if (st.screen == SCREEN_MILESTONES)
-        strcpy(dst, "MILESTONES");
+        strcpy(dst, st.cat == 1 ? "MILESTONE WATCH" : "MILESTONES");
     else if (st.screen == SCREEN_SETTINGS)
         strcpy(dst, "DYNASTY SETTINGS");
     else if (st.screen == SCREEN_ABOUT)
@@ -5354,7 +5531,8 @@ static int band_row(int y)
 static int left_right_screen(int screen)
 {
     return screen == SCREEN_LEADERS || screen == SCREEN_AWARDS || screen == SCREEN_STANDINGS
-           || screen == SCREEN_SERIES || screen == SCREEN_BOX || screen == SCREEN_PLAYOFFS;
+           || screen == SCREEN_SERIES || screen == SCREEN_BOX || screen == SCREEN_PLAYOFFS
+           || screen == SCREEN_MILESTONES;   /* C27: a title click toggles the mode */
 }
 
 /* the key of a left click at (x, y) (dynview.click_to_key, C13.6), in order: a hub row band is that
