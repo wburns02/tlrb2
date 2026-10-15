@@ -979,6 +979,99 @@ def test_render_edit_msg_and_cursor_row(tmp_path):
                for y in range(172, 179) for x in range(10, 200))
 
 
+# ---------------------------------------------------------------- C31: point budget
+def test_budget_module_tables():
+    assert cr.BUDGET_BAT == (0, 36, 45, 54) and cr.BUDGET_PIT == (0, 18, 24, 28)
+    assert cr.BUDGET_NAMES == ('OFF', 'ROOKIE', 'REGULAR', 'STAR')
+    assert cr.MSG_BUDGET == 'OVER THE POINT BUDGET, PRESS B'
+
+
+def test_budget_cycle_on_rating_field(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 17)                       # empty batter, POWER row next
+    st, _ = walk(ctx, [DOWN] * 6 + [66, 98], st)
+    assert st['budget'] == 2                       # 0 -> 1 -> 2
+    st, _ = walk(ctx, [66, 66], st)
+    assert st['budget'] == 0                       # 3 wraps to OFF
+    st2 = to_edit(ctx, 0, 17)                      # survives every screen change
+    st2, _ = walk(ctx, [DOWN] * 6 + [98, ESC, DOWN, ENTER], st2)
+    assert (st2['screen'], st2['budget']) == (cr.S_EDIT, 1)
+    st3, _ = walk(ctx, [DOWN] * 13 + [ENTER], st2)  # save attempt with no name
+    assert st3['screen'] == cr.S_EDIT
+    st3, _ = walk(ctx, [ESC, ESC, ENTER, DOWN, ENTER], st3)   # back to a fresh slot
+    assert (st3['screen'], st3['budget']) == (cr.S_EDIT, 1)
+
+
+def test_budget_b_typed_in_names(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 17)
+    st, _ = walk(ctx, [66, 98], st)                # LAST NAME row: letters, not the mode
+    assert (st['budget'], st['form']['last']) == (0, 'BB')
+    st, _ = walk(ctx, [DOWN, 66, 98, UP], st)      # FIRST NAME row too
+    assert (st['budget'], st['form']['first']) == (0, 'BB')
+
+
+def test_budget_spent_defaults(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    assert cr._budget_spent(to_edit(ctx, 0, 17)) == 36     # default batter: 6 * 6
+    # pitcher spent = r0 + r1 + r2. blank_form is 6 + 6 + 6 = 18; an edit screen's
+    # default_form starts ENDURANCE at 5, so 17.
+    assert cr._budget_spent(to_edit(ctx, 0, 1)) == 17
+    assert cr._budget_spent(dict(cr.start_state(), slot=1, form=cr.blank_form())) == 18
+
+
+@need_fonts
+def test_budget_star_saves_rookie_refused(tmp_path):
+    lg = make_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg, fonts=fonts())
+    before = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
+    st = to_edit(ctx, 0, 17)                       # empty batter B2
+    st, _ = walk(ctx, typed('Oak') + [DOWN] * 6, st)       # cursor on POWER (row 6)
+    st, _ = walk(ctx, [98] + [RIGHT] * 6 + [DOWN] * 7 + [ENTER], st)   # ROOKIE mode
+    # spent 42 > 36: refused, msg 2, nothing written
+    assert (st['screen'], st['msg'], st['budget']) == (cr.S_EDIT, 2, 1)
+    assert open(os.path.join(lg, 'BOS.V20'), 'rb').read() == before
+    fb = cr.render(st, ctx)
+    assert any(fb[y * 320 + x] == dynview.C_DRED
+               for y in range(172, 179) for x in range(10, 250))
+    st, _ = walk(ctx, [LEFT], st)                  # the next key clears msg 2
+    assert st['msg'] == 0
+    st, _ = walk(ctx, [98, 98], st)                # STAR (cap 54): the form now saves
+    st, _ = walk(ctx, [DOWN] * 7 + [ENTER], st)
+    assert st['screen'] == cr.S_DONE
+    img = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
+    assert img != before
+    assert cr.record(img, 17)[74] & 0x0f == 12     # POWER 12 written
+    st, _ = walk(ctx, [ENTER], st)                 # CREATE ANOTHER keeps the mode
+    assert (st['screen'], st['budget']) == (cr.S_TEAM, 3)
+    st, _ = walk(ctx, [ENTER, ENTER], st)
+    assert (st['screen'], st['budget']) == (cr.S_EDIT, 3)
+
+
+def test_budget_empty_name_msg1_wins(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 17)                       # ROOKIE, no name, spent 42 over 36
+    st, _ = walk(ctx, [DOWN] * 6 + [98] + [RIGHT] * 6 + [DOWN] * 7 + [ENTER], st)
+    assert (st['msg'], st['screen']) == (1, cr.S_EDIT)     # the empty name check runs first
+
+
+def test_budget_off_save_identical(tmp_path):
+    """Mode OFF: an all-12s form (over every non-OFF batter budget) still saves, and the
+    record equals build_record of the walked form."""
+    lg = make_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    st = to_edit(ctx, 0, 17)
+    keys = typed('Oak') + [DOWN] * 6 + ([RIGHT] * 6 + [DOWN]) * 6 + [DOWN, ENTER]
+    st, _ = walk(ctx, keys, st)
+    assert (st['screen'], st['budget']) == (cr.S_DONE, 0)
+    rec = open(os.path.join(lg, 'BOS.V20'), 'rb').read()[295 + 143 * 17:295 + 143 * 18]
+    grp = ctx['faces'][1]
+    form = cr.blank_form()
+    form.update({'last': 'OAK', 'r': [12] * 6})
+    want = cr.build_record(form, False, cr.year_byte(cr.read_v20(lg, 'BOS')), grp)
+    assert rec == want
+
+
 # ---------------------------------------------------------------- teams: stable ids (C12.3)
 def write_table(d, entries):
     """TEAMID.DAT of d: entries = {k: stem} (k 0..31), every other entry NUL."""

@@ -1356,3 +1356,31 @@ two screens read off those records; it writes nothing.
   12th row, PLAYOFFS pages 0 and 1 and empty seasons, PBOX first game and after RIGHT, the WS
   box after RIGHT past the last round game (and back), the managed star, a 48-header season,
   headers out of g order, and 25 random key walks all match Python's framebuffer byte for byte.
+
+## C31. CREATE point budget (added 2026-10-14)
+
+The CREATE edit screen (create._step_edit, create._draw_edit and the C port) gains a
+point budget. It does not change the V20 record build: save_slot, build_record and
+every saved byte are exactly as before.
+
+- Session state st['budget'] in 0..3, set to 0 by start_state and kept across CREATE
+  ANOTHER and every screen change. Modes: 0 OFF, 1 ROOKIE, 2 REGULAR, 3 STAR. Point
+  budgets: batters BUDGET_BAT = (0, 36, 45, 54), pitchers BUDGET_PIT = (0, 18, 24, 28);
+  BUDGET_NAMES = ('OFF', 'ROOKIE', 'REGULAR', 'STAR').
+- Points spent = the sum of the form's ratings (r0..r5 for a batter slot, r0..r2 for a
+  pitcher slot). The pitcher edit screen's default form is 17 points (ENDURANCE starts
+  at 5); the blank form is 18.
+- Key B (66 or 98) on the edit screen, when the current field is not 'last' or 'first'
+  (there B types a letter as before), cycles st['budget'] = (st['budget'] + 1) % 4.
+  Nothing else changes; footers are unchanged.
+- Drawn on the edit screen below the salary block, in C_BLACK: 'BUDGET' at (228, 135);
+  at (228, 145) BUDGET_NAMES[mode] when the mode is OFF, else '%d/%d' % (spent, budget);
+  at (228, 155) the mode name when the mode is not OFF (nothing when OFF). When
+  spent > budget (mode not OFF) the '%d/%d' text is drawn in C_DRED.
+- SAVE: ENTER on 'save' with a non-empty last name and spent > budget (mode not OFF)
+  sets st['msg'] = 2 and saves nothing; the confirm screen and the save are skipped.
+  st['msg'] == 2 draws MSG_BUDGET = 'OVER THE POINT BUDGET, PRESS B' at (10, 175) in
+  C_DRED. msg 2 is cleared like msg 1 (step clears msg first on every key). The empty
+  name check runs first (msg 1 wins over the budget refusal).
+- C port: create.c carries budget in State, the same tables, key rule, texts, colours
+  and positions; CREATE.EXE rebuilt with Watcom after the parity gate.

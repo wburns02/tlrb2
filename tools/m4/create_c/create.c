@@ -140,7 +140,7 @@ typedef struct {
 
 /* the program state (create.py state dict; the image lives in g_image) */
 typedef struct {
-    int16_t screen, cursor, team, slot, msg;
+    int16_t screen, cursor, team, slot, msg, budget;
     Form form;
 } State;
 
@@ -218,6 +218,11 @@ static const char *FOOT_NAME = "TYPE NAME   UP DOWN   ESC SLOTS";
 static const char *FOOT_SAVE = "ENTER SAVE   UP DOWN   ESC SLOTS";
 static const char *FOOT_FIELD = "UP DOWN   LEFT RIGHT CHANGE   ESC SLOTS";
 static const char *MSG_NAME = "TYPE A LAST NAME FIRST";
+/* C31: point budgets per mode (OFF, ROOKIE, REGULAR, STAR) and messages */
+static const uint8_t BUDGET_BAT[4] = { 0, 36, 45, 54 };
+static const uint8_t BUDGET_PIT[4] = { 0, 18, 24, 28 };
+static const char *BUDGET_NAMES[4] = { "OFF", "ROOKIE", "REGULAR", "STAR" };
+static const char *MSG_BUDGET = "OVER THE POINT BUDGET, PRESS B";
 
 /* team header slot lists of the ROLE column (create.py ROLE_LISTS): byte ranges of the
  * team image, each byte a slot index or 0xff */
@@ -1069,6 +1074,21 @@ static int step_slot(State *st, int32_t key)
     return 0;
 }
 
+/* C31: points spent (the form's ratings) and the budget of the current mode */
+static int budget_spent(const State *st)
+{
+    const Form *f = &st->form;
+    if (st->slot < PITCHER_SLOTS)
+        return f->r[0] + f->r[1] + f->r[2];
+    return f->r[0] + f->r[1] + f->r[2] + f->r[3] + f->r[4] + f->r[5];
+}
+
+static int budget_cap(const State *st)
+{
+    const uint8_t *tab = st->slot < PITCHER_SLOTS ? BUDGET_PIT : BUDGET_BAT;
+    return tab[st->budget];
+}
+
 static int step_edit(State *st, int32_t key)
 {
     int pitcher = st->slot < PITCHER_SLOTS;
@@ -1083,10 +1103,16 @@ static int step_edit(State *st, int32_t key)
         st->cursor = (int16_t)list_key(st->cursor, key, edit_rows(pitcher));
         return 0;
     }
+    if ((key == 66 || key == 98) && fld != FLD_LAST && fld != FLD_FIRST) {
+        st->budget = (int16_t)((st->budget + 1) % 4);   /* C31: cycle the budget mode */
+        return 0;
+    }
     if (key == KEY_ENTER) {
         if (fld == FLD_SAVE) {
             if (f->last[0] == 0)
                 st->msg = 1;
+            else if (st->budget && budget_spent(st) > budget_cap(st))
+                st->msg = 2;                     /* C31: over the point budget */
             else if (recp(st->slot)[0]) {
                 st->screen = S_CONFIRM;
                 st->cursor = 0;
@@ -1396,6 +1422,8 @@ static void draw_edit(const State *st)
     }
     if (st->msg == 1)
         dtext(g_main, 10, 175, MSG_NAME, C_DRED);      /* C21: 14 rows end at 173 */
+    else if (st->msg == 2)
+        dtext(g_main, 10, 175, MSG_BUDGET, C_DRED);    /* C31: over the budget */
     {   /* C21: the salary of the record this form would save, live under the portrait */
         char sal[16];
         uint8_t rec[RECORD_LEN];
@@ -1403,6 +1431,20 @@ static void draw_edit(const State *st)
         dtext(g_main, 228, 110, "SALARY", C_BLACK);
         sprintf(sal, "%ld", sl_salary(rec));
         dtext(g_main, 228, 120, sal, C_BLACK);
+    }
+    /* C31: the point budget block, under the salary */
+    {
+        char bud[16];
+        int spent = budget_spent(st), cap = budget_cap(st), off = st->budget == 0;
+        dtext(g_main, 228, 135, "BUDGET", C_BLACK);
+        if (off)
+            strcpy(bud, BUDGET_NAMES[st->budget]);
+        else
+            sprintf(bud, "%d/%d", spent, cap);
+        dtext(g_main, 228, 145, bud,
+              (off || spent <= cap) ? C_BLACK : C_DRED);
+        if (!off)
+            dtext(g_main, 228, 155, BUDGET_NAMES[st->budget], C_BLACK);
     }
     fld = edit_field(pitcher, st->cursor);
     if (fld == FLD_LAST || fld == FLD_FIRST)

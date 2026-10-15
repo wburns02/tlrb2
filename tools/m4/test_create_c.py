@@ -503,6 +503,37 @@ def test_dos_parity(tmp_path):
     assert fb_dos == fb_py, 'DOS framebuffer differs at %d' % first_diff(fb_dos, fb_py)
 
 
+@need_fonts
+def test_parity_budget_c31(tmp_path):
+    """C31: the BUDGET block and the refusal message on both sides. OFF default, the
+    three modes, the red over-budget text, an over-budget SAVE refusal frame, a save
+    under STAR and B typed into the last name."""
+    # OFF default form (batter and pitcher), and each of the 3 modes
+    parity(tmp_path, [ENTER] + [DOWN] * 16 + [ENTER])
+    parity(tmp_path, [ENTER, DOWN, ENTER])
+    parity(tmp_path, [ENTER] + [DOWN] * 17 + [ENTER] + [DOWN] * 6 + [66])
+    parity(tmp_path, [ENTER] + [DOWN] * 17 + [ENTER] + [DOWN] * 6 + [98, 98])
+    parity(tmp_path, [ENTER] + [DOWN] * 17 + [ENTER] + [DOWN] * 6 + [66, 66, 66])
+    # over-budget refusal: ROOKIE, POWER raised to 12, SAVE ENTER (msg 2 frame)
+    over = ([ENTER] + [DOWN] * 17 + [ENTER] + typed('Oak') + [DOWN] * 6 + [98]
+            + [RIGHT] * 6 + [DOWN] * 7 + [ENTER])
+    st, _ = parity(tmp_path, over)
+    assert (st['screen'], st['msg'], st['budget']) == (cr.S_EDIT, 2, 1)
+    # then the next key clears msg 2 like msg 1
+    parity(tmp_path, over + [LEFT])
+    # a save under STAR goes to DONE on both sides with identical V20 bytes
+    st, _ = parity(tmp_path, [ENTER] + [DOWN] * 17 + [ENTER] + typed('Oak')
+                   + [DOWN] * 6 + [98, 98, 98] + [RIGHT] * 6 + [DOWN] * 7 + [ENTER])
+    assert st['screen'] == cr.S_DONE
+    # B typed into the last name letters, mode untouched
+    parity(tmp_path, [ENTER] + [DOWN] * 17 + [ENTER] + typed('bBb') + [DOWN, 98, 98, UP])
+    # survive CREATE ANOTHER: cycle a mode, save, re-enter the edit screen
+    again = ([ENTER] + [DOWN] * 17 + [ENTER] + typed('Oak') + [DOWN] * 6 + [98]
+             + [RIGHT] * 6 + [DOWN] * 7 + [ENTER, 98, ENTER, ENTER, DOWN, ENTER, ENTER])
+    st, _ = parity(tmp_path, again)
+    assert (st['screen'], st['budget']) == (cr.S_EDIT, 2)
+
+
 # ---------------------------------------------------------------- 3 divisions: team list (C12.3)
 # These run without the game fonts: synthetic MAIN.FNT / BOLD.FNT of the same layout (glyph
 # shapes do not matter, both sides draw the same ones), so the host team list is always checked.
