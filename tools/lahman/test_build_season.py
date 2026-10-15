@@ -1015,3 +1015,17 @@ def test_2012_miami(league2012):
     with open(os.path.join(str(league2012), 'CLASSIC.MAJ'), 'rb') as f:
         d = f.read()
     assert _maj_entry(d, 1, 'clasnle7') == (b'MIAMI', b'MIA')
+
+
+def test_1998_nl_allstar_entry_restored(league30):
+    """C46: ARI fills the NL slot 15 all-star entry before the realign; after it, slot 15 is free
+    and holds the template's ALL STARS 2 entry again (name, abbr, NUL-led stem), as in the AL."""
+    lg = league30[1]
+    d = _maj_bytes(lg)
+    t = _classic_maj_bytes()
+    for L in (0, 1):
+        s = teamids.S[L]
+        for o, n in ((teamids.O_NAMES, 16), (teamids.O_ABBR, 3), (teamids.O_STEM, 8)):
+            a = s + o + n * 15
+            assert d[a:a + n] == t[a:a + n], (L, o)
+    assert d[teamids.S[1] + teamids.O_STEM + 8 * 15] == 0

@@ -91,9 +91,10 @@ def _divisions(teams_L, target, L, known=None):
     return out + [[]] * (3 - len(out))
 
 
-def realign(d, target, known=None):
+def realign(d, target, known=None, cap=None):
     """-> (new_bytes, None), or (None, reason) when refused; d itself is never changed. known, when given,
-    is a {league: division lists} table replacing KNOWN[target] (Python only; the C port takes none)."""
+    is a {league: division lists} table replacing KNOWN[target] (Python only; the C port takes none). cap,
+    when given, replaces the per-league team cap (Python only: C46's 16-team 1998+ NL)."""
     assert target in (2, 3), target
     d = teamids.raw(d)
     if len(d) < MAJ_SIZE:
@@ -104,7 +105,8 @@ def realign(d, target, known=None):
         return None, 'BAD DIVISIONS'
     if target == now_divs(d):
         return None, 'ALREADY'
-    cap = 15 if target == 3 else 14
+    if cap is None:
+        cap = 15 if target == 3 else 14
     leagues = [_league_teams(d, L) for L in (0, 1)]
     for L, lst in enumerate(leagues):
         if len(lst) > cap:

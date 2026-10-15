@@ -582,7 +582,7 @@ def seed_history(db, year, out_dir, placed):
     c.close()
 
 
-def realign_lahman(db, year, out_dir):
+def realign_lahman(db, year, out_dir, template=None):
     """C38: 1994+ leagues are written already realigned to 3 divisions with the Lahman
     alignment. Writes TEAMID.DAT from the pre-realignment MAJ (stable ids = the 2-division
     engine ids), realigns the MAJ, then sets HISTORY.DAT byte 0 = 1 (the season is rolled,
@@ -610,49 +610,28 @@ def realign_lahman(db, year, out_dir):
         known[L] = names
     table = teamids.make_table(d)
     open(os.path.join(out_dir, teamids.TABLE_NAME), 'wb').write(table)
-    new, reason = realign.realign(d, 3, known=known)
-    if reason == '%s TOO MANY TEAMS' % realign.LG_NAMES[1]:
-        new, reason = _realign_16(d, known), None   # the NL's 16th team trips realign's tool cap
+    # 1998+: the NL holds 16 teams (realign's default cap is 15)
+    new, reason = realign.realign(d, 3, known=known, cap=16 if year >= 1998 else None)
     if reason is not None:
         raise ValueError(reason)
+    if year >= 1998 and template is not None:
+        # ARI took the NL slot 15 all-star entry (ALL STARS 2, NUL-led stem) in the 2-division
+        # layout; slot 15 is free again after the 3-division realign, so the template's entry
+        # comes back there, as in every other league
+        new = bytearray(new)
+        t = open(_maj_path(template), 'rb').read()
+        s = teamids.S[1]
+        for o, n in ((teamids.O_NAMES, 16), (teamids.O_ABBR, 3), (teamids.O_STEM, 8)):
+            a = s + o + n * 15
+            if any(new[a:a + n]):
+                raise ValueError('NL slot 15 is not free after the realign')
+            new[a:a + n] = t[a:a + n]
+        new = bytes(new)
     open(maj, 'wb').write(new)
     hp = os.path.join(out_dir, 'HISTORY.DAT')
     img = bytearray(open(hp, 'rb').read())
     img[0] = 1
     open(hp, 'wb').write(bytes(img))
-
-
-def _realign_16(d, known):
-    """The C12.5 write sequence for a 16-team league, which realign.realign's over-15-team gate
-    refuses (Python-only tool cap; the game itself holds 8 teams a division, so both 16-team
-    leagues fit). Same writes, the other refusal rules, and the same known-table division
-    packing as realign itself."""
-    leagues = [realign._league_teams(d, L) for L in (0, 1)]
-    for L, lst in enumerate(leagues):
-        if len(lst) % 2:
-            raise ValueError('%s ODD COUNT' % realign.LG_NAMES[L])
-    new = bytearray(d)
-    for L in (0, 1):
-        s = teamids.S[L]
-        for slot in range(teamids.SLOTS):
-            if slot == 15 and d[s + teamids.O_STEM + 8 * 15] == 0:
-                continue                       # the all-star entry stays
-            new[s + teamids.O_NAMES + 16 * slot:s + teamids.O_NAMES + 16 * slot + 16] = bytes(16)
-            new[s + teamids.O_ABBR + 3 * slot:s + teamids.O_ABBR + 3 * slot + 3] = bytes(3)
-            new[s + teamids.O_STEM + 8 * slot:s + teamids.O_STEM + 8 * slot + 8] = bytes(8)
-        for dv, lst in enumerate(realign._divisions(leagues[L], 3, L, known)):
-            for i, (_slot, name, abbr, stem) in enumerate(lst):
-                slot = dv * 8 + i
-                new[s + teamids.O_NAMES + 16 * slot:s + teamids.O_NAMES + 16 * slot + 16] = name
-                new[s + teamids.O_ABBR + 3 * slot:s + teamids.O_ABBR + 3 * slot + 3] = abbr
-                new[s + teamids.O_STEM + 8 * slot:s + teamids.O_STEM + 8 * slot + 8] = stem
-            new[s + 0x298 + dv] = len(lst)
-            new[0x20e + 3 * L + dv] = len(lst)
-        new[s + 0x2b3:s + 0x2cb] = b'\xff' * 24
-        new[s + 0x2cb:s + 0x32b] = bytes(96)
-    new[0x20a] = 0xf3
-    new[0x20d] = 3
-    return bytes(new)
 
 
 def main(argv):
@@ -716,7 +695,7 @@ def main(argv):
         seed_history(db, year, out, placed)
         rosters.refresh_allstars(out)               # else the template's classic stars play the first All-Star game
         if year >= 1994:
-            realign_lahman(db, year, out)
+            realign_lahman(db, year, out, template)
     except Exception as e:
         print('build failed: %s' % e)
         return 2
