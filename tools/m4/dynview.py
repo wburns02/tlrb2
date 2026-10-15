@@ -1047,9 +1047,9 @@ def history_rows(hist, league_dir=None, stems=None, mask=0):
 
 
 def stems_managed(stems, stem8, mask):
-    """True when the 8 byte champion stem (ASCII upper case, NUL cut) of se maps
-    through stems to a managed id (C18: tid < 32 and the mask bit set)."""
-    stem = stem8.split(b'\0')[0].decode('latin-1').strip()
+    """True when the 8 byte champion stem (cut at the first NUL, trailing spaces dropped,
+    ASCII upper case) maps through stems to a managed id (C18: tid < 32, mask bit set)."""
+    stem = stem8.split(b'\0')[0].rstrip(b' ').decode('latin-1')   # as C's field_of
     tid = stems.get(ascii_upper(stem)) if stem else None
     return tid is not None and tid < 32 and ((mask >> tid) & 1) != 0
 
