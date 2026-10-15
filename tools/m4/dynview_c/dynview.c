@@ -2303,7 +2303,7 @@ static const char *const HOF_FILTER_LABELS[N_HOF_FILTERS] = {
 static uint8_t HOF_MATCH[N_HOF_FILTERS][2][16];
 
 /* fill HOF_MATCH from the Python rules: ALL everything, P any pitcher, else a batter
- * whose pos1 is one of the filter's positions */
+ * whose pos1 is one of the filter's positions (a pitcher never matches a position) */
 static void hof_match_init(void)
 {
     static const uint8_t poss[N_HOF_FILTERS][4] = {
@@ -2327,7 +2327,7 @@ static void hof_match_init(void)
                     hit = 1;
                 else if (f == HOF_F_P)
                     hit = (uint8_t)p;
-                else {
+                else if (!p) {
                     for (k = 0; k < 4 && !hit; k++)
                         if (poss[f][k] != 255 && poss[f][k] == (uint8_t)pos)
                             hit = 1;

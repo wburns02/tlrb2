@@ -1135,6 +1135,21 @@ def hof_players_c53():
 
 
 @needs_fonts
+def test_hof_pitcher_pos1_not_in_position_filter(tmp_path):
+    """C53: a HoF pitcher whose pos1 is a batting position (SS 5) shows under ALL and P
+    only, never under the SS filter, in Python and in the C port"""
+    pl = hof_players_c53()
+    pl[0] = player('PITCHA', first='A', status=3, hof=2, pitcher=1, pos1=5,
+                   totals=tot(W=300, OUTS=3704, ER=900, PSO=2995), war10=500)
+    ldir = league(tmp_path, pl, seasons=4, start=1990, name='hof53p')
+    s, data = py_run(ldir, tmp_path, [K2] + [TAB] * 6)
+    assert dynview.screen_title(s, data) == 'HALL OF FAME: SS'
+    assert [r[0] for r in dynview.rows(s, data)] == ['SSMAN, S']
+    check(ldir, tmp_path, 'c53p_ss', [K2] + [TAB] * 6)
+    check(ldir, tmp_path, 'c53p_p', [K2, TAB])
+
+
+@needs_fonts
 def test_hof_filter_frames(tmp_path):
     """C53: the ALL page with the new footer, P (the pitcher's row), OF with the cursor
     on row 1, the DH message row of a league with none, TAB wrap back to ALL, and the
