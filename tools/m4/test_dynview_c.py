@@ -2097,3 +2097,130 @@ def test_watch_screen_parity(tmp_path, empty):
                  keys=[52, ('L', 100, 14)])
     assert fb_python(ldir, keys=[52, ('L', 100, 14)]) == \
         fb_python(ldir, keys=[52, dynview.KEY_RIGHT])
+
+
+# ---------------------------------------------------------------- C29 TEAM HISTORY
+
+def th_league_c(tmp_path, name):
+    """The C29 parity league: the standings league's names and 3 seasons (BOSTON and
+    CLEVELAND play every season, DETROIT and ATLANTA only 1993), BOSTON the 1993
+    champion, CLEVELAND the 1994 AL pennant, and 1995 round headers that put BOSTON
+    and DETROIT in an AL DS, CLEVELAND and ATLANTA in the AL LCS."""
+    base = tmp_path / name
+    base.mkdir(parents=True, exist_ok=True)
+    ldir = make_standings(base, seasons=[
+        ({0: (10, 4), 1: (8, 6), 2: (4, 10), 16: (8, 2)}, 0, 0xff, 0xff),
+        ({0: (6, 4), 2: (6, 4), 16: (4, 6), 17: (8, 2)}, 0xff, 2, 0xff),
+        ({0: (5, 5), 2: (9, 0), 16: (7, 3), 17: (1, 9)}, 0xff, 0xff, 0xff)])
+    write_box(ldir, [
+        box_rec(3, 16, 4, 0 * 256 + 2, (5, 3, 9, 7, 1, 0, 0, 0), b=1, i=1),  # AL DS 0/2
+        box_rec(3, 17, 4, 1 * 256 + 16, (2, 4, 6, 9, 0, 1, 0, 0), b=1 + 4, i=1),  # AL DS 1/16
+        box_rec(3, 23, 4, 2 * 256 + 16, (7, 1, 11, 4, 0, 1, 0, 0), b=2, i=1),  # AL LCS 2/16
+        box_rec(3, 27, 4, 16 * 256 + 17, (2, 5, 6, 8, 1, 0, 0, 0), b=2 + 4, i=1),  # NL LCS
+    ])
+    return ldir
+
+
+def test_teamhist_champion_frame_parity(tmp_path):
+    """TEAM HISTORY of the champion BOSTON (mask 0 on standings), the standings frame
+    with the new T footer, and a T press on a page-2 season-1 standings with the mask
+    bit on CLEVELAND: every frame matches Python and ESC returns the exact state."""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = th_league_c(tmp_path, 'thc')
+    check_parity(ldir, tmp_path, 'c29_stand_open', keys=[48])
+    check_parity(ldir, tmp_path, 'c29_stand_open_t', keys=[48, 84])
+    # the exact ESC round trip: identical standings state
+    assert fb_python(ldir, keys=[48, 84, ESC]) == fb_python(ldir, keys=[48])
+    check_parity(ldir, tmp_path, 'c29_esc_back', keys=[48, 84, ESC])
+    check_parity(ldir, tmp_path, 'c29_lower_t', keys=[48, 116])
+    # the champion's rows show; a long history page 1 (only 3 rows: PGDN stays)
+    assert fb_python(ldir, keys=[48, 84, PGDN]) == fb_python(ldir, keys=[48, 84])
+    check_parity(ldir, tmp_path, 'c29_pgdn_stays', keys=[48, 84, PGDN])
+
+
+def test_teamhist_page1_and_right_parity(tmp_path):
+    """Page 1 of a long history and RIGHT to the next team: a 12+ season league whose
+    BOSTON plays every season, so the history spills onto page 2; RIGHT lands on
+    DETROIT's history."""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = th_league_c(tmp_path, 'thlong')
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    for n in range(4, 15):
+        # seasons 4..14 replay the season-1 table without champion or pennants
+        write_standings(d, n, {0: (9, 5), 1: (7, 7), 2: (6, 8), 16: (8, 2)})
+    d[4], d[5] = 14, 0
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir), FILES)
+    s, _ex = dynview.step((dynview.SCREEN_STANDINGS, 0, 0), 84, data)
+    assert s == (dynview.SCREEN_TEAMHIST, 0, 0)
+    assert dynview.screen_title(s, data) == 'BOSTON  1 TITLES  1 PENNANTS'
+    n = dynview.total_rows(s, data)
+    assert n > dynview.ROWS_PER_PAGE
+    assert dynview.rows((dynview.SCREEN_TEAMHIST, 1, 0), data)[0] == \
+        dynview.team_history_rows(data['hist'], data['box'], 0)[12]
+    check_parity(ldir, tmp_path, 'c29_long_p0', keys=[48, 84])
+    check_parity(ldir, tmp_path, 'c29_long_p1', keys=[48, 84, PGDN])
+    check_parity(ldir, tmp_path, 'c29_long_right', keys=[48, 84, RIGHT])
+    check_parity(ldir, tmp_path, 'c29_long_right_pgdn', keys=[48, 84, RIGHT, PGDN])
+
+
+def test_teamhist_masked_open_and_title_click_parity(tmp_path):
+    """The T open picks the lowest managed id; the message row of a team without
+    seasons; a title-band click steps the team."""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = th_league_c(tmp_path, 'thmask')
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[12:16] = (1 << 2).to_bytes(4, 'little')            # CLEVELAND managed
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir), FILES)
+    s, _ex = dynview.step((dynview.SCREEN_STANDINGS, 0, 0), 84, data)
+    assert s == (dynview.SCREEN_TEAMHIST, 0, 2)
+    # the message row: TEAM 10 has no games
+    assert dynview.rows((dynview.SCREEN_TEAMHIST, 0, 10), data) == \
+        [('NO SEASONS RECORDED',)]
+    check_parity(ldir, tmp_path, 'c29_mask_open', keys=[48, 84])
+    check_parity(ldir, tmp_path, 'c29_mask_msg', keys=[48, 84, LEFT, LEFT, LEFT])
+    # LEFT from BOSTON wraps to the last listed team (SAN FRANCISCO, 27)
+    msg_state = None
+    s2, _ex = dynview.step(s, dynview.KEY_LEFT, data)
+    assert s2[2] == 1
+    # the title click: RIGHT on the title band of the mask league
+    check_parity(ldir, tmp_path, 'c29_title_click', keys=[48, 84, ('L', 250, 14)])
+    assert fb_python(ldir, keys=[48, 84, ('L', 250, 14)]) == \
+        fb_python(ldir, keys=[48, 84, dynview.KEY_RIGHT])
+
+
+def test_teamhist_walk_and_esc_parity(tmp_path):
+    """LEFT and RIGHT wrap over the listed teams, PGDN/PGUP page, ESC gives the kept
+    standings state (page included), and rows carry the LCS / DS results."""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = th_league_c(tmp_path, 'thwalk')
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[12:16] = (1 << 27).to_bytes(4, 'little')           # SAN FRANCISCO managed
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir), FILES)
+    s, _ex = dynview.step((dynview.SCREEN_STANDINGS, 0, 0), 84, data)
+    assert s == (dynview.SCREEN_TEAMHIST, 0, 27)
+    # LEFT: SAN FRANCISCO -> LOS ANGELES (26); RIGHT wraps it back to SAN FRANCISCO
+    s2 = dynview.step(s, dynview.KEY_LEFT, data)[0]
+    assert s2 == (dynview.SCREEN_TEAMHIST, 0, 26)
+    assert dynview.step(s2, dynview.KEY_RIGHT, data)[0] == s
+    s3, _ex = dynview.step(s, dynview.KEY_RIGHT, data)
+    assert s3 == (dynview.SCREEN_TEAMHIST, 0, 0)
+    # the RESULT cells of CLEVELAND (2): 1995 LCS, 1994 PENNANT, 1993 ''
+    rows = dynview.team_history_rows(data['hist'], data['box'], 2)
+    assert [r[5] for r in rows] == ['LCS', 'PENNANT', '']
+    # the py sequence 48 84 ESC ESC: back to standings then the hub
+    check_parity(ldir, tmp_path, 'c29_walk_right', keys=[48, 84, RIGHT])
+    check_parity(ldir, tmp_path, 'c29_walk_right_right', keys=[48, 84, RIGHT, RIGHT])
+    check_parity(ldir, tmp_path, 'c29_walk_left', keys=[48, 84, LEFT])
+    check_parity(ldir, tmp_path, 'c29_walk_t_esc_esc', keys=[48, 84, ESC])
+    # a click on the standings title: LEFT/RIGHT still step the season there
+    check_parity(ldir, tmp_path, 'c29_stand_title_click', keys=[48, ('L', 100, 14)])

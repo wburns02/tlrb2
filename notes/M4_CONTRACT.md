@@ -1744,6 +1744,87 @@ C port: dynview.c mirrors the same state (row field), toggle and paging in its s
 card_head + honors render path; the host binary is rebuilt with gcc after the parity gate.
 Parity covers HONORS page 0 and page 1 of a batter, HONORS of an entry with no items, the
 HOF entry, and the SEASONS card with the new footer.
+
+## C50. DYNVIEW FIND PLAYER (added 2026-10-15)
+
+DYNVIEW gains SCREEN_FIND = 18, opened by F or f on the hub (SCREEN_MENU): the state is
+(18, 0, 0) and data['find'] (str, upper case, at most FIND_MAX = 12 chars) is the
+query. Reads only; writes nothing. Python tools/m4/dynview.py is the reference; the C
+port dynview_c/dynview.c renders the same framebuffers and walks the same states.
+
+- The query lives in data['find'] (C: the static g_find_q[FIND_MAX + 1]), never in the
+  state. On FIND: A-Z / a-z appends the upper case letter while len(q) < FIND_MAX,
+  BACKSPACE (8) removes the last char; either edit resets the state to (18, 0, 0) (packed).
+  Other printable keys do nothing (digits and TAB never type; C and c are letters here).
+  ENTER on a row opens that row's entry with open_card (the C13.5 one-level back state);
+  no row or the empty list: nothing. ESC returns (0, 0, 0); ESC on a card opened from
+  FIND returns to the exact FIND state, query and cursor kept. UP/DOWN/PGUP/PGDN move
+  the cursor like on HALL OF FAME; FOOTERS[SCREEN_MENU] becomes
+  '0-9 W P F SELECT   ESC EXIT' (the /TITLE footer text is unchanged).
+- find_rows(hist, q) -> [(entry, row cells)]: '' -> []. Otherwise every entry with a
+  status in (1, 2, 3) (unused entries, status 0, are never listed) whose
+  one_field(name[0:12]).upper() starts with q, sorted by (last upper, first upper, i),
+  at most FIND_LIST = 300 (the DOS far data budget; a longer query narrows). Cells: (name_display(name, 20), pos_name(pos1), '%d' % seasons_played,
+  STATUS) with STATUS 'ACTIVE', 'RETIRED' or 'HALL OF FAME'.
+- COLS_FIND = [('NAME', _cx(0), 20, 'L'), ('POS', _cx(21), 3, 'L'), ('YRS', _cx(25), 3, 'R'),
+  ('STATUS', _cx(30), 12, 'L')]. Title 'FIND PLAYER: ' + q + '_'. Empty rows: q == '' ->
+  one row ('TYPE THE START OF A LAST NAME.',) with COLS_SINGLE; no match -> one row
+  ('NO PLAYER FOUND.',) that keeps the COLS_FIND headers (a lone message row of a screen
+  with its own columns: the cursor row 0 is highlighted there). Footer
+  FOOTERS[SCREEN_FIND] = 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'. body_cols returns
+  COLS_SINGLE for the empty query, COLS_FIND once the query is non-empty.
+- C port: the same keys, rows, columns, title and footers; the query is the static
+  buffer, the scan keeps the top matches in one HISTORY.DAT pass with the
+  (last upper, first upper, index) order; every other screen and frame is unchanged
+  except the MENU footer text.
+- Tests: test_dynview.py (model), test_dynview_c13_c.py (the existing MENU footer pins
+  updated to '0-9 W P F SELECT   ESC EXIT') and new test_dynview_c50_c.py (host
+  framebuffer parity: the empty-query prompt, a filtered frame with the cursor on
+  row 1, the no-match frame, the MENU with the new footer, and a card opened from FIND
+  then ESC back).
+
+## C29. TEAM HISTORY (added 2026-10-15)
+
+Screen 17 TEAM HISTORY (SCREEN_TEAMHIST), state (17, page, t) with cat = the stable team
+id. Opened from SEASON STANDINGS by T (84 or 116): t is the lowest id of data['teams']
+whose mask bit is set, else data['teams'][0][0]; nothing happens when data['teams'] is
+empty. The standings state is kept in data['th_back'] (one level, like the card) and ESC
+returns it exactly; a T with no prior open defaults that to (SCREEN_STANDINGS, 0, 0).
+Reads HISTORY.DAT season entries (read_season_entry, season <=
+history.SEASON_COUNT) and the C23b BOXSCORE.DAT round headers (playoff_games); writes
+nothing. Python tools/m4/dynview.py is the reference; the C port dynview_c/dynview.c
+renders the same framebuffers and walks the same states.
+
+- team_history_rows(hist, box, teams, t): newest season first over seasons
+  min(hist.seasons_recorded, SEASON_COUNT) down to 1, one row per season where
+  t has W + L > 0: (year_text(hist, season), '%d' % W, '%d' % L, fmt_avg(PCT), FINISH,
+  RESULT) with PCT = W * 1000 // (W + L). FINISH = the 1-based rank of t, as an ordinal
+  ('1ST', '2ND', '3RD', then '%dTH' from 4; 11..13 always TH) among the teams of t's
+  league (id // 16) with W + L > 0 and the same division_of(se, id), ordered as
+  standings_block orders them (PCT desc, W desc, id asc). RESULT: 'CHAMPION' when
+  t == champion; else 'PENNANT' when t is the al_pennant or nl_pennant; else 'LCS'
+  when t is a team of any rnd 2 (b & 3) header of that season; else 'DS' over any
+  rnd 1 header; else ''. No row: one message row ('NO SEASONS RECORDED',) with
+  COLS_SINGLE. The year label is the loop season (start year + season - 1), not the
+  entry's stored season_no.
+- COLS_TEAMHIST = [('YEAR', _cx(0), 4, 'L'), ('W', _cx(5), 4, 'R'), ('L', _cx(10), 4, 'R'),
+  ('PCT', _cx(15), 5, 'R'), ('FINISH', _cx(22), 6, 'L'), ('RESULT', _cx(30), 12, 'L')].
+  Title '%s  %d TITLES  %d PENNANTS' (name = the display of t in data['teams'],
+  'TEAM %d' % t when absent; titles = CHAMPION rows, pennants = CHAMPION or PENNANT
+  rows). Footer 'LEFT RIGHT TEAM   PGUP PGDN   ESC'; the SEASON STANDINGS footer becomes
+  'T TEAM  LEFT RIGHT SEASON  PGUP PGDN  ESC'.
+- Keys: LEFT/RIGHT step t to the previous/next id of data['teams'] (wrapping), page 0;
+  PGUP/PGDN page as every list screen; ESC per the rule above. SCREEN_TEAMHIST joins
+  LEFT_RIGHT_SCREENS, so a title-band click is LEFT or RIGHT.
+- C port: the rows live in a FARDATA buffer of 64 (TEAMHIST_MAX); the round headers are
+  read by streaming BOXSCORE.DAT the way the C23c PLAYOFFS screen does
+  (playoff_headers, no whole-file buffer) with the LCS (rnd 2) scan over all headers
+  before the DS (rnd 1) scan; season entries stream read_season like STANDINGS; the
+  finish rank's insertion keeps the exact standings order (equal records keep id
+  order); the kept standings state is a static pair like g_card_back. The host binary
+  rebuilds with the gcc command in tools/m4/dynview_c/build_dynview.py (-Werror clean);
+  DYNVIEW.EXE is untouched.
+
 ## C53. DYNVIEW HALL OF FAME position filter (added 2026-10-15)
 
 HALL OF FAME (SCREEN_HOF 2, a cursor screen) gains a position filter: the state's cat is
