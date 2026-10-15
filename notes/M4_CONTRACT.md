@@ -1633,6 +1633,118 @@ dynview_c/dynview.c renders the same framebuffers and walks the same states.
   ordering and tie break. The host binary is rebuilt with gcc after the parity gate
   (-Werror clean); DYNVIEW.EXE is untouched.
 
+## C28. AWARD HISTORY (added 2026-10-15)
+
+Screen 16 AWARD HISTORY, state (16, page, a, row) with a = the award code
+L * 20 + k (L 0 AL, 1 NL; k the award's kind offset 0..19, so kind =
+(64, 96)[L] + k). Opened by key H (72 or 104) from SEASON AWARDS (screen 9):
+the code of the cursor row's award record (the row's kind in (kind, file
+position) order when it is an award record, not a leader record or one of the
+six-winner fallback rows or the GG SS row), else 0. The SEASON AWARDS state is
+kept in data['awh_back'] (C: g_awh_back) and ESC on AWARD HISTORY returns it
+exactly (default (9, 0, 0) with nothing kept). Reads MILESTON.DAT and
+HISTORY.DAT; writes nothing.
+
+- Rows (award_history_items, newest season first over seasons
+  hist.seasons_recorded down to 1, at most LIST_MAX): the first file record of
+  the season with the kind gives (year_text(hist, season),
+  entry_name(hist, idx, 16), award_value(kind, value)) with entry
+  award_entry(hist, idx). A season with no record of the kind, when k <= 2,
+  season <= history.SEASON_COUNT and the season has no award record of any kind
+  at all, uses the fallback winner aw[L * 3 + k] of the season entry with value
+  '' (skipped when it is NO_AWARD). Otherwise the season is skipped. No row:
+  [(('NO WINNERS RECORDED',), None)] and COLS_SINGLE.
+- Columns COLS_AWHIST = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
+  ('VALUE', _cx(22), 20, 'R')]. Title award_label(kind) + ' HISTORY'
+  ('AWARD HISTORY' with no recorded season). Footer 'ENTER CARD  LEFT RIGHT
+  AWARD  PGUP PGDN  ESC'; the SEASON AWARDS footer becomes 'H HISTORY  LEFT
+  RIGHT SEASON  PGUP PGDN  ESC'.
+- Keys: LEFT/RIGHT step a by -1/+1 modulo 40 (page and row reset to 0); a title
+  click there is LEFT/RIGHT. It is a cursor screen (C13.4): UP/DOWN/PGUP/PGDN
+  move the row cursor, ENTER opens the PLAYER CARD of the row's entry (nothing
+  on a None row) and ESC on the card returns to the identical AWARD HISTORY
+  state.
+- C port: the same screens, keys, clicks, titles, footers and rows.
+  MILESTON.DAT is streamed the way SEASON AWARDS does (no whole-file buffer
+  beyond what the port already holds); the AWARD HISTORY rows live in a
+  FARDATA table of LIST_MAX entries (g_ah / g_ah_idx). Host binary rebuilt with
+  the gcc command in tools/m4/dynview_c/build_dynview.py (host build only; the
+  Watcom/DOS build and DYNVIEW.EXE are untouched).
+
+## C46. Lahman 1998-2012, 30 teams (added 2026-10-15)
+
+tools/lahman/build_season.py accepts 1977..2012 (YEAR_MAX 2012; 2013+ still exit 2). team_list is
+unchanged through 1997; from 1998 it is the 30-team form: AL slot 4 (stem clasale5) holds TBA (the
+AL's Milwaukee leaves; the AL is 14 teams), and the NL grows to 16, East CHN MON NYN PHI PIT SLN FLO
+MIL (MIL = clasnle8, slot 7), West ATL CIN HOU LAN SDN SFN COL ARI (ARI = clasnlw8, slot 15). TeamID
+switches carry in team_list:clasalw1 is ANA 1997..2004 and LAA from 2005, clasnle2 is MON through
+2004 and WAS from 2005, clasnle7 is FLO through 2011 and MIA in 2012.
+
+- 1998 (add_expansion_1998, right after add_expansion, before any rename): CLASALE5.V20 (at this
+  point still the template Milwaukee file) is copied to CLASNLE8.V20 with the header name MILWAUKEE
+  and abbr MIL (stadium kept) and CLASNLW7.V20 is copied to CLASNLW8.V20 as ARIZONA/ARI, stadium
+  grass; then CLASALE5.V20 itself becomes TAMPA BAY/TB, stadium grass. MAJ NL slots 7 and 15 get the
+  name, abbr and stem entries (the slots must be empty first, else ValueError, like add_expansion),
+  the AL slot 4 entry follows the TB rename, and the NL division counts go 7 -> 8 at 0x758c + 0x298
+  + d and 0x20e + 3 + d.
+- rename_anaheim is replaced by rename_teams, driven by the RENAMES table of (first, last, stem,
+  L, slot, name, abbr) rows: (1997, 2004, 'clasalw1', 0, 8, 'ANAHEIM', 'ANA'), (2005, 9999,
+  'clasalw1', 0, 8, 'LA ANGELS', 'LAA'), (2005, 9999, 'clasnle2', 1, 1, 'WASHINGTON', 'WAS'),
+  (2012, 9999, 'clasnle7', 1, 6, 'MIAMI', 'MIA'). Each row active for the year sets the V20 header
+  name/abbr and the MAJ league L slot entry's name (16 B NUL padded) and abbr. Called where
+  rename_anaheim was (year >= 1997, after add_expansion_1998).
+- realign_lahman: 1994+ writes TEAMID.DAT from the pre-realignment MAJ and realigns to 3 divisions
+  with the Lahman divID known table (HISTORY.DAT byte 0 = 1). For 1998+ the NL holds 16 teams, over
+  realign.realign's default 3-division cap of 15 (a tool cap; the GENERATED layout holds 8 teams a
+  division), so realign.realign takes a Python-only cap argument (default unchanged, the C port takes
+  none) and build_season passes cap=16. In the 2-division layout ARI fills NL slot 15, the hidden
+  ALL STARS 2 entry (NUL-led stem); after the realign slot 15 is free (NL West has 5 teams), so
+  realign_lahman copies the template MAJ's NL slot 15 name, abbr and stem back, as every other
+  league keeps it. Open: whether the game's All-Star game or the engine id of slot 15 care that ARI
+  held that id in TEAMID.DAT (rig check, C52).
+- 1977..1997 output is byte-identical to the pre-C46 build (V20s, MAJ, TEAMID.DAT, HISTORY.DAT).
+
+## C40. PLAYER CARD honors (added 2026-10-15)
+
+PLAYER CARD state gains a row field: the state is (13, page, entry, view), view 0 = SEASONS
+(the old card, unchanged), view 1 = HONORS (read only; nothing is written). H or h (72,
+104) toggles the view and resets the page to 0: (13, 0, entry) <-> (13, 0, entry, 1). ESC
+returns data['card_back'] from both views.
+
+honors_rows(hist, ms, entry) builds the (YEAR, HONOR) cells:
+
+- First row ('', 'MVP %d  CY %d  ROY %d  GG %d  SS %d' % tuple(e['awards'])), the career
+  counts; an entry with no item shows it alone.
+- The items sort by (season, group, order). Group 0: the MILESTON.DAT records with
+  idx == entry, in file order - award records (award_kind) show award_label(kind), leader
+  records (leader_kind) show leader_label(kind) + ' ' + leader_value(kind, value),
+  milestones (kind < AWARD_KIND_MIN) show event_text(kind, value), other kinds are
+  skipped. A record marks its season as having an award or leader record for this entry,
+  whether or not its kind is shown: for every recorded season (1 .. seasons_recorded,
+  capped at SEASON_COUNT) with no such record, each season-table award k won by the entry
+  (read_season_entry(season)['awards'][k] == entry) gives HONOR AWARD_FALLBACK[k] with
+  order 100000 + k. Group 1: an entry with status STATUS_HOF gets one HALL OF FAME item at
+  its hof_season (after that season's group 0 items).
+- YEAR = year_text(hist, season) (start year + season - 1).
+
+HONORS rows page HONOR_ROWS = 9 a page, drawn where the season table is: header YEAR
+(COLS x 10) and HONOR (x 45), widths 5 and 37, both left aligned (COLS_HONORS), header at
+CARD_HDR_Y, rows from CARD_ROW_Y0 (the 9 middle rows between the card header and CAREER).
+Page 0's first row is the counts row; a later page holds only its items. PGDN when
+(page + 1) * 9 < len(honors_rows), PGUP when page > 0; the seasons view's own paging
+(card_rows a page) is unchanged. The portrait, the five info lines and the title stay as
+on the SEASONS view.
+
+Footers: SEASONS view 'PGUP PGDN SEASONS  H HONORS  ESC BACK', HONORS view
+'PGUP PGDN  H SEASONS  ESC BACK'. rows() on the HONORS view returns the page's
+honors_rows; body_cols returns COLS_HONORS. Every other screen and frame is unchanged
+except the SEASONS card footer text.
+
+C port: dynview.c mirrors the same state (row field), toggle and paging in its step, and a
+card_head + honors render path; the host binary is rebuilt with gcc after the parity gate.
+Parity covers HONORS page 0 and page 1 of a batter, HONORS of an entry with no items, the
+HOF entry, and the SEASONS card with the new footer.
+
 ## C50. DYNVIEW FIND PLAYER (added 2026-10-15)
 
 DYNVIEW gains SCREEN_FIND = 18, opened by F or f on the hub (SCREEN_MENU): the state is
