@@ -85,6 +85,9 @@
 #define SCREEN_PLAYOFFS 14
 #define SCREEN_PBOX 15
 #define SCREEN_AWHIST 16
+/* REPLAY (C74): R on the hub; cat is the tab, 0 STANDINGS, 1 BATTERS, 2 PITCHERS */
+#define SCREEN_REPLAY 19
+#define N_REPLAY_TABS 3
 
 /* FIND PLAYER (C50): F on the menu opens a last-name prefix search (18, page, 0, row);
  * the query is a static buffer of FIND_MAX + 1 */
@@ -169,7 +172,7 @@
 #define T_ER 20
 
 /* the hub rows (SCREEN_MENU) and the ABOUT THE MODS rows */
-#define N_MENU_ROWS 12
+#define N_MENU_ROWS 13
 #define N_ABOUT_ROWS 57
 #define N_TITLE_ROWS 11
 
@@ -274,7 +277,7 @@ typedef struct {
 #define CHAR_W 7
 #define SLEN 64             /* cell / line text cap */
 #define NAME_CAP_MAX 96
-#define MAX_ROWS 12
+#define MAX_ROWS 13                 /* the hub's N_MENU_ROWS */
 
 #ifdef __WATCOMC__
 #define FARDATA __far
@@ -426,9 +429,23 @@ static List FARDATA g_list_buf[5];
 static Row FARDATA g_rows[MAX_ROWS];
 static int g_nrows;
 
+/* PLAYOFFS (C23c): the rows of one season's rounds (PLAYOFF_ROWS_MAX at most: six
+ * series of a title, 7 games of 3 rows and the summary) */
+#define PLAYOFF_ROWS_MAX 140
+
+/* One far row pool (C74) holds the rows of SEASON AWARDS (g_awd), SEASON STANDINGS (g_stnd),
+ * WORLD SERIES (g_ser) and PLAYOFFS (g_pser). Each build_* rewrites its rows before every read
+ * (no cache spans a call), so one buffer serves all four and saves 60 KB of DOS conventional
+ * memory, the heap the 30 KB team table and the 60 KB MAJ realign buffer need. A reader of
+ * one name must not call another name's build_* between its build and its reads. */
+static Row FARDATA g_rowpool[PLAYOFF_ROWS_MAX];
+#if AWARD_MAX > PLAYOFF_ROWS_MAX || STAND_MAX > PLAYOFF_ROWS_MAX || SERIES_MAX > PLAYOFF_ROWS_MAX
+#error the row pool is smaller than one of its users
+#endif
+
 /* SEASON AWARDS: all rows of the season (AWARD_MAX at most) and the award and leader
  * records kept for them, in (kind, file position) order */
-static Row FARDATA g_awd[AWARD_MAX];
+#define g_awd g_rowpool
 static MsRec FARDATA g_arec[AWARD_MAX];
 /* the player entry of each g_awd row (-1 for none: a message, the GG SS row, an empty slot) */
 static int32_t FARDATA g_awd_idx[AWARD_MAX];
@@ -509,7 +526,7 @@ static uint8_t FARDATA g_portrait[PORTRAIT_W * PORTRAIT_H];
  * id it shows (C57): 0xff on a header, blank and message row, else the stable id the
  * cursor's ENTER opens (dynview.standings_teams). The 32 B id table is no far segment. */
 #define STAND_NONE 0xff
-static Row FARDATA g_stnd[STAND_MAX];
+#define g_stnd g_rowpool          /* STAND_MAX rows of the pool */
 static uint8_t g_stnd_tid[STAND_MAX];
 
 /* MILESTONES WATCH (C27): the watch items in sorted order (WATCH_MAX at most) */
@@ -519,13 +536,11 @@ static int32_t g_nwatch;
 /* WORLD SERIES: the rows of the season (SERIES_MAX at most); per row the game number
  * (C64): g on the header, visitor and home rows of game g, -1 on the summary and
  * message rows */
-static Row FARDATA g_ser[SERIES_MAX];
+#define g_ser g_rowpool           /* SERIES_MAX rows of the pool */
 static int8_t FARDATA g_ser_game[SERIES_MAX];
 
-/* PLAYOFFS (C23c): the rows of one season's rounds (PLAYOFF_ROWS_MAX at most: six
- * series of a title, 7 games of 3 rows and the summary) */
-#define PLAYOFF_ROWS_MAX 140
-static Row FARDATA g_pser[PLAYOFF_ROWS_MAX];
+/* PLAYOFFS: the pool's PLAYOFF_ROWS_MAX rows */
+#define g_pser g_rowpool
 
 /* BOX SCORE: the records of the game on the screen (BOX_MAX_RECS at most); the file is
  * read again only for another (season, game): g_box_g -1 is none yet */
@@ -3683,6 +3698,9 @@ static int build_series(long season)
 
 /* forward declarations: the PLAYOFFS bodies below sit before the ColDef tables */
 static const ColDef COLS_SINGLE[1];
+static const ColDef COLS_REPLAY_STANDINGS[4];   /* C74 */
+static const ColDef COLS_REPLAY_BAT[6];
+static const ColDef COLS_REPLAY_PIT[6];
 static const ColDef COLS_SERIES[5];
 static const ColDef COLS_BOX[7];
 static const ColDef COLS_WATCH[4];      /* C27 WATCH */
@@ -4501,7 +4519,7 @@ static const char *MENU_ITEMS[N_MENU_ROWS] = {
     "1  SEASON HISTORY", "2  HALL OF FAME", "3  LEADERS",
     "4  MILESTONES", "5  LAST SEASON REVIEW", "6  OFFSEASON",
     "7  DYNASTY SETTINGS", "8  ABOUT THE MODS", "9  SEASON AWARDS",
-    "0  SEASON STANDINGS", "W  WORLD SERIES", "P  PLAYOFFS" };
+    "0  SEASON STANDINGS", "W  WORLD SERIES", "P  PLAYOFFS", "R  REPLAY" };
 
 static void build_menu_rows(void)
 {
@@ -4740,6 +4758,440 @@ static int page_rows(int total, int page)
     return n;
 }
 
+/* ---------------- REPLAY (C74) ---------------- */
+
+/* REAL.DAT (LEAGUE_DIR), what really happened in the league's year: a 16 B header ('RL',
+ * version 1, u16 year at 4, u8 team record count at 6, u16 player record count at 8), T 8 B
+ * team records (u8 stable id, u16 W at 2, u16 L at 4) and P 80 B player records (20 B name,
+ * u16 birth at 20, u8 team id at 22, u8 flags at 23 with bit0 pitcher, 25 u16 season totals at
+ * 24 in TOTALS order). It is read record by record, never as a whole. The screen is
+ * dynview.replay_body: one message row, or the STANDINGS, BATTERS or PITCHERS tab. */
+#define REAL_FILE "REAL.DAT"
+#define REAL_HDR 16
+#define REAL_TEAM 8
+#define REAL_PLAYER 80
+#define REAL_VERSION 1
+#define REPLAY_BAT_AB 100
+#define REPLAY_PIT_OUTS 150
+#define NO_REAL_TEXT "NO REAL SEASON ON FILE"
+#define NOT_PLAYED_TEXT "SEASON NOT PLAYED YET"
+#define NO_COMPARE_TEXT "NO PLAYERS TO COMPARE"
+#define RP_HAS ((uint32_t)1 << 31)     /* B item: a SEASLINE line of the season names the entry */
+
+static const char *const REPLAY_TABS[N_REPLAY_TABS] = { "STANDINGS", "BATTERS", "PITCHERS" };
+
+/* the three lists of the BATTERS and PITCHERS join (the top-K buffers, shared with the other
+ * screens, which rebuild theirs on every use):
+ *   A: key = hash of a record's 22 identity bytes, idx = record number | (entry + 1) << 16
+ *   B: key = entry index, idx = record number | RP_HAS, for the identified records of A
+ *   C: key = (65535 - stat) << 16 | entry (the final order, rp_c_add), idx = record number | entry << 16 */
+#define g_rpa (g_list_buf[0])
+#define g_rpb (g_list_buf[1])
+#define g_rpc (g_list_buf[2])
+
+typedef struct {
+    FILE *f;
+    uint16_t year, nplayers;
+    uint8_t nteams;
+} RealFile;
+
+/* the real W and L of the stable ids 0..31 from the team records (the first record of an id
+ * counts), and which ids have one */
+static uint16_t g_rtw[32], g_rtl[32];
+static uint8_t g_rth[32];
+
+static uint16_t rd16(const uint8_t *b)
+{
+    return (uint16_t)(b[0] | ((unsigned)b[1] << 8));
+}
+
+/* REAL.DAT of g_lgdir opened and checked (dynview.load_real): 1 with r->f at the first team
+ * record; 0 (nothing left open) for a missing file, a header under 16 B, a magic other than 'RL',
+ * a version other than 1, or a file shorter than its header says */
+static int real_open(RealFile *r)
+{
+    char path[600];
+    uint8_t hd[REAL_HDR];
+    long size = 0;
+    path_join(path, g_lgdir, REAL_FILE);
+    r->f = fopen(path, "rb");
+    if (!r->f)
+        return 0;
+    if (fseek(r->f, 0, SEEK_END) == 0 && (size = ftell(r->f)) >= 0 && fseek(r->f, 0, SEEK_SET) == 0
+        && fread(hd, 1, REAL_HDR, r->f) == REAL_HDR && hd[0] == 'R' && hd[1] == 'L'
+        && hd[2] == REAL_VERSION) {
+        r->year = rd16(hd + 4);
+        r->nteams = hd[6];
+        r->nplayers = rd16(hd + 8);
+        if (size >= REAL_HDR + (long)REAL_TEAM * r->nteams + (long)REAL_PLAYER * r->nplayers)
+            return 1;
+    }
+    fclose(r->f);
+    r->f = NULL;
+    return 0;
+}
+
+static void real_close(RealFile *r)
+{
+    fclose(r->f);
+    r->f = NULL;
+}
+
+/* g_rtw, g_rtl and g_rth from the team records */
+static void real_teams(RealFile *r)
+{
+    uint8_t rec[REAL_TEAM];
+    int k;
+    memset(g_rth, 0, sizeof g_rth);
+    if (fseek(r->f, REAL_HDR, SEEK_SET) != 0)
+        return;
+    for (k = 0; k < r->nteams; k++) {
+        if (fread(rec, 1, REAL_TEAM, r->f) != REAL_TEAM)
+            break;
+        if (rec[0] < 32 && !g_rth[rec[0]]) {
+            g_rth[rec[0]] = 1;
+            g_rtw[rec[0]] = rd16(rec + 2);
+            g_rtl[rec[0]] = rd16(rec + 4);
+        }
+    }
+}
+
+/* the STANDINGS tab (dynview.replay_standings): build_standings' rows of season recast in
+ * g_stnd as TEAM, SIM (W-L), REAL (W-L of REAL.DAT, '-' for a team without a team record) and
+ * DIFF (sim W minus real W as +3, -2, 0; blank without a real record); a header or blank row
+ * keeps its first cell. Returns the row count; a lone message row stays one cell. */
+static int replay_standings(long season, RealFile *r)
+{
+    SeasonEntry se;
+    int n = build_standings(season), i, t;
+    long d;
+    if (n == 1 && g_stnd[0].ncells == 1)
+        return n;
+    memset(&se, 0, sizeof se);
+    read_season(&se, (int)season);
+    real_teams(r);
+    for (i = 0; i < n; i++) {
+        Row *row = &g_stnd[i];
+        t = g_stnd_tid[i];
+        row->cells[1][0] = row->cells[2][0] = row->cells[3][0] = 0;
+        row->ncells = 4;
+        if (t == STAND_NONE)
+            continue;
+        sprintf(row->cells[1], "%d-%d", se.wl[t][0], se.wl[t][1]);
+        if (!g_rth[t]) {
+            strcpy(row->cells[2], "-");
+            continue;
+        }
+        sprintf(row->cells[2], "%lu-%lu", (unsigned long)g_rtw[t], (unsigned long)g_rtl[t]);
+        d = (long)se.wl[t][0] - (long)g_rtw[t];
+        if (d == 0)
+            strcpy(row->cells[3], "0");
+        else
+            sprintf(row->cells[3], "%+ld", d);
+    }
+    return n;
+}
+
+/* FNV-1a over the 22 identity bytes of a REAL.DAT player record or a HISTORY.DAT entry (the
+ * name, then the u16 birth) */
+static uint32_t rp_hash(const uint8_t *b)
+{
+    uint32_t h = 2166136261u;
+    int i;
+    for (i = 0; i < 22; i++) {
+        h ^= b[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* the stat a record of the tab must reach and the one it is ordered by: real AB (batters) or
+ * real OUTS (pitchers), the u16 at its TOTALS index */
+static uint16_t rp_stat_at(int pitchers)
+{
+    return (uint16_t)(24 + 2 * (pitchers ? T_OUTS : T_AB));
+}
+
+/* pass R: from record k0 on, the records of the tab's kind (flags bit0) and size into g_rpa as
+ * (hash, record number), in hash order, until LIST_MAX are held. Returns the number of the first
+ * record not read. */
+static long rp_collect(RealFile *r, long k0, int pitchers)
+{
+    uint8_t rec[REAL_PLAYER];
+    long k = k0;
+    g_rpa.n = 0;
+    if (fseek(r->f, REAL_HDR + (long)REAL_TEAM * r->nteams + (long)REAL_PLAYER * k0, SEEK_SET) != 0)
+        return r->nplayers;
+    while (k < r->nplayers && g_rpa.n < LIST_MAX) {
+        if (fread(rec, 1, REAL_PLAYER, r->f) != REAL_PLAYER)
+            return r->nplayers;
+        k++;
+        if (((rec[23] & 1) != 0) != (pitchers != 0))
+            continue;
+        if (rd16(rec + rp_stat_at(pitchers)) < (pitchers ? REPLAY_PIT_OUTS : REPLAY_BAT_AB))
+            continue;
+        list_add_asc(&g_rpa, (int32_t)(rp_hash(rec) ^ 0x80000000u), (uint32_t)(k - 1));
+    }
+    return k;
+}
+
+/* pass H: the HISTORY.DAT entries in file order (history.find_entry: the first entry of an
+ * identity wins) against g_rpa. An item of equal hash whose record has the same 22 identity
+ * bytes and no entry yet gets the entry index + 1 in its high half. Entries past 65534 are
+ * out of reach of a u16 SEASLINE index. */
+static void rp_identify(RealFile *r)
+{
+    uint8_t eb[PLAYER_ENTRY], rb[22];
+    uint32_t i, h;
+    int32_t lo, hi, mid, j;
+    long base = REAL_HDR + (long)REAL_TEAM * r->nteams;
+    if (!g_hist || g_rpa.n == 0 || fseek(g_hist, PLAYER_TABLE, SEEK_SET) != 0)
+        return;
+    for (i = 0; i < g_file_entries && i < 65535u; i++) {
+        if (fread(eb, 1, PLAYER_ENTRY, g_hist) != PLAYER_ENTRY)
+            break;
+        h = rp_hash(eb);
+        lo = 0;
+        hi = g_rpa.n;
+        while (lo < hi) {
+            mid = (lo + hi) / 2;
+            if (g_rpa.key[mid] < h)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        for (j = lo; j < g_rpa.n && g_rpa.key[j] == h; j++) {
+            if ((g_rpa.idx[j] >> 16) != 0)
+                continue;
+            if (fseek(r->f, base + (long)REAL_PLAYER * (long)(g_rpa.idx[j] & 0xffffu), SEEK_SET) == 0
+                && fread(rb, 1, 22, r->f) == 22 && memcmp(rb, eb, 22) == 0)
+                g_rpa.idx[j] |= (i + 1) << 16;
+        }
+    }
+}
+
+/* pass L: g_rpb = the identified items of g_rpa by entry index; every SEASLINE.DAT line of the
+ * season sets RP_HAS on the items of its entry */
+static void rp_lines(long season)
+{
+    FILE *f;
+    Line ln;
+    int32_t j, lo, hi, mid;
+    uint32_t key;
+    g_rpb.n = 0;
+    for (j = 0; j < g_rpa.n; j++)
+        if ((g_rpa.idx[j] >> 16) != 0)
+            list_add_asc(&g_rpb, (int32_t)((g_rpa.idx[j] >> 16) - 1), g_rpa.idx[j] & 0xffffu);
+    f = g_rpb.n ? seasline_open() : NULL;
+    if (!f)
+        return;
+    while (line_next(f, &ln)) {
+        if ((long)ln.season != season)
+            continue;
+        key = keybox((int32_t)ln.entry);
+        lo = 0;
+        hi = g_rpb.n;
+        while (lo < hi) {
+            mid = (lo + hi) / 2;
+            if (g_rpb.key[mid] < key)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        for (; lo < g_rpb.n && g_rpb.key[lo] == key; lo++)
+            g_rpb.idx[lo] |= RP_HAS;
+    }
+    fclose(f);
+}
+
+/* ordered top-K insert into g_rpc by the unsigned key k, ascending: the LIST_MAX smallest keys
+ * are kept, equal keys in insertion order. (list_add_asc is not used here: on a full list it
+ * drops the better new key and keeps the worse.) */
+static void rp_c_add(uint32_t k, uint32_t idx)
+{
+    int32_t lo = 0, hi = g_rpc.n, mid;
+    if (g_rpc.n >= LIST_MAX && k >= g_rpc.key[g_rpc.n - 1])
+        return;
+    while (lo < hi) {
+        mid = (lo + hi) / 2;
+        if (g_rpc.key[mid] <= k)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (g_rpc.n < LIST_MAX)
+        g_rpc.n++;
+    if (g_rpc.n - 1 > lo) {
+        memmove(&g_rpc.key[lo + 1], &g_rpc.key[lo],
+                (size_t)(g_rpc.n - 1 - lo) * sizeof(g_rpc.key[0]));
+        memmove(&g_rpc.idx[lo + 1], &g_rpc.idx[lo],
+                (size_t)(g_rpc.n - 1 - lo) * sizeof(g_rpc.idx[0]));
+    }
+    g_rpc.key[lo] = k;
+    g_rpc.idx[lo] = idx;
+}
+
+/* the items of g_rpb with RP_HAS into g_rpc in the tab's order: real stat descending, then entry
+ * index ascending, then record order (the insertion order of equal keys) */
+static void rp_merge(RealFile *r, int pitchers)
+{
+    uint8_t two[2];
+    int32_t j;
+    uint32_t v, e, rec, stat;
+    long base = REAL_HDR + (long)REAL_TEAM * r->nteams;
+    for (j = 0; j < g_rpb.n; j++) {
+        v = g_rpb.idx[j];
+        if (!(v & RP_HAS))
+            continue;
+        rec = v & 0xffffu;
+        e = g_rpb.key[j] ^ 0x80000000u;
+        if (fseek(r->f, base + (long)REAL_PLAYER * (long)rec + rp_stat_at(pitchers), SEEK_SET) != 0
+            || fread(two, 1, 2, r->f) != 2)
+            continue;
+        stat = rd16(two);
+        rp_c_add(((65535u - stat) << 16) | e, rec | (e << 16));
+    }
+}
+
+/* the BATTERS or PITCHERS rows of season in order into g_rpc (dynview.replay_players), at most
+ * LIST_MAX: more than LIST_MAX qualifying records are joined LIST_MAX at a time. Returns the
+ * count. */
+static int rp_scan(RealFile *r, long season, int pitchers)
+{
+    long k = 0;
+    g_rpc.n = 0;
+    while (k < r->nplayers) {
+        k = rp_collect(r, k, pitchers);
+        if (g_rpa.n == 0)
+            break;
+        rp_identify(r);
+        rp_lines(season);
+        rp_merge(r, pitchers);
+    }
+    return (int)g_rpc.n;
+}
+
+/* an AVG cell from H and AB (fmt_avg of H * 1000 // AB, '-' with no AB) */
+static void rp_avg(uint32_t h, uint32_t ab, char *dst)
+{
+    if (ab == 0)
+        strcpy(dst, "-");
+    else
+        fmt_avg((int32_t)((int64_t)h * 1000 / ab), dst);
+}
+
+/* an ERA cell from ER and OUTS (fmt_era100 of ER * 2700 // OUTS, '-' with no OUTS) */
+static void rp_era(uint32_t er, uint32_t outs, char *dst)
+{
+    if (outs == 0)
+        strcpy(dst, "-");
+    else
+        fmt_era100((int32_t)((int64_t)er * 2700 / outs), dst);
+}
+
+/* the rows of page of the BATTERS or PITCHERS tab into g_rows: the page's records of g_rpc, the
+ * name of the entry, the team of the record, then sim and real AVG and HR (ERA and W). The sim
+ * stats are the sums of the entry's lines of the season, from one pass over SEASLINE.DAT. */
+static int rp_page_rows(RealFile *r, long season, int pitchers, int page)
+{
+    uint8_t rb[REAL_PLAYER];
+    uint32_t acc[ROWS_PER_PAGE][3];
+    uint16_t ent[ROWS_PER_PAGE];
+    uint32_t rec;
+    long base = REAL_HDR + (long)REAL_TEAM * r->nteams;
+    int32_t j;
+    int nr = 0, k, a, b, c;
+    FILE *f;
+    Line ln;
+    for (j = (int32_t)page * ROWS_PER_PAGE; j < g_rpc.n && nr < ROWS_PER_PAGE; j++, nr++) {
+        ent[nr] = (uint16_t)(g_rpc.idx[j] >> 16);
+        acc[nr][0] = acc[nr][1] = acc[nr][2] = 0;
+    }
+    a = pitchers ? T_OUTS : T_AB;
+    b = pitchers ? T_ER : 2;                    /* H */
+    c = pitchers ? 13 : 5;                      /* W, HR */
+    f = nr ? seasline_open() : NULL;
+    if (f) {
+        while (line_next(f, &ln)) {
+            if ((long)ln.season != season)
+                continue;
+            for (k = 0; k < nr; k++) {
+                if (ent[k] == ln.entry) {
+                    acc[k][0] += ln.tot[a];
+                    acc[k][1] += ln.tot[b];
+                    acc[k][2] += ln.tot[c];
+                }
+            }
+        }
+        fclose(f);
+    }
+    for (k = 0; k < nr; k++) {
+        Row *row = &g_rows[k];
+        uint32_t real_a, real_b, real_c;
+        rec = g_rpc.idx[(int32_t)page * ROWS_PER_PAGE + k] & 0xffffu;
+        memset(rb, 0, sizeof rb);
+        if (fseek(r->f, base + (long)REAL_PLAYER * (long)rec, SEEK_SET) == 0)
+            (void)fread(rb, 1, REAL_PLAYER, r->f);
+        real_a = rd16(rb + 24 + 2 * a);
+        real_b = rd16(rb + 24 + 2 * b);
+        real_c = rd16(rb + 24 + 2 * c);
+        entry_name(ent[k], 16, row->cells[0]);
+        strcpy(row->cells[1], abbr_of(rb[22]));
+        if (pitchers) {
+            rp_era(acc[k][1], acc[k][0], row->cells[2]);
+            rp_era(real_b, real_a, row->cells[3]);
+        } else {
+            rp_avg(acc[k][1], acc[k][0], row->cells[2]);
+            rp_avg(real_b, real_a, row->cells[3]);
+        }
+        sprintf(row->cells[4], "%lu", (unsigned long)acc[k][2]);
+        sprintf(row->cells[5], "%lu", (unsigned long)real_c);
+        row->ncells = 6;
+    }
+    for (k = nr; k < MAX_ROWS; k++)
+        g_rows[k].ncells = 0;
+    return nr;
+}
+
+/* REPLAY page (dynview.replay_body): the rows of the tab st.cat into g_rows for page (page < 0
+ * counts only). Returns the row count; *cols is COLS_SINGLE for a lone message row:
+ * NO_REAL_TEXT without a good REAL.DAT, else NOT_PLAYED_TEXT when no recorded season has its
+ * year, else (a tab with no row) NO_COMPARE_TEXT. */
+static int replay_body(State st, int page, const ColDef **cols)
+{
+    RealFile r;
+    long season;
+    int tab = (int)(st.cat % N_REPLAY_TABS), n, k, q;
+    *cols = COLS_SINGLE;
+    if (!real_open(&r))
+        return msg_row(page, NO_REAL_TEXT);
+    season = (long)r.year - start_year() + 1;
+    if (season < 1 || season > (long)g_hdr_seasons) {
+        real_close(&r);
+        return msg_row(page, NOT_PLAYED_TEXT);
+    }
+    if (tab == 0) {
+        n = replay_standings(season, &r);
+        if (!(n == 1 && g_stnd[0].ncells == 1))
+            *cols = COLS_REPLAY_STANDINGS;
+        if (page >= 0) {
+            for (k = 0, q = page * ROWS_PER_PAGE; q < n && k < ROWS_PER_PAGE; q++, k++)
+                g_rows[k] = g_stnd[q];
+        }
+    } else {
+        n = rp_scan(&r, season, tab == 2);
+        if (n == 0) {
+            real_close(&r);
+            return msg_row(page, NO_COMPARE_TEXT);
+        }
+        *cols = tab == 2 ? COLS_REPLAY_PIT : COLS_REPLAY_BAT;
+        if (page >= 0)
+            rp_page_rows(&r, season, tab == 2, page);
+    }
+    real_close(&r);
+    return n;
+}
+
 /* ---------------- state machine ---------------- */
 
 /* number of model rows of the current state (paging bound) */
@@ -4793,6 +5245,8 @@ static int total_rows(State st)
         return pbox_body(st, -1, &cols);
     case SCREEN_TEAMHIST:
         return teamhist_body(st, -1, &cols);
+    case SCREEN_REPLAY:
+        return replay_body(st, -1, &cols);
     case SCREEN_SETTINGS:
         return SET_TEAM0 + g_nteams;
     case SCREEN_ABOUT:
@@ -4843,6 +5297,8 @@ static int refresh_rows(State st, const ColDef **cols)
             *cols = COLS_SINGLE;
         return n;
     }
+    if (st.screen == SCREEN_REPLAY)
+        return page_rows(replay_body(st, st.page, cols), st.page);
     if (g_hdr_seasons == 0) {
         build_no_hist_rows();
         return g_nrows;
@@ -4929,8 +5385,8 @@ static int leader_ncats(int mode)
 /* the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode), SEASON AWARDS,
  * AWARD HISTORY (C28), SEASON HISTORY (C56), SEASON STANDINGS (C57), TEAM HISTORY (C60),
  * the offseason RETIREMENTS phase, MILESTONES (C27/C61: cat 0 the milestones list,
- * cat 1 WATCH), WORLD SERIES (C64) and PLAYOFFS (C65); the hub MENU keeps its own
- * cursor (C67, step and hub_cursor) */
+ * cat 1 WATCH), WORLD SERIES (C64), PLAYOFFS (C65) and REPLAY (C74); the hub MENU keeps
+ * its own cursor (C67, step and hub_cursor) */
 static int cursor_screen(State st)
 {
     if (st.screen == SCREEN_HOF || st.screen == SCREEN_LEADERS
@@ -4938,7 +5394,7 @@ static int cursor_screen(State st)
         || st.screen == SCREEN_HISTORY || st.screen == SCREEN_STANDINGS
         || st.screen == SCREEN_BOX || st.screen == SCREEN_PBOX
         || st.screen == SCREEN_TEAMHIST || st.screen == SCREEN_SERIES
-        || st.screen == SCREEN_PLAYOFFS)
+        || st.screen == SCREEN_PLAYOFFS || st.screen == SCREEN_REPLAY)
         return 1;
     if (st.screen == SCREEN_MILESTONES)
         return 1;
@@ -5185,6 +5641,12 @@ static State step(State in, int32_t key)
         } else if (key == 80 || key == 112) {
             /* P or p: PLAYOFFS */
             s.screen = SCREEN_PLAYOFFS;
+            s.page = 0;
+            s.cat = 0;
+            s.row = 0;
+        } else if (key == 82 || key == 114) {
+            /* R or r: REPLAY (C74), the STANDINGS tab */
+            s.screen = SCREEN_REPLAY;
             s.page = 0;
             s.cat = 0;
             s.row = 0;
@@ -5702,6 +6164,11 @@ static State step(State in, int32_t key)
         g_th_live = 1;
         return mk_state(SCREEN_TEAMHIST, 0, g_tlg[first >= 0 ? first : 0]);
     }
+    if (s.screen == SCREEN_REPLAY && (key == KEY_LEFT || key == KEY_RIGHT)) {
+        /* C74: LEFT / RIGHT cycle the tab STANDINGS, BATTERS, PITCHERS (wrapping); page and row reset */
+        return mk_state(SCREEN_REPLAY, 0,
+                        (s.cat + (key == KEY_LEFT ? N_REPLAY_TABS - 1 : 1)) % N_REPLAY_TABS);
+    }
     if (s.screen == SCREEN_TEAMHIST && (key == KEY_LEFT || key == KEY_RIGHT)) {
         /* LEFT / RIGHT step to the previous / next id of the MAJ teams (the listed order),
          * wrapping; the page resets to 0 */
@@ -5788,6 +6255,19 @@ static const ColDef COLS_STANDINGS[] = {
     { "TEAM", CX(0), 17, 0 }, { "W", CX(17), 5, 1 }, { "L", CX(22), 5, 1 },
     { "PCT", CX(27), 6, 1 }, { "GB", CX(33), 6, 1 }, { " ", CX(39), 3, 1 } };
 
+/* REPLAY (C74): S = the sim season, R = the real one */
+static const ColDef COLS_REPLAY_STANDINGS[4] = {
+    { "TEAM", CX(0), 17, 0 }, { "SIM", CX(17), 8, 1 }, { "REAL", CX(25), 8, 1 },
+    { "DIFF", CX(33), 6, 1 } };
+
+static const ColDef COLS_REPLAY_BAT[6] = {
+    { "PLAYER", CX(0), 16, 0 }, { "TM", CX(16), 4, 1 }, { "S AVG", CX(20), 6, 1 },
+    { "R AVG", CX(26), 6, 1 }, { "S HR", CX(32), 5, 1 }, { "R HR", CX(37), 5, 1 } };
+
+static const ColDef COLS_REPLAY_PIT[6] = {
+    { "PLAYER", CX(0), 16, 0 }, { "TM", CX(16), 4, 1 }, { "S ERA", CX(20), 6, 1 },
+    { "R ERA", CX(26), 6, 1 }, { "S W", CX(32), 5, 1 }, { "R W", CX(37), 5, 1 } };
+
 static const ColDef COLS_SERIES[] = {
     { "TEAM", CX(0), 17, 0 }, { "R", CX(17), 5, 1 }, { "H", CX(22), 5, 1 },
     { "E", CX(27), 5, 1 }, { " ", CX(32), 10, 1 } };
@@ -5860,6 +6340,12 @@ static int n_cols(const ColDef *cols)
         return NCOLS(COLS_AWHIST);
     if (cols == COLS_STANDINGS)
         return NCOLS(COLS_STANDINGS);
+    if (cols == COLS_REPLAY_STANDINGS)
+        return NCOLS(COLS_REPLAY_STANDINGS);
+    if (cols == COLS_REPLAY_BAT)
+        return NCOLS(COLS_REPLAY_BAT);
+    if (cols == COLS_REPLAY_PIT)
+        return NCOLS(COLS_REPLAY_PIT);
     if (cols == COLS_SERIES)
         return NCOLS(COLS_SERIES);
     if (cols == COLS_BOX)
@@ -6508,6 +6994,8 @@ static const char *footer_of(State st)
         return "ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC";
     if (st.screen == SCREEN_PBOX)
         return "ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC";
+    if (st.screen == SCREEN_REPLAY)
+        return "LEFT RIGHT TAB  S SIM  R REAL  PGUP PGDN ESC";
     if (st.screen == SCREEN_OFFSEASON) {
         if ((st.cat & 15) < OFF_READY)
             return "ENTER NEXT   PGUP PGDN   ESC MENU";
@@ -6616,6 +7104,16 @@ static void screen_title(State st, char *dst)
             }
         } else {
             strcpy(dst, "PLAYOFF BOX SCORE");
+        }
+    }
+    else if (st.screen == SCREEN_REPLAY) {
+        /* C74: REPLAY year  TAB; just REPLAY without a good REAL.DAT */
+        RealFile r;
+        if (real_open(&r)) {
+            sprintf(dst, "REPLAY %u  %s", (unsigned)r.year, REPLAY_TABS[st.cat % N_REPLAY_TABS]);
+            real_close(&r);
+        } else {
+            strcpy(dst, "REPLAY");
         }
     }
     else if (st.screen == SCREEN_AWHIST) {
@@ -7212,15 +7710,16 @@ static int32_t parse_key(const uint8_t *t)
 
 /* ---------------- clicks (C13.6) ---------------- */
 
-/* the body row (0..ROWS_PER_PAGE - 1) whose band (BODY_Y0 + r * ROW_H .. + 9) holds y, -1 for none */
-static int band_row(int y)
+/* the body row (0..n - 1, n a page's ROWS_PER_PAGE, the hub's N_MENU_ROWS) whose band
+ * (BODY_Y0 + r * ROW_H .. + 9) holds y, -1 for none */
+static int band_row(int y, int n)
 {
     int r, off;
     if (y < BODY_Y0)
         return -1;
     r = (y - BODY_Y0) / ROW_H;
     off = (y - BODY_Y0) % ROW_H;
-    return off <= 9 && r < ROWS_PER_PAGE ? r : -1;
+    return off <= 9 && r < n ? r : -1;
 }
 
 /* the screens where LEFT and RIGHT step something (a title click there is LEFT or RIGHT) */
@@ -7230,7 +7729,8 @@ static int left_right_screen(int screen)
            || screen == SCREEN_SERIES || screen == SCREEN_BOX || screen == SCREEN_PLAYOFFS
            || screen == SCREEN_MILESTONES   /* C27: a title click toggles the mode */
            || screen == SCREEN_AWHIST       /* C28: a title click steps the award code */
-           || screen == SCREEN_TEAMHIST;    /* C29: a title click steps the team */
+           || screen == SCREEN_TEAMHIST     /* C29: a title click steps the team */
+           || screen == SCREEN_REPLAY;      /* C74: a title click steps the tab */
 }
 
 /* the key of a left click at (x, y) (dynview.click_to_key, C13.6), in order: a hub row band is that
@@ -7241,7 +7741,7 @@ static int left_right_screen(int screen)
  * nothing */
 static void click_to_key(State st, int x, int y, int32_t *key, int32_t *row)
 {
-    int r = band_row(y);
+    int r = band_row(y, st.screen == SCREEN_MENU ? N_MENU_ROWS : ROWS_PER_PAGE);
     int title_menu = g_hdr_seasons == 0 && (st.cat >> 4) != 0;
     *key = -1;
     *row = -1;

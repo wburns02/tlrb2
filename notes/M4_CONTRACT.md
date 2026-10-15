@@ -2360,3 +2360,98 @@ order, the wrong-size skip, the refusals and every key.
 
 Gate fix (brain, 2026-10-15): repair (rosters.repair and repair.h) skips a header list byte >= 40 (other than
 0xff) and leaves it as is; before, C indexed chg[40] out of bounds and Python raised IndexError at 80 and up.
+
+## C74. REPLAY (added 2026-10-15)
+A league built by tools/lahman/build_season.py from a real year YEAR plays season 1 as YEAR with
+that year's real rosters. Nothing recorded what really happened that year, so the user could not
+compare the sim with history. build_season now writes the real standings and real player lines
+to REAL.DAT in the league dir, and a DYNVIEW hub screen REPLAY (key R) puts the sim season next
+to the real one on three tabs: STANDINGS, BATTERS, PITCHERS.
+
+Behaviour (Python, tools/m4/dynview.py and tools/lahman/build_season.py)
+1. REAL.DAT format (league dir, little endian):
+   - Header 16 B: 0 'R' 'L', 2 u8 version 1, 3 u8 0, 4 u16 YEAR, 6 u8 team record count T, 7 u8 0,
+     8 u16 player record count P, 10..15 zero.
+   - T team records of 8 B from offset 16: 0 u8 stable team id, 1 u8 0, 2 u16 real W, 4 u16 real L,
+     6 u16 0. In stable id order.
+   - P player records of 80 B after the team records: 0 20 B name20 (the V20 record bytes 0..19
+     exactly as placed), 20 u16 birth key (1001 - age, as placed), 22 u8 stable team id of the team
+     he was placed on, 23 u8 flags (bit0 pitcher: pos1 == 0), 24 25 x u16 real season totals in
+     history.TOTALS order, each min(value, 0xffff), 74..79 zero. In `placed` order.
+2. Real totals of a player for YEAR, summed over all his stints that year (every team): G = pitching
+   G when bit0 is set else batting G; AB, H, 2B, 3B, HR, R, RBI, BB, SO, SB, CS from batting; E from
+   fielding; W, L, SV, GS, CG, SHO, OUTS (IPouts), ER, PH (H), PBB (BB), PSO (SO), PHR (HR) from
+   pitching. Missing tables rows or NULL cells count 0. The same Lahman tables and column names
+   build_season already reads (build_season.TOTAL_TABLES, shared with the C36 career sums).
+3. Real team W and L from the Lahman teams table for (YEAR, teamID) of every team in team_list(YEAR).
+4. build_season.main writes REAL.DAT as the last build step (after realign_lahman, so the stable ids
+   are final), through `write_real(db, year, out_dir, placed)`. A write failure fails the build the
+   same way other steps do.
+5. dynview: hub row `R  REPLAY` appended after `P  PLAYOFFS` in MENU_ROWS; keys R and r open
+   SCREEN_REPLAY (= 19). The hub cursor reaches it like every other row.
+6. REPLAY screen, three tabs in this order: STANDINGS, BATTERS, PITCHERS. LEFT and RIGHT cycle the
+   tab (wrapping), UP/DOWN/PGUP/PGDN/HOME/END scroll as on the other list screens, ESC returns to
+   the hub. The title row shows `REPLAY YEAR  <TAB NAME>`.
+7. The compared season s = the lowest recorded season (1..seasons_recorded) with year_of(hist, s) ==
+   REAL.DAT YEAR. Messages (single row, COLS_SINGLE, as SEASON AWARDS' messages): REAL.DAT missing,
+   shorter than its header says, or a bad magic/version -> `NO REAL SEASON ON FILE`; no such s ->
+   `SEASON NOT PLAYED YET`.
+8. STANDINGS tab: the same team order, division blocks and header rows as standings_walk for season
+   s; columns TEAM, SIM (W-L as `95-67`), REAL (`W-L` from REAL.DAT, `-` when the team has no
+   REAL.DAT team record), DIFF (sim W minus real W, `+3`, `-2`, `0`, blank when no real record). The
+   managed `*` prefix as on SEASON STANDINGS.
+9. BATTERS tab: one row per REAL.DAT player with bit0 clear and real AB >= 100 whose entry index e =
+   find_entry(hist, name20, birth) is found and who has a SEASLINE line (entry e, season s); when he
+   has several lines that season, sum them. Columns PLAYER (the name as LEADERS shows it), TM (the
+   team abbreviation of the REAL.DAT team id, as LEADERS does), AVG sim, AVG real (fmt_avg of
+   H*1000//AB, `-` when AB is 0), HR sim, HR real. Order: real AB descending, then entry index
+   ascending.
+10. PITCHERS tab: bit0 set, real OUTS >= 150, same join. Columns PLAYER, TM, ERA sim, ERA real
+    (ER*27/OUTS to two decimals: value100 = ER * 2700 // OUTS shown as `3.07`, `-` when OUTS is 0),
+    W sim, W real. Order: real OUTS descending, then entry index ascending.
+11. A tab with no qualifying rows shows the single row `NO PLAYERS TO COMPARE`. At most LIST_MAX
+    rows.
+
+C port (tools/m4/dynview_c/dynview.c)
+dynview.c matches dynview.py frame for frame on every REPLAY state (same rows, columns, messages,
+keys). REAL.DAT is read record by record (no buffer of the whole file); C89, OpenWatcom large model,
+no new array over 2 KB (the new statics are g_rtw, g_rtl and g_rth, 32 entries each, and the three
+joins below borrow three of the existing g_list_buf lists), 8.3 names. The SEASLINE join reads the
+file the way the C LEADERS code does (seasline_open and line_next). Host gcc build with -Werror
+stays clean.
+
+Choices the behaviour above leaves open (Python and C do the same)
+- find_entry returns -1, not NO_ENTRY, for a missing identity: that is "not found". The join is
+  the first HISTORY.DAT entry (any of the entries in the file, not only the header count) whose
+  name20 and u16 birth equal the record's first 22 bytes. A line of a later entry with the same
+  identity does not count.
+- REAL.DAT is read at each call (rows, total_rows, title), never cached in data. Of two team
+  records with one id the first counts; an id past 31 never shows. A file longer than its header
+  says is fine. Byte 3 of the header is not checked.
+- Season s is year - start_year + 1 when that is in 1..seasons_recorded. REPLAY handles a league
+  with no HISTORY.DAT or no recorded season itself: a good REAL.DAT gives `SEASON NOT PLAYED YET`,
+  not the generic `NO DYNASTY HISTORY YET`. The title is `REPLAY` alone when REAL.DAT is not good.
+- STANDINGS rows are standings_walk's rows of s: a header or blank row keeps only its first cell
+  (the other three are empty); a lone message row of the walk (`NO STANDINGS RECORDED`) stays one
+  cell in COLS_SINGLE. DIFF is `0` for no difference, else `%+d`.
+- SIM and REAL AVG and ERA use the same cell rule: `-` when the sim (or real) AB or OUTS is 0, so a
+  sim AB of 0 shows `-`. The sim figures are the sums of totals over the entry's lines of s.
+- Order ties past (real stat, entry index) keep REAL.DAT order. The cap is the first LIST_MAX rows of
+  the order. The C join holds LIST_MAX qualifying records at a time (hash of the 22 identity bytes,
+  FNV-1a 32 bit, in one list; a hash hit is checked against the identity bytes), so any number
+  of qualifying records gives the same rows as Python.
+- Columns (COLS_REPLAY_STANDINGS: TEAM 17, SIM 8 right, REAL 8 right, DIFF 6 right; COLS_REPLAY_BAT and
+  COLS_REPLAY_PIT: PLAYER 16, TM 4 right, then S AVG / R AVG / S HR / R HR and S ERA / R ERA / S W /
+  R W at x 20, 26, 32, 37, widths 6, 6, 5, 5; S = sim, R = real). Footer `LEFT RIGHT TAB  S SIM  R
+  REAL  PGUP PGDN ESC` (44 characters). REPLAY is a cursor screen (ENTER does nothing; a click on a
+  row sets the cursor) and a title click is LEFT or RIGHT.
+- The hub now has 13 rows and stays one page: its cursor keeps page 0 (before, row 12 would have
+  been page 1 and drawn on row 0), and a click on the 13th row band (y 167..176) is its key, R.
+  The hub footer is unchanged. In C, MAX_ROWS is 13 and band_row takes the row count.
+
+Tests that pin it: tools/lahman/test_write_real.py (synthetic sqlite: exact bytes, no team row,
+TEAMID.DAT ids, the step order of main), tools/lahman/test_build_season.py::test_1993_real_dat (with
+the Lahman db), tools/m4/test_dynview.py (test_replay_*: every tab's rows, both messages, wrap, hub,
+paging, the 1200 cap) and tools/m4/test_dynview_c.py (test_replay_parity_*: host frames equal Python's
+on every tab and message, 1300 qualifying batters, a real FNV-1a collision, duplicate records and
+entries).

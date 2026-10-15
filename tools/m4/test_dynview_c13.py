@@ -1000,8 +1000,8 @@ def test_hub_rows_and_key_p(tmp_path):
     write_league(ldir, player_set(), seasons=3)
     data = load(ldir)
     assert dynview.MENU_ROWS[11] == 'P  PLAYOFFS'
-    assert len(dynview.MENU_ROWS) == 12
-    assert dynview.total_rows(HUB, data) == 12
+    assert len(dynview.MENU_ROWS) == 13 and dynview.MENU_ROWS[12] == 'R  REPLAY'   # C74
+    assert dynview.total_rows(HUB, data) == len(dynview.MENU_ROWS)
     assert dynview.rows(HUB, data)[11] == ('P  PLAYOFFS',)
     assert dynview.SCREEN_PLAYOFFS == 14 and dynview.SCREEN_PBOX == 15
     for key in (80, 112):

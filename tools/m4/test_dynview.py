@@ -593,8 +593,8 @@ def test_c67_hub_menu_cursor(tmp_path):
     data = dynview.load_data(str(ldir))
     H = dynview.SCREEN_MENU
     st3 = dynview.pack(H, 0, 0, 3)
-    st11 = dynview.pack(H, 0, 0, 11)
-    # UP at row 0 and DOWN at row 11 stay (clamped, no wrap)
+    st11 = dynview.pack(H, 0, 0, len(dynview.MENU_ROWS) - 1)
+    # UP at row 0 and DOWN at the last row stay (clamped, no wrap)
     assert dynview.step((H, 0, 0), dynview.KEY_UP, data) == ((H, 0, 0), 0)
     assert dynview.step(st11, dynview.KEY_DOWN, data) == (st11, 0)
     # END, then the pages from row 0 (one page, so PGUP and PGDN are HOME and END)
@@ -610,10 +610,11 @@ def test_c67_hub_menu_cursor(tmp_path):
     assert dynview.step(s, dynview.KEY_ENTER, data) == \
         dynview.step(st3, ord('4'), data)
     assert dynview.step(s, dynview.KEY_ENTER, data) == ((dynview.SCREEN_MILESTONES, 0, 0), 0)
-    # END then ENTER is the 12th row's key, P (PLAYOFFS)
+    # END then ENTER is the last row's key
     assert dynview.step(st11, dynview.KEY_ENTER, data) == \
-        dynview.step(st11, ord('P'), data)
-    assert dynview.step(st11, dynview.KEY_ENTER, data) == ((dynview.SCREEN_PLAYOFFS, 0, 0), 0)
+        dynview.step(st11, ord(dynview.MENU_ROWS[-1][0]), data)
+    st_p = dynview.pack(H, 0, 0, dynview.MENU_ROWS.index('P  PLAYOFFS'))
+    assert dynview.step(st_p, dynview.KEY_ENTER, data) == ((dynview.SCREEN_PLAYOFFS, 0, 0), 0)
     # row 9's ENTER is key '0': SEASON STANDINGS with the st_back state cleared
     data['st_back'] = (dynview.SCREEN_HISTORY, 0, 0)
     st9 = dynview.pack(H, 0, 0, 9)
@@ -650,8 +651,8 @@ def test_c67_title_menu_enter_and_c(tmp_path):
     # the cursor moves and the page follows the row; the record keys still work
     s, _ex = dynview.step(T, dynview.KEY_DOWN, data)
     assert s == dynview.pack(H, 0, dynview.TITLE_FLAG, 1)
-    assert dynview.step(dynview.pack(H, 0, dynview.TITLE_FLAG, 11), dynview.KEY_END,
-                        data)[0] == dynview.pack(H, 0, dynview.TITLE_FLAG, 11)
+    assert dynview.step(dynview.pack(H, 0, dynview.TITLE_FLAG, len(dynview.MENU_ROWS) - 1), dynview.KEY_END,
+                        data)[0] == dynview.pack(H, 0, dynview.TITLE_FLAG, len(dynview.MENU_ROWS) - 1)
     # C and c exit with flag 1 (the state kept with its cursor), ESC too
     for k in (67, 99):
         assert dynview.step(s, k, data) == (s, 1)
@@ -1056,7 +1057,7 @@ def test_offseason_titles_footers_and_menu(tmp_path):
     assert dynview.footer_text((dynview.SCREEN_REVIEW, 0, 0)) == 'ENTER MENU   ESC MENU'
     # the menu's sixth row and key 6; key 7 opens DYNASTY SETTINGS, 9 SEASON AWARDS
     assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data)[5] == ('6  OFFSEASON',)
-    assert dynview.total_rows((dynview.SCREEN_MENU, 0, 0), data) == 12
+    assert dynview.total_rows((dynview.SCREEN_MENU, 0, 0), data) == len(dynview.MENU_ROWS)
     s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('6'), data)
     assert s == (SO, 0, 0) and ex == 0
     s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('9'), data)
@@ -1516,10 +1517,10 @@ def test_hub_rows_with_and_without_history(tmp_path):
     ldir, _ = make_data(tmp_path)
     data = dynview.load_data(str(ldir))
     assert dynview.rows(HUB, data) == [(t,) for t in dynview.MENU_ROWS]
-    assert dynview.MENU_ROWS[6:] == ['7  DYNASTY SETTINGS', '8  ABOUT THE MODS',
-                                     '9  SEASON AWARDS', '0  SEASON STANDINGS',
-                                     'W  WORLD SERIES', 'P  PLAYOFFS']
-    assert dynview.total_rows(HUB, data) == 12
+    assert dynview.MENU_ROWS[6:12] == ['7  DYNASTY SETTINGS', '8  ABOUT THE MODS',
+                                       '9  SEASON AWARDS', '0  SEASON STANDINGS',
+                                       'W  WORLD SERIES', 'P  PLAYOFFS']
+    assert dynview.total_rows(HUB, data) == len(dynview.MENU_ROWS)
     empty = tmp_path / 'empty'
     empty.mkdir()
     data = dynview.load_data(str(empty))
@@ -2462,7 +2463,7 @@ def test_standings_hub_key_and_footers(tmp_path):
     data = dynview.load_data(str(ldir))
     assert dynview.MENU_ROWS[9] == '0  SEASON STANDINGS'
     assert dynview.rows(HUB, data)[9] == ('0  SEASON STANDINGS',)
-    assert dynview.total_rows(HUB, data) == 12
+    assert dynview.total_rows(HUB, data) == len(dynview.MENU_ROWS)
     assert dynview.step(HUB, ord('0'), data) == ((SS, 0, 0), 0)
     # from the /TITLE menu too; ESC goes back to the plain hub
     T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
@@ -2837,7 +2838,7 @@ def test_series_hub_key_and_footers(tmp_path):
     data = dynview.load_data(str(ldir))
     assert dynview.MENU_ROWS[10] == 'W  WORLD SERIES'
     assert dynview.rows(HUB, data)[10] == ('W  WORLD SERIES',)
-    assert dynview.total_rows(HUB, data) == 12
+    assert dynview.total_rows(HUB, data) == len(dynview.MENU_ROWS)
     # W and w open WORLD SERIES from the hub and from the /TITLE menu
     T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
     for key in (ord('W'), ord('w')):
@@ -3998,7 +3999,7 @@ def test_playoffs_hub_title_footer_and_keys(tmp_path):
     assert dynview.MENU_ROWS[11] == 'P  PLAYOFFS'
     assert dynview.SCREEN_PLAYOFFS == 14 and dynview.SCREEN_PBOX == 15
     assert dynview.rows(HUB, data)[11] == ('P  PLAYOFFS',)
-    assert dynview.total_rows(HUB, data) == 12
+    assert dynview.total_rows(HUB, data) == len(dynview.MENU_ROWS)
     assert dynview.step(HUB, 80, data) == ((SP, 0, 0), 0)
     assert dynview.step(HUB, 112, data) == ((SP, 0, 0), 0)
     # a click on the row gives key ord('P') = 80
@@ -5335,7 +5336,7 @@ def test_c63_home_end_cursor_jumps(tmp_path):
     assert press((dynview.SCREEN_MENU, 0, 0), dynview.KEY_HOME, sdata) == \
         (dynview.SCREEN_MENU, 0, 0)
     assert press((dynview.SCREEN_MENU, 0, 0), dynview.KEY_END, sdata) == \
-        (dynview.SCREEN_MENU, 0, 0, 11)
+        (dynview.SCREEN_MENU, 0, 0, len(dynview.MENU_ROWS) - 1)
     # cursor_move keeps the HoF state unchanged at the ends (the empty-filter one-row list)
     assert dynview.cursor_move((HC, 0, 1, 0), (HC, 0, 1, 0), dynview.KEY_END, data) == \
         (HC, 0, 1, 0)
@@ -5378,3 +5379,541 @@ def test_pager_home_end_one_page(tmp_path):
     assert s == st(rv)
     s, _ex = dynview.step(s, dynview.KEY_HOME, data)
     assert s == st(rv)
+
+
+# ---------------------------------------------------------------- C74 REPLAY
+# A league whose season 2 is 1993: five MAJ teams (BOS 0, DET 1, OAK 8, ATL 16, LAD 24), a HISTORY.DAT
+# with 13 entries (birth keys), SEASLINE.DAT lines for seasons 1..3 and REAL.DAT of 1993. Every expected
+# row below is worked out by hand from these numbers.
+RP_YEAR, RP_START = 1993, 1992
+REPLAY = dynview.SCREEN_REPLAY
+RP_TEAMS = {0: (b'ABOS', b'BOS', 'BOSTON'), 1: (b'ADET', b'DET', 'DETROIT'),
+            8: (b'AOAK', b'OAK', 'OAKLAND'), 16: (b'NATL', b'ATL', 'ATLANTA'),
+            24: (b'NLAD', b'LAD', None)}         # LAD has no V20: its row reads TEAM 24
+# HISTORY entries: (last, first, birth, pitcher)
+RP_ENTRIES = [('AARON', 'H', 940, 0), ('BONDS', 'B', 960, 0), ('CLEMENS', 'R', 962, 1),
+              ('DAWSON', 'A', 950, 0), ('EVANS', 'D', 955, 0), ('FORD', 'W', 958, 1),
+              ('GIBSON', 'B', 961, 1), ('HOLT', 'J', 965, 0), ('IRVIN', 'T', 966, 0),
+              ('JONES', 'M', 967, 0), ('KOUFAX', 'S', 968, 1), ('LOLICH', 'M', 969, 1),
+              ('TWOWAY', 'X', 970, 1)]
+RP_SIM_WL = {0: (90, 72), 1: (80, 82), 8: (95, 67), 16: (100, 62), 24: (70, 92)}   # season 2
+RP_REAL_TEAMS = [(0, 91, 71), (1, 80, 82), (8, 92, 70), (24, 72, 90)]               # ATL has none
+
+
+def rp_tot(vals):
+    """25 totals from {TOTALS index: value}"""
+    t = [0] * 25
+    for k, v in vals.items():
+        t[k] = v
+    return t
+
+
+def rp_name(last, first):
+    return last.encode().ljust(12, b'\0') + first.encode().ljust(8, b'\0')
+
+
+def rp_line(entry, season, vals):
+    """one 80 B SEASLINE.DAT line"""
+    r = bytearray(80)
+    struct.pack_into('<HHBB', r, 0, entry, season, 0, 0)
+    struct.pack_into('<25H', r, 22, *rp_tot(vals))
+    return bytes(r)
+
+
+def rp_real(year, teams, players):
+    """REAL.DAT bytes: teams = [(id, W, L)], players = [(name20, birth, team, flags, {index: value})]"""
+    out = bytearray(b'RL\x01\x00' + struct.pack('<H', year) + bytes([len(teams), 0])
+                    + struct.pack('<H', len(players)) + bytes(6))
+    for k, w, l in teams:
+        out += struct.pack('<BBHHH', k, 0, w, l, 0)
+    for nm, birth, team, flags, vals in players:
+        out += nm + struct.pack('<HBB', birth, team, flags) + struct.pack('<25H', *rp_tot(vals)) \
+            + bytes(6)
+    return bytes(out)
+
+
+def rp_real_players(many=0):
+    """REAL.DAT players (name20, birth, team, flags, totals): the file order puts JONES before IRVIN
+    (same real AB, the entry order must win) and LOLICH before KOUFAX; many extra batters BATnn lead
+    the BATTERS tab with real AB 1000 - 10 nn"""
+    p = [(rp_name('JONES', 'M'), 967, 9, 0, {AB: 450, H: 117, HR: 8}),
+         (rp_name('IRVIN', 'T'), 966, 16, 0, {AB: 450, H: 135, HR: 10}),
+         (rp_name('BONDS', 'B'), 960, 0, 0, {AB: 600, H: 200, HR: 45}),
+         (rp_name('AARON', 'H'), 940, 8, 0, {AB: 500, H: 150, HR: 30}),
+         (rp_name('AARON', 'H'), 941, 8, 0, {AB: 700, H: 300, HR: 60}),         # another birth: no entry
+         (rp_name('HOLT', 'J'), 965, 24, 0, {AB: 300, H: 90, HR: 3}),
+         (rp_name('DAWSON', 'A'), 950, 0, 0, {AB: 99, H: 30, HR: 1}),           # under 100 AB
+         (rp_name('EVANS', 'D'), 955, 0, 0, {AB: 100, H: 25, HR: 2}),           # no season 2 line
+         (rp_name('STRANGER', 'S'), 999, 0, 0, {AB: 400, H: 100, HR: 9}),       # no entry
+         (rp_name('CLEMENS', 'R'), 962, 1, 1, {OUTS: 600, ER: 70, W: 20}),
+         (rp_name('LOLICH', 'M'), 969, 2, 1, {OUTS: 300, ER: 40, W: 8}),
+         (rp_name('KOUFAX', 'S'), 968, 1, 1, {OUTS: 300, ER: 30, W: 11}),
+         (rp_name('TWOWAY', 'X'), 970, 24, 1, {AB: 200, H: 50, OUTS: 200, ER: 21, W: 5}),
+         (rp_name('GIBSON', 'B'), 961, 16, 1, {OUTS: 150, ER: 10, W: 1}),
+         (rp_name('FORD', 'W'), 958, 0, 1, {OUTS: 149, ER: 10, W: 3})]          # under 150 OUTS
+    for i in range(many):
+        p.append((rp_name('BAT%02d' % i, 'Z'), 900 + i, 0, 0, {AB: 1000 - 10 * i, H: 200, HR: i}))
+    return p
+
+
+def rp_lines(many=0):
+    out = [rp_line(1, 1, {AB: 500, H: 150, HR: 30}), rp_line(4, 1, {AB: 200, H: 60}),
+           rp_line(0, 2, {AB: 400, H: 100, HR: 20}),
+           rp_line(1, 2, {AB: 100, H: 40, HR: 5}), rp_line(1, 2, {AB: 300, H: 120, HR: 15}),
+           rp_line(2, 2, {OUTS: 450, ER: 50, W: 15}), rp_line(3, 2, {AB: 90, H: 30}),
+           rp_line(5, 2, {OUTS: 100, ER: 10}), rp_line(6, 2, {G: 3}),
+           rp_line(7, 2, {G: 5}), rp_line(8, 2, {AB: 300, H: 90, HR: 12}),
+           rp_line(9, 2, {AB: 200, H: 50, HR: 4}), rp_line(10, 2, {OUTS: 270, ER: 25, W: 9}),
+           rp_line(11, 2, {OUTS: 300, ER: 40, W: 8}), rp_line(12, 2, {OUTS: 180, ER: 20, W: 4}),
+           rp_line(0, 3, {AB: 1000, H: 500, HR: 99})]
+    out += [rp_line(len(RP_ENTRIES) + i, 2, {AB: 100 + i, H: 30 + i, HR: 2 * i}) for i in range(many)]
+    return out
+
+
+def rp_write_league(ldir, entries, lines, real, seasons=3, start=RP_START, wl=None, mask=1 << 1,
+                    teams=True):
+    """a league dir: HISTORY.DAT with the entries [(last, first, birth, pitcher)], the standings wl of
+    season 2 when given, the start year and the managed mask; SEASLINE.DAT with the 80 B lines; the REAL.DAT
+    bytes when real is not falsy; the five MAJ teams of RP_TEAMS when teams"""
+    ldir.mkdir(parents=True, exist_ok=True)
+    d = bytearray(32 + 64 * 128 + 160 * len(entries))
+    d[3] = 1
+    d[4], d[5] = seasons, 0
+    d[6], d[7] = len(entries) & 255, len(entries) >> 8
+    d[12:16] = mask.to_bytes(4, 'little')
+    d[18:20] = start.to_bytes(2, 'little')
+    for i, (last, first, birth, pit) in enumerate(entries):
+        write_player(d, i, last.encode(), first.encode(), pitcher=pit)
+        struct.pack_into('<H', d, 8224 + 160 * i + 20, birth)
+    if wl is not None and seasons >= 2:
+        write_standings(d, 2, wl)
+    (ldir / 'HISTORY.DAT').write_bytes(bytes(d))
+    if teams:
+        maj = bytearray(59771)
+        for lg, (stem, abbr, nm) in RP_TEAMS.items():
+            base = dynview.MAJ_S_AL if lg < 16 else dynview.MAJ_S_NL
+            o = base + dynview.MAJ_O_STEM + 8 * (lg & 15)
+            maj[o:o + 8] = stem.ljust(8, b'\0')
+            a = base + dynview.teamids.O_ABBR + 3 * (lg & 15)
+            maj[a:a + 3] = abbr
+            if nm:
+                write_team(ldir, stem.decode(), nm)
+        (ldir / 'TEST.MAJ').write_bytes(bytes(maj))
+    if lines is not None:
+        (ldir / 'SEASLINE.DAT').write_bytes(b'SL\x01\x00' + struct.pack('<HH', 80, 3) + bytes(8)
+                                            + b''.join(lines))
+    if real:
+        (ldir / 'REAL.DAT').write_bytes(real)
+    return ldir
+
+
+def replay_league(tmp_path, real=True, year=RP_YEAR, seasons=3, start=RP_START, many=0, name='replay'):
+    """the league dir described above; real False writes no REAL.DAT, real may also be raw bytes; many
+    adds that many extra batters BATnn (real AB 1000 - 10 nn, sim AB 100 + nn)"""
+    entries = list(RP_ENTRIES) + [('BAT%02d' % i, 'Z', 900 + i, 0) for i in range(many)]
+    if real is True:
+        real = rp_real(year, RP_REAL_TEAMS, rp_real_players(many))
+    return rp_write_league(tmp_path / name, entries, rp_lines(many), real, seasons=seasons,
+                           start=start, wl=RP_SIM_WL)
+
+
+RP_STAND_ROWS = [
+    ('AL WEST', '', '', ''),
+    ('OAKLAND', '95-67', '92-70', '+3'),
+    ('AL EAST', '', '', ''),
+    ('BOSTON', '90-72', '91-71', '-1'),
+    ('*DETROIT', '80-82', '80-82', '0'),
+    ('NL WEST', '', '', ''),
+    ('TEAM 24', '70-92', '72-90', '-2'),
+    ('NL EAST', '', '', ''),
+    ('ATLANTA', '100-62', '-', '')]
+RP_BAT_ROWS = [
+    ('BONDS, B', 'BOS', '.400', '.333', '20', '45'),
+    ('AARON, H', 'OAK', '.250', '.300', '20', '30'),
+    ('IRVIN, T', 'ATL', '.300', '.300', '12', '10'),
+    ('JONES, M', '?', '.250', '.260', '4', '8'),
+    ('HOLT, J', 'LAD', '-', '.300', '0', '3')]
+RP_PIT_ROWS = [
+    ('CLEMENS, R', 'DET', '3.00', '3.15', '15', '20'),
+    ('KOUFAX, S', 'DET', '2.50', '2.70', '9', '11'),
+    ('LOLICH, M', '?', '3.60', '3.60', '8', '8'),
+    ('TWOWAY, X', 'LAD', '3.00', '2.83', '4', '5'),
+    ('GIBSON, B', 'ATL', '-', '1.80', '0', '1')]
+
+
+def rp_load(ldir):
+    return dynview.load_data(str(ldir))
+
+
+def test_replay_hub_row_keys_cursor_esc(tmp_path):
+    """the 13th hub row, keys R and r, the cursor reaching it, ENTER on it, ESC back, a click on it"""
+    data = rp_load(replay_league(tmp_path))
+    assert len(dynview.MENU_ROWS) == 13 and dynview.MENU_ROWS[11] == 'P  PLAYOFFS'
+    assert dynview.MENU_ROWS[12] == 'R  REPLAY' and REPLAY == 19
+    assert dynview.rows(HUB, data)[12] == ('R  REPLAY',) and dynview.total_rows(HUB, data) == 13
+    for key in (82, 114):
+        assert dynview.step(HUB, key, data) == ((REPLAY, 0, 0), 0)
+    s = HUB
+    for _ in range(12):
+        s, _ex = dynview.step(s, dynview.KEY_DOWN, data)
+    assert s == (dynview.SCREEN_MENU, 0, 0, 12)                  # the hub is one page: page stays 0
+    assert dynview.step(s, dynview.KEY_DOWN, data) == (s, 0)
+    assert dynview.step(s, dynview.KEY_ENTER, data) == ((REPLAY, 0, 0), 0)
+    assert dynview.step(HUB, dynview.KEY_END, data)[0] == s
+    assert dynview.step(s, dynview.KEY_HOME, data)[0] == HUB
+    assert dynview.step((REPLAY, 0, 0), dynview.KEY_ESC, data) == (HUB, 0)
+    assert dynview.click_to_key(HUB, data, 100, 35 + 12 * 11 + 3) == (82, None)
+    assert dynview.click_to_key(HUB, data, 100, 35 + 12 * 11 + 10) == (None, None)    # the grid line
+    assert dynview.click_to_key(HUB, data, 100, 35 + 13 * 11 + 3) == (None, None)     # no 14th row
+    t = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
+    assert dynview.step(t, 82, data) == ((REPLAY, 0, 0), 0)
+    assert dynview.footer_text(HUB, data) == 'ENTER 0-9 W P F SELECT   ESC EXIT'
+
+
+def test_replay_standings_tab(tmp_path):
+    """STANDINGS: standings_walk's order, headers and managed star; SIM, REAL, DIFF; ATL has no real record"""
+    ldir = replay_league(tmp_path)
+    data = rp_load(ldir)
+    cols, rows = dynview.replay_body((REPLAY, 0, 0), data)
+    assert rows == RP_STAND_ROWS
+    assert [c[0] for c in cols] == ['TEAM', 'SIM', 'REAL', 'DIFF']
+    assert cols is dynview.COLS_REPLAY_STANDINGS
+    # exactly the rows of SEASON STANDINGS for season 2: same teams, same order, same headers
+    walk = dynview.standings_rows(data['hist'], data['teams'], 2, data['team_stems'], data['mask'])
+    assert [r[0] for r in walk] == [r[0] for r in rows]
+    assert dynview.rows((REPLAY, 0, 0), data) == RP_STAND_ROWS
+    assert dynview.total_rows((REPLAY, 0, 0), data) == 9
+    assert dynview.body_cols((REPLAY, 0, 0), data) is dynview.COLS_REPLAY_STANDINGS
+
+
+def test_replay_standings_header_blank_row_like_the_walk(tmp_path):
+    """a header that would fall on a page's last row gets the blank row before it, as in the walk: the
+    CLASSIC season of the standings tests (31 rows, a blank before NL EAST), no real teams at all (REAL
+    column '-', DIFF blank)"""
+    ldir = replay_league(tmp_path, real=rp_real(RP_YEAR, [], []))
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    write_standings(d, 2, WL_CLASSIC)
+    p.write_bytes(bytes(d))
+    data = rp_load(ldir)
+    walk = dynview.standings_rows(data['hist'], data['teams'], 2, data['team_stems'], data['mask'])
+    rows = dynview.replay_body((REPLAY, 0, 0), data)[1]
+    assert len(rows) == len(walk) == 31 and rows[23] == ('', '', '', '') and walk[23][0] == ''
+    assert rows[24][0] == 'NL EAST' and dynview.total_rows((REPLAY, 0, 0), data) == 31
+    assert [len(dynview.rows((REPLAY, p, 0), data)) for p in range(3)] == [12, 12, 7]
+    for w, r in zip(walk, rows):
+        assert r[0] == w[0]
+        if w[1] == '' or w[0] == '':                       # a header or blank row
+            assert r[1:] == ('', '', '')
+        else:
+            assert r[1] == '%s-%s' % (w[1], w[2]) and r[2:] == ('-', '')
+
+
+def test_replay_batters_tab(tmp_path):
+    """BATTERS: real AB >= 100, a HISTORY entry by (name, birth) with a season line, the split season
+    summed, other seasons ignored, real AB descending then entry ascending, '-' for no sim AB"""
+    data = rp_load(replay_league(tmp_path))
+    cols, rows = dynview.replay_body((REPLAY, 0, 1), data)
+    assert rows == RP_BAT_ROWS
+    assert cols is dynview.COLS_REPLAY_BAT and len(cols) == 6 and cols[0][0] == 'PLAYER'
+    assert dynview.rows((REPLAY, 0, 1), data) == RP_BAT_ROWS
+    assert dynview.body_cols((REPLAY, 0, 1), data) is dynview.COLS_REPLAY_BAT
+
+
+def test_replay_pitchers_tab(tmp_path):
+    """PITCHERS: bit0 set and real OUTS >= 150, ERA = ER * 2700 // OUTS, real OUTS descending then entry
+    ascending (KOUFAX 10 before LOLICH 11, listed the other way in REAL.DAT), '-' for no sim OUTS; a
+    pitcher with 200 real AB is not a batter"""
+    data = rp_load(replay_league(tmp_path))
+    cols, rows = dynview.replay_body((REPLAY, 0, 2), data)
+    assert rows == RP_PIT_ROWS
+    assert cols is dynview.COLS_REPLAY_PIT and len(cols) == 6
+    assert all(r[0] != 'TWOWAY, X' for r in dynview.replay_body((REPLAY, 0, 1), data)[1])
+
+
+def test_replay_tab_wrap_and_titles(tmp_path):
+    """LEFT and RIGHT cycle STANDINGS, BATTERS, PITCHERS both ways with page and row reset; the title"""
+    data = rp_load(replay_league(tmp_path))
+    L, Rt = dynview.KEY_LEFT, dynview.KEY_RIGHT
+    assert dynview.step((REPLAY, 0, 0), Rt, data) == ((REPLAY, 0, 1), 0)
+    assert dynview.step((REPLAY, 0, 1), Rt, data) == ((REPLAY, 0, 2), 0)
+    assert dynview.step((REPLAY, 0, 2), Rt, data) == ((REPLAY, 0, 0), 0)
+    assert dynview.step((REPLAY, 0, 0), L, data) == ((REPLAY, 0, 2), 0)
+    assert dynview.step((REPLAY, 0, 2), L, data) == ((REPLAY, 0, 1), 0)
+    assert dynview.step((REPLAY, 0, 1), L, data) == ((REPLAY, 0, 0), 0)
+    assert dynview.step((REPLAY, 2, 1, 27), Rt, data) == ((REPLAY, 0, 2), 0)
+    assert [dynview.screen_title((REPLAY, 0, k), data) for k in range(3)] == [
+        'REPLAY 1993  STANDINGS', 'REPLAY 1993  BATTERS', 'REPLAY 1993  PITCHERS']
+    assert dynview.footer_text((REPLAY, 0, 0), data) == dynview.FOOTERS[REPLAY]
+    assert len(dynview.FOOTERS[REPLAY]) <= 44
+    assert dynview.click_to_key((REPLAY, 0, 0), data, 100, 14) == (dynview.KEY_LEFT, None)
+    assert dynview.click_to_key((REPLAY, 0, 0), data, 200, 14) == (dynview.KEY_RIGHT, None)
+    assert dynview.step((REPLAY, 0, 1), dynview.KEY_ENTER, data) == ((REPLAY, 0, 1), 0)
+
+
+def test_replay_messages(tmp_path):
+    """NO REAL SEASON ON FILE for a missing, short, header-short, bad-magic and bad-version REAL.DAT;
+    SEASON NOT PLAYED YET for a year no recorded season has; every tab shows the same single row"""
+    good = rp_real(RP_YEAR, RP_REAL_TEAMS, rp_real_players())
+    cases = {
+        'missing': False,
+        'empty': b'',
+        'header_short': good[:15],
+        'body_short': good[:-1],
+        'teams_short': good[:16 + 8 * len(RP_REAL_TEAMS) - 1],
+        'bad_magic': b'XL' + good[2:],
+        'bad_magic2': b'RX' + good[2:],
+        'bad_version': good[:2] + b'\x02' + good[3:],
+        'version_0': good[:2] + b'\x00' + good[3:]}
+    for i, (tag, raw) in enumerate(cases.items()):
+        data = rp_load(replay_league(tmp_path, real=raw, name='m%d' % i))
+        for tab in range(3):
+            cols, rows = dynview.replay_body((REPLAY, 0, tab), data)
+            assert (cols, rows) == (dynview.COLS_SINGLE, [('NO REAL SEASON ON FILE',)]), (tag, tab)
+            assert dynview.rows((REPLAY, 0, tab), data) == [('NO REAL SEASON ON FILE',)]
+            assert dynview.body_cols((REPLAY, 0, tab), data) is dynview.COLS_SINGLE
+            assert dynview.total_rows((REPLAY, 0, tab), data) == 1
+        assert dynview.screen_title((REPLAY, 0, 1), data) == 'REPLAY'
+    # a file longer than its header says is fine
+    data = rp_load(replay_league(tmp_path, real=good + b'\xff' * 100, name='long'))
+    assert dynview.replay_body((REPLAY, 0, 1), data)[1] == RP_BAT_ROWS
+    # no recorded season has the year: 1992 is season 1 here, 1990 and 1996 are not played; with no
+    # recorded season at all the same message (REPLAY does not say NO DYNASTY HISTORY YET)
+    for i, (year, seasons) in enumerate(((1990, 3), (1996, 3), (1994, 2), (RP_YEAR, 0), (RP_YEAR, 1))):
+        raw = rp_real(year, RP_REAL_TEAMS, rp_real_players())
+        data = rp_load(replay_league(tmp_path, real=raw, seasons=seasons, name='n%d' % i))
+        for tab in range(3):
+            assert dynview.replay_body((REPLAY, 0, tab), data) == (
+                dynview.COLS_SINGLE, [('SEASON NOT PLAYED YET',)]), (year, seasons, tab)
+        assert dynview.screen_title((REPLAY, 0, 2), data) == 'REPLAY %d  PITCHERS' % year
+    # REAL.DAT is read at each call: a file that goes away shows the message on the next frame
+    ldir = replay_league(tmp_path, name='gone')
+    data = rp_load(ldir)
+    assert dynview.replay_body((REPLAY, 0, 1), data)[1] == RP_BAT_ROWS
+    os.remove(str(ldir / 'REAL.DAT'))
+    assert dynview.replay_body((REPLAY, 0, 1), data)[1] == [('NO REAL SEASON ON FILE',)]
+
+
+def test_replay_season_is_chosen_by_year(tmp_path):
+    """season s is the one whose calendar year is the REAL.DAT year, whatever the start year: start
+    1993 makes it season 1 (the fixture gives season 1 no games: the walk's message row; its lines are
+    BONDS 500 AB and EVANS 200 AB), start 1991 season 3"""
+    data = rp_load(replay_league(tmp_path, start=RP_YEAR, name='s1'))
+    assert dynview.replay_body((REPLAY, 0, 0), data) == (
+        dynview.COLS_SINGLE, [('NO STANDINGS RECORDED',)])
+    assert dynview.replay_body((REPLAY, 0, 1), data)[1] == [
+        ('BONDS, B', 'BOS', '.300', '.333', '30', '45'), ('EVANS, D', 'BOS', '.300', '.250', '0', '2')]
+    assert dynview.replay_body((REPLAY, 0, 2), data) == (
+        dynview.COLS_SINGLE, [('NO PLAYERS TO COMPARE',)])
+    # start 1991: 1993 is season 3, which has the one AARON line (AB 1000, H 500, HR 99)
+    data = rp_load(replay_league(tmp_path, start=1991, name='s3'))
+    assert dynview.replay_body((REPLAY, 0, 1), data)[1] == [
+        ('AARON, H', 'OAK', '.500', '.300', '99', '30')]
+    # a start year outside 1871..2100 counts as 1993 (year_of), so season 1 is 1993
+    data = rp_load(replay_league(tmp_path, start=0, name='s0'))
+    assert dynview.replay_season(data['hist'], RP_YEAR) == 1
+
+
+def test_replay_no_players_to_compare(tmp_path):
+    """a tab with no qualifying row shows the single NO PLAYERS TO COMPARE row, in COLS_SINGLE"""
+    raw = rp_real(RP_YEAR, RP_REAL_TEAMS, [(rp_name('STRANGER', 'S'), 999, 0, 0, {AB: 400}),
+                                           (rp_name('HOLT', 'J'), 965, 0, 0, {AB: 99})])
+    data = rp_load(replay_league(tmp_path, real=raw))
+    for tab in (1, 2):
+        assert dynview.replay_body((REPLAY, 0, tab), data) == (
+            dynview.COLS_SINGLE, [('NO PLAYERS TO COMPARE',)])
+        assert dynview.total_rows((REPLAY, 0, tab), data) == 1
+    assert dynview.replay_body((REPLAY, 0, 0), data)[1] == RP_STAND_ROWS      # the teams are fine
+    # no team records and no players at all
+    data = rp_load(replay_league(tmp_path, real=rp_real(RP_YEAR, [], []), name='bare'))
+    assert dynview.replay_body((REPLAY, 0, 1), data)[1] == [('NO PLAYERS TO COMPARE',)]
+
+
+def test_replay_load_real_details(tmp_path):
+    """the first of two team records with one id counts; ids past 31 and flags bits other than bit0 are
+    harmless; a team id the MAJ does not know shows '?'"""
+    raw = rp_real(RP_YEAR, [(0, 91, 71), (0, 1, 1), (200, 5, 5), (1, 80, 82), (8, 92, 70), (24, 72, 90)],
+                  [(rp_name('BONDS', 'B'), 960, 77, 2, {AB: 600, H: 200, HR: 45}),
+                   (rp_name('CLEMENS', 'R'), 962, 1, 3, {OUTS: 600, ER: 70, W: 20})])
+    data = rp_load(replay_league(tmp_path, real=raw))
+    real = dynview.load_real(data['league_dir'])
+    assert real['teams'][0] == (91, 71) and real['year'] == RP_YEAR and len(real['players']) == 2
+    assert dynview.replay_body((REPLAY, 0, 0), data)[1][3] == ('BOSTON', '90-72', '91-71', '-1')
+    assert dynview.replay_body((REPLAY, 0, 1), data)[1] == [
+        ('BONDS, B', '?', '.400', '.333', '20', '45')]                  # flags 2: bit0 clear, a batter
+    assert dynview.replay_body((REPLAY, 0, 2), data)[1] == [
+        ('CLEMENS, R', 'DET', '3.00', '3.15', '15', '20')]              # flags 3: bit0 set
+    assert dynview.load_real(str(tmp_path / 'nowhere')) is None and dynview.load_real(None) is None
+
+
+def test_replay_cursor_and_paging(tmp_path):
+    """REPLAY is a cursor screen: UP, DOWN, PGUP, PGDN, HOME, END scroll the 35 BATTERS rows (30 extra
+    batters lead them, then the five of the fixture); ENTER does nothing"""
+    data = rp_load(replay_league(tmp_path, many=30))
+    B = 1
+    assert dynview.cursor_screen((REPLAY, 0, B))
+    assert dynview.total_rows((REPLAY, 0, B), data) == 35
+    names = [r[0] for r in dynview.replay_body((REPLAY, 0, B), data)[1]]
+    assert names[:3] == ['BAT00, Z', 'BAT01, Z', 'BAT02, Z'] and names[29] == 'BAT29, Z'
+    assert names[30:] == [r[0] for r in RP_BAT_ROWS]
+    step = lambda s, k: dynview.step(s, k, data)[0]
+    s = (REPLAY, 0, B)
+    s = step(s, dynview.KEY_DOWN)
+    assert s == (REPLAY, 0, B, 1)
+    s = step(s, dynview.KEY_PGDN)
+    assert s == (REPLAY, 1, B, 12)
+    s = step(s, dynview.KEY_PGDN)
+    assert s == (REPLAY, 2, B, 24)
+    assert step(s, dynview.KEY_PGDN) == s                        # no page 3
+    assert [r[0] for r in dynview.rows(s, data)] == names[24:35]
+    s = step(s, dynview.KEY_END)
+    assert s == (REPLAY, 2, B, 34)
+    s = step(s, dynview.KEY_UP)
+    assert s == (REPLAY, 2, B, 33)
+    s = step(s, dynview.KEY_PGUP)
+    assert s == (REPLAY, 1, B, 12)
+    s = step(s, dynview.KEY_HOME)
+    assert s == (REPLAY, 0, B)
+    assert step(s, dynview.KEY_UP) == s and step(s, dynview.KEY_PGUP) == s
+    assert step((REPLAY, 2, B, 30), dynview.KEY_ENTER) == (REPLAY, 2, B, 30)
+    # a click on a row sets the cursor and sends ENTER
+    assert dynview.click_to_key((REPLAY, 1, B, 12), data, 100, 35 + 3 * 11 + 2) == (
+        dynview.KEY_ENTER, 15)
+    assert dynview.click_to_key((REPLAY, 2, B, 24), data, 100, 35 + 11 * 11 + 2) == (None, None)  # 35 rows only
+
+
+def test_replay_list_max(tmp_path, monkeypatch):
+    """at most LIST_MAX rows"""
+    data = rp_load(replay_league(tmp_path, many=30))
+    monkeypatch.setattr(dynview, 'LIST_MAX', 7)
+    rows = dynview.replay_body((REPLAY, 0, 1), data)[1]
+    assert [r[0] for r in rows] == ['BAT%02d, Z' % i for i in range(7)]
+
+
+def test_replay_render_with_synthetic_fonts(tmp_path):
+    """every tab and message state renders; the hub highlights its 13th row when the cursor is there"""
+    from test_dynview_c13 import make_fonts
+    fonts = dynview.load_fonts(make_fonts(tmp_path / 'fonts'))
+    ldir = replay_league(tmp_path)
+    data = dynview.load_data(str(ldir), str(tmp_path / 'fonts'))
+    assert fonts is not None and data['fonts'] is not None
+    seen = []
+    for tab in range(3):
+        fb = dynview.render((REPLAY, 0, tab), data)
+        assert len(fb) == dynview.FB_SIZE
+        seen.append(bytes(fb))
+    assert len(set(seen)) == 3
+    # the cursor row of a list tab is drawn red, the rest tan
+    fb = dynview.render((REPLAY, 0, 1, 2), data)
+    assert fb[(35 + 2 * 11) * 320 + 9] == dynview.C_TITLE_RED and fb[(35 + 3 * 11) * 320 + 9] == dynview.C_ROW_TAN
+    os.remove(str(ldir / 'REAL.DAT'))
+    fb = dynview.render((REPLAY, 0, 1), data)                       # a message row: no cursor row
+    assert fb[35 * 320 + 9] == dynview.C_ROW_TAN
+    fb = dynview.render((dynview.SCREEN_MENU, 0, 0, 12), data)
+    assert fb[(35 + 12 * 11) * 320 + 9] == dynview.C_TITLE_RED and fb[35 * 320 + 9] == dynview.C_ROW_TAN
+
+
+# ---- REPLAY edge fixtures (also the C parity fixtures of test_dynview_c.py)
+# two identities whose FNV-1a 32-bit hashes (the C port's join key over name20 + birth) collide:
+# the C port must tell them apart by the identity bytes
+RP_COLL_A = ('COLLSHNKHO', 'X', 960)
+RP_COLL_B = ('COLLBLTSZE', 'X', 955)
+
+
+def rp_fnv(last, first, birth):
+    h = 2166136261
+    for c in rp_name(last, first) + birth.to_bytes(2, 'little'):
+        h = ((h ^ c) * 16777619) & 0xffffffff
+    return h
+
+
+def replay_collision_league(tmp_path, both=True, name='coll'):
+    """HISTORY entry 0 COLLBLTSZE (and, with both, entry 1 COLLSHNKHO); REAL.DAT batters COLLSHNKHO
+    (AB 300), COLLBLTSZE (AB 400, DET) and COLLBLTSZE again (AB 400, BOS: the same entry twice); lines
+    of season 2 for both entries"""
+    entries = [(RP_COLL_B[0], RP_COLL_B[1], RP_COLL_B[2], 0)]
+    if both:
+        entries.append((RP_COLL_A[0], RP_COLL_A[1], RP_COLL_A[2], 0))
+    real = rp_real(RP_YEAR, RP_REAL_TEAMS, [
+        (rp_name(RP_COLL_A[0], RP_COLL_A[1]), RP_COLL_A[2], 0, 0, {AB: 300, H: 90, HR: 5}),
+        (rp_name(RP_COLL_B[0], RP_COLL_B[1]), RP_COLL_B[2], 1, 0, {AB: 400, H: 120, HR: 8}),
+        (rp_name(RP_COLL_B[0], RP_COLL_B[1]), RP_COLL_B[2], 0, 0, {AB: 400, H: 100, HR: 9})])
+    lines = [rp_line(0, 2, {AB: 200, H: 50, HR: 4}), rp_line(1, 2, {AB: 100, H: 40, HR: 6})]
+    return rp_write_league(tmp_path / name, entries, lines, real, wl=RP_SIM_WL)
+
+
+RP_COLL_ROWS = [('COLLBLTSZE, X', 'DET', '.250', '.300', '4', '8'),
+                ('COLLBLTSZE, X', 'BOS', '.250', '.250', '4', '9'),
+                ('COLLSHNKHO, X', 'BOS', '.400', '.300', '6', '5')]
+
+
+def test_replay_colliding_identities_and_duplicate_records(tmp_path):
+    """equal-hash identities stay apart (the premise: the two hashes are equal); one HISTORY entry
+    named by two REAL.DAT records gives two rows, in REAL.DAT order when their keys tie"""
+    assert rp_fnv(*RP_COLL_A) == rp_fnv(*RP_COLL_B) == 0x3cbe52fb
+    data = rp_load(replay_collision_league(tmp_path))
+    assert dynview.replay_body((REPLAY, 0, 1), data)[1] == RP_COLL_ROWS
+    data = rp_load(replay_collision_league(tmp_path, both=False, name='coll1'))
+    assert dynview.replay_body((REPLAY, 0, 1), data)[1] == RP_COLL_ROWS[:2]
+
+
+def replay_big_league(tmp_path, n=1300, name='big'):
+    """n batters B0000.. (entries 0..n-1), all in REAL.DAT with distinct real AB 100 + i * 7919 % 1301
+    (all qualify, 1300 > LIST_MAX) and a line of season 2 each"""
+    entries = [('B%04d' % i, 'Z', 900 + i % 90, 0) for i in range(n)]
+    real = rp_real(RP_YEAR, RP_REAL_TEAMS, [
+        (rp_name('B%04d' % i, 'Z'), 900 + i % 90, i % 5, 0,
+         {AB: 100 + i * 7919 % 1301, H: (100 + i * 7919 % 1301) // 3, HR: i % 50}) for i in range(n)])
+    lines = [rp_line(i, 2, {AB: 50 + i % 400, H: (50 + i % 400) // 4, HR: i % 17}) for i in range(n)]
+    return rp_write_league(tmp_path / name, entries, lines, real, wl=RP_SIM_WL)
+
+
+def test_replay_more_than_list_max_batters(tmp_path):
+    """1300 qualifying batters: the 1200 with the highest real AB, in order; the rows are worked out
+    from the generating formulas"""
+    data = rp_load(replay_big_league(tmp_path))
+    rows = dynview.replay_body((REPLAY, 0, 1), data)[1]
+    order = sorted(range(1300), key=lambda i: (-(100 + i * 7919 % 1301), i))
+    assert len(rows) == 1200 == dynview.LIST_MAX and dynview.total_rows((REPLAY, 0, 1), data) == 1200
+    assert [r[0] for r in rows] == ['B%04d, Z' % i for i in order[:1200]]
+    for r, i in ((rows[0], order[0]), (rows[777], order[777]), (rows[1199], order[1199])):
+        ab, sab = 100 + i * 7919 % 1301, 50 + i % 400
+        assert r[1:] == (('BOS', 'DET', '?', '?', '?')[i % 5], '%s' % dynview.fmt_avg(sab // 4 * 1000 // sab),
+                         dynview.fmt_avg(ab // 3 * 1000 // ab), '%d' % (i % 17), '%d' % (i % 50))
+    assert len(dynview.rows((REPLAY, 99, 1), data)) == 12
+
+
+def test_replay_missing_files(tmp_path):
+    """no SEASLINE.DAT: the BATTERS and PITCHERS tabs have no row to compare, STANDINGS is whole; no
+    HISTORY.DAT: SEASON NOT PLAYED YET with a good REAL.DAT"""
+    ldir = replay_league(tmp_path)
+    os.remove(str(ldir / 'SEASLINE.DAT'))
+    data = rp_load(ldir)
+    assert dynview.replay_body((REPLAY, 0, 0), data)[1] == RP_STAND_ROWS
+    for tab in (1, 2):
+        assert dynview.replay_body((REPLAY, 0, tab), data)[1] == [('NO PLAYERS TO COMPARE',)]
+    os.remove(str(ldir / 'HISTORY.DAT'))
+    data = rp_load(ldir)
+    for tab in range(3):
+        assert dynview.replay_body((REPLAY, 0, tab), data)[1] == [('SEASON NOT PLAYED YET',)]
+    assert dynview.screen_title((REPLAY, 0, 0), data) == 'REPLAY 1993  STANDINGS'
+
+
+def replay_duplicate_history_league(tmp_path, line_entry, name='dup'):
+    """two HISTORY entries of one identity (entry 0 and 1: find_entry gives the first), one REAL.DAT batter
+    of that identity (AB 200) and a season 2 line for entry line_entry only"""
+    entries = [('DUPLICATE', 'Z', 970, 0), ('DUPLICATE', 'Z', 970, 0)]
+    real = rp_real(RP_YEAR, RP_REAL_TEAMS, [(rp_name('DUPLICATE', 'Z'), 970, 0, 0, {AB: 200, H: 60, HR: 3})])
+    lines = [rp_line(line_entry, 2, {AB: 100, H: 20, HR: 1})]
+    return rp_write_league(tmp_path / name, entries, lines, real, wl=RP_SIM_WL)
+
+
+def test_replay_first_history_entry_of_an_identity_wins(tmp_path):
+    """the join is history.find_entry: a line of the second entry of an identity does not count"""
+    data = rp_load(replay_duplicate_history_league(tmp_path, 1, name='dup1'))
+    assert dynview.replay_body((REPLAY, 0, 1), data)[1] == [('NO PLAYERS TO COMPARE',)]
+    data = rp_load(replay_duplicate_history_league(tmp_path, 0, name='dup0'))
+    assert dynview.replay_body((REPLAY, 0, 1), data)[1] == [
+        ('DUPLICATE, Z', 'BOS', '.200', '.300', '1', '3')]
+    ident = dynview.history.find_entry(data['hist'], rp_name('DUPLICATE', 'Z'), 970)
+    assert ident == 0
