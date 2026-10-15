@@ -2036,8 +2036,8 @@ def test_playoffs_sparse_g_and_long_box_parity(tmp_path):
     # row) and ENTER opens that game's PBOX (g 30), not the old first-GAME-row-on-the-
     # page rule (g 40)
     data = dynview.load_data(str(ldir))
-    assert dynview.step((dynview.SCREEN_PLAYOFFS, 1, 0, 12), dynview.KEY_ENTER,
-                        data)[0] == (dynview.SCREEN_PBOX, 0, 30 - 16)
+    s = (dynview.SCREEN_PLAYOFFS, 1, 0, 12)
+    assert dynview.step(s, dynview.KEY_ENTER, data)[0] == (dynview.SCREEN_PBOX, 0, 30 - 16)
 
 
 # ---------------------------------------------------------------- C27 MILESTONES WATCH
