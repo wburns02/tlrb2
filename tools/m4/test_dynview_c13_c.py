@@ -1111,3 +1111,23 @@ def test_c50_paging_other_keys_do_nothing(tmp_path):
     assert data['find'] == 'J'                 # a digit is never typed
     assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
     assert py_run(ldir, tmp_path, [KF, ord('J'), PGUP])[0] == (dynview.SCREEN_FIND, 0, 0)
+
+
+# ---------------------------------------------------------------- C56 HISTORY cursor and STANDINGS jump
+@needs_fonts
+def test_c56_history_cursor_standings_parity(tmp_path):
+    """HISTORY with the cursor on row 1, the STANDINGS opened from it (ESC back to the
+    identical frame), and the no-history HISTORY frame; every frame matches Python."""
+    ldir = league(tmp_path, players=player_set(), seasons=3, start=1990, name='c56')
+    nohist = league(tmp_path, name='c56nohist')
+    os.remove(str(nohist / 'HISTORY.DAT'))
+    check(ldir, tmp_path, 'c56_hist_footer', [K1])
+    check(ldir, tmp_path, 'c56_hist_row1', [K1, DOWN])
+    assert py_run(ldir, tmp_path, [K1, DOWN])[0] == (dynview.SCREEN_HISTORY, 0, 0, 1)
+    check(ldir, tmp_path, 'c56_standings', [K1, DOWN, ENTER])
+    assert py_run(ldir, tmp_path, [K1, DOWN, ENTER])[0] == (dynview.SCREEN_STANDINGS, 0, 1)
+    check(ldir, tmp_path, 'c56_standings_esc', [K1, DOWN, ENTER, ESC])
+    assert py_run(ldir, tmp_path, [K1, DOWN, ENTER, ESC])[0] == \
+        (dynview.SCREEN_HISTORY, 0, 0, 1)
+    check(ldir, tmp_path, 'c56_esc_menu', [K1, DOWN, ENTER, ESC, ESC])
+    check(nohist, tmp_path, 'c56_nohistory', [K1])

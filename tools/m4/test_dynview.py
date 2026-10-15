@@ -788,7 +788,8 @@ def test_offseason_titles_footers_and_menu(tmp_path):
     assert dynview.footer_text((SO, 0, oc(5))) == 'ENTER CONTINUE   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5, 0))) == 'ENTER MENU   ESC MENU'
     assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '0-9 W P F SELECT   ESC EXIT'
-    assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == 'PGUP PGDN   ESC MENU'
+    assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == \
+        'ENTER STANDINGS   PGUP PGDN   ESC MENU'
     assert dynview.footer_text((dynview.SCREEN_REVIEW, 0, 0)) == 'ENTER MENU   ESC MENU'
     # the menu's sixth row and key 6; key 7 opens DYNASTY SETTINGS, 9 SEASON AWARDS
     assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data)[5] == ('6  OFFSEASON',)
@@ -3939,3 +3940,69 @@ def test_c50_find_list_cap(tmp_path, monkeypatch):
     assert dynview.FIND_LIST == 300 and len(full) > 1
     monkeypatch.setattr(dynview, 'FIND_LIST', 1)
     assert dynview.find_rows(hist, 'SM') == full[:1]
+
+
+# ---------------------------------------------------------------- C56 HISTORY cursor and STANDINGS jump
+def test_history_cursor_moves_and_footer(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    hs = dynview.SCREEN_HISTORY
+    assert dynview.cursor_screen((hs, 0, 0)) is True
+    s = press((hs, 0, 0), dynview.KEY_DOWN, data)
+    assert s == (hs, 0, 0, 1)                    # the cursor state packs the row
+    assert dynview.unpack(s)[3] == 1
+    s = press(s, dynview.KEY_DOWN, data)
+    assert s == (hs, 0, 0, 2)                    # 3 rows: the last
+    assert press(s, dynview.KEY_DOWN, data) == (hs, 0, 0, 2)
+    assert press((hs, 0, 0), dynview.KEY_UP, data) == (hs, 0, 0)
+    # PGDN on a 3-row list is a no-op (below 12 rows), PGUP at page 0 too
+    assert press((hs, 0, 0), dynview.KEY_PGDN, data) == (hs, 0, 0)
+    assert press((hs, 0, 0), dynview.KEY_PGUP, data) == (hs, 0, 0)
+    assert dynview.footer_text((hs, 0, 0), data) == \
+        'ENTER STANDINGS   PGUP PGDN   ESC MENU'
+
+
+def test_history_enter_opens_standings_and_esc_back(tmp_path):
+    """ENTER row r opens the STANDINGS of the row's season; ESC returns the exact
+    HISTORY state (cursor kept) then MENU"""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    hs, ss = dynview.SCREEN_HISTORY, dynview.SCREEN_STANDINGS
+    assert dynview.history_pos(data['hist']) == [3, 2, 1]   # season_no 3, 2, 1 newest first
+    s0 = press((hs, 0, 0), dynview.KEY_DOWN, data)          # row 1: season 2
+    s, _ex = dynview.step(s0, ENTER, data)
+    assert s == (ss, 0, 1)                       # cat = 3 recorded - pos 2 = 1
+    assert dynview.screen_title(s, data) == '1994 STANDINGS'
+    assert data['st_back'] == (hs, 0, 0, 1)
+    s2, _ex = dynview.step(s, ESC, data)
+    assert s2 == (hs, 0, 0, 1)
+    assert 'st_back' not in data                 # deleted after the one level
+    s3, _ex = dynview.step(s2, ESC, data)
+    assert s3 == (dynview.SCREEN_MENU, 0, 0)
+    # row 2 (the last): season 1, cat 2
+    s, _ex = dynview.step((hs, 0, 0, 2), ENTER, data)
+    assert s == (ss, 0, 2)
+    assert dynview.screen_title(s, data) == '1993 STANDINGS'
+    assert dynview.step(s, ESC, data)[0] == (hs, 0, 0, 2)
+
+
+def test_history_enter_key0_path_esc_goes_to_menu(tmp_path):
+    """STANDINGS opened another way (key 0 on the hub) deletes st_back first, so a
+    later ESC goes to MENU; T then ESC ESC keeps st_back, returning STANDINGS then
+    HISTORY (the standings league: T needs a MAJ team)"""
+    hs, ss, hub = dynview.SCREEN_HISTORY, dynview.SCREEN_STANDINGS, (dynview.SCREEN_MENU, 0, 0)
+    ldir = make_standings(tmp_path)
+    data = dynview.load_data(str(ldir))
+    press((hs, 0, 0), ENTER, data)               # arms st_back (state thrown away)
+    assert 'st_back' in data
+    s, _ex = dynview.step(hub, ord('0'), data)   # key 0: clears it
+    assert s == (ss, 0, 0) and 'st_back' not in data
+    assert dynview.step(s, ESC, data)[0] == hub  # ESC goes to MENU
+    # T then ESC ESC: TEAM HISTORY keeps st_back, so ESC returns STANDINGS then HISTORY
+    press((hs, 0, 0), ENTER, data)
+    st = press((ss, 0, 0), ord('T'), data)
+    assert st[0] == dynview.SCREEN_TEAMHIST
+    assert 'st_back' in data                     # untouched by T
+    back = dynview.step(st, ESC, data)[0]
+    assert back == (ss, 0, 0)
+    assert dynview.step(back, ESC, data)[0] == (hs, 0, 0)
