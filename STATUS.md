@@ -9,8 +9,8 @@ and is in a numbered improvement loop (items C23..C59, one worktree and branch e
 
 ## What is live
 - Site: https://tlrb2.ecbtx.com answers HTTP 401 without credentials (curl, 2026-10-15). Auth is on, the host is up.
-- Default branch: origin/main at `d0e6d0d` (2026-10-15 01:34, "C30: ERA text from the 32-bit key ..."). It was
-  `f9e861f` when this lane started and `e039f26` when the worktree was branched.
+- Default branch: origin/main at `5ea5f49` (2026-10-15 09:23, "Merge C69: CREATE release to pool") before this
+  lane's merge. It was `f9e861f` when this lane started and `e039f26` when the worktree was branched.
 - Last deploy: `/mnt/nvme/tlrb2/work/improve5/deploy_c23.log` shows the 2026-10-14 22:30 CT deploy ending with
   "live ... serves b6d46c314030554c, 401 without auth"; the improve5 progress log records a later deploy at 00:30
   "through C46" (commit `f7016388` in that log). The local bundle `/mnt/nvme/tlrb2/web/site/tlrb2.jsdos` is dated
@@ -41,7 +41,8 @@ Builders (GLM-Flash via Hive) and the brain/orchestrator work in per-item worktr
   new C arrays at about 2 KB.
 - The merge helper `keepboth.py` is unsafe on dict, tuple and if-chain conflicts (duplicate keys, older value wins).
   Read code hunks by hand.
-- Full-suite wall time and pass counts for `python3 -m pytest -q tools/m4` are not recorded here; see the notes file.
+- Full suite `python3 -m pytest -q -p no:cacheprovider tools/m4` (serial, 2026-10-15 13:21 on 5ea5f49 plus this
+  lane's docs and holdout): 1381 passed in 290 s. Do not pass `-n`: the C build at collection races under xdist.
 - Tests that need `/mnt/nvme/tlrb2` data, fonts, dosbox-x or Open Watcom skip when those are missing.
 
 ## Awaiting Will

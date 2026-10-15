@@ -35,7 +35,8 @@ Deploy target: a private host reached by ssh, driven only by `web/deploy.sh`. Th
 - Holdout suite (synthetic, offline, no game data, 14 tests, about 1 s):
   `cd tools/m4 && python3 -m pytest -q -p no:cacheprovider holdout`
   (also works from the repo root as `python3 -m pytest -q -p no:cacheprovider tools/m4/holdout`).
-- Max 2 workers; pytest-xdist is NOT installed, so run files serially. Never weaken, skip or delete a parity test.
+- Run serially. Do not pass `-n`: under pytest-xdist the workers race to build the same C object (`dynview.o`)
+  at collection and the run dies before any test. Never weaken, skip or delete a parity test.
 - Other test roots: `tools/*.py` (assets, dcl, stadium, replay) and `web/test_*.py`; `python3 -m pytest -q tools web`.
 
 ## 5. Lint / typecheck
