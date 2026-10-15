@@ -1598,3 +1598,33 @@ unchanged through 1996 (1993's 28 teams carry over); from 1997 the AL slot 8 tea
   default path) gains an optional `known` argument: a {league: division lists} table replacing
   KNOWN[target] with the same set-equality check (a set that does not match the league's
   abbreviations falls back to the generic rule). known=None behaves exactly as today.
+
+## C46. Lahman 1998-2012, 30 teams (added 2026-10-15)
+
+tools/lahman/build_season.py accepts 1977..2012 (YEAR_MAX 2012; 2013+ still exit 2). team_list is
+unchanged through 1997; from 1998 it is the 30-team form: AL slot 4 (stem clasale5) holds TBA (the
+AL's Milwaukee leaves; the AL is 14 teams), and the NL grows to 16, East CHN MON NYN PHI PIT SLN FLO
+MIL (MIL = clasnle8, slot 7), West ATL CIN HOU LAN SDN SFN COL ARI (ARI = clasnlw8, slot 15). TeamID
+switches carry in team_list:clasalw1 is ANA 1997..2004 and LAA from 2005, clasnle2 is MON through
+2004 and WAS from 2005, clasnle7 is FLO through 2011 and MIA in 2012.
+
+- 1998 (add_expansion_1998, right after add_expansion, before any rename): CLASALE5.V20 (at this
+  point still the template Milwaukee file) is copied to CLASNLE8.V20 with the header name MILWAUKEE
+  and abbr MIL (stadium kept) and CLASNLW7.V20 is copied to CLASNLW8.V20 as ARIZONA/ARI, stadium
+  grass; then CLASALE5.V20 itself becomes TAMPA BAY/TB, stadium grass. MAJ NL slots 7 and 15 get the
+  name, abbr and stem entries (the slots must be empty first, else ValueError, like add_expansion),
+  the AL slot 4 entry follows the TB rename, and the NL division counts go 7 -> 8 at 0x758c + 0x298
+  + d and 0x20e + 3 + d.
+- rename_anaheim is replaced by rename_teams, driven by the RENAMES table of (first, last, stem,
+  L, slot, name, abbr) rows: (1997, 2004, 'clasalw1', 0, 8, 'ANAHEIM', 'ANA'), (2005, 9999,
+  'clasalw1', 0, 8, 'LA ANGELS', 'LAA'), (2005, 9999, 'clasnle2', 1, 1, 'WASHINGTON', 'WAS'),
+  (2012, 9999, 'clasnle7', 1, 6, 'MIAMI', 'MIA'). Each row active for the year sets the V20 header
+  name/abbr and the MAJ league L slot entry's name (16 B NUL padded) and abbr. Called where
+  rename_anaheim was (year >= 1997, after add_expansion_1998).
+- realign_lahman logic is unchanged: 1994+ writes TEAMID.DAT from the pre-realignment MAJ and
+  realigns to 3 divisions with the Lahman divID known table (HISTORY.DAT byte 0 = 1). For 1998+ the
+  NL's 16th team trips the Python tool's over-15-team refusal ('NL TOO MANY TEAMS', a tool-only
+  cap; the game's GENERATED layout holds 8 teams a division), which build_season answers by
+  repeating realign's exact C12.5 write sequence without the count gate (build_season._realign_16):
+  the same writes byte for byte, division sizes straight off the Lahman divID groups.
+- 1977..1997 output is byte-identical to the pre-C46 build (V20s, MAJ, TEAMID.DAT, HISTORY.DAT).

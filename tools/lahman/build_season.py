@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Lahman season -> playable TLRB2 league (H1).
 usage: build_season.py YEAR OUT_DIR [--db PATH] [--template DIR]
-YEAR 1977..1997. Copies the template league dir to OUT_DIR (must not exist or be empty), then (1993:
-the two NL expansion teams; 1997: CAL renamed ANAHEIM/ANA), rewrites the 28 CLAS*.V20 files, seeds
-HISTORY.DAT with the players' Lahman careers before YEAR (C36, seed_history), then rebuilds ALLSTAR1/2
-from them (C9, rosters.refresh_allstars). 1994+ adds TEAMID.DAT (from the pre-realignment MAJ) and
-realigns the MAJ to 3 divisions with the Lahman alignment (C38, realign_lahman). MAJ and every V20
-header bytes 0..110 are kept from the template (1993: the
-MAJ NL slot entries and division counts are patched, C15's UTIL NEW TEAM fields). Exit 0 ok, 2 on any
-error."""
+YEAR 1977..2012. Copies the template league dir to OUT_DIR (must not exist or be empty), then (1993:
+the two NL expansion teams; 1998: TB replaces the AL's Milwaukee, which moves to the NL with Arizona;
+renames: 1997 CAL to ANAHEIM/ANA, 2005 LA ANGELS/LAA and WASHINGTON/WAS, 2012 MIAMI/MIA), rewrites the
+28 or 30 CLAS*.V20 files, seeds HISTORY.DAT with the players' Lahman careers before YEAR (C36,
+seed_history), then rebuilds ALLSTAR1/2 from them (C9, rosters.refresh_allstars). 1994+ adds TEAMID.DAT
+(from the pre-realignment MAJ) and realigns the MAJ to 3 divisions with the Lahman alignment (C38,
+realign_lahman). MAJ and every V20 header bytes 0..110 are kept from the template (1993/1998: the
+MAJ expansion slot entries and division counts are patched, C15's UTIL NEW TEAM fields). Exit 0 ok, 2
+on any error."""
 import os
 import shutil
 import sqlite3
@@ -21,15 +22,16 @@ if _TOOLS not in sys.path:
 
 import ratings                                                    # noqa: E402
 import v20                                                        # noqa: E402
-from m4 import rosters                                            # noqa: E402 (depth_rebuild)
+from m4 import realign, rosters, teamids                          # noqa: E402 (depth_rebuild)
 
 DB = '/mnt/nvme/tlrb2/lahman/lahmansbaseballdb.sqlite'
 TEMPLATE = '/mnt/nvme/tlrb2/hist/template/CLASSIC'
-YEAR_MIN, YEAR_MAX = 1977, 1997
+YEAR_MIN, YEAR_MAX = 1977, 2012
 
 # 1977-1992 alignment, slot = division*8 + i (all-star team is slot 15): AL East 0..6, AL West
 # 8..14, NL East 0..5, NL West 8..14. Files clasale1..7, clasalw1..7, clasnle1..6, clasnlw1..6.
-# Milwaukee used the Lahman teamID ML4 (MIL is a franchID, never a teamID here).
+# Milwaukee used the Lahman teamID ML4 through 1997 (the Brewers leave the AL in 1998; from then
+# on MIL is the NL teamID and clasale5 holds TBA).
 AL_TEAMS = ['BAL', 'BOS', 'CLE', 'DET', 'ML4', 'NYA', 'TOR',
             'CAL', 'CHA', 'KCA', 'MIN', 'OAK', 'SEA', 'TEX']
 NL_TEAMS = ['CHN', 'MON', 'NYN', 'PHI', 'PIT', 'SLN',
@@ -37,25 +39,38 @@ NL_TEAMS = ['CHN', 'MON', 'NYN', 'PHI', 'PIT', 'SLN',
 
 
 def team_list(year=1992):
-    """[(stem, Lahman teamID, MAJ slot)] for the season: the 26 pre-1993 teams; 1993 adds
-    the two NL expansion teams (East 7th FLO slot 6, West 7th COL slot 14). 1997 renames
-    the AL slot 8 team's Lahman teamID to ANA."""
+    """[(stem, Lahman teamID, MAJ slot)] for the season: the 26 pre-1993 teams; 1993 the
+    two NL expansion teams (East 7th FLO slot 6, West 7th COL slot 14); 1997 the AL slot 8
+    team's Lahman teamID becomes ANA; 1998 TB takes the AL slot 4 stem clasale5, Milwaukee
+    moves to the NL East as clasnle8 slot 7 and ARI joins the NL West as clasnlw8 slot 15
+    (28 -> 30 teams). 2005 MON becomes WAS and the AL slot 8 teamID becomes LAA; 2012 FLO
+    becomes MIA."""
     out = []
     for i, tid in enumerate(AL_TEAMS):
         et = i < 7
         if i == 7 and year >= 1997:
             tid = 'ANA'
+        if i == 7 and year >= 2005:
+            tid = 'LAA'
+        if i == 4 and year >= 1998:
+            tid = 'TBA'
         out.append(('clasale%d' % (i + 1) if et else 'clasalw%d' % (i - 6),
                     tid, i if et else i + 1))
     nl = list(NL_TEAMS)
     if year >= 1993:
         nl.insert(6, 'FLO')
         nl.append('COL')
-    ne = 7 if year >= 1993 else 6                  # NL East size
+    if year >= 1998:
+        nl.insert(7, 'MIL')
+        nl.append('ARI')
+    ne = 8 if year >= 1998 else (7 if year >= 1993 else 6)   # NL East size
     for i, tid in enumerate(nl):
-        et = i < ne
-        out.append(('clasnle%d' % (i + 1) if et else 'clasnlw%d' % (i - ne + 1),
-                    tid, i if et else i - ne + 8))
+        if tid == 'MON' and year >= 2005:
+            tid = 'WAS'
+        elif tid == 'FLO' and year >= 2012:
+            tid = 'MIA'
+        out.append(('clasnle%d' % (i + 1) if i < ne else 'clasnlw%d' % (i - ne + 1),
+                    tid, i if i < ne else i - ne + 8))
     return out
 
 
@@ -103,25 +118,88 @@ def add_expansion(out_dir):
     open(maj, 'wb').write(bytes(img))
 
 
-# 1997: CAL became ANA (Lahman teamID 'ANA'): the V20 header and the MAJ AL slot 8 entry.
-RENAME_1997 = ('clasalw1', 8, 'ANAHEIM', 'ANA')
+# 1998: TB replaces the AL's Milwaukee, which moves to the NL with Arizona. Slot 7 files and
+# entries must be empty first (same ValueError as add_expansion).
+EXPANSION_1998 = [('clasnle8', 'MIL', 7, 'MILWAUKEE', 'MIL', 'clasnle5'),
+                  ('clasnlw8', 'ARI', 15, 'ARIZONA', 'ARI', 'clasnlw7')]
 
 
-def rename_anaheim(out_dir):
-    """1997: the clasalw1 team's V20 header name/abbr become ANAHEIM/ANA, and the MAJ AL
-    slot 8 entry's name (16 B NUL padded) and abbr follow."""
-    stem, slot, name, abbr = RENAME_1997
-    path = os.path.join(out_dir, stem.upper() + '.V20')
-    t = v20.Team.load(path)
-    t.set_name(name)
-    t.set_abbr(abbr)
-    t.save(path)
+def add_expansion_1998(out_dir):
+    """1998: copy the (still template-Milwaukee) CLASALE5.V20 to CLASNLE8.V20 as MILWAUKEE/MIL
+    (stadium kept) and CLASNLW7.V20 to CLASNLW8.V20 as ARIZONA/ARI (stadium grass); then the
+    CLASALE5.V20 file becomes TAMPA BAY/TB. NL slots 7 and 15 get name, abbr and stem, and the
+    NL division counts go 7 -> 8."""
     maj = _maj_path(out_dir)
     img = bytearray(open(maj, 'rb').read())
-    b = 0x21d + 0x0f + 16 * slot
-    img[b:b + 16] = name.encode('latin-1').ljust(16, b'\0')
-    b = 0x21d + 0x18f + 3 * slot
-    img[b:b + 3] = abbr.encode('latin-1').ljust(3, b'\0')
+    if len(img) < 0x758c + 0x298 + 2:
+        raise ValueError('MAJ too short: %d B' % len(img))
+    for stem, tid, slot, name, abbr, tmpl in EXPANSION_1998:
+        if img[0x758c + 0x1d7 + 8 * slot] != 0:
+            raise ValueError('MAJ slot %d is not empty' % slot)
+    le5 = os.path.join(out_dir, 'CLASALE5.V20')
+    shutil.copy2(le5, os.path.join(out_dir, 'CLASNLE8.V20'))
+    t = v20.Team.load(os.path.join(out_dir, 'CLASNLE8.V20'))
+    t.set_name('MILWAUKEE')
+    t.set_abbr('MIL')
+    t.save(os.path.join(out_dir, 'CLASNLE8.V20'))
+    shutil.copy2(os.path.join(out_dir, 'CLASNLW7.V20'), os.path.join(out_dir, 'CLASNLW8.V20'))
+    t = v20.Team.load(os.path.join(out_dir, 'CLASNLW8.V20'))
+    t.set_name('ARIZONA')
+    t.set_abbr('ARI')
+    t.set_stadium('grass')
+    t.save(os.path.join(out_dir, 'CLASNLW8.V20'))
+    t = v20.Team.load(le5)
+    t.set_name('TAMPA BAY')
+    t.set_abbr('TB')
+    t.set_stadium('grass')
+    t.save(le5)
+    b = 0x21d + 0x0f + 16 * 4
+    img[b:b + 16] = 'TAMPA BAY'.encode('latin-1').ljust(16, b'\0')
+    b = 0x21d + 0x18f + 3 * 4
+    img[b:b + 3] = b'TB\0'
+    for stem, tid, slot, name, abbr, tmpl in EXPANSION_1998:
+        b = 0x758c + 0x0f + 16 * slot
+        img[b:b + 16] = name.encode('latin-1').ljust(16, b'\0')
+        b = 0x758c + 0x18f + 3 * slot
+        img[b:b + 3] = abbr.encode('latin-1').ljust(3, b'\0')
+        b = 0x758c + 0x1d7 + 8 * slot
+        img[b:b + 8] = stem.encode('latin-1').ljust(8, b'\0')
+    for d in (0, 1):
+        img[0x758c + 0x298 + d] = 8
+        img[0x20e + 3 + d] = 8
+    open(maj, 'wb').write(bytes(img))
+
+
+# (first, last, stem, L, slot, name, abbr): franchise moves and rebrands. Each row with
+# first <= year <= last sets the V20 header name/abbr and the MAJ league L slot entry.
+RENAMES = [
+    (1997, 2004, 'clasalw1', 0, 8, 'ANAHEIM', 'ANA'),
+    (2005, 9999, 'clasalw1', 0, 8, 'LA ANGELS', 'LAA'),
+    (2005, 9999, 'clasnle2', 1, 1, 'WASHINGTON', 'WAS'),
+    (2012, 9999, 'clasnle7', 1, 6, 'MIAMI', 'MIA'),
+]
+
+
+def rename_teams(out_dir, year):
+    """The RENAMES rows active for year: the stem's V20 header name/abbr and the MAJ league L
+    slot entry's name (16 B NUL padded) and abbr follow."""
+    maj = _maj_path(out_dir)
+    img = bytearray(open(maj, 'rb').read())
+    if len(img) < 0x758c + 0x298 + 2:
+        raise ValueError('MAJ too short: %d B' % len(img))
+    for first, last, stem, L, slot, name, abbr in RENAMES:
+        if not first <= year <= last:
+            continue
+        path = os.path.join(out_dir, stem.upper() + '.V20')
+        t = v20.Team.load(path)
+        t.set_name(name)
+        t.set_abbr(abbr)
+        t.save(path)
+        s = teamids.S[L]
+        b = s + 0x0f + 16 * slot
+        img[b:b + 16] = name.encode('latin-1').ljust(16, b'\0')
+        b = s + 0x18f + 3 * slot
+        img[b:b + 3] = abbr.encode('latin-1').ljust(3, b'\0')
     open(maj, 'wb').write(bytes(img))
 
 
@@ -533,6 +611,8 @@ def realign_lahman(db, year, out_dir):
     table = teamids.make_table(d)
     open(os.path.join(out_dir, teamids.TABLE_NAME), 'wb').write(table)
     new, reason = realign.realign(d, 3, known=known)
+    if reason == '%s TOO MANY TEAMS' % realign.LG_NAMES[1]:
+        new, reason = _realign_16(d, known), None   # the NL's 16th team trips realign's tool cap
     if reason is not None:
         raise ValueError(reason)
     open(maj, 'wb').write(new)
@@ -540,6 +620,39 @@ def realign_lahman(db, year, out_dir):
     img = bytearray(open(hp, 'rb').read())
     img[0] = 1
     open(hp, 'wb').write(bytes(img))
+
+
+def _realign_16(d, known):
+    """The C12.5 write sequence for a 16-team league, which realign.realign's over-15-team gate
+    refuses (Python-only tool cap; the game itself holds 8 teams a division, so both 16-team
+    leagues fit). Same writes, the other refusal rules, and the same known-table division
+    packing as realign itself."""
+    leagues = [realign._league_teams(d, L) for L in (0, 1)]
+    for L, lst in enumerate(leagues):
+        if len(lst) % 2:
+            raise ValueError('%s ODD COUNT' % realign.LG_NAMES[L])
+    new = bytearray(d)
+    for L in (0, 1):
+        s = teamids.S[L]
+        for slot in range(teamids.SLOTS):
+            if slot == 15 and d[s + teamids.O_STEM + 8 * 15] == 0:
+                continue                       # the all-star entry stays
+            new[s + teamids.O_NAMES + 16 * slot:s + teamids.O_NAMES + 16 * slot + 16] = bytes(16)
+            new[s + teamids.O_ABBR + 3 * slot:s + teamids.O_ABBR + 3 * slot + 3] = bytes(3)
+            new[s + teamids.O_STEM + 8 * slot:s + teamids.O_STEM + 8 * slot + 8] = bytes(8)
+        for dv, lst in enumerate(realign._divisions(leagues[L], 3, L, known)):
+            for i, (_slot, name, abbr, stem) in enumerate(lst):
+                slot = dv * 8 + i
+                new[s + teamids.O_NAMES + 16 * slot:s + teamids.O_NAMES + 16 * slot + 16] = name
+                new[s + teamids.O_ABBR + 3 * slot:s + teamids.O_ABBR + 3 * slot + 3] = abbr
+                new[s + teamids.O_STEM + 8 * slot:s + teamids.O_STEM + 8 * slot + 8] = stem
+            new[s + 0x298 + dv] = len(lst)
+            new[0x20e + 3 * L + dv] = len(lst)
+        new[s + 0x2b3:s + 0x2cb] = b'\xff' * 24
+        new[s + 0x2cb:s + 0x32b] = bytes(96)
+    new[0x20a] = 0xf3
+    new[0x20d] = 3
+    return bytes(new)
 
 
 def main(argv):
@@ -595,8 +708,10 @@ def main(argv):
             os.chmod(os.path.join(out, f), 0o644)
         if year >= 1993:
             add_expansion(out)
+        if year >= 1998:
+            add_expansion_1998(out)
         if year >= 1997:
-            rename_anaheim(out)
+            rename_teams(out, year)
         placed = build_league(db, year, out, template)
         seed_history(db, year, out, placed)
         rosters.refresh_allstars(out)               # else the template's classic stars play the first All-Star game

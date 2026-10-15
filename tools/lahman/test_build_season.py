@@ -248,7 +248,7 @@ def test_header_partition(league):
 
 
 def test_year_out_of_range(tmp_path):
-    for year in (1976, 1998):
+    for year in (1976, 2013):
         out = os.path.join(tmp_path, 'x')
         rc = build_season.main(['build_season.py', str(year), str(out)])
         assert rc == 2
@@ -256,7 +256,7 @@ def test_year_out_of_range(tmp_path):
     # existing empty OUT_DIR is also left empty on exit 2
     out = os.path.join(tmp_path, 'y')
     os.mkdir(out)
-    rc = build_season.main(['build_season.py', '1998', str(out)])
+    rc = build_season.main(['build_season.py', '2013', str(out)])
     assert rc == 2
     assert os.listdir(out) == []
 
@@ -838,3 +838,180 @@ def test_realign_known_table_overrides_default():
     s0, s1 = teamids.S[0], teamids.S[1]
     assert moved[s0 + 0x0f:s0 + 0x2b3] != new[s0 + 0x0f:s0 + 0x2b3]
     assert moved[s1 + 0x0f:s1 + 0x2b3] == new[s1 + 0x0f:s1 + 0x2b3]
+
+
+def test_2013_out_of_range(tmp_path):
+    out = os.path.join(tmp_path, 'x')
+    assert build_season.YEAR_MAX == 2012
+    rc = build_season.main(['build_season.py', '2013', str(out)])
+    assert rc == 2
+    assert not os.path.exists(out)
+
+
+@pytest.mark.parametrize('year', [1998, 2005, 2012])
+def test_team_list_lahman_ids(year):
+    """Every 1998+ teamID is a real Lahman `teams` row of that year; 30 entries."""
+    c = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    ids = {r[0] for r in c.execute('select teamID from teams where yearID=?', (year,))}
+    c.close()
+    tl = build_season.team_list(year)
+    assert len(tl) == 30
+    wrong = [(s, t) for s, t, _k in tl if t not in ids]
+    assert not wrong, (year, wrong)
+
+
+def test_team_list_30_stems_slots():
+    for year in (1998, 2005, 2012):
+        tl = build_season.team_list(year)
+        assert [(s, t) for s, t, _k in tl if s.startswith('clasal')] == [
+            ('clasale1', 'BAL'), ('clasale2', 'BOS'), ('clasale3', 'CLE'),
+            ('clasale4', 'DET'), ('clasale5', 'TBA'), ('clasale6', 'NYA'),
+            ('clasale7', 'TOR'), ('clasalw1', 'ANA' if year <= 2004 else 'LAA'),
+            ('clasalw2', 'CHA'), ('clasalw3', 'KCA'), ('clasalw4', 'MIN'),
+            ('clasalw5', 'OAK'), ('clasalw6', 'SEA'), ('clasalw7', 'TEX')]
+        mon = 'MON' if year <= 2004 else 'WAS'
+        fla = 'FLO' if year <= 2011 else 'MIA'
+        assert [(s, t) for s, t, _k in tl if s.startswith('clasnle')] == [
+            ('clasnle1', 'CHN'), ('clasnle2', mon), ('clasnle3', 'NYN'),
+            ('clasnle4', 'PHI'), ('clasnle5', 'PIT'), ('clasnle6', 'SLN'),
+            ('clasnle7', fla), ('clasnle8', 'MIL')]
+        assert [(s, t) for s, t, _k in tl if s.startswith('clasnlw')] == [
+            ('clasnlw1', 'ATL'), ('clasnlw2', 'CIN'), ('clasnlw3', 'HOU'), ('clasnlw4', 'LAN'),
+            ('clasnlw5', 'SDN'), ('clasnlw6', 'SFN'), ('clasnlw7', 'COL'), ('clasnlw8', 'ARI')]
+        assert [k for _s, _t, k in tl if _s.startswith('clasal')] == \
+            list(range(7)) + list(range(8, 15))
+        assert sorted(k for _s, _t, k in tl if _s.startswith('clasnl')) == \
+            sorted(list(range(8)) + list(range(8, 16)))
+
+
+def _stem_at(d, L, slot):
+    a = teamids.S[L] + 0x1d7 + 8 * slot
+    return bytes(d[a:a + 8]).rstrip(b'\0').decode('latin-1').lower()
+
+
+def _maj_entry(d, L, stem):
+    """(name, abbr) of the realigned MAJ slot holding stem in league L."""
+    s = teamids.S[L]
+    for slot in range(24):
+        if _stem_at(d, L, slot) == stem:
+            n = bytes(d[s + teamids.O_NAMES + 16 * slot:s + teamids.O_NAMES + 16 * slot + 16])
+            a = bytes(d[s + teamids.O_ABBR + 3 * slot:s + teamids.O_ABBR + 3 * slot + 3])
+            return n.split(b'\0')[0], a.rstrip(b'\0')
+    raise AssertionError('stem %s not in league %d' % (stem, L))
+
+
+def _league_divisions(year, out_dir):
+    """({L: [stem sets of realigned division 0, 1, 2]}, {L: [stem sets per Lahman divID
+    E, W, C]}, {L: (division count bytes 0, 1, 2)}) for the year's teams."""
+    with open(os.path.join(str(out_dir), 'CLASSIC.MAJ'), 'rb') as f:
+        d = f.read()
+    c = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    div = dict(c.execute('select teamID, divID from teams where yearID=?', (year,)))
+    c.close()
+    tl = build_season.team_list(year)
+    got, want, counts = {}, {}, {}
+    for L, prefix in ((0, 'clasal'), (1, 'clasnl')):
+        s = teamids.S[L]
+        counts[L] = tuple(d[s + 0x298 + dv] for dv in range(3))
+        got[L] = [{_stem_at(d, L, dv * 8 + i) for i in range(counts[L][dv])} for dv in range(3)]
+        want[L] = [set(), set(), set()]
+        for stem, tid, _slot in tl:
+            if stem.startswith(prefix):
+                want[L]['EWC'.index(div[tid])].add(stem)
+    return got, want, counts
+
+
+DIV_INTEREST = [1998, 2005, 2012]
+
+
+@pytest.fixture(scope='module', params=DIV_INTEREST)
+def league30(tmp_path_factory, request):
+    year = request.param
+    out = tmp_path_factory.mktemp('league') / ('hist%d' % year)
+    rc = build_season.main(['build_season.py', str(year), str(out)])
+    assert rc == 0, out
+    return year, out
+
+
+def test_30_team_maj(league30):
+    year, lg = league30
+    names = sorted(os.listdir(lg))
+    assert 'TEAMID.DAT' in names
+    for f in ('CLASALE5.V20', 'CLASNLE8.V20', 'CLASNLW8.V20'):
+        assert f in names
+    maj = _maj_bytes(lg)
+    assert maj[0x20d] == 3 and maj[0x20a] == 0xf3
+    got, want, counts = _league_divisions(year, lg)
+    for L in (0, 1):
+        s = teamids.S[L]
+        assert [maj[s + 0x298 + dv] for dv in range(3)] == list(counts[L])
+        assert [maj[0x20e + 3 * L + dv] for dv in range(3)] == list(counts[L])
+        assert sum(counts[L]) == (14 if L == 0 else 16)
+        assert max(counts[L]) <= 8 and min(counts[L]) >= 4
+
+
+def test_30_team_divisions_match_lahman(league30):
+    """Per league, the set of MAJ abbrs in each realigned division equals the Lahman
+    divID grouping of that year's teamIDs (the known table drove the packing)."""
+    year, lg = league30
+    got, want, _counts = _league_divisions(year, lg)
+    assert got == want, (year, got, want)
+
+
+@pytest.fixture(scope='module')
+def league98(tmp_path_factory):
+    out = tmp_path_factory.mktemp('league') / 'hist1998b'
+    rc = build_season.main(['build_season.py', '1998', str(out)])
+    assert rc == 0, out
+    return out
+
+
+def test_1998_files(league98):
+    t = v20.Team.load(team_path(league98, 'clasale5'))
+    assert (t.name, t.abbr) == ('TAMPA BAY', 'TB')
+    t = v20.Team.load(team_path(league98, 'clasnle8'))
+    assert (t.name, t.abbr) == ('MILWAUKEE', 'MIL')
+    t = v20.Team.load(team_path(league98, 'clasnlw8'))
+    assert (t.name, t.abbr, t.stadium) == ('ARIZONA', 'ARI', 'grass')
+    with open(os.path.join(str(league98), 'TEAMID.DAT'), 'rb') as f:
+        assert len(f.read()) == 256
+    with open(os.path.join(str(league98), 'HISTORY.DAT'), 'rb') as f:
+        assert f.read()[0] == 1
+
+
+@pytest.fixture(scope='module')
+def league2005(tmp_path_factory):
+    out = tmp_path_factory.mktemp('league') / 'hist2005'
+    rc = build_season.main(['build_season.py', '2005', str(out)])
+    assert rc == 0, out
+    return out
+
+
+def test_2005_renames(league2005):
+    t = v20.Team.load(team_path(league2005, 'clasalw1'))
+    assert (t.name, t.abbr) == ('LA ANGELS', 'LAA')
+    t = v20.Team.load(team_path(league2005, 'clasnle2'))
+    assert (t.name, t.abbr) == ('WASHINGTON', 'WAS')
+    t = v20.Team.load(team_path(league2005, 'clasnle7'))
+    assert (t.name, t.abbr) == ('FLORIDA', 'FLA')
+    with open(os.path.join(str(league2005), 'CLASSIC.MAJ'), 'rb') as f:
+        d = f.read()
+    assert _maj_entry(d, 0, 'clasalw1') == (b'LA ANGELS', b'LAA')
+    assert _maj_entry(d, 1, 'clasnle2') == (b'WASHINGTON', b'WAS')
+    assert _maj_entry(d, 1, 'clasnle7') == (b'FLORIDA', b'FLA')
+
+
+@pytest.fixture(scope='module')
+def league2012(tmp_path_factory):
+    out = tmp_path_factory.mktemp('league') / 'hist2012'
+    rc = build_season.main(['build_season.py', '2012', str(out)])
+    assert rc == 0, out
+    return out
+
+
+def test_2012_miami(league2012):
+    t = v20.Team.load(team_path(league2012, 'clasnle7'))
+    assert (t.name, t.abbr) == ('MIAMI', 'MIA')
+    with open(os.path.join(str(league2012), 'CLASSIC.MAJ'), 'rb') as f:
+        d = f.read()
+    assert _maj_entry(d, 1, 'clasnle7') == (b'MIAMI', b'MIA')
