@@ -562,6 +562,10 @@ static ThRow FARDATA g_th[TEAMHIST_MAX];
  * screen was opened from; th_live marks it set */
 static State g_th_back;
 static int g_th_live;
+/* C56: the state kept for ESC (data['st_back']): the SEASON HISTORY state (cursor kept)
+ * SEASON STANDINGS was opened from; g_st_have marks it set */
+static State g_st_back;
+static int g_st_have;
 
 /* ROSTERS.TXT draft table (loaded once): the first DRAFT_KEEP valid DRAFT lines.
  * Slot: [0] stem length, [1] name length, then the upper-case stem and the joined
@@ -4807,12 +4811,13 @@ static int leader_ncats(int mode)
 }
 
 /* the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode), SEASON AWARDS,
- * the offseason RETIREMENTS phase and MILESTONES WATCH (C27, cat 1; milestones mode 0
- * has none) */
+ * AWARD HISTORY (C28), SEASON HISTORY (C56), the offseason RETIREMENTS phase and
+ * MILESTONES WATCH (C27, cat 1; milestones mode 0 has none) */
 static int cursor_screen(State st)
 {
     if (st.screen == SCREEN_HOF || st.screen == SCREEN_LEADERS
-        || st.screen == SCREEN_AWARDS || st.screen == SCREEN_AWHIST)
+        || st.screen == SCREEN_AWARDS || st.screen == SCREEN_AWHIST
+        || st.screen == SCREEN_HISTORY)
         return 1;
     if (st.screen == SCREEN_MILESTONES && st.cat == 1)
         return 1;
@@ -4966,12 +4971,23 @@ static State step(State in, int32_t key)
          * it was never opened: the default (STANDINGS, 0, 0) like Python's data.get */
         if (s.screen == SCREEN_TEAMHIST)
             return g_th_live ? g_th_back : mk_state(SCREEN_STANDINGS, 0, 0);
+        /* C59: a typed query clears first, the state resets to the prompt row */
+        if (s.screen == SCREEN_FIND && g_find_q[0]) {
+            g_find_q[0] = 0;
+            return mk_state(SCREEN_FIND, 0, 0);
+        }
+        /* C56: SEASON STANDINGS returns one level to the HISTORY state that opened it */
+        if (s.screen == SCREEN_STANDINGS && g_st_have) {
+            g_st_have = 0;
+            return g_st_back;
+        }
         if (s.screen == SCREEN_MENU)
             g_exit = 1;
         return mk_state(SCREEN_MENU, 0, 0);
     }
     if (s.screen == SCREEN_MENU) {
         if (key == 48) {
+            g_st_have = 0;      /* C56: another way in clears the kept HISTORY back state */
             s.screen = SCREEN_STANDINGS;
             s.page = 0;
             s.cat = 0;
@@ -5005,7 +5021,8 @@ static State step(State in, int32_t key)
     }
     /* FIND PLAYER (C50): a letter appends its upper case (FIND_MAX at most), BACKSPACE
      * removes the last char; either edit resets page, cat and row. Other printable keys
-     * do nothing; the row cursor (below) and ESC (handled first) stay. */
+     * do nothing; the row cursor (below) and ESC (handled first, C59 clearing a typed
+     * query) stay. */
     if (s.screen == SCREEN_FIND && key >= 65 && key <= 90) {
         int n = (int)strlen(g_find_q);
         if (n < FIND_MAX) {
@@ -5160,14 +5177,31 @@ static State step(State in, int32_t key)
         }
         return s;
     }
-    /* the row cursor (C13.4): UP / DOWN / PGUP / PGDN move it, ENTER opens the card of its row */
+    /* the row cursor (C13.4): UP / DOWN / PGUP / PGDN move it; ENTER opens the card of
+     * its row, except on SEASON HISTORY, where it opens the season's STANDINGS (C56) */
     if (cursor_screen(s) && (key == KEY_UP || key == KEY_DOWN || key == KEY_PGUP
                              || key == KEY_PGDN))
         return cursor_move(s, key);
     if (cursor_screen(s) && key == KEY_ENTER) {
-        int32_t entry = row_entry(s);
-        if (entry >= 0)
-            return open_card(s, entry);
+        if (s.screen == SCREEN_HISTORY) {
+            if (!g_hdr_seasons)
+                return s;
+            hist_scan(&g_histl);
+            if (s.row < (int32_t)g_histl.n) {
+                long c = (long)g_hdr_seasons - (int32_t)g_histl.idx[s.row];
+                if (c >= 0) {
+                    g_st_back = s;
+                    g_st_have = 1;
+                    return mk_state(SCREEN_STANDINGS, 0, (int32_t)c);
+                }
+            }
+            return s;
+        }
+        {
+            int32_t entry = row_entry(s);
+            if (entry >= 0)
+                return open_card(s, entry);
+        }
         return s;
     }
     /* C28: H on SEASON AWARDS opens the AWARD HISTORY of the cursor row's award record
@@ -6136,18 +6170,20 @@ static int honors_rows(int32_t entry, int page)
     return r + at;
 }
 
-/* footer line: the offseason's ENTER label follows its phase */
+/* footer line: the offseason's ENTER label follows its phase, FIND PLAYER's ESC label
+ * follows the query (C59) */
 static const char *footer_of(State st)
 {
     static const char *footers[6] = {
         "0-9 W P F SELECT   ESC EXIT",
-        "PGUP PGDN   ESC MENU",
+        "ENTER STANDINGS   PGUP PGDN   ESC MENU",
         "TAB POSITION   PGUP PGDN   ESC MENU",
         "LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD",
         "LEFT RIGHT WATCH   PGUP PGDN   ESC MENU",
         "ENTER MENU   ESC MENU" };
     if (st.screen == SCREEN_FIND)
-        return "TYPE NAME  BKSP  ENTER CARD  ESC MENU";
+        return g_find_q[0] ? "TYPE NAME  BKSP  ENTER CARD  ESC CLEAR"
+                           : "TYPE NAME  BKSP  ENTER CARD  ESC MENU";
     if (st.screen == SCREEN_LEADERS && (st.cat >> 5) == MODE_BYYEAR)
         return "LEFT RIGHT STAT  - + YEAR  TAB MODE";
     if (st.screen == SCREEN_MILESTONES && st.cat == 1)

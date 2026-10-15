@@ -926,7 +926,8 @@ def test_offseason_titles_footers_and_menu(tmp_path):
     assert dynview.footer_text((SO, 0, oc(5))) == 'ENTER CONTINUE   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5, 0))) == 'ENTER MENU   ESC MENU'
     assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '0-9 W P F SELECT   ESC EXIT'
-    assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == 'PGUP PGDN   ESC MENU'
+    assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == \
+        'ENTER STANDINGS   PGUP PGDN   ESC MENU'
     assert dynview.footer_text((dynview.SCREEN_REVIEW, 0, 0)) == 'ENTER MENU   ESC MENU'
     # the menu's sixth row and key 6; key 7 opens DYNASTY SETTINGS, 9 SEASON AWARDS
     assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data)[5] == ('6  OFFSEASON',)
@@ -4025,8 +4026,46 @@ def test_find_open_edit_and_rows(tmp_path):
     s3 = (dynview.SCREEN_FIND, 0, 0)
     s4 = press(s3, ord('c'), data)
     assert s4 == (dynview.SCREEN_FIND, 0, 0)
-    # ESC back to the hub, query unchanged
-    assert dynview.step((dynview.SCREEN_FIND, 0, 0, 2), ESC, data) == (HUB, 0)
+    # ESC clears the typed query first (C59): reset to the prompt row, not the hub
+    assert dynview.step((dynview.SCREEN_FIND, 0, 0, 2), ESC, data) == \
+        ((dynview.SCREEN_FIND, 0, 0), 0)
+    assert data['find'] == ''
+
+
+def test_find_esc_clears_then_menu(tmp_path):
+    """C59: ESC on FIND with a non-empty query clears data['find'] and resets to the
+    prompt row (18, 0, 0); a second ESC goes to the MENU; ESC with an empty query goes
+    straight to the MENU; the footer labels the ESC key CLEAR only while the query has
+    text; ESC after moving the cursor resets it too."""
+    ldir = make_find(tmp_path, write_player)
+    data = dynview.load_data(str(ldir))
+    HUB = (dynview.SCREEN_MENU, 0, 0)
+    s, _ex = dynview.step(HUB, ord('F'), data)
+    s = press(s, ord('S'), data)
+    s = press(s, ord('M'), data)
+    assert data['find'] == 'SM'
+    assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR'
+    assert press(s, ESC, data) == (dynview.SCREEN_FIND, 0, 0)
+    assert data['find'] == ''
+    assert dynview.footer_text((dynview.SCREEN_FIND, 0, 0), data) == \
+        'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
+    assert dynview.step((dynview.SCREEN_FIND, 0, 0), ESC, data) == (HUB, 0)
+    # ESC on an empty query goes straight to the MENU
+    assert dynview.step((dynview.SCREEN_FIND, 0, 0), ESC, data) == (HUB, 0)
+    # ESC after moving the cursor resets it too
+    s = press(HUB, ord('f'), data)
+    s = press(s, ord('S'), data)
+    s = press((dynview.SCREEN_FIND, 0, 0, 2), ESC, data)
+    assert s == (dynview.SCREEN_FIND, 0, 0) and data['find'] == ''
+    # a card opened from FIND keeps the exact FIND state on ESC (unchanged)
+    s = press(s, ord('S'), data)
+    s = press(s, ord('M'), data)
+    card, _ex = dynview.step((dynview.SCREEN_FIND, 0, 0, 1), ENTER, data)
+    assert data['card_back'] == (dynview.SCREEN_FIND, 0, 0, 1)
+    assert dynview.step(card, ESC, data)[0] == (dynview.SCREEN_FIND, 0, 0, 1)
+    assert data['find'] == 'SM'
+    assert dynview.footer_text((dynview.SCREEN_FIND, 0, 0, 1), data) == \
+        'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR'
 
 
 def _find_cells(hist, q):
@@ -4375,6 +4414,71 @@ def test_c54_flag_survives_tab_card_and_menu(tmp_path):
     assert menu == (dynview.SCREEN_MENU, 0, 0) and data['lead_active'] is True
     # open_card kept the list state like on any other screen
     assert data.get('card_back') == (PM, 0, 0)
+
+# ---------------------------------------------------------------- C56 HISTORY cursor and STANDINGS jump
+def test_history_cursor_moves_and_footer(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    hs = dynview.SCREEN_HISTORY
+    assert dynview.cursor_screen((hs, 0, 0)) is True
+    s = press((hs, 0, 0), dynview.KEY_DOWN, data)
+    assert s == (hs, 0, 0, 1)                    # the cursor state packs the row
+    assert dynview.unpack(s)[3] == 1
+    s = press(s, dynview.KEY_DOWN, data)
+    assert s == (hs, 0, 0, 2)                    # 3 rows: the last
+    assert press(s, dynview.KEY_DOWN, data) == (hs, 0, 0, 2)
+    assert press((hs, 0, 0), dynview.KEY_UP, data) == (hs, 0, 0)
+    # PGDN on a 3-row list is a no-op (below 12 rows), PGUP at page 0 too
+    assert press((hs, 0, 0), dynview.KEY_PGDN, data) == (hs, 0, 0)
+    assert press((hs, 0, 0), dynview.KEY_PGUP, data) == (hs, 0, 0)
+    assert dynview.footer_text((hs, 0, 0), data) == \
+        'ENTER STANDINGS   PGUP PGDN   ESC MENU'
+
+
+def test_history_enter_opens_standings_and_esc_back(tmp_path):
+    """ENTER row r opens the STANDINGS of the row's season; ESC returns the exact
+    HISTORY state (cursor kept) then MENU"""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    hs, ss = dynview.SCREEN_HISTORY, dynview.SCREEN_STANDINGS
+    assert dynview.history_pos(data['hist']) == [3, 2, 1]   # season_no 3, 2, 1 newest first
+    s0 = press((hs, 0, 0), dynview.KEY_DOWN, data)          # row 1: season 2
+    s, _ex = dynview.step(s0, ENTER, data)
+    assert s == (ss, 0, 1)                       # cat = 3 recorded - pos 2 = 1
+    assert dynview.screen_title(s, data) == '1994 STANDINGS'
+    assert data['st_back'] == (hs, 0, 0, 1)
+    s2, _ex = dynview.step(s, ESC, data)
+    assert s2 == (hs, 0, 0, 1)
+    assert 'st_back' not in data                 # deleted after the one level
+    s3, _ex = dynview.step(s2, ESC, data)
+    assert s3 == (dynview.SCREEN_MENU, 0, 0)
+    # row 2 (the last): season 1, cat 2
+    s, _ex = dynview.step((hs, 0, 0, 2), ENTER, data)
+    assert s == (ss, 0, 2)
+    assert dynview.screen_title(s, data) == '1993 STANDINGS'
+    assert dynview.step(s, ESC, data)[0] == (hs, 0, 0, 2)
+
+
+def test_history_enter_key0_path_esc_goes_to_menu(tmp_path):
+    """STANDINGS opened another way (key 0 on the hub) deletes st_back first, so a
+    later ESC goes to MENU; T then ESC ESC keeps st_back, returning STANDINGS then
+    HISTORY (the standings league: T needs a MAJ team)"""
+    hs, ss, hub = dynview.SCREEN_HISTORY, dynview.SCREEN_STANDINGS, (dynview.SCREEN_MENU, 0, 0)
+    ldir = make_standings(tmp_path)
+    data = dynview.load_data(str(ldir))
+    press((hs, 0, 0), ENTER, data)               # arms st_back (state thrown away)
+    assert 'st_back' in data
+    s, _ex = dynview.step(hub, ord('0'), data)   # key 0: clears it
+    assert s == (ss, 0, 0) and 'st_back' not in data
+    assert dynview.step(s, ESC, data)[0] == hub  # ESC goes to MENU
+    # T then ESC ESC: TEAM HISTORY keeps st_back, so ESC returns STANDINGS then HISTORY
+    press((hs, 0, 0), ENTER, data)
+    st = press((ss, 0, 0), ord('T'), data)
+    assert st[0] == dynview.SCREEN_TEAMHIST
+    assert 'st_back' in data                     # untouched by T
+    back = dynview.step(st, ESC, data)[0]
+    assert back == (ss, 0, 0)
+    assert dynview.step(back, ESC, data)[0] == (hs, 0, 0)
 
 # ------------------------------------------------- C58 PLAYER CARD LEFT/RIGHT browse
 def test_c58_card_hof_browse_rows_and_view(tmp_path):

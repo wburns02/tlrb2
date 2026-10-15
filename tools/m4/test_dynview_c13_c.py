@@ -1012,7 +1012,7 @@ def find_players():
 @needs_fonts
 def test_c50_menu_footer_and_open(tmp_path):
     """F and f on the hub open the empty FIND (prompt row, COLS_SINGLE); the hub footer
-    carries the F key; ESC goes back to the hub with the query kept cleared."""
+    carries the F key; ESC goes back to the prompt row (C59), empty query kept cleared."""
     ldir = league(tmp_path, players=player_set(), seasons=3, name='mf')
     hub = run_pair(ldir, tmp_path, 'c50_hub', [])[0]
     assert dynview.FOOTERS[dynview.SCREEN_MENU] == '0-9 W P F SELECT   ESC EXIT'
@@ -1026,8 +1026,37 @@ def test_c50_menu_footer_and_open(tmp_path):
     assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
     assert dynview.screen_title(s, data) == 'FIND PLAYER: _'
     assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
-    # ESC back to a plain hub, then typing letters does nothing there
+    # ESC with an empty query goes straight to the hub, then typing letters does nothing there
     assert run_pair(ldir, tmp_path, 'c50_find_esc', [KF, ESC])[0] == hub
+
+
+@needs_fonts
+def test_c59_find_esc_clears_frames(tmp_path):
+    """C59 framebuffer parity: ESC on a typed query clears it back to the prompt frame
+    (with the ESC MENU footer again), the second ESC reaches the hub; the typed frame
+    carries the ESC CLEAR footer, ESC after DOWN resets the cursor with the query."""
+    ldir = league(tmp_path, players=find_players(), seasons=3, name='esc9')
+    hub = run_pair(ldir, tmp_path, 'c59_hub', [])[0]
+    prompt = run_pair(ldir, tmp_path, 'c59_prompt', [KF])[0]
+    s, data = py_run(ldir, tmp_path, [KF, ord('S'), ord('M')])
+    assert data['find'] == 'SM'
+    assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR'
+    typed = run_pair(ldir, tmp_path, 'c59_typed', [KF, ord('S'), ord('M')])[0]
+    assert typed != prompt
+    one = run_pair(ldir, tmp_path, 'c59_esc_once', [KF, ord('S'), ord('M'), ESC])[0]
+    assert one == prompt
+    two = run_pair(ldir, tmp_path, 'c59_esc_twice', [KF, ord('S'), ord('M'), ESC, ESC])[0]
+    assert two == hub
+    s2, data2 = py_run(ldir, tmp_path, [KF, ord('S'), ord('M'), ESC, ESC])
+    assert s2 == (dynview.SCREEN_MENU, 0, 0) and data2['find'] == ''
+    # ESC after the cursor moved resets the row and keeps the cleared query
+    down = [KF, ord('S'), ord('M'), DOWN]
+    run_pair(ldir, tmp_path, 'c59_down', down)
+    assert py_run(ldir, tmp_path, down)[0] == (dynview.SCREEN_FIND, 0, 0, 1)
+    esc3 = down + [ESC]
+    assert run_pair(ldir, tmp_path, 'c59_esc_down', esc3)[0] == prompt
+    s3, data3 = py_run(ldir, tmp_path, esc3)
+    assert s3 == (dynview.SCREEN_FIND, 0, 0) and data3['find'] == ''
 
 
 @needs_fonts
@@ -1144,7 +1173,8 @@ def test_c50_paging_other_keys_do_nothing(tmp_path):
     assert run_pair(ldir, tmp_path, 'c50_keys_digit', [KF, ord('J'), ord('5')])[0] == base
     s, data = py_run(ldir, tmp_path, [KF, ord('J'), ord('5')])
     assert data['find'] == 'J'                 # a digit is never typed
-    assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
+    # the query is non-empty, so the ESC label is CLEAR (C59)
+    assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR'
     assert py_run(ldir, tmp_path, [KF, ord('J'), PGUP])[0] == (dynview.SCREEN_FIND, 0, 0)
 
 # ---------------------------------------------------------------- C53 HALL OF FAME filters
@@ -1300,3 +1330,23 @@ def test_c54_active_flag_survives_and_card_parity(tmp_path):
     # the filter re-ranks behind the cursor: row 1 is entry 1 (BRAVO)
     down, data2 = py_run(ldir, tmp_path, [K3, ord('A'), DOWN])
     assert dynview.row_entry(down, data2) == 1
+
+
+# ---------------------------------------------------------------- C56 HISTORY cursor and STANDINGS jump
+@needs_fonts
+def test_c56_history_cursor_standings_parity(tmp_path):
+    """HISTORY with the cursor on row 1, the STANDINGS opened from it (ESC back to the
+    identical frame), and the no-history HISTORY frame; every frame matches Python."""
+    ldir = league(tmp_path, players=player_set(), seasons=3, start=1990, name='c56')
+    nohist = league(tmp_path, name='c56nohist')
+    os.remove(str(nohist / 'HISTORY.DAT'))
+    check(ldir, tmp_path, 'c56_hist_footer', [K1])
+    check(ldir, tmp_path, 'c56_hist_row1', [K1, DOWN])
+    assert py_run(ldir, tmp_path, [K1, DOWN])[0] == (dynview.SCREEN_HISTORY, 0, 0, 1)
+    check(ldir, tmp_path, 'c56_standings', [K1, DOWN, ENTER])
+    assert py_run(ldir, tmp_path, [K1, DOWN, ENTER])[0] == (dynview.SCREEN_STANDINGS, 0, 1)
+    check(ldir, tmp_path, 'c56_standings_esc', [K1, DOWN, ENTER, ESC])
+    assert py_run(ldir, tmp_path, [K1, DOWN, ENTER, ESC])[0] == \
+        (dynview.SCREEN_HISTORY, 0, 0, 1)
+    check(ldir, tmp_path, 'c56_esc_menu', [K1, DOWN, ENTER, ESC, ESC])
+    check(nohist, tmp_path, 'c56_nohistory', [K1])

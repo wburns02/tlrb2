@@ -1072,6 +1072,19 @@ def history_rows(hist, league_dir=None, stems=None, mask=0):
     return out
 
 
+def history_pos(hist):
+    """The season-entry positions of history_rows' rows: pos 1..n
+    (n = min(seasons_recorded, SEASON_COUNT)) sorted by (-season_no, pos), like
+    history_rows sorts them."""
+    n = min(hist.seasons_recorded, history.SEASON_COUNT)
+    items = []
+    for pos in range(1, n + 1):
+        se = hist.read_season_entry(pos)
+        items.append((-se['season_no'], pos))
+    items.sort()
+    return [pos for _s, pos in items]
+
+
 def stems_managed(stems, stem8, mask):
     """True when the 8 byte champion stem (cut at the first NUL, trailing spaces dropped,
     ASCII upper case) maps through stems to a managed id (C18: tid < 32, mask bit set)."""
@@ -2097,9 +2110,10 @@ def unpack(state):
 
 def cursor_screen(s):
     """True on the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode),
-    SEASON AWARDS, AWARD HISTORY (C28), the offseason RETIREMENTS phase and MILESTONES
-    WATCH (C27, cat 1; the milestones mode 0 has none)."""
-    if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_AWHIST):
+    SEASON AWARDS, AWARD HISTORY (C28), SEASON HISTORY (C56), the offseason RETIREMENTS
+    phase and MILESTONES WATCH (C27, cat 1; the milestones mode 0 has none)."""
+    if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_AWHIST,
+                SCREEN_HISTORY):
         return True
     if s[0] == SCREEN_MILESTONES and s[2] == 1:
         return True
@@ -2694,9 +2708,18 @@ def step(state, key, data):
             return data.get('awh_back', (SCREEN_AWARDS, 0, 0)), 0
         if screen == SCREEN_TEAMHIST:
             return data.get('th_back', (SCREEN_STANDINGS, 0, 0)), 0
+        if screen == SCREEN_FIND and data.get('find', ''):
+            # C59: a typed query clears first, the state resets to the prompt row
+            data['find'] = ''
+            return pack(SCREEN_FIND, 0, 0), 0
+        if screen == SCREEN_STANDINGS and 'st_back' in data:
+            # C56: one level back to the HISTORY (or other) state that opened it
+            back = data.pop('st_back')
+            return back, 0
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_MENU:
         if key == 48:
+            data.pop('st_back', None)             # C56: another way in clears the back state
             return (SCREEN_STANDINGS, 0, 0), 0
         if 49 <= key <= 57:
             return (key - 48, 0, 0), 0
@@ -2807,6 +2830,18 @@ def step(state, key, data):
     if cursor_screen(s) and key in CURSOR_KEYS:
         return cursor_move(state, s, key, data), 0
     if cursor_screen(s) and key == KEY_ENTER:
+        if s[0] == SCREEN_HISTORY:
+            # C56: the row's season entry opens SEASON STANDINGS (cat = its seasons back
+            # from the newest); the HISTORY state (cursor kept) is kept for ESC
+            hist = data['hist']
+            rows = history_rows(hist)
+            pos = history_pos(hist)
+            if s[3] < len(rows):
+                c = hist.seasons_recorded - pos[s[3]]
+                if c >= 0:
+                    data['st_back'] = pack(s[0], s[1], s[2], s[3], s[4])
+                    return pack(SCREEN_STANDINGS, 0, c), 0
+            return state, 0
         entry = row_entry(s, data)
         if entry is not None:
             return open_card(s, entry, data)
@@ -3121,7 +3156,7 @@ COLS_AWHIST = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
 
 FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
            SCREEN_TEAMHIST: 'LEFT RIGHT TEAM   PGUP PGDN   ESC',
-           SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
+           SCREEN_HISTORY: 'ENTER STANDINGS   PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'TAB POSITION   PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD',
            SCREEN_CARD: 'LEFT RIGHT  PGUP PGDN  H HONORS  ESC',
@@ -3145,9 +3180,13 @@ TITLE_FOOTER_NEW = 'ENTER PLAY BALL'
 
 def footer_text(state, data=None):
     """Footer line of state; the offseason's ENTER label follows its phase, the /TITLE
-    menu's follows whether any season is recorded, MILESTONES WATCH its mode (C27)."""
+    menu's follows whether any season is recorded, MILESTONES WATCH its mode (C27),
+    FIND PLAYER's ESC label follows the query (C59)."""
     s = unpack(state)
     screen, cat = s[0], s[2]
+    if screen == SCREEN_FIND:
+        return 'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR' if data and data.get('find', '') \
+            else FOOTERS[SCREEN_FIND]
     if screen == SCREEN_MILESTONES and cat == 1:
         return 'ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC'
     if screen == SCREEN_CARD and s[3] == 1:
