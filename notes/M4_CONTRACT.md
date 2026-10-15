@@ -1599,6 +1599,40 @@ unchanged through 1996 (1993's 28 teams carry over); from 1997 the AL slot 8 tea
   KNOWN[target] with the same set-equality check (a set that does not match the league's
   abbreviations falls back to the generic rule). known=None behaves exactly as today.
 
+## C39. LEADERS postseason mode (added 2026-10-15)
+
+LEADERS (SCREEN_LEADERS) gains mode 3, POSTSEASON: the career leaders summed from the
+BOXSCORE.DAT player rows (the C23b/C26 layout, rows with idx == entry and flags != 4).
+Reads only; writes nothing. Python tools/m4/dynview.py is the reference; the C port
+dynview_c/dynview.c renders the same framebuffers and walks the same states.
+
+- POST_CATS = [('G', 'count', 0), ('H', 'count', 2), ('HR', 'count', 5), ('RBI', 'count', 7),
+  ('SB', 'count', 10), ('SO', 'count', 23), ('IP', 'ip', 19)]; leader_cats(MODE_POST)
+  returns POST_CATS (CAREER keeps CATS, SEASON and BY YEAR keep SEASON_CATS).
+- post_leader_totals(box) -> {entry: (games, t)}: for every entry with at least one player
+  row (flags != 4), exactly post_totals(box, entry) (same distinct (season, g) G and the
+  same sums). Built in one pass over box; entries >= POST_ENTRY_MAX (4096) are ignored.
+- post_order(box, cat) -> [(value, entry, games)]: value = t[cat[2]] (index 0 is G = games),
+  only value > 0, sorted value descending then entry ascending, the first POST_MAX (50).
+- Rows: rank '#k', NAME (entry_name 16), mark 'R' retired / 'H' HoF / ' ' otherwise (the
+  career_leader_cells rule), G (the entry's distinct postseason games), value formatted
+  with cat_format. COLS_POST_LEADERS = [('#', _cx(0), 5, 'L'), ('NAME', _cx(5), 16, 'L'),
+  (' ', _cx(22), 1, 'L'), ('G', _cx(23), 5, 'R'), ('VALUE', _cx(28), 14, 'R')]. No item:
+  one COLS_SINGLE row 'NO POSTSEASON GAMES RECORDED YET.'. Title 'POSTSEASON LEADERS: '
+  + label; the footer is CAREER's (FOOTERS[SCREEN_LEADERS]).
+- TAB cycles CAREER -> SEASON -> BY YEAR -> POSTSEASON -> CAREER ((mode + 1) % 4), the
+  same label carry-over rule (else index 0); BY YEAR still gets default_year(data).
+  LEFT/RIGHT wrap within POST_CATS. row_entry in MODE_POST returns post_order(...)[row]'s
+  entry, None past the end or on the message row; ENTER opens the card, ESC returns to the
+  same state (the existing open_card path). Every other screen, mode and frame unchanged.
+- C port: POST_CATS, COLS_POST_LEADERS and MODE_POST mirror Python; the accumulate is ONE
+  pass over BOXSCORE.DAT into FARDATA arrays indexed by entry (POST_ENTRY_MAX 4096), games
+  counted by the entry's last (season, g) key (the records of a game are contiguous), the
+  seven values in TOTALS index order; the scan is cached like the other scans (nothing in
+  DYNVIEW writes BOXSCORE.DAT); the top POST_MAX is kept like season_scan with the same
+  ordering and tie break. The host binary is rebuilt with gcc after the parity gate
+  (-Werror clean); DYNVIEW.EXE is untouched.
+
 ## C46. Lahman 1998-2012, 30 teams (added 2026-10-15)
 
 tools/lahman/build_season.py accepts 1977..2012 (YEAR_MAX 2012; 2013+ still exit 2). team_list is

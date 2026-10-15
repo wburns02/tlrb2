@@ -32,6 +32,7 @@ S = dict(G=0, AB=1, H=2, D2=3, T3=4, HR=5, R=6, RBI=7, BB=8, SO=9, SB=10, CS=11,
          W=13, L=14, SV=15, GS=16, CG=17, SHO=18, OUTS=19, ER=20, PH=21, PBB=22, PSO=23, PHR=24)
 SEASON_LABELS = [c[0] for c in dynview.SEASON_CATS]
 CAREER_LABELS = [c[0] for c in dynview.CATS]
+POST_LABELS = [c[0] for c in dynview.POST_CATS]
 
 
 def sidx(label):
@@ -429,8 +430,10 @@ def test_tab_cycles_modes_and_keeps_the_category_by_label(tmp_path):
     assert s == (LEAD, 0, SEASON + sidx('SV'))
     s = press(s, TAB, data)                                           # -> BY YEAR, newest season
     assert s == (LEAD, 0, BY_YEAR + sidx('SV'), 0, 2)
-    s = press(s, TAB, data)                                           # -> CAREER, year cleared
-    assert s == (LEAD, 0, cidx('SV'))
+    s = press(s, TAB, data)                                           # -> POSTSEASON, fallback G
+    assert s == (LEAD, 0, 3 * 32)                                      # no SV in POST_CATS
+    s = press(s, TAB, data)                                           # -> CAREER, cat from label
+    assert s == (LEAD, 0, 0)                                           # G -> index 0
     # MVP AWARDS has no SEASON counterpart: the category falls back to 0
     assert press((LEAD, 2, cidx('MVP AWARDS')), TAB, data) == (LEAD, 0, SEASON)
     # page and cursor reset on TAB

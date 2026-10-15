@@ -70,8 +70,8 @@ SCREEN_BOX = 12
 SCREEN_CARD = 13
 SCREEN_PLAYOFFS = 14
 SCREEN_PBOX = 15
-# LEADERS modes (C13.3): cat = mode * 32 + category index
-MODE_CAREER, MODE_SEASON, MODE_BYYEAR = 0, 1, 2
+# LEADERS modes (C13.3, C39): cat = mode * 32 + category index
+MODE_CAREER, MODE_SEASON, MODE_BYYEAR, MODE_POST = 0, 1, 2, 3
 MODE_SHIFT = 32
 # rows of a list page; the cursor (C13.4) is the absolute row index, page = row // ROWS_PER_PAGE
 # PLAYER CARD season table: CARD_SEASON_ROWS season rows, then the CAREER row at CARD_CAREER_Y
@@ -224,6 +224,13 @@ SEASON_CATS = [('AVG', 'avg', 0), ('HR', 'count', 5), ('RBI', 'count', 7), ('H',
                ('BB', 'count', 8), ('WAR', 'war', 0), ('W', 'count', 13), ('ERA', 'era', 0),
                ('SO', 'count', 23), ('SV', 'count', 15), ('IP', 'ip', 19), ('CG', 'count', 17),
                ('SHO', 'count', 18)]
+# POSTSEASON career leader categories (C39), over the BOXSCORE.DAT player rows
+# (C26 sums): TOTALS indexes of the post_totals t lists
+POST_CATS = [('G', 'count', 0), ('H', 'count', 2), ('HR', 'count', 5), ('RBI', 'count', 7),
+             ('SB', 'count', 10), ('SO', 'count', 23), ('IP', 'ip', 19)]
+# POSTSEASON keeps the top POST_MAX lines of one category over POST_ENTRY_MAX entries
+POST_MAX, POST_ENTRY_MAX = 50, 4096
+NO_POST_TEXT = 'NO POSTSEASON GAMES RECORDED YET.'
 # TOTALS indexes used by the SEASON qualifiers
 T_G, T_AB, T_BB, T_OUTS, T_ER = 0, 1, 8, 19, 20
 # SEASLINE ratings (C13.2 bytes 12..20) in order, and the position names as the game shows them
@@ -1934,9 +1941,59 @@ def cursor_move(state, s, key, data):
 
 
 def leader_cats(mode):
-    """The category list of a LEADERS mode (C13.3): CAREER, or the SEASON list for both season
-    modes."""
-    return CATS if mode == MODE_CAREER else SEASON_CATS
+    """The category list of a LEADERS mode (C13.3, C39): CAREER = CATS, SEASON and
+    BY YEAR = SEASON_CATS, POST = POST_CATS."""
+    if mode == MODE_CAREER:
+        return CATS
+    if mode == MODE_POST:
+        return POST_CATS
+    return SEASON_CATS
+
+
+def post_leader_totals(box):
+    """{entry: (games, t)} of every entry with at least one BOXSCORE.DAT player row
+    (C39), exactly post_totals(box, entry): one pass, entries >= POST_ENTRY_MAX
+    ignored, games the distinct (season, g) pairs, t the 25-int TOTALS sums."""
+    acc = {}
+    games = {}
+    for rec in box:
+        if rec[3] >= POST_ENTRY_MAX or rec[2] == 4:          # idx overflow, or a header
+            continue
+        idx = rec[3]
+        season, g, flags, stats = rec[0], rec[1], rec[2], rec[6]
+        d = acc.get(idx)
+        if d is None:
+            d = acc[idx] = [0] * 25
+            games[idx] = set()
+        seen = games[idx]
+        if (season, g) not in seen:
+            seen.add((season, g))
+        if flags & 2:
+            d[19] += 3 * (stats[0] // 10) + stats[0] % 10
+            d[20] += stats[3]
+            d[23] += stats[6]
+        else:
+            d[1] += stats[0]
+            d[2] += stats[2]
+            d[7] += stats[3]
+            d[5] += stats[4]
+            d[10] += stats[7]
+    return {idx: (len(games[idx]), [len(games[idx])] + t[1:])
+            for idx, t in acc.items()}
+
+
+def post_order(box, cat):
+    """[(value, entry, games)] of the POSTSEASON leaders of cat (C39): value = t[index]
+    (index 0 is G = games), only value > 0, sorted value descending then entry
+    ascending, the first POST_MAX."""
+    index = cat[2]
+    items = []
+    for entry, (games, t) in post_leader_totals(box).items():
+        value = games if index == 0 else t[index]
+        if value > 0:
+            items.append((value, entry, games))
+    items.sort(key=lambda it: (-it[0], it[1]))
+    return items[:POST_MAX]
 
 
 def default_year(data):
@@ -1967,6 +2024,19 @@ def leaders_body(state, data):
     mode, idx = s[2] >> 5, s[2] & 31
     if mode == MODE_CAREER:
         return COLS_LEADERS, career_leader_cells(hist, idx)
+    if mode == MODE_POST:
+        items = post_order(data['box'], POST_CATS[idx])
+        if not items:
+            return COLS_SINGLE, [(NO_POST_TEXT,)]
+        out = []
+        for k, (val, entry, games) in enumerate(items, 1):
+            # a BOXSCORE.DAT index past HISTORY.DAT's entries: name '?', no mark
+            status = hist.read_entry(entry)['status'] if entry < n_entries(hist) else 0
+            mark = 'R' if status == history.STATUS_RETIRED \
+                else ('H' if status == history.STATUS_HOF else ' ')
+            out.append(('#%d' % k, entry_name(hist, entry, 16), mark, '%d' % games,
+                        cat_format(POST_CATS[idx], val)))
+        return COLS_POST_LEADERS, out
     season = leaders_year(s, data) if mode == MODE_BYYEAR else None
     if not any(season is None or ln['season'] == season for ln in data['lines']):
         return COLS_SINGLE, [(NO_LINES_TEXT,)]
@@ -1993,6 +2063,9 @@ def row_entry(s, data):
         if s[2] >> 5 == MODE_CAREER:
             cands = career_order(hist, s[2] & 31)
             return cands[row][1] if row < len(cands) else None
+        if s[2] >> 5 == MODE_POST:
+            items = post_order(data['box'], POST_CATS[s[2] & 31])
+            return items[row][1] if row < len(items) else None
         items = season_items(s, data)
         return items[row][2] if row < len(items) else None
     if s[0] == SCREEN_AWARDS:
@@ -2452,9 +2525,10 @@ def step(state, key, data):
         return pack(SCREEN_LEADERS, 0, mode * MODE_SHIFT + (idx + d) % len(leader_cats(mode)),
                     0, s[4]), 0
     if screen == SCREEN_LEADERS and key == KEY_TAB:
-        # the mode cycles CAREER -> SEASON -> BY YEAR; the category stays when the new mode has it
+        # the mode cycles CAREER -> SEASON -> BY YEAR -> POSTSEASON; the category stays
+        # when the new mode has it (by label), else the first
         mode, idx = cat >> 5, cat & 31
-        new = (mode + 1) % 3
+        new = (mode + 1) % 4
         label = leader_cats(mode)[idx][0]
         labels = [c[0] for c in leader_cats(new)]
         year = default_year(data) if new == MODE_BYYEAR else 0
@@ -2528,6 +2602,9 @@ COLS_SETTINGS = [('SETTING', _cx(0), 24, 'L'), ('VALUE', _cx(26), 16, 'L')]
 COLS_SEASON_LEADERS = [('#', _cx(0), 4, 'L'), ('NAME', _cx(4), 16, 'L'),
                        ('YEAR', _cx(20), 5, 'R'), ('TEAM', _cx(25), 4, 'R'),
                        ('VALUE', _cx(29), 12, 'R')]
+# POSTSEASON LEADERS (C39): the same shape as the career table
+COLS_POST_LEADERS = [('#', _cx(0), 5, 'L'), ('NAME', _cx(5), 16, 'L'), (' ', _cx(22), 1, 'L'),
+                     ('G', _cx(23), 5, 'R'), ('VALUE', _cx(28), 14, 'R')]
 # PLAYER CARD season table (C13.5): batters and pitchers; the widths run on from x 10
 COLS_CARD_BAT = [('YEAR', _cx(0), 4, 'L'), ('TM', _cx(4), 4, 'R'), ('G', _cx(8), 4, 'R'),
                  ('AB', _cx(12), 5, 'R'), ('H', _cx(17), 4, 'R'), ('HR', _cx(21), 4, 'R'),
@@ -2600,6 +2677,8 @@ def screen_title(state, data):
             return 'CAREER LEADERS: ' + label
         if mode == MODE_SEASON:
             return 'SEASON LEADERS: ' + label
+        if mode == MODE_POST:
+            return 'POSTSEASON LEADERS: ' + label
         return '%d LEADERS: %s' % (year_of(hist, leaders_year(s, data)), label)
     if screen == SCREEN_CARD:
         return card_title(s, data)
