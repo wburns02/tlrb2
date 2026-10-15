@@ -1632,3 +1632,41 @@ dynview_c/dynview.c renders the same framebuffers and walks the same states.
   DYNVIEW writes BOXSCORE.DAT); the top POST_MAX is kept like season_scan with the same
   ordering and tie break. The host binary is rebuilt with gcc after the parity gate
   (-Werror clean); DYNVIEW.EXE is untouched.
+
+## C50. DYNVIEW FIND PLAYER (added 2026-10-15)
+
+DYNVIEW gains SCREEN_FIND = 18, opened by F or f on the hub (SCREEN_MENU): the state is
+(18, 0, 0) and data['find'] (str, upper case, at most FIND_MAX = 12 chars) is the
+query. Reads only; writes nothing. Python tools/m4/dynview.py is the reference; the C
+port dynview_c/dynview.c renders the same framebuffers and walks the same states.
+
+- The query lives in data['find'] (C: the static g_find_q[FIND_MAX + 1]), never in the
+  state. On FIND: A-Z / a-z appends the upper case letter while len(q) < FIND_MAX,
+  BACKSPACE (8) removes the last char; either edit resets the state to (18, 0, 0) (packed).
+  Other printable keys do nothing (digits and TAB never type; C and c are letters here).
+  ENTER on a row opens that row's entry with open_card (the C13.5 one-level back state);
+  no row or the empty list: nothing. ESC returns (0, 0, 0); ESC on a card opened from
+  FIND returns to the exact FIND state, query and cursor kept. UP/DOWN/PGUP/PGDN move
+  the cursor like on HALL OF FAME; FOOTERS[SCREEN_MENU] becomes
+  '0-9 W P F SELECT   ESC EXIT' (the /TITLE footer text is unchanged).
+- find_rows(hist, q) -> [(entry, row cells)]: '' -> []. Otherwise every entry with a
+  status in (1, 2, 3) (unused entries, status 0, are never listed) whose
+  one_field(name[0:12]).upper() starts with q, sorted by (last upper, first upper, i),
+  at most FIND_LIST = 300 (the DOS far data budget; a longer query narrows). Cells: (name_display(name, 20), pos_name(pos1), '%d' % seasons_played,
+  STATUS) with STATUS 'ACTIVE', 'RETIRED' or 'HALL OF FAME'.
+- COLS_FIND = [('NAME', _cx(0), 20, 'L'), ('POS', _cx(21), 3, 'L'), ('YRS', _cx(25), 3, 'R'),
+  ('STATUS', _cx(30), 12, 'L')]. Title 'FIND PLAYER: ' + q + '_'. Empty rows: q == '' ->
+  one row ('TYPE THE START OF A LAST NAME.',) with COLS_SINGLE; no match -> one row
+  ('NO PLAYER FOUND.',) that keeps the COLS_FIND headers (a lone message row of a screen
+  with its own columns: the cursor row 0 is highlighted there). Footer
+  FOOTERS[SCREEN_FIND] = 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'. body_cols returns
+  COLS_SINGLE for the empty query, COLS_FIND once the query is non-empty.
+- C port: the same keys, rows, columns, title and footers; the query is the static
+  buffer, the scan keeps the top matches in one HISTORY.DAT pass with the
+  (last upper, first upper, index) order; every other screen and frame is unchanged
+  except the MENU footer text.
+- Tests: test_dynview.py (model), test_dynview_c13_c.py (the existing MENU footer pins
+  updated to '0-9 W P F SELECT   ESC EXIT') and new test_dynview_c50_c.py (host
+  framebuffer parity: the empty-query prompt, a filtered frame with the cursor on
+  row 1, the no-match frame, the MENU with the new footer, and a card opened from FIND
+  then ESC back).

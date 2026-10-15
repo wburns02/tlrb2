@@ -82,6 +82,12 @@
 #define SCREEN_CARD 13
 #define SCREEN_PLAYOFFS 14
 #define SCREEN_PBOX 15
+/* FIND PLAYER (C50): F on the menu opens a last-name prefix search (18, page, 0, row);
+ * the query is a static buffer of FIND_MAX + 1 */
+#define SCREEN_FIND 18
+#define FIND_MAX 12
+#define FIND_LIST 300     /* dynview.FIND_LIST: 300 * 28 B fits the DOS far data budget */
+#define KEY_BKSP 8
 /* LEADERS modes (C13.3, C39): the state cat is mode * MODE_SHIFT + category index */
 #define MODE_CAREER 0
 #define MODE_SEASON 1
@@ -409,6 +415,17 @@ static CardLine FARDATA g_card[CARD_MAX];
 static int g_ncard;
 static State g_card_back;       /* the list state the PLAYER CARD was opened from (C13.5) */
 
+/* FIND PLAYER (C50, find_scan): the matching entries in (last upper, first upper, index)
+ * order, capped at LIST_MAX; key in the List keybox of ((last << 32) | (first << 24) |
+ * index) is not possible in 32 bits, so the struct holds the sort values directly */
+typedef struct {
+    uint32_t entry;             /* the entry index (a List idx would need the same width) */
+    uint8_t last_u[13], first_u[9];  /* the sort keys, upper case */
+    uint8_t pad[2];
+} FindItem;
+static FindItem FARDATA g_find[FIND_LIST];
+static int32_t g_nfind;
+
 /* C26 PLAYER CARD POST row: the postseason sums of the entry (g_post_entry; POST_UNSET is
  * none yet), recomputed only when the entry changes. g_post_games 0 = no player rows
  * (dynview.post_totals returns None), else the distinct (season, g) game count. */
@@ -655,7 +672,12 @@ static void box_rec_row(Row *row, const BoxRec *r, int pitch);
 static int leaders_body(State st, int page, const ColDef **cols);
 static int post_scan(const CatDef *c);
 static int build_post_rows(const CatDef *c, int page);
+static int find_body(State st, int page, const ColDef **cols);
+static const ColDef COLS_FIND[4];       /* defined below, FIND PLAYER needs it early */
 /* ---- helpers ---- */
+
+/* the FIND PLAYER query (C50): ASCII upper case letters, FIND_MAX chars at most */
+static char g_find_q[FIND_MAX + 1];
 
 /* signed division truncating toward zero == C99 / (x86 idiv) */
 static int32_t idiv_(int64_t a, int64_t b)
@@ -2810,6 +2832,86 @@ static void watch_scan(void)
     }
 }
 
+/* FIND PLAYER scan (C50): every entry with status in (1, 2, 3) whose one_field(name[0:12])
+ * ASCII upper case starts with find_q, in (last upper, first upper, index) order, capped at
+ * FIND_LIST. g_find holds that many items. *seen gets the full list length (for the row
+ * count); returns the held count. A non-NULL *order (page >= 0) takes up to ROWS_PER_PAGE
+ * items of page into *order rows. */
+static int find_lt(const FindItem *a, const FindItem *b)
+{
+    int c;
+    c = strcmp((const char *)a->last_u, (const char *)b->last_u);
+    if (c)
+        return c < 0;
+    c = strcmp((const char *)a->first_u, (const char *)b->first_u);
+    if (c)
+        return c < 0;
+    return a->entry < b->entry;
+}
+
+/* how many characters of the query the last name starts with (0 when it is not a match) */
+static int find_prefix(const uint8_t *last_u, const char *q)
+{
+    int i;
+    for (i = 0; q[i]; i++) {
+        if (last_u[i] != (uint8_t)q[i])
+            return 0;
+    }
+    return 1;
+}
+
+static int find_scan(const char *q, int page, Row *order, int *seen)
+{
+    uint32_t i;
+    Entry e;
+    int32_t n;
+    char last[13], first[9];
+    uint8_t last_u[13], first_u[9];
+    if (!q[0]) {
+        *seen = 0;
+        return 0;
+    }
+    (void)page;
+    (void)order;
+    n = 0;
+    for (i = 0; i < n_entries(); i++) {
+        FindItem it;
+        int kl, kf;
+        read_entry(&e, i);
+        if (e.status != STATUS_ACTIVE && e.status != STATUS_RETIRED && e.status != STATUS_HOF)
+            continue;
+        field_of(e.name, 12, last);
+        field_of(e.name + 12, 8, first);
+        for (kl = 0; last[kl] && kl < 12; kl++)
+            last_u[kl] = ascii_up((uint8_t)last[kl]);
+        last_u[kl] = 0;
+        if (!find_prefix(last_u, q))
+            continue;
+        for (kf = 0; first[kf] && kf < 8; kf++)
+            first_u[kf] = ascii_up((uint8_t)first[kf]);
+        first_u[kf] = 0;
+        it.entry = i;
+        memcpy(it.last_u, last_u, (size_t)kl + 1);
+        memcpy(it.first_u, first_u, (size_t)kf + 1);
+        it.pad[0] = it.pad[1] = 0;
+        if (n >= FIND_LIST && !find_lt(&it, &g_find[n - 1]))
+            continue;
+        {
+            int32_t j = n < FIND_LIST ? n : n - 1;
+            while (j > 0 && find_lt(&it, &g_find[j - 1])) {
+                g_find[j] = g_find[j - 1];
+                j--;
+            }
+            g_find[j] = it;
+        }
+        if (n < FIND_LIST)
+            n++;
+    }
+    g_nfind = n;
+    *seen = (int)n;
+    return (int)n;
+}
+
 /* history: one row per season, newest first (at most 64 seasons) */
 static void hist_scan(List *b)
 {
@@ -3957,6 +4059,45 @@ static void build_ready_rows(uint32_t nret, uint32_t nhof, int launched)
         g_rows[k].ncells = 1;
 }
 
+/* FIND PLAYER page (C50, dynview.rows SCREEN_FIND): the empty query is one prompt row
+ * (COLS_SINGLE), no match one NO PLAYER FOUND row (COLS_SINGLE), else the page's search
+ * rows in COLS_FIND (find_scan fills g_rows directly). Returns the row count of the page. */
+static int find_body(State st, int page, const ColDef **cols)
+{
+    int seen;
+    (void)st;
+    if (!g_find_q[0]) {
+        *cols = COLS_SINGLE;
+        return msg_row(page, "TYPE THE START OF A LAST NAME.");
+    }
+    find_scan(g_find_q, -1, NULL, &seen);
+    if (seen == 0) {
+        /* a lone message row of a screen with its own columns: the FIND headers stay,
+         * the message renders from the first column (the body_cols rule above) */
+        *cols = COLS_FIND;
+        return msg_row(page, "NO PLAYER FOUND.");
+    }
+    *cols = COLS_FIND;
+    if (page >= 0) {
+        int k = 0, m;
+        char nm[NAME_CAP_MAX];
+        for (m = page * ROWS_PER_PAGE; m < seen && k < ROWS_PER_PAGE; m++, k++) {
+            Row *row = &g_rows[k];
+            Entry rd;
+            if (!read_entry(&rd, g_find[m].entry))
+                break;
+            name_display(rd.name, 20, nm);
+            put_cell(row->cells[0], (const uint8_t *)nm, (int)strlen(nm));
+            strcpy(row->cells[1], pos_name(rd.pos1));
+            sprintf(row->cells[2], "%u", (unsigned)rd.seasons_played);
+            strcpy(row->cells[3], rd.status == STATUS_RETIRED ? "RETIRED"
+                                  : (rd.status == STATUS_HOF ? "HALL OF FAME" : "ACTIVE"));
+            row->ncells = 4;
+        }
+    }
+    return seen;
+}
+
 /* the one message row of an empty phase: page 0 holds it, any page counts 1 */
 static int msg_row(int page, const char *text)
 {
@@ -4035,6 +4176,11 @@ static int total_rows(State st)
         return SET_TEAM0 + g_nteams;
     case SCREEN_ABOUT:
         return N_ABOUT_ROWS;
+    case SCREEN_FIND: {
+        int seen;
+        find_scan(g_find_q, -1, NULL, &seen);
+        return seen ? seen : 1;
+    }
     default:
         return N_MENU_ROWS;
     }
@@ -4098,6 +4244,8 @@ static int refresh_rows(State st, const ColDef **cols)
         return page_rows(playoffs_body(st, st.page, cols), st.page);
     case SCREEN_PBOX:
         return page_rows(pbox_body(st, st.page, cols), st.page);
+    case SCREEN_FIND:
+        return find_body(st, st.page, cols);
     default:
         return build_review_rows();
     }
@@ -4143,6 +4291,8 @@ static int cursor_screen(State st)
     if (st.screen == SCREEN_HOF || st.screen == SCREEN_LEADERS || st.screen == SCREEN_AWARDS)
         return 1;
     if (st.screen == SCREEN_MILESTONES && st.cat == 1)
+        return 1;
+    if (st.screen == SCREEN_FIND)
         return 1;
     return st.screen == SCREEN_OFFSEASON && (st.cat & 15) == OFF_RETIRE;
 }
@@ -4221,6 +4371,11 @@ static int32_t row_entry(State st)
         retire_scan(&nret, &nhof);
         return row < (int32_t)g_retl.n ? (int32_t)g_retl.idx[row] : -1;
     }
+    if (st.screen == SCREEN_FIND) {
+        int seen;
+        find_scan(g_find_q, -1, NULL, &seen);
+        return row < seen ? (int32_t)g_find[row].entry : -1;
+    }
     return -1;
 }
 
@@ -4295,10 +4450,52 @@ static State step(State in, int32_t key)
             s.screen = SCREEN_PLAYOFFS;
             s.page = 0;
             s.cat = 0;
+        } else if (key == 70 || key == 102) {
+            /* F or f: FIND PLAYER (C50), the query cleared */
+            s.screen = SCREEN_FIND;
+            s.page = 0;
+            s.cat = 0;
+            s.row = 0;
+            s.year = 0;
+            g_find_q[0] = 0;
         } else if (key == KEY_ENTER && (s.cat >> 4)) {
             /* /TITLE: ENTER goes on to the game */
             g_exit = 1;
         }
+        return s;
+    }
+    /* FIND PLAYER (C50): a letter appends its upper case (FIND_MAX at most), BACKSPACE
+     * removes the last char; either edit resets page, cat and row. Other printable keys
+     * do nothing; the row cursor (below) and ESC (handled first) stay. */
+    if (s.screen == SCREEN_FIND && key >= 65 && key <= 90) {
+        int n = (int)strlen(g_find_q);
+        if (n < FIND_MAX) {
+            g_find_q[n] = (char)key;
+            g_find_q[n + 1] = 0;
+        }
+        s.page = 0;
+        s.cat = 0;
+        s.row = 0;
+        return s;
+    }
+    if (s.screen == SCREEN_FIND && key >= 97 && key <= 122) {
+        int n = (int)strlen(g_find_q);
+        if (n < FIND_MAX) {
+            g_find_q[n] = (char)(key - 32);
+            g_find_q[n + 1] = 0;
+        }
+        s.page = 0;
+        s.cat = 0;
+        s.row = 0;
+        return s;
+    }
+    if (s.screen == SCREEN_FIND && key == KEY_BKSP) {
+        int n = (int)strlen(g_find_q);
+        if (n > 0)
+            g_find_q[n - 1] = 0;
+        s.page = 0;
+        s.cat = 0;
+        s.row = 0;
         return s;
     }
     if (s.screen == SCREEN_REVIEW && key == KEY_ENTER) {
@@ -4648,6 +4845,11 @@ static const ColDef COLS_POST_LEADERS[] = {
     { "#", CX(0), 5, 0 }, { "NAME", CX(5), 16, 0 }, { " ", CX(22), 1, 0 },
     { "G", CX(23), 5, 1 }, { "VALUE", CX(28), 14, 1 } };
 
+/* FIND PLAYER (C50) */
+static const ColDef COLS_FIND[4] = {
+    { "NAME", CX(0), 20, 0 }, { "POS", CX(21), 3, 0 }, { "YRS", CX(25), 3, 1 },
+    { "STATUS", CX(30), 12, 0 } };
+
 /* PLAYER CARD season tables (C13.5): batters and pitchers */
 static const ColDef COLS_CARD_BAT[] = {
     { "YEAR", CX(0), 4, 0 }, { "TM", CX(4), 4, 1 }, { "G", CX(8), 4, 1 },
@@ -4669,6 +4871,8 @@ static int n_cols(const ColDef *cols)
         return NCOLS(COLS_SINGLE);
     if (cols == COLS_WATCH)
         return NCOLS(COLS_WATCH);
+    if (cols == COLS_FIND)
+        return NCOLS(COLS_FIND);
     if (cols == COLS_HISTORY)
         return NCOLS(COLS_HISTORY);
     if (cols == COLS_HOF)
@@ -4721,6 +4925,8 @@ static const ColDef *body_cols(State st)
         return COLS_HOF;
     case SCREEN_LEADERS:
         return COLS_LEADERS;
+    case SCREEN_FIND:
+        return g_find_q[0] ? COLS_FIND : COLS_SINGLE;
     case SCREEN_MILESTONES: {
         /* WATCH: the message row (no item) uses COLS_SINGLE, as the cursors do (C15.8) */
         if (st.cat == 1) {
@@ -5066,12 +5272,14 @@ static void card_name(const Entry *e, char *dst)
 static const char *footer_of(State st)
 {
     static const char *footers[6] = {
-        "0-9 W SELECT   ESC EXIT",
+        "0-9 W P F SELECT   ESC EXIT",
         "PGUP PGDN   ESC MENU",
         "PGUP PGDN   ESC MENU",
         "LEFT RIGHT STAT  TAB MODE  ENTER CARD",
         "LEFT RIGHT WATCH   PGUP PGDN   ESC MENU",
         "ENTER MENU   ESC MENU" };
+    if (st.screen == SCREEN_FIND)
+        return "TYPE NAME  BKSP  ENTER CARD  ESC MENU";
     if (st.screen == SCREEN_LEADERS && (st.cat >> 5) == MODE_BYYEAR)
         return "LEFT RIGHT STAT  - + YEAR  TAB MODE";
     if (st.screen == SCREEN_MILESTONES && st.cat == 1)
@@ -5135,6 +5343,10 @@ static void screen_title(State st, char *dst)
             read_entry(&e, (uint32_t)st.cat);
             card_name(&e, dst);
         }
+    } else if (st.screen == SCREEN_FIND) {
+        strcpy(dst, "FIND PLAYER: ");
+        strcat(dst, g_find_q);
+        strcat(dst, "_");
     } else if (st.screen == SCREEN_MILESTONES)
         strcpy(dst, st.cat == 1 ? "MILESTONE WATCH" : "MILESTONES");
     else if (st.screen == SCREEN_SETTINGS)

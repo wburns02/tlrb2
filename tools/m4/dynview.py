@@ -70,6 +70,12 @@ SCREEN_BOX = 12
 SCREEN_CARD = 13
 SCREEN_PLAYOFFS = 14
 SCREEN_PBOX = 15
+# FIND PLAYER (C50): F on the menu opens a last-name prefix search (18, page, 0, row)
+SCREEN_FIND = 18
+FIND_MAX = 12
+# FIND PLAYER keeps at most FIND_LIST matches (25 pages): the DOS port's far data budget
+# holds no more, and a longer query narrows the list
+FIND_LIST = 300
 # LEADERS modes (C13.3, C39): cat = mode * 32 + category index
 MODE_CAREER, MODE_SEASON, MODE_BYYEAR, MODE_POST = 0, 1, 2, 3
 MODE_SHIFT = 32
@@ -1913,6 +1919,8 @@ def cursor_screen(s):
         return True
     if s[0] == SCREEN_MILESTONES and s[2] == 1:
         return True
+    if s[0] == SCREEN_FIND:
+        return True
     return s[0] == SCREEN_OFFSEASON and (s[2] & 15) == OFF_RETIRE
 
 
@@ -2055,7 +2063,7 @@ def row_entry(s, data):
     hist = data['hist']
     if hist.seasons_recorded == 0:
         return None
-    row = s[3]
+    row = unpack(s)[3]
     if s[0] == SCREEN_HOF:
         order = hof_order(hist)
         return order[row][0] if row < len(order) else None
@@ -2074,10 +2082,33 @@ def row_entry(s, data):
     if s[0] == SCREEN_MILESTONES and s[2] == 1:
         items = watch_items(hist)
         return items[row][3] if row < len(items) else None
+    if s[0] == SCREEN_FIND:
+        q = data.get('find', '')
+        items = [t for t in _find_order(hist, q)]
+        return items[row][2] if row < len(items) else None
     if s[0] == SCREEN_OFFSEASON:
         ret = retire_entries(hist)
         return ret[row][0] if row < len(ret) else None
     return None
+
+
+def _find_order(hist, q):
+    """The FIND PLAYER search entries ((last_u, first_u, index, entry)) of q, in order."""
+    if not q:
+        return []
+    items = []
+    for i in range(n_entries(hist)):
+        e = hist.read_entry(i)
+        if e['status'] not in (history.STATUS_ACTIVE, history.STATUS_RETIRED,
+                               history.STATUS_HOF):
+            continue
+        last_u = one_field(e['name'][0:12]).upper()
+        if not last_u.startswith(q):
+            continue
+        first_u = one_field(e['name'][12:20]).upper()
+        items.append((last_u, first_u, i, e))
+    items.sort(key=lambda t: (t[0], t[1], t[2]))
+    return items
 
 
 def open_card(s, entry, data):
@@ -2085,6 +2116,21 @@ def open_card(s, entry, data):
     ESC returns to it exactly."""
     data['card_back'] = pack(s[0], s[1], s[2], s[3], s[4])
     return (SCREEN_CARD, 0, entry), 0
+
+
+def find_rows(hist, q):
+    """FIND PLAYER rows (C50): '' -> []; otherwise every entry with a status in (1, 2, 3)
+    whose one_field(name[0:12]).upper() starts with q, sorted by (last upper, first upper,
+    index), at most FIND_LIST. Cells: (name_display(name, 20), pos_name(pos1),
+    '%d' % seasons_played, 'ACTIVE' / 'RETIRED' / 'HALL OF FAME')."""
+    out = []
+    for _l, _f, i, e in _find_order(hist, q)[:FIND_LIST]:
+        st = e['status']
+        status = 'RETIRED' if st == history.STATUS_RETIRED \
+            else ('HALL OF FAME' if st == history.STATUS_HOF else 'ACTIVE')
+        out.append((i, (name_display(e['name'], 20), pos_name(e['pos1']),
+                        '%d' % e['seasons_played'], status)))
+    return out
 
 
 def card_lines(s, data):
@@ -2272,6 +2318,8 @@ def total_rows(state, data):
         n = ABOUT_ROWS
     elif screen == SCREEN_CARD:
         n = card_lines(s, data)
+    elif screen == SCREEN_FIND:
+        n = find_rows(hist, data.get('find', ''))
     else:
         n = MENU_ROWS
     return len(n)
@@ -2297,6 +2345,13 @@ def rows(state, data):
         if (hist is None or hist.seasons_recorded == 0) and cat >> 4:
             return [(t,) for t in TITLE_ROWS]
         return [(t,) for t in MENU_ROWS]
+    if screen == SCREEN_FIND:
+        q = data.get('find', '')
+        if not q:
+            return FIND_ROWS_EMPTY
+        n = len(find_rows(hist, q))
+        return [c for _i, c in find_rows(hist, q)][page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE] \
+            if n else FIND_ROWS_NONE
     if hist is None or hist.seasons_recorded == 0:
         return [('NO DYNASTY HISTORY YET',)]
     if screen == SCREEN_LEADERS:
@@ -2380,9 +2435,25 @@ def step(state, key, data):
             return (SCREEN_SERIES, 0, 0), 0
         if key in (80, 112):
             return (SCREEN_PLAYOFFS, 0, 0), 0
+        if key in (70, 102):
+            # C50 FIND PLAYER: the state is (18, 0, 0) packed, the query in data['find']; no
+            # card is open, so any open one keeps its stored back (open_card overwrites
+            # it on the next ENTER)
+            data['find'] = ''
+            return pack(SCREEN_FIND, 0, 0), 0
         if key == KEY_ENTER and cat >> 4:
             return state, 1
         return state, 0
+    if screen == SCREEN_FIND:
+        q = data.get('find', '')
+        if 65 <= key <= 90 or 97 <= key <= 122:
+            if len(q) < FIND_MAX:
+                q += chr(key - 32 if key >= 97 else key)
+            data['find'] = q
+            return pack(SCREEN_FIND, 0, 0), 0
+        if key == 8:                                  # BACKSPACE: the last char off
+            data['find'] = q[:-1]
+            return pack(SCREEN_FIND, 0, 0), 0
     if screen == SCREEN_REVIEW and key == KEY_ENTER:
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_OFFSEASON and key == KEY_ENTER:
@@ -2605,6 +2676,11 @@ COLS_SEASON_LEADERS = [('#', _cx(0), 4, 'L'), ('NAME', _cx(4), 16, 'L'),
 # POSTSEASON LEADERS (C39): the same shape as the career table
 COLS_POST_LEADERS = [('#', _cx(0), 5, 'L'), ('NAME', _cx(5), 16, 'L'), (' ', _cx(22), 1, 'L'),
                      ('G', _cx(23), 5, 'R'), ('VALUE', _cx(28), 14, 'R')]
+# FIND PLAYER (C50)
+COLS_FIND = [('NAME', _cx(0), 20, 'L'), ('POS', _cx(21), 3, 'L'), ('YRS', _cx(25), 3, 'R'),
+             ('STATUS', _cx(30), 12, 'L')]
+FIND_ROWS_EMPTY = [('TYPE THE START OF A LAST NAME.',)]
+FIND_ROWS_NONE = [('NO PLAYER FOUND.',)]
 # PLAYER CARD season table (C13.5): batters and pitchers; the widths run on from x 10
 COLS_CARD_BAT = [('YEAR', _cx(0), 4, 'L'), ('TM', _cx(4), 4, 'R'), ('G', _cx(8), 4, 'R'),
                  ('AB', _cx(12), 5, 'R'), ('H', _cx(17), 4, 'R'), ('HR', _cx(21), 4, 'R'),
@@ -2616,7 +2692,7 @@ COLS_CARD_PIT = [('YEAR', _cx(0), 4, 'L'), ('TM', _cx(4), 4, 'R'), ('G', _cx(8),
                  ('WAR', _cx(37), 5, 'R')]
 OFF_COLS = [COLS_SINGLE, COLS_RETIRE, COLS_DRAFT, COLS_MOVE, COLS_MOVE, COLS_SINGLE]
 
-FOOTERS = {SCREEN_MENU: '0-9 W SELECT   ESC EXIT',
+FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT STAT  TAB MODE  ENTER CARD',
@@ -2630,7 +2706,8 @@ FOOTERS = {SCREEN_MENU: '0-9 W SELECT   ESC EXIT',
            SCREEN_SERIES: '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
            SCREEN_BOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC SERIES',
            SCREEN_PLAYOFFS: 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
-           SCREEN_PBOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC PLAYOFFS'}
+           SCREEN_PBOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC PLAYOFFS',
+           SCREEN_FIND: 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'}
 
 
 TITLE_FOOTER = '0-9 W SELECT   ENTER PLAY BALL'
@@ -2682,6 +2759,8 @@ def screen_title(state, data):
         return '%d LEADERS: %s' % (year_of(hist, leaders_year(s, data)), label)
     if screen == SCREEN_CARD:
         return card_title(s, data)
+    if screen == SCREEN_FIND:
+        return 'FIND PLAYER: ' + data.get('find', '') + '_'
     if screen == SCREEN_MILESTONES:
         return 'MILESTONE WATCH' if cat == 1 else 'MILESTONES'
     if screen == SCREEN_OFFSEASON:
@@ -2759,6 +2838,8 @@ def body_cols(state, data):
         return leaders_body(state, data)[0]
     if state[0] == SCREEN_MILESTONES and unpack(state)[2] == 1:
         return COLS_WATCH if watch_items(data['hist']) else COLS_SINGLE
+    if state[0] == SCREEN_FIND:
+        return COLS_SINGLE if not data.get('find', '') else COLS_FIND
     return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
             SCREEN_HOF: COLS_HOF, SCREEN_MILESTONES: COLS_MILESTONES,
             SCREEN_REVIEW: COLS_SINGLE, SCREEN_CARD: COLS_SINGLE}[state[0]]
