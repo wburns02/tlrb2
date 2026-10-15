@@ -1012,7 +1012,7 @@ def test_hub_rows_and_key_p(tmp_path):
     assert dynview.FOOTERS[dynview.SCREEN_PLAYOFFS] == \
         'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
     assert dynview.FOOTERS[dynview.SCREEN_PBOX] == \
-        'LEFT RIGHT GAME   PGUP PGDN   ESC PLAYOFFS'
+        'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC'
 
 
 def test_playoffs_keys_titles_and_walk_no_fonts(tmp_path):

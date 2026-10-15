@@ -2698,7 +2698,7 @@ def test_series_columns_fit():
 
 # ---------------------------------------------------------------- BOX SCORE (C10 fifth amendment)
 SB = dynview.SCREEN_BOX
-BOX_FOOTER = 'LEFT RIGHT GAME   PGUP PGDN   ESC SERIES'
+BOX_FOOTER = 'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC'
 HDR_AB = ('AB', 'R', 'H', 'RBI', 'BB', 'SO')
 PIT_HDR = ('PITCHING', 'IP', 'H', 'R', 'ER', 'BB', 'SO')
 
@@ -2903,11 +2903,12 @@ def test_box_paging_four_pages(tmp_path):
     assert dynview.rows((SB, 3, 0), data)[-1] == PIT_HDR
     assert dynview.rows((SB, 0, 0), data)[1] == ('HITTER, A', '1', '0', '0', '0', '0', '0')
     s = press((SB, 0, 0), dynview.KEY_PGDN, data)
-    assert s == (SB, 1, 0)
+    # C62: BOX is a cursor screen, so PGDN puts the cursor on the new page's first row
+    assert s == (SB, 1, 0, 12)
     s = press(press(s, dynview.KEY_PGDN, data), dynview.KEY_PGDN, data)
-    assert s == (SB, 3, 0)
-    assert press(s, dynview.KEY_PGDN, data) == (SB, 3, 0)
-    assert press(s, dynview.KEY_PGUP, data) == (SB, 2, 0)
+    assert s == (SB, 3, 0, 36)
+    assert press(s, dynview.KEY_PGDN, data) == (SB, 3, 0, 36)
+    assert press(s, dynview.KEY_PGUP, data) == (SB, 2, 0, 24)
     assert press((SB, 0, 0), dynview.KEY_PGUP, data) == (SB, 0, 0)
 
 
@@ -3383,7 +3384,7 @@ def test_releases_total_rows_capped(tmp_path, monkeypatch):
 SP = dynview.SCREEN_PLAYOFFS
 SPB = dynview.SCREEN_PBOX
 PLAYOFFS_FOOTER = 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
-PBOX_FOOTER = 'LEFT RIGHT GAME   PGUP PGDN   ESC PLAYOFFS'
+PBOX_FOOTER = 'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC'
 
 
 def round_hdr(season, g, v, h, rnd, L, k, vr, hr, vhi, hhi, ve, he, s=0):
@@ -3614,7 +3615,7 @@ def test_playoff_box_walk_and_esc(tmp_path):
     ldir = make_playoffs(tmp_path)
     data = dynview.load_data(str(ldir))
     assert dynview.footer_text((SPB, 0, 0)) == PBOX_FOOTER
-    assert len(PBOX_FOOTER) == 42
+    assert len(PBOX_FOOTER) == 43
     # RIGHT steps to the next round game, LEFT back; over 14 round games then into the WS
     s = (SPB, 0, 13)                              # the last round game (g 29)
     assert dynview.step(s, dynview.KEY_RIGHT, data) == ((SB, 0, 0), 0)
@@ -3648,6 +3649,115 @@ def test_box_left_from_first_ws_game_into_pbox(tmp_path):
     write_box(ldir2, BOX_G0)
     data2 = dynview.load_data(str(ldir2))
     assert dynview.step((SB, 0, 0), dynview.KEY_LEFT, data2) == ((SB, 0, 0), 0)
+
+
+# ---------------------------------------------------------------- C62 row cursor
+def test_box_entries_align_with_rows(tmp_path):
+    """box_entries is box_rows' length, None exactly on the team headers, the PITCHING
+    headers, the message row and the '?' rows; the same for pbox_entries"""
+    ldir0 = tmp_path / 'box'
+    ldir0.mkdir()
+    ldir = make_series(ldir0, game_ms(3, (0,)))
+    write_box(ldir, BOX_G0 + [box_rec(3, 0, 0, 0xffff, (9, 9, 9, 9, 9, 9, 9, 9))])
+    data = dynview.load_data(str(ldir))
+    rows = dynview.box_rows(data['hist'], data['ms'], data['box'], data['teams'], 3, 0)
+    entries = dynview.box_entries(data['hist'], data['ms'], data['box'], data['teams'], 3, 0)
+    assert len(entries) == len(rows)
+    # one extra visitor batting row (a '?'): 10 rows
+    assert entries == [None, 0, None, None, 5, 1, None, 2, None, 6]
+    # rows[2] is the '?' batting row of the visitor side
+    assert rows[2][0] == '?'
+    # the message row: entries [(None,)]
+    assert dynview.box_rows(data['hist'], data['ms'], data['box'], data['teams'], 3, 1) \
+        == [('NO BOX SCORE RECORDED',)]
+    assert dynview.box_entries(data['hist'], data['ms'], data['box'], data['teams'], 3, 1) \
+        == [None]
+    # PBOX: the round game rows' entries, one header per side, '?' rows
+    ldir1 = tmp_path / 'pbox'
+    ldir1.mkdir()
+    ldir = make_playoffs(ldir1)
+    data = dynview.load_data(str(ldir))
+    prows = dynview.pbox_rows(data['hist'], data['box'], data['teams'], 3, 16)
+    pentries = dynview.pbox_entries(data['hist'], data['box'], data['teams'], 3, 16)
+    assert len(pentries) == len(prows) == 6
+    assert pentries == [None, None, None, None, None, None]     # all '?' records
+    assert dynview.pbox_entries(data['hist'], data['box'], data['teams'], 3, 40) == [None]
+
+
+def test_box_cursor_enter_card_and_esc(tmp_path):
+    """BOX is a cursor screen: ENTER on a batting row opens pack(13, 0, entry) with the box
+    state as card_back; ESC returns with the row kept; ENTER on a header row is a no-op;
+    PGUP / PGDN move the cursor; the footers are the C62 text"""
+    ldir = make_series(tmp_path, game_ms(3, (0,)))
+    write_box(ldir, BOX_G0)
+    data = dynview.load_data(str(ldir))
+    assert dynview.FOOTERS[SB] == BOX_FOOTER == 'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC'
+    assert dynview.footer_text((SB, 0, 0), data) == BOX_FOOTER
+    assert dynview.cursor_screen((SB, 0, 0)) is True
+    assert dynview.cursor_screen((SPB, 0, 0)) is True
+    # row 1 is the visitor's first batting row (HITTER, entry 0): the card opens
+    s, _ex = dynview.step((SB, 0, 0, 1), ENTER, data)
+    assert s == (13, 0, 0)
+    assert data['card_back'] == (SB, 0, 0, 1)
+    s, _ex = dynview.step(s, ESC, data)
+    assert s == (SB, 0, 0, 1)
+    # a pitching row too (row 3, ACE = entry 5)
+    assert dynview.row_entry((SB, 0, 0, 3), data) == 5
+    # the team header row and the PITCHING row: no card
+    for r in (0, 2):
+        assert dynview.step((SB, 0, 0, r), ENTER, data) == ((SB, 0, 0, r), 0)
+    # a row past the end: nothing
+    assert dynview.step((SB, 0, 0, 9), ENTER, data) == ((SB, 0, 0, 9), 0)
+    # DOWN / UP move the cursor (pack drops a 0 row); the 9 rows make one page, so
+    # PGUP / PGDN cannot move
+    assert dynview.step((SB, 0, 0, 1), dynview.KEY_DOWN, data) == ((SB, 0, 0, 2), 0)
+    assert dynview.step((SB, 0, 0, 1), dynview.KEY_UP, data) == ((SB, 0, 0), 0)
+    assert dynview.step((SB, 0, 0, 1), dynview.KEY_PGDN, data) == ((SB, 0, 0, 1), 0)
+    assert dynview.step((SB, 0, 0, 1), dynview.KEY_PGUP, data) == ((SB, 0, 0, 1), 0)
+
+
+def test_pbox_cursor_enter_card_and_footers(tmp_path):
+    """PBOX: the same cursor, the card of its player rows and the C62 footer"""
+    ldir = make_playoffs(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.FOOTERS[SPB] == PBOX_FOOTER
+    assert dynview.footer_text((SPB, 0, 0), data) == PBOX_FOOTER
+    assert dynview.cursor_screen((SPB, 0, 0)) is True
+    # every player row of the round game is a '?': no card anywhere, ENTER is a no-op
+    for r in range(6):
+        assert dynview.step((SPB, 0, 0, r), ENTER, data) == ((SPB, 0, 0, r), 0)
+    assert dynview.step((SPB, 0, 0, 2), ESC, data) == ((SP, 0, 0), 0)
+    # PGDN over the 6 rows: no page to go to, the state stays
+    assert dynview.step((SPB, 0, 0, 2), dynview.KEY_PGDN, data) == ((SPB, 0, 0, 2), 0)
+
+
+def test_box_left_right_step_resets_row(tmp_path):
+    """RIGHT to another game resets page and row; LEFT / RIGHT with no other game keep
+    the state exactly (the row kept); the same on PBOX"""
+    base = tmp_path / 'walk' / 'lg'
+    base.mkdir(parents=True)
+    ldir = make_series(base, game_ms(3, (0, 1)) + game_ms(2, (0,)))
+    write_box(ldir, BOX_G0 + [box_rec(3, 1, 0, 1, (9, 9, 9, 9, 9, 9, 9, 9))])
+    data = dynview.load_data(str(ldir))
+    s = (SB, 0, 0, 3)
+    assert dynview.step(s, dynview.KEY_RIGHT, data) == ((SB, 0, 1), 0)
+    assert dynview.step((SB, 0, 1, 3), dynview.KEY_LEFT, data) == ((SB, 0, 0), 0)
+    # game 2 (cat >> 3 = 1) has a kind 192 record but no box rows for g 2, and game 3
+    # has none: the season's games with records stay 0 and 1, so LEFT steps to game 1
+    assert dynview.step((SB, 0, 2, 3), dynview.KEY_RIGHT, data) == ((SB, 0, 2, 3), 0)
+    assert dynview.step((SB, 0, 2, 3), dynview.KEY_LEFT, data) == ((SB, 0, 1), 0)
+    # from the season's first game LEFT has nowhere to go: the state is unchanged
+    assert dynview.step((SB, 0, 0, 4), dynview.KEY_LEFT, data) == ((SB, 0, 0, 4), 0)
+    # PBOX: cat 0 (g 16) steps to cat 1 (g 17) and back, the row resets; past the ends kept
+    pbase = tmp_path / 'pb' / 'lg'
+    pbase.mkdir(parents=True)
+    ldir2 = make_series(pbase, game_ms(3, (0, 1)))
+    write_box(ldir2, playoff_recs()[:12])          # the AL DS series 0, two games
+    data2 = dynview.load_data(str(ldir2))
+    s = (SPB, 0, 0, 2)
+    assert dynview.step(s, dynview.KEY_RIGHT, data2) == ((SPB, 0, 1), 0)
+    assert dynview.step((SPB, 0, 1, 2), dynview.KEY_LEFT, data2) == ((SPB, 0, 0), 0)
+    assert dynview.step((SPB, 0, 0, 2), dynview.KEY_LEFT, data2) == ((SPB, 0, 0, 2), 0)
 
 
 # ---------------------------------------------------------------- C27 MILESTONES WATCH

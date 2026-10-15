@@ -523,6 +523,9 @@ static Row FARDATA g_pser[PLAYOFF_ROWS_MAX];
 static BoxRec FARDATA g_box[BOX_MAX_RECS];
 static long g_box_season;
 static int g_box_g = -1, g_box_n;
+/* C62 row cursor: g_box_idx[r] is the player entry of row r (or -1: a header row,
+ * '' entry 0xffff, or a row past the walk); filled while the rows build */
+static int16_t g_box_idx[BOX_MAX_RECS + 4];
 
 /* PLAYOFFS (C23c): the season's flags-4 round headers, (g, idx, b, i, stats) streamed
  * from BOXSCORE.DAT like the BOX screen does (never the whole file) */
@@ -746,6 +749,11 @@ static Row *box_next(int *ord, int page);
 static void box_set(Row *row, const char *c0, const char *c1, const char *c2,
                     const char *c3, const char *c4, const char *c5, const char *c6);
 static void box_rec_row(Row *row, const BoxRec *r, int pitch);
+static int16_t *box_idx_base(void);
+static void box_idx_put(int ord, const BoxRec *r);
+static void box_idx_clear(void);
+static int32_t box_row_entry(State st);
+static int32_t pbox_row_entry(State st);
 static int leaders_body(State st, int page, const ColDef **cols);
 static int post_scan(const CatDef *c);
 static int build_post_rows(const CatDef *c, int page);
@@ -4045,6 +4053,7 @@ static int build_pbox(long season, int g, int page)
     Row *row;
     gmode = g_hdr_seasons != 0 && season >= 1 && season <= SEASON_COUNT
             && playoff_header_of(season, g, &hd);
+    box_idx_clear();
     if (!gmode)
         return msg_row(0, "NO BOX SCORE RECORDED");
     /* stream the records of (season, g) that are not the header, first BOX_MAX_RECS */
@@ -4097,6 +4106,7 @@ static int build_pbox(long season, int g, int page)
                 const BoxRec *r = &g_pbox[k];
                 if ((r->flags & 1) != t || ((r->flags >> 1) & 1) != pitch)
                     continue;
+                box_idx_put(ord, r);
                 row = box_next(&ord, page);
                 if (row)
                     box_rec_row(row, r, pitch);
@@ -4817,7 +4827,8 @@ static int cursor_screen(State st)
 {
     if (st.screen == SCREEN_HOF || st.screen == SCREEN_LEADERS
         || st.screen == SCREEN_AWARDS || st.screen == SCREEN_AWHIST
-        || st.screen == SCREEN_HISTORY)
+        || st.screen == SCREEN_HISTORY || st.screen == SCREEN_BOX
+        || st.screen == SCREEN_PBOX)
         return 1;
     if (st.screen == SCREEN_MILESTONES && st.cat == 1)
         return 1;
@@ -4862,6 +4873,27 @@ static int32_t award_entry(int32_t idx)
     return idx;
 }
 
+/* the entry of the BOX SCORE screen's cursor row (dynview.row_entry C62): g_box_idx as
+ * box_body last filled it, -1 past its end */
+static int32_t box_row_entry(State st)
+{
+    const ColDef *cols;
+    int32_t n = box_body(mk_state(SCREEN_BOX, -1, st.cat), -1, &cols);
+    if (st.row >= n)
+        return -1;
+    return g_box_idx[st.row];
+}
+
+/* the entry of the PLAYOFF BOX screen's cursor row (dynview.row_entry C62), likewise */
+static int32_t pbox_row_entry(State st)
+{
+    const ColDef *cols;
+    int32_t n = pbox_body(st, -1, &cols);
+    if (st.row >= n)
+        return -1;
+    return g_box_idx[st.row];
+}
+
 /* the player entry named by the cursor row of st (dynview.row_entry), -1 for none: a message row, an
  * award with no player, an empty list or no history */
 static int32_t row_entry(State st)
@@ -4899,6 +4931,10 @@ static int32_t row_entry(State st)
         watch_scan();
         return row < g_nwatch ? (int32_t)g_watch[row].entry : -1;
     }
+    if (st.screen == SCREEN_BOX)
+        return box_row_entry(st);
+    if (st.screen == SCREEN_PBOX)
+        return pbox_row_entry(st);
     if (st.screen == SCREEN_OFFSEASON) {
         uint32_t nret = 0, nhof = 0;
         retire_scan(&nret, &nhof);
@@ -5889,6 +5925,27 @@ static void box_set(Row *row, const char *c0, const char *c1, const char *c2,
     row->ncells = 7;
 }
 
+/* g_box_idx (the C62 row cursor entries); one table for both box screens */
+static int16_t *box_idx_base(void)
+{
+    return g_box_idx;
+}
+
+/* every entry off (-1): a fresh walk starts all headers */
+static void box_idx_clear(void)
+{
+    memset(box_idx_base(), 0xff, (BOX_MAX_RECS + 4) * sizeof(int16_t));
+}
+
+/* the record idx of player row ord as the card target (-1 on '?' or a header) */
+static void box_idx_put(int ord, const BoxRec *r)
+{
+    int16_t ix = -1;
+    if (r->idx != NO_AWARD && (uint32_t)r->idx < n_entries())
+        ix = (int16_t)r->idx;
+    box_idx_base()[ord] = ix;
+}
+
 /* the batting row (pitch 0) or pitching row (pitch 1) of record r: NAME ('?' for entry
  * 0xffff), then stats 0, 1, 2, 3, 5, 6 (IP as d.d for a pitching row) */
 static void box_rec_row(Row *row, const BoxRec *r, int pitch)
@@ -5931,6 +5988,7 @@ static int box_body(State st, int page, const ColDef **cols)
         }
         n = g_box_n;
     }
+    box_idx_clear();
     if (n == 0) {
         *cols = COLS_SINGLE;
         return msg_row(page, "NO BOX SCORE RECORDED");
@@ -5954,6 +6012,7 @@ static int box_body(State st, int page, const ColDef **cols)
                 const BoxRec *r = &g_box[k];
                 if ((r->flags & 1) != t || ((r->flags >> 1) & 1) != pitch)
                     continue;
+                box_idx_put(ord, r);
                 row = box_next(&ord, page);
                 if (row)
                     box_rec_row(row, r, pitch);
@@ -6185,11 +6244,11 @@ static const char *footer_of(State st)
     if (st.screen == SCREEN_SERIES)
         return "1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC";
     if (st.screen == SCREEN_BOX)
-        return "LEFT RIGHT GAME   PGUP PGDN   ESC SERIES";
+        return "ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC";
     if (st.screen == SCREEN_PLAYOFFS)
         return "ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC";
     if (st.screen == SCREEN_PBOX)
-        return "LEFT RIGHT GAME   PGUP PGDN   ESC PLAYOFFS";
+        return "ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC";
     if (st.screen == SCREEN_OFFSEASON) {
         if ((st.cat & 15) < OFF_READY)
             return "ENTER NEXT   PGUP PGDN   ESC MENU";
