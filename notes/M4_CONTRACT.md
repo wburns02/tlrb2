@@ -1533,3 +1533,41 @@ This amends C2: "careers count dynasty seasons only" still holds for WAR10, top7
 but a Lahman league's career totals, seasons_played and award counts start from the real career
 before YEAR. The identity matches C2's (name bytes 0..19, birth = 1000 + season_no - age) at
 season_no 1, so the dynasty continues the seeded entry instead of appending a new zero one.
+
+## C28. AWARD HISTORY (added 2026-10-15)
+
+Screen 16 AWARD HISTORY, state (16, page, a, row) with a = the award code
+L * 20 + k (L 0 AL, 1 NL; k the award's kind offset 0..19, so kind =
+(64, 96)[L] + k). Opened by key H (72 or 104) from SEASON AWARDS (screen 9):
+the code of the cursor row's award record (the row's kind in (kind, file
+position) order when it is an award record, not a leader record or one of the
+six-winner fallback rows or the GG SS row), else 0. The SEASON AWARDS state is
+kept in data['awh_back'] (C: g_awh_back) and ESC on AWARD HISTORY returns it
+exactly (default (9, 0, 0) with nothing kept). Reads MILESTON.DAT and
+HISTORY.DAT; writes nothing.
+
+- Rows (award_history_items, newest season first over seasons
+  hist.seasons_recorded down to 1, at most LIST_MAX): the first file record of
+  the season with the kind gives (year_text(hist, season),
+  entry_name(hist, idx, 16), award_value(kind, value)) with entry
+  award_entry(hist, idx). A season with no record of the kind, when k <= 2,
+  season <= history.SEASON_COUNT and the season has no award record of any kind
+  at all, uses the fallback winner aw[L * 3 + k] of the season entry with value
+  '' (skipped when it is NO_AWARD). Otherwise the season is skipped. No row:
+  [(('NO WINNERS RECORDED',), None)] and COLS_SINGLE.
+- Columns COLS_AWHIST = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
+  ('VALUE', _cx(22), 20, 'R')]. Title award_label(kind) + ' HISTORY'
+  ('AWARD HISTORY' with no recorded season). Footer 'ENTER CARD  LEFT RIGHT
+  AWARD  PGUP PGDN  ESC'; the SEASON AWARDS footer becomes 'H HISTORY  LEFT
+  RIGHT SEASON  PGUP PGDN  ESC'.
+- Keys: LEFT/RIGHT step a by -1/+1 modulo 40 (page and row reset to 0); a title
+  click there is LEFT/RIGHT. It is a cursor screen (C13.4): UP/DOWN/PGUP/PGDN
+  move the row cursor, ENTER opens the PLAYER CARD of the row's entry (nothing
+  on a None row) and ESC on the card returns to the identical AWARD HISTORY
+  state.
+- C port: the same screens, keys, clicks, titles, footers and rows.
+  MILESTON.DAT is streamed the way SEASON AWARDS does (no whole-file buffer
+  beyond what the port already holds); the AWARD HISTORY rows live in a
+  FARDATA table of LIST_MAX entries (g_ah / g_ah_idx). Host binary rebuilt with
+  the gcc command in tools/m4/dynview_c/build_dynview.py (host build only; the
+  Watcom/DOS build and DYNVIEW.EXE are untouched).

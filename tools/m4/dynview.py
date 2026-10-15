@@ -70,6 +70,7 @@ SCREEN_BOX = 12
 SCREEN_CARD = 13
 SCREEN_PLAYOFFS = 14
 SCREEN_PBOX = 15
+SCREEN_AWHIST = 16
 # LEADERS modes (C13.3): cat = mode * 32 + category index
 MODE_CAREER, MODE_SEASON, MODE_BYYEAR = 0, 1, 2
 MODE_SHIFT = 32
@@ -87,7 +88,7 @@ SET_START = 2
 # the screens where LEFT and RIGHT step something (a title click there is LEFT or RIGHT).
 # MILESTONES (C27): LEFT/RIGHT toggle the mode (cat 0 milestones, cat 1 WATCH)
 LEFT_RIGHT_SCREENS = (SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_STANDINGS, SCREEN_SERIES,
-                      SCREEN_BOX, SCREEN_PLAYOFFS, SCREEN_MILESTONES)
+                      SCREEN_BOX, SCREEN_PLAYOFFS, SCREEN_MILESTONES, SCREEN_AWHIST)
 N_CATS = 18
 
 # MILESTON.DAT kinds from this one up are award and leader records (C7), not milestones
@@ -1302,6 +1303,12 @@ def award_label(kind):
     return lg + ' ' + what
 
 
+def row_is_award(label):
+    """A SEASON AWARDS row label is an award record's ('NL GLOVE C'), not a leader
+    record's or a fallback or message row's."""
+    return len(label) > 3 and label[1] == ' ' and label[:3] in ('AL ', 'NL ')
+
+
 def award_value(kind, value):
     """value is the stored u16 (an s16): WAR10 for MVP, CY and ROOKIE, fp1000 for a
     GLOVE, bat100 for a SLUGGER (shown as runs, truncated toward zero)."""
@@ -1380,6 +1387,62 @@ def awards_body(state, data):
     if len(rows) == 1 and len(rows[0]) == 1:
         return COLS_SINGLE, rows
     return COLS_AWARDS, rows
+
+
+# ---------------------------------------------------------------- award history (C28)
+# AWARD HISTORY: cat is the award code L * 20 + k (L 0 AL, 1 NL; k the award's kind
+# offset), at most AWHIST_MAX rows (the DOS port's fixed buffer)
+AWHIST_MAX = LIST_MAX
+
+
+def award_history_items(hist, ms, a):
+    """[(row cells, entry or None)] of AWARD HISTORY rows of award code a (see
+    award_history_rows); the entry is the winner's player entry for the PLAYER CARD,
+    None for the message row or a fallback winner with none."""
+    L = 1 if a >= 20 else 0
+    k = a - L * 20
+    kind = (64, 96)[L] + k
+    out = []
+    for season in range(hist.seasons_recorded, 0, -1):
+        rec = next(((idx, value) for s, idx, kk, value in ms
+                    if s == season and kk == kind), None)
+        if rec is not None:
+            idx, value = rec
+            out.append(((year_text(hist, season), entry_name(hist, idx, 16),
+                         award_value(kind, value)), award_entry(hist, idx)))
+            continue
+        if k < 3 and season <= history.SEASON_COUNT:
+            # a season recorded before the award records: its six fallback winners
+            se_recs = any(award_kind(kk) or leader_kind(kk)
+                          for s2, _i, kk, _v in ms if s2 == season)
+            if not se_recs:
+                aw = hist.read_season_entry(season)['awards']
+                idx = aw[L * 3 + k]
+                if idx == history.NO_AWARD:
+                    continue
+                out.append(((year_text(hist, season),
+                             entry_name(hist, idx, 16), ''),
+                            award_entry(hist, idx)))
+    return out[:AWHIST_MAX] or [(('NO WINNERS RECORDED',), None)]
+
+
+def award_history_rows(hist, ms, a):
+    """AWARD HISTORY rows of award code a: newest season first, the first kind-kind record
+    of each season, the fallback winner of an MVP / CY YOUNG / ROOKIE season recorded before
+    the award records; seasons with nothing are skipped. No row: one message row."""
+    return [cells for cells, _entry in award_history_items(hist, ms, a)]
+
+
+def awhist_body(state, data):
+    """(cols, rows) of AWARD HISTORY: the award code cat. A lone message row uses
+    COLS_SINGLE (as the other count screens'); no history gives no rows."""
+    hist = data['hist']
+    if hist.seasons_recorded == 0:
+        return COLS_SINGLE, []
+    rows = award_history_rows(hist, data['ms'], state[2])
+    if len(rows) == 1 and len(rows[0]) == 1:
+        return COLS_SINGLE, rows
+    return COLS_AWHIST, rows
 
 
 # ---------------------------------------------------------------- standings
@@ -1900,9 +1963,9 @@ def unpack(state):
 
 def cursor_screen(s):
     """True on the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode),
-    SEASON AWARDS, the offseason RETIREMENTS phase and MILESTONES WATCH (C27, cat 1;
-    the milestones mode 0 has none)."""
-    if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS):
+    SEASON AWARDS, AWARD HISTORY (C28), the offseason RETIREMENTS phase and MILESTONES
+    WATCH (C27, cat 1; the milestones mode 0 has none)."""
+    if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_AWHIST):
         return True
     if s[0] == SCREEN_MILESTONES and s[2] == 1:
         return True
@@ -1998,6 +2061,9 @@ def row_entry(s, data):
     if s[0] == SCREEN_AWARDS:
         items = awards_items(hist, data['ms'], hist.seasons_recorded - s[2])
         return award_entry(hist, items[row][1]) if row < len(items) else None
+    if s[0] == SCREEN_AWHIST:
+        items = award_history_items(hist, data['ms'], s[2])
+        return items[row][1] if row < len(items) else None
     if s[0] == SCREEN_MILESTONES and s[2] == 1:
         items = watch_items(hist)
         return items[row][3] if row < len(items) else None
@@ -2183,6 +2249,8 @@ def total_rows(state, data):
         n = offseason_body(s, data)[1]
     elif screen == SCREEN_AWARDS:
         n = awards_body(s, data)[1]
+    elif screen == SCREEN_AWHIST:
+        n = awhist_body(s, data)[1]
     elif screen == SCREEN_STANDINGS:
         n = standings_body(s, data)[1]
     elif screen == SCREEN_SERIES:
@@ -2233,6 +2301,9 @@ def rows(state, data):
         return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_AWARDS:
         body = awards_body(state, data)[1]
+        return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
+    if screen == SCREEN_AWHIST:
+        body = awhist_body(state, data)[1]
         return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_STANDINGS:
         body = standings_body(state, data)[1]
@@ -2297,6 +2368,8 @@ def step(state, key, data):
             return (SCREEN_PLAYOFFS, 0, cat >> 6), 0
         if screen == SCREEN_CARD:
             return data.get('card_back', (SCREEN_MENU, 0, 0)), 0
+        if screen == SCREEN_AWHIST:
+            return data.get('awh_back', (SCREEN_AWARDS, 0, 0)), 0
         return (SCREEN_MENU, 0, 0), 0
     if screen == SCREEN_MENU:
         if key == 48:
@@ -2372,6 +2445,26 @@ def step(state, key, data):
         if entry is not None:
             return open_card(s, entry, data)
         return state, 0
+    if screen == SCREEN_AWARDS and key in (72, 104):
+        # C28: H opens AWARD HISTORY of the cursor row's award record (its kind's code
+        # L * 20 + k), or code 0 on a leader, fallback or message row; the awards state
+        # is kept for ESC
+        hist = data['hist']
+        data['awh_back'] = pack(s[0], s[1], s[2], s[3], s[4])
+        a = 0
+        if hist.seasons_recorded:
+            season = hist.seasons_recorded - s[2]
+            recs = sorted((kind, pos) for pos, (sn, _idx, kind, _v) in
+                          enumerate(data['ms'])
+                          if sn == season and (award_kind(kind) or leader_kind(kind)))
+            if s[3] < len(recs) and award_kind(recs[s[3]][0]):
+                kind = recs[s[3]][0]
+                a = (20 if kind >= 96 else 0) + kind - (96 if kind >= 96 else 64)
+        return (SCREEN_AWHIST, 0, a), 0
+    if screen == SCREEN_AWHIST and key in (KEY_LEFT, KEY_RIGHT):
+        # next (RIGHT) or previous (LEFT) award code, modulo 40 (page and row reset)
+        return (SCREEN_AWHIST, 0,
+                (s[2] + (1 if key == KEY_RIGHT else 39)) % 40), 0
     if screen == SCREEN_SERIES and 49 <= key <= 55:
         # game key - 49 of the season (cat seasons back), when the season is 1..64 and has it
         g = key - 49
@@ -2538,6 +2631,9 @@ COLS_CARD_PIT = [('YEAR', _cx(0), 4, 'L'), ('TM', _cx(4), 4, 'R'), ('G', _cx(8),
                  ('IP', _cx(22), 6, 'R'), ('SO', _cx(28), 4, 'R'), ('ERA', _cx(32), 5, 'R'),
                  ('WAR', _cx(37), 5, 'R')]
 OFF_COLS = [COLS_SINGLE, COLS_RETIRE, COLS_DRAFT, COLS_MOVE, COLS_MOVE, COLS_SINGLE]
+# AWARD HISTORY (C28)
+COLS_AWHIST = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
+               ('VALUE', _cx(22), 20, 'R')]
 
 FOOTERS = {SCREEN_MENU: '0-9 W SELECT   ESC EXIT',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
@@ -2548,7 +2644,8 @@ FOOTERS = {SCREEN_MENU: '0-9 W SELECT   ESC EXIT',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU',
            SCREEN_SETTINGS: 'UP DOWN MOVE   ENTER CHANGE   ESC MENU',
            SCREEN_ABOUT: 'PGUP PGDN   ESC MENU',
-           SCREEN_AWARDS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU',
+           SCREEN_AWARDS: 'H HISTORY  LEFT RIGHT SEASON  PGUP PGDN  ESC',
+           SCREEN_AWHIST: 'ENTER CARD  LEFT RIGHT AWARD  PGUP PGDN  ESC',
            SCREEN_STANDINGS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU',
            SCREEN_SERIES: '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
            SCREEN_BOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC SERIES',
@@ -2618,6 +2715,11 @@ def screen_title(state, data):
     if screen == SCREEN_ABOUT:
         return 'ABOUT THE MODS %d/%d' % (page + 1, (len(ABOUT_ROWS) + ROWS_PER_PAGE - 1)
                                          // ROWS_PER_PAGE)
+    if screen == SCREEN_AWHIST:
+        n = data['hist'].seasons_recorded
+        lg = 1 if cat >= 20 else 0
+        return ('%s HISTORY' % award_label((64, 96)[lg] + cat - lg * 20)) if n \
+            else 'AWARD HISTORY'
     n = data['hist'].seasons_recorded
     # A league with no recorded season has no season number to show (it would read SEASON 0).
     if screen == SCREEN_BOX:
@@ -2666,6 +2768,8 @@ def body_cols(state, data):
         return offseason_body(state, data)[0]
     if state[0] == SCREEN_AWARDS:
         return awards_body(state, data)[0]
+    if state[0] == SCREEN_AWHIST:
+        return awhist_body(state, data)[0]
     if state[0] == SCREEN_STANDINGS:
         return standings_body(state, data)[0]
     if state[0] == SCREEN_SERIES:
