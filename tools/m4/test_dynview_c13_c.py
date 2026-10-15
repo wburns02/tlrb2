@@ -43,6 +43,7 @@ K1, K2, K3, K4, K7, K9 = (ord(c) for c in '123479')     # hub rows: history, HoF
                                                         # milestones, settings, awards
 MENU, LEAD, SET, CARD = (dynview.SCREEN_MENU, dynview.SCREEN_LEADERS,
                          dynview.SCREEN_SETTINGS, dynview.SCREEN_CARD)
+SA, AH = dynview.SCREEN_AWARDS, dynview.SCREEN_AWHIST
 SEASON, BY_YEAR = dynview.MODE_SHIFT, 2 * dynview.MODE_SHIFT
 SEASON_LABELS = [c[0] for c in dynview.SEASON_CATS]     # 17 categories
 CAREER_LABELS = [c[0] for c in dynview.CATS]            # 18 categories
@@ -747,6 +748,29 @@ def test_watch_parity_frames(tmp_path):
     check(ldir, tmp_path, 'c27_watch_pgdn', [K4, RIGHT, PGDN])
 
 
+# ---------------------------------------------------------------- C28 AWARD HISTORY
+def awhist_players():
+    """the C28 fixture players (8 entries; the names match test_dynview_c13.awhist_league)"""
+    return [player(n, totals=tot(H=100 + e), war10=50 + e) for e, n in
+            enumerate(['WIN1X', 'WIN2X', 'WIN3X', 'WIN4X', 'GLOVE', 'LEADR', 'FILLA',
+                       'FILLB'])]
+
+
+def awhist_league_c(tmp_path):
+    """4 seasons with AL MVP records in seasons 2, 3, 4 (season 1 only the fallback
+    winners of its season entry, no award record at all), an NL GLOVE C record in
+    season 3, leader records the H key ignores, and a WS record"""
+    ldir = league(tmp_path, awhist_players(), seasons=4, start=1990, name='awh',
+                  ms=[(2, 1, 64, 30), (2, 6, 128, 312),
+                      (3, 2, 64, (-25) & 0xffff), (3, 4, 99, 987),
+                      (3, 5, 160, 205), (4, 3, 64, 0), (4, 0, 192, 5 * 256 + 3)])
+    hp = ldir / 'HISTORY.DAT'
+    d = bytearray(hp.read_bytes())
+    d[32 + 88:32 + 100] = bytes((0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0))
+    hp.write_bytes(bytes(d))
+    return ldir
+
+
 # ---------------------------------------------------------------- C39 POSTSEASON LEADERS
 def post_leader_league(tmp_path, name):
     """The post_league box plus player rows for entries 1 and 5 and a flags 4 header:
@@ -761,6 +785,76 @@ def post_leader_league(tmp_path, name):
         box_rec(3, 0, 2, 1, (20, 5, 2, 2, 1, 1, 3, 12)),
     ])
     return ldir
+
+
+@needs_fonts
+def test_awhist_parity_frames(tmp_path):
+    """C28: AWARD HISTORY for AL MVP with the cursor on row 1, the NL GLOVE C code after
+    the steps, the message row of an award never given, SEASON AWARDS with the new
+    footer, H from the awards (both the award and the leader row), the card opened from
+    the history and the identical state ESC returns twice, and a title click (LEFT)"""
+    ldir = awhist_league_c(tmp_path)
+    # H (72) from the SEASON AWARDS' AL MVP row opens AL MVP (code 0), the cursor DOWN
+    # to row 1: the history frame and the ESC back through the card
+    check(ldir, tmp_path, 'c28_awards_footer', [K9])
+    assert py_run(ldir, tmp_path, [K9])[0] == (SA, 0, 0)
+    check(ldir, tmp_path, 'c28_open_h', [K9, 72])
+    assert py_run(ldir, tmp_path, [K9, 72])[0] == (16, 0, 0)
+    check(ldir, tmp_path, 'c28_row1', [K9, 72, DOWN])
+    assert py_run(ldir, tmp_path, [K9, 72, DOWN])[0] == (16, 0, 0, 1)
+    # H from the leader record row: code 0 as well
+    assert py_run(ldir, tmp_path, [K9, DOWN, 72])[0] == (16, 0, 0)
+    check(ldir, tmp_path, 'c28_h_on_leader', [K9, DOWN, 72])
+    # LEFT from code 0 to 39 (the message row), then RIGHT to 38, then to the NL GLOVE C
+    # code after LEFT wrap walk 0 -> 39 -> 38 ... to 23
+    check(ldir, tmp_path, 'c28_left_wrap_msg', [K9, 72, LEFT])
+    assert py_run(ldir, tmp_path, [K9, 72, LEFT])[0] == (16, 0, 39)
+    # RIGHT from 39 wraps to 0
+    check(ldir, tmp_path, 'c28_right_back_zero', [K9, 72, LEFT, RIGHT])
+    assert py_run(ldir, tmp_path, [K9, 72, LEFT, RIGHT])[0] == (16, 0, 0)
+    # 17 LEFTs: 0 -> 39 -> ... -> 23 (the NL GLOVE C code)
+    wrap = [K9, 72] + [LEFT] * 17
+    assert py_run(ldir, tmp_path, wrap)[0] == (16, 0, 23)
+    check(ldir, tmp_path, 'c28_walk_to_nlglove', wrap)
+    # the title click on AWARD HISTORY is LEFT (the code steps back)
+    assert check(ldir, tmp_path, 'c28_title_click', [K9, 72, ('L', 100, 14)]) == \
+        check(ldir, tmp_path, 'c28_key_left', [K9, 72, LEFT])
+    # ENTER on the history row opens the card; ESC back twice (card -> history ->
+    # awards), each state identical
+    hist_keys = [K9, 72, ENTER]
+    assert py_run(ldir, tmp_path, hist_keys)[0] == (CARD, 0, 3)
+    check(ldir, tmp_path, 'c28_card_from_hist', hist_keys)
+    check(ldir, tmp_path, 'c28_card_esc_weak', hist_keys + [ESC])
+    assert py_run(ldir, tmp_path, hist_keys + [ESC])[0] == (16, 0, 0)
+    check(ldir, tmp_path, 'c28_esc_to_awards', hist_keys + [ESC, ESC])
+    assert py_run(ldir, tmp_path, hist_keys + [ESC, ESC])[0] == (9, 0, 0)
+    # AWARD HISTORY H-less state (a Right/Left walk) ESC: back to the SEASON AWARDS
+    # state kept by its H (identical), and a no-history league (the default back)
+    check(ldir, tmp_path, 'c28_pgdn_stays', [K9, 72, PGDN])
+    empty = league(tmp_path, name='awhempty')
+    check(empty, tmp_path, 'c28_empty', [K9, 72, LEFT])
+
+
+@needs_fonts
+def test_awhist_parity_flat_league_frames(tmp_path):
+    """the season-3 league without the fallback patch (every season has award records):
+    the fallback rule never applies, and the history rows come from the records alone"""
+    ldir = league(tmp_path, awhist_players(), seasons=4, start=1990, name='awhflat',
+                  ms=[(2, 1, 64, 30), (3, 2, 64, (-25) & 0xffff), (4, 3, 64, 0),
+                      (3, 4, 99, 987)])
+    check(ldir, tmp_path, 'c28_flat_mvp', [K9, 72])
+    check(ldir, tmp_path, 'c28_flat_noglove', [K9, 72, LEFT])
+
+
+@needs_fonts
+def test_awhist_parity_nl_fallback_frames(tmp_path):
+    """C28: the NL codes 20 and 22 (k <= 2) take season 1's fallback winners aw[3 + k]
+    in both ports (the C port once tested the code a, not k, so NL never fell back)"""
+    ldir = awhist_league_c(tmp_path)
+    nl = [K9, 72] + [RIGHT] * 20
+    assert py_run(ldir, tmp_path, nl)[0] == (16, 0, 20)
+    check(ldir, tmp_path, 'c28_nl_mvp_fallback', nl)
+    check(ldir, tmp_path, 'c28_nl_k2_fallback', nl + [RIGHT, RIGHT])
 
 
 @needs_fonts

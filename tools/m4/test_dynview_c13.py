@@ -1286,3 +1286,151 @@ def test_watch_cursor_enter_and_mode0_plain(tmp_path):
     data4 = load(ldir4)
     assert dynview.step((MS, 1, 0), dynview.KEY_PGDN, data4)[0] == (MS, 1, 0)
     assert dynview.step((MS, 0, 0), dynview.KEY_PGDN, data4)[0] == (MS, 1, 0)
+# ---------------------------------------------------------------- C28 AWARD HISTORY
+AH = dynview.SCREEN_AWHIST
+K_HUP, K_HLOW = 72, 104
+
+
+def awhist_league(tmp_path):
+    """4 seasons, 8 players. AL MVP records in seasons 2, 3, 4 (season 1 instead has
+    fallback winners from its season entry and no award record of any kind), an NL GLOVE C
+    record (kind 98) in season 3 only, leader records (kinds 128 and up) the H key ignores.
+    Negative and zero values exercise the sign and rounding."""
+    players = [player(n, totals=tot(H=100 + e), war10=50 + e) for e, n in
+               enumerate(['WIN1X', 'WIN2X', 'WIN3X', 'WIN4X', 'GLOVE', 'LEADR', 'FILLA',
+                          'FILLB'])]
+    ldir = tmp_path / 'awh'
+    write_league(ldir, players, seasons=4, start=1990,
+                 ms=[(2, 1, 64, 30), (2, 6, 128, 312),          # AL MVP, AL BA leader
+                     (3, 2, 64, (-25) & 0xffff), (3, 4, 99, 987),   # AL MVP, NL GLOVE C
+                     (3, 5, 160, 205),                          # an NL leader
+                     (4, 3, 64, 0),                             # 0 WAR
+                     (4, 0, 192, 5 * 256 + 3)])                 # a WS record, not an award
+    # season 1's fallback winners (its entries 0..5, none NO_AWARD)
+    hp = ldir / 'HISTORY.DAT'
+    d = bytearray(hp.read_bytes())
+    d[32 + 88:32 + 100] = bytes((0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0))
+    hp.write_bytes(bytes(d))
+    return load(ldir)
+
+
+def test_awhist_rows_newest_first_and_fallback(tmp_path):
+    data = awhist_league(tmp_path)
+    hist, ms = data['hist'], data['ms']
+    # a = 0 (AL MVP): records of seasons 4 (0.0 WAR), 3 (-2.5 WAR) and 2 (3.0 WAR), then
+    # season 1's fallback AL MVP with an empty value
+    got = dynview.award_history_items(hist, ms, 0)
+    assert [r for r, _e in got] == [
+        ('1993', 'WIN4X, A', '0.0 WAR'), ('1992', 'WIN3X, A', '-2.5 WAR'),
+        ('1991', 'WIN2X, A', '3.0 WAR'), ('1990', 'WIN1X, A', '')]
+    assert [e for _r, e in got] == [3, 2, 1, 0]         # the fallback winner keeps its
+    # entry: the card of row 3 opens entry 0
+    assert dynview.row_entry((AH, 0, 0, 3), data) == 0
+    # the fallback value cell is empty (not a war string)
+    assert got[3][0][2] == ''
+    # a = 20 (NL MVP): only season 1 has no award record of any kind, so only it shows;
+    # its NL MVP fallback winner is aw[3] (WIN4X), value ''
+    assert dynview.award_history_items(hist, ms, 20) == [(('1990', 'WIN4X, A', ''), 3)]
+    # a = 23 (NL GLOVE C, kind 99): season 3 only, value '.987 FLD'
+    assert dynview.award_history_items(hist, ms, 23) == \
+        [(('1992', 'GLOVE, A', '.987 FLD'), 4)]
+    # a = 3 (AL GLOVE C, kind 67): no record of the kind anywhere and k > 2: no row
+    assert dynview.award_history_items(hist, ms, 3) == \
+        [(('NO WINNERS RECORDED',), None)]
+    # a value past the entry table is not a card row (the out-of-range name is '?')
+    ldir = tmp_path / 'oob'
+    write_league(ldir, [player('ONLY', first='A')], seasons=2,
+                 ms=[(2, 9, 64, 10)])
+    data2 = load(ldir)
+    assert dynview.award_history_items(data2['hist'], data2['ms'], 0) == \
+        [(('1994', '?', '1.0 WAR'), None), (('1993', 'ONLY, A', ''), 0)]
+    assert dynview.row_entry((AH, 0, 0, 0), data2) is None
+
+
+def test_awhist_message_row_and_columns(tmp_path):
+    data = awhist_league(tmp_path)
+    # an award never given (no record of the kind in any season, and the fallback rule
+    # does not apply to k > 2): one message row with COLS_SINGLE
+    assert dynview.award_history_rows(data['hist'], data['ms'], 39) == \
+        [('NO WINNERS RECORDED',)]
+    rows, cols = dynview.awhist_body((AH, 0, 39), data)[1], dynview.awhist_body((AH, 0, 39),
+                                                                                data)[0]
+    assert rows == [('NO WINNERS RECORDED',)] and cols == dynview.COLS_SINGLE
+    assert dynview.total_rows((AH, 0, 39), data) == 1
+    # an award with rows: COLS_AWHIST, and no history gives no rows
+    assert dynview.awhist_body((AH, 0, 0), data) == \
+        (dynview.COLS_AWHIST, [('1993', 'WIN4X, A', '0.0 WAR'),
+                               ('1992', 'WIN3X, A', '-2.5 WAR'),
+                               ('1991', 'WIN2X, A', '3.0 WAR'),
+                               ('1990', 'WIN1X, A', '')])
+    ldir = tmp_path / 'nohist'
+    ldir.mkdir()
+    data3 = load(ldir)
+    assert dynview.awhist_body((AH, 0, 0), data3) == (dynview.COLS_SINGLE, [])
+    assert dynview.rows((AH, 0, 0), data3) == [('NO DYNASTY HISTORY YET',)]
+    assert dynview.COLS_AWHIST == [
+        ('YEAR', dynview._cx(0), 4, 'L'), ('NAME', dynview._cx(5), 16, 'L'),
+        ('VALUE', dynview._cx(22), 20, 'R')]
+
+
+def test_awhist_left_right_wrap_cursor_and_paging(tmp_path):
+    data = awhist_league(tmp_path)
+    # LEFT wraps from code 0 to 39 (page and row reset); RIGHT from 38 to 39
+    s = (AH, 2, 39, 25)
+    assert press(s, LEFT, data) == (AH, 0, 38)
+    assert press((AH, 0, 38), RIGHT, data) == (AH, 0, 39)
+    assert press((AH, 0, 20), RIGHT, data) == (AH, 0, 21)
+    # the cursor moves like on HALL OF FAME: DOWN caps at the last row (4), PGDN pages
+    # only when there is a next page (the 4 rows here fit one, so it stays)
+    s = press((AH, 0, 0), DOWN, data)
+    assert s == (AH, 0, 0, 1)
+    for _ in range(4):
+        s = press(s, DOWN, data)
+    assert s == (AH, 0, 0, 3)                        # the last row of 4
+    assert press(s, PGDN, data) == s                 # no page 2
+    assert dynview.screen_title((AH, 0, 0), data) == 'AL MVP HISTORY'
+    assert dynview.screen_title((AH, 0, 18), data) == 'AL SLUGGER RF HISTORY'
+    assert dynview.screen_title((AH, 0, 20), data) == 'NL MVP HISTORY'
+    assert dynview.screen_title((AH, 0, 23), data) == 'NL GLOVE C HISTORY'
+    assert dynview.screen_title((AH, 0, 39), data) == 'NL SLUGGER DH HISTORY'
+    assert dynview.footer_text((AH, 0, 0), data) == \
+        'ENTER CARD  LEFT RIGHT AWARD  PGUP PGDN  ESC'
+
+
+def test_awhist_open_from_awards_and_esc_back(tmp_path):
+    data = awhist_league(tmp_path)
+    # SEASON AWARDS of season 4: award records (AL MVP), then the leader record; the
+    # kind 192 WS record does not show
+    awards_now = dynview.awards_items(data['hist'], data['ms'], 4)
+    assert awards_now == [(('AL MVP', 'WIN4X, A', '0.0 WAR'), 3)]
+    # H (both cases) on the award record row opens that award's history and keeps the
+    # awards state in data['awh_back']; ESC returns it exactly
+    for h in (K_HUP, K_HLOW):
+        sa = (SA, 0, 0, 0)
+        s2, _ex = dynview.step(sa, h, data)
+        assert s2 == (AH, 0, 0), h
+        assert data['awh_back'] == (SA, 0, 0)          # pack drops the 0 row and page
+        assert dynview.unpack(press(s2, ESC, data)) == dynview.unpack(sa)
+    # H on a leader record row keeps code 0
+    s2 = press((SA, 0, 0), DOWN, data)
+    assert press(s2, K_HUP, data) == (AH, 0, 0)
+    # H on a fallback row (season 1 has no award records) and on the message row: code 0
+    for cat in (2, 5):
+        assert press((SA, 0, cat), K_HLOW, data) == (AH, 0, 0)
+    # the state after ESC is exactly what H saw, cursor included
+    sa = (SA, 1, 2, 13)
+    s2, _ex = dynview.step(sa, K_HUP, data)
+    assert data['awh_back'] == sa and press(s2, ESC, data) == sa
+    # ESC on a code reached without an H (nothing kept this session): the default
+    # (9, 0, 0); here data['awh_back'] still holds the H from above, so a fresh data dict
+    data3 = load((tmp_path / 'awh'))
+    assert press((AH, 2, 7, 9), ESC, data3) == (SA, 0, 0)
+    # ENTER on the history row opens the card, ESC goes back to the identical state twice:
+    # card -> history, then history -> awards with the backed-up state
+    sa = (SA, 0, 0, 0)
+    data2 = load((tmp_path / 'awh'))                          # a fresh data dict
+    ah, _ex = dynview.step(sa, K_HUP, data2)
+    card, _ex2 = dynview.step(ah, ENTER, data2)
+    assert card == (CARD, 0, 3)
+    assert press(card, ESC, data2) == ah
+    assert dynview.unpack(press(ah, ESC, data2)) == dynview.unpack(sa)

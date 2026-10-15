@@ -1491,7 +1491,7 @@ def test_settings_and_about_render_without_history(tmp_path):
 
 # ---------------------------------------------------------------- SEASON AWARDS (C7)
 SA = dynview.SCREEN_AWARDS
-AWARDS_FOOTER = 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'
+AWARDS_FOOTER = 'H HISTORY  LEFT RIGHT SEASON  PGUP PGDN  ESC'
 # award records (kind, entry index, value): season 2 has three; season 3 has all 40
 # kinds (AL 64..83, then NL 96..115). Values are signed; the file stores them as u16.
 AW_2 = [(64, 1, 45), (65, 4, 120), (96, 9, 70)]
