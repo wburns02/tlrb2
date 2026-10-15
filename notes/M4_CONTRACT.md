@@ -1415,6 +1415,7 @@ the same framebuffers.
   whole-file buffer); the sums are 32-bit integers; the sums are cached per entry and
   recomputed only when the entry changes. Host builds with the gcc command in
   tools/m4/dynview_c/build_dynview.py (-Werror clean); DYNVIEW.EXE is untouched.
+
 ## C27. MILESTONES watch (added 2026-10-15)
 
 MILESTONES (SCREEN_MILESTONES = 4) gains WATCH, cat 1: the active players within 10% of an

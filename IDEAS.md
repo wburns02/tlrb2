@@ -108,7 +108,7 @@ like the stock screen. Past-season league leaders: DONE 2026-10-11 as C7 leader 
 ERA, SO, SV per league) on SEASON AWARDS. World Series line scores: DONE 2026-10-11 as C7 series records (from
 PLAYOFFS.AL at roll time) on DYNASTY MODE > W WORLD SERIES (per game R H E, the winner, WINS 4-2). World Series
 box scores: DONE 2026-10-11 as C7 BOXSCORE.DAT (per player AB R H RBI BB SO, pitchers IP H R ER BB SO) on WORLD
-SERIES keys 1-7. Still open: box scores of the earlier playoff rounds. No pre-roll guard is needed (probe 2026-10-08): SEASON > START NEW SEASON
+SERIES keys 1-7. Earlier playoff round box scores: DONE 2026-10-14 as C23c PLAYOFF BOX (DYNASTY MODE > PLAYOFFS, ENTER BOX). No pre-roll guard is needed (probe 2026-10-08): SEASON > START NEW SEASON
 on BACK's post World Series menu saves the season and exits through the BAT, which archives and rolls it like QUIT.
 
 ## Next season sequence like BBPRO / ClaudeBall (Will, 2026-10-08)
