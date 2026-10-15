@@ -137,6 +137,144 @@ def test_hof_rows_order(tmp_path):
     # pitcher columns for entry 5 are not in the HOF table (status 2)
 
 
+# ---------------------------------------------------------------- HOF filter (C53)
+def test_hof_match_each_filter():
+    P = dict(pitcher=1, pos1=0)
+    C = dict(pitcher=0, pos1=1)
+    B1B = dict(pitcher=0, pos1=2)
+    B2B = dict(pitcher=0, pos1=3)
+    B3B = dict(pitcher=0, pos1=4)
+    SS = dict(pitcher=0, pos1=5)
+    LF = dict(pitcher=0, pos1=6)
+    CF = dict(pitcher=0, pos1=7)
+    RF = dict(pitcher=0, pos1=8)
+    DH = dict(pitcher=0, pos1=9)
+    entry = dict(P, **{'name': b'X'})
+    assert dynview.HOF_FILTERS == [('ALL', None), ('P', None), ('C', (1,)),
+                                   ('1B', (2,)), ('2B', (3,)), ('3B', (4,)),
+                                   ('SS', (5,)), ('OF', (6, 7, 8)), ('DH', (9,))]
+    for e in (P, C, B1B, B2B, B3B, SS, LF, CF, RF, DH):
+        assert dynview.hof_match(e, 0)
+    assert dynview.hof_match(P, 1)
+    for e in (C, B1B, B2B, B3B, SS, LF, CF, RF, DH):
+        assert not dynview.hof_match(e, 1)
+    for who, f in ((C, 2), (B1B, 3), (B2B, 4), (B3B, 5), (SS, 6), (DH, 8)):
+        assert dynview.hof_match(who, f)
+        for f2 in range(9):
+            if f2 != f and f2 != 0:
+                assert not dynview.hof_match(who, f2), (who, f2)
+    for e in (LF, CF, RF):
+        assert dynview.hof_match(e, 7)               # OF covers LF CF RF
+        assert not dynview.hof_match(e, 2)
+    # a pitcher never matches a position filter, a batter never P
+    assert not dynview.hof_match(P, 7)
+    assert not dynview.hof_match(C, 1)
+    assert dynview.hof_match(dict(C, pitcher=1), 1)  # a pitcher: P, not C
+
+
+def test_hof_tab_cycles_filters(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.KEY_TAB == 9
+    s = (dynview.SCREEN_HOF, 0, 0)
+    for want in (1, 2, 3, 4, 5, 6, 7, 8, 0):
+        s, _ex = dynview.step(s, dynview.KEY_TAB, data)
+        assert s == (dynview.SCREEN_HOF, 0, want)
+    # page and row reset (not a cursor move)
+    s, _ex = dynview.step((dynview.SCREEN_HOF, 1, 0, 3), dynview.KEY_TAB, data)
+    assert s == (dynview.SCREEN_HOF, 0, 1)
+    # other screens unchanged: TAB does nothing on HISTORY, LEADERS mode logic intact
+    s, _ex = dynview.step((dynview.SCREEN_HISTORY, 0, 0), dynview.KEY_TAB, data)
+    assert s == (dynview.SCREEN_HISTORY, 0, 0)
+    s, _ex = dynview.step((dynview.SCREEN_LEADERS, 0, 0), dynview.KEY_TAB, data)
+    assert s == (dynview.SCREEN_LEADERS, 0, dynview.MODE_SHIFT + 3)   # CAREER H -> SEASON H
+
+
+def test_hof_filter_titles(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.screen_title((dynview.SCREEN_HOF, 0, 0), data) == 'HALL OF FAME'
+    assert dynview.screen_title((dynview.SCREEN_HOF, 0, 1), data) == 'HALL OF FAME: P'
+    assert dynview.screen_title((dynview.SCREEN_HOF, 0, 6), data) == 'HALL OF FAME: SS'
+    assert dynview.screen_title((dynview.SCREEN_HOF, 0, 7), data) == 'HALL OF FAME: OF'
+    assert dynview.screen_title((dynview.SCREEN_HOF, 0, 8), data) == 'HALL OF FAME: DH'
+    assert dynview.footer_text((dynview.SCREEN_HOF, 0, 0), data) == \
+        'TAB POSITION   PGUP PGDN   ESC MENU'
+    assert dynview.FOOTERS[dynview.SCREEN_HOF] == \
+        'TAB POSITION   PGUP PGDN   ESC MENU'
+
+
+def test_hof_filter_order(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    # make_data leaves byte 30 (pos1) at 0 for its HoF entries (28, 29), batters by
+    # the pitcher byte: only ALL shows them; 2B (filter 4) sees none
+    rows = dynview.rows(st(dynview.SCREEN_HOF, 0, 4), data)       # 2B filter: none
+    assert rows == [('NO HALL OF FAMERS AT 2B',)]
+    assert dynview.body_cols(st(dynview.SCREEN_HOF, 0, 4), data) == dynview.COLS_SINGLE
+    # ALL row cells unchanged
+    assert dynview.rows(st(dynview.SCREEN_HOF), data) == dynview.hof_rows(data['hist'], 0)
+    assert dynview.total_rows(st(dynview.SCREEN_HOF, 0, 1), data) == 1   # P: no HoF pitchers
+    assert dynview.total_rows(st(dynview.SCREEN_HOF, 0, 0), data) == 2   # ALL: both
+    # the cursor of an empty filter names no entry
+    assert dynview.row_entry((dynview.SCREEN_HOF, 0, 1, 0), data) is None
+
+
+def test_hof_filter_keep_season_order_then_index(tmp_path):
+    """Filter keeps (HoF season desc, index asc)."""
+    from test_dynview_c13 import player, write_league
+
+    def tb(h):
+        t = [0] * 25
+        t[1], t[2] = 20, h
+        return t
+
+    ldir = tmp_path / 'ord'
+    ldir.mkdir()
+    players = [player('HOFB', first='B', status=3, hof=3, pos1=5, totals=tb(6)),
+               player('HOFA', first='A', status=3, hof=2, pos1=5, totals=tb(5))]
+    write_league(ldir, players, seasons=4)
+    data = dynview.load_data(str(ldir))
+    rows = dynview.rows(st(dynview.SCREEN_HOF, 0, 6), data)      # SS filter
+    assert [r[0] for r in rows] == ['HOFB, B', 'HOFA, A']
+    assert dynview.rows(st(dynview.SCREEN_HOF, 0, 6), data) == \
+        dynview.hof_rows(data['hist'], 6)
+    assert [i for i, _e in dynview.hof_order(data['hist'], 6)] == [0, 1]
+
+
+def test_hof_enter_opens_filtered_card_and_esc(tmp_path):
+    from test_dynview_c13 import player, write_league, line
+
+    def tb(h):
+        t = [0] * 25
+        t[1], t[2] = 20, h
+        return t
+
+    ldir = tmp_path / 'card'
+    # HOFA (entry 0) has the older HoF season, so the list's row 0 is HOFB (entry 1)
+    write_league(ldir, [player('HOFA', first='A', status=3, hof=2, pos1=5,
+                               totals=tb(5)),
+                        player('HOFB', first='B', status=3, hof=3, pos1=5,
+                               totals=tb(6))], seasons=4,
+                 lines=[line(0, 3, totals=tb(5))])
+    data = dynview.load_data(str(ldir))
+    s, _ex = dynview.step((dynview.SCREEN_HOF, 0, 6), dynview.KEY_ENTER, data)
+    assert s == (dynview.SCREEN_CARD, 0, 1)
+    s2, _ex = dynview.step(s, dynview.KEY_ESC, data)
+    assert s2 == (dynview.SCREEN_HOF, 0, 6)
+    # ENTER on an empty filter does nothing
+    s3, _ex = dynview.step((dynview.SCREEN_HOF, 0, 1), dynview.KEY_ENTER, data)
+    assert s3 == (dynview.SCREEN_HOF, 0, 1)
+    # cat 0 with no members keeps today's behaviour: empty table, COLS_HOF
+    ldir2 = tmp_path / 'none'
+    write_league(ldir2, [player('ACT', totals=tb(1))], seasons=2)
+    data2 = dynview.load_data(str(ldir2))
+    assert dynview.rows(st(dynview.SCREEN_HOF, 0, 0), data2) == []
+    assert dynview.body_cols(st(dynview.SCREEN_HOF, 0, 0), data2) == dynview.COLS_HOF
+    assert dynview.rows(st(dynview.SCREEN_HOF, 0, 2), data2) == \
+        [('NO HALL OF FAMERS AT C',)]
+
+
 def test_leaders_count_order_and_ties(tmp_path):
     ldir, _ = make_data(tmp_path)
     data = dynview.load_data(str(ldir))

@@ -264,6 +264,11 @@ typedef struct {
 #define STATUS_HOF 3
 #define NO_AWARD 0xffff
 
+/* HALL OF FAME position filters (C53): the cat of the screen is one of them and TAB
+ * cycles it; F_P is any pitcher, the OF filter covers LF CF and RF */
+#define N_HOF_FILTERS 9
+#define HOF_F_P 1                                  /* the filter index of P */
+
 #define CHAR_W 7
 #define SLEN 64             /* cell / line text cap */
 #define NAME_CAP_MAX 96
@@ -2305,15 +2310,72 @@ static void cat_format(const CatDef *c, uint32_t v, char *dst)
 
 /* ---------------- top-K list scans ---------------- */
 
-/* HoF: status 3 by (hof_season desc, index asc) */
-static void hof_scan(List *b)
+/* the filter label texts (C53): 'HALL OF FAME: ' + label when the cat is not ALL */
+static const char *const HOF_FILTER_LABELS[N_HOF_FILTERS] = {
+    "ALL", "P", "C", "1B", "2B", "3B", "SS", "OF", "DH" };
+
+/* one-byte hof_match table (C53): bit set = the entry of pitcher p (0 / 1) and pos1
+ * pos (0..15) shows under filter f */
+static uint8_t HOF_MATCH[N_HOF_FILTERS][2][16];
+
+/* fill HOF_MATCH from the Python rules: ALL everything, P any pitcher, else a batter
+ * whose pos1 is one of the filter's positions (a pitcher never matches a position) */
+static void hof_match_init(void)
+{
+    static const uint8_t poss[N_HOF_FILTERS][4] = {
+        { 255, 255, 255, 255 },       /* ALL: everything (fill below) */
+        { 255, 255, 255, 255 },       /* P: any pitcher */
+        { 1, 255, 255, 255 },         /* C */
+        { 2, 255, 255, 255 },         /* 1B */
+        { 3, 255, 255, 255 },         /* 2B */
+        { 4, 255, 255, 255 },         /* 3B */
+        { 5, 255, 255, 255 },         /* SS */
+        { 6, 7, 8, 255 },             /* OF */
+        { 9, 255, 255, 255 }          /* DH */
+    };
+    int f, p, pos, k;
+    uint8_t hit;
+    for (f = 0; f < N_HOF_FILTERS; f++) {
+        for (p = 0; p < 2; p++) {
+            for (pos = 0; pos < 16; pos++) {
+                hit = 0;
+                if (f == 0)
+                    hit = 1;
+                else if (f == HOF_F_P)
+                    hit = (uint8_t)p;
+                else if (!p) {
+                    for (k = 0; k < 4 && !hit; k++)
+                        if (poss[f][k] != 255 && poss[f][k] == (uint8_t)pos)
+                            hit = 1;
+                }
+                HOF_MATCH[f][p][pos] = hit;
+            }
+        }
+    }
+}
+
+/* hof_match (C53): f 0 always 1, f 1 any pitcher, else a batter at one of the filter
+ * positions (the prebuilt HOF_MATCH table; pos1 over 15 never matches) */
+static int hof_match(int f, const Entry *e)
+{
+    int p = e->pitcher != 0;
+    if (f == 0)
+        return 1;
+    if (f == HOF_F_P)
+        return p;
+    return e->pos1 < 16 ? HOF_MATCH[f][p][e->pos1] : 0;
+}
+
+/* HoF: status 3 by (hof_season desc, index asc), the filter applied before the
+ * LIST_MAX cut (C53) */
+static void hof_scan(List *b, int f)
 {
     uint32_t i;
     Entry e;
     b->n = 0;
     for (i = 0; i < n_entries(); i++) {
         read_entry(&e, i);
-        if (e.status == STATUS_HOF)
+        if (e.status == STATUS_HOF && hof_match(f, &e))
             list_add_desc(b, (int32_t)e.hof_season, i);
     }
 }
@@ -4102,13 +4164,14 @@ static int build_hist_rows(int page)
     return n;
 }
 
-/* HOF row: NAME, IND, YRS, H/W, HR/SO(PSO), AVG/ERA, WAR */
+/* HOF row of page from the g_hofl scan (dynview.hof_rows; the filter was already
+ * applied by hof_scan): NAME, IND, YRS, H/W, HR/SO(PSO), AVG/ERA, WAR */
 static int build_hof_rows(int page)
 {
     int n = 0, k, r0 = page * ROWS_PER_PAGE, r;
+    Entry e;
+    char nm[NAME_CAP_MAX];
     for (r = r0; r < g_hofl.n && r < (page + 1) * ROWS_PER_PAGE; r++, n++) {
-        Entry e;
-        char nm[NAME_CAP_MAX];
         read_entry(&e, g_hofl.idx[r]);
         g_rows[n].ncells = 7;
         name_display(e.name, 12, nm);
@@ -4546,6 +4609,15 @@ static int msg_row(int page, const char *text)
     return 1;
 }
 
+/* the NO HALL OF FAMERS message text (C53) of filter f: the label appended */
+static const char *hof_msg(int f)
+{
+    static char msg[48];
+    strcpy(msg, "NO HALL OF FAMERS AT ");
+    strcat(msg, HOF_FILTER_LABELS[f]);
+    return msg;
+}
+
 /* a row count capped at LIST_MAX */
 static uint32_t capped(uint32_t n)
 {
@@ -4576,7 +4648,7 @@ static int total_rows(State st)
     case SCREEN_HOF:
         if (!g_hdr_seasons)
             return 0;
-        hof_scan(&g_hofl);
+        hof_scan(&g_hofl, (int)st.cat);
         return g_hofl.n;
     case SCREEN_LEADERS:
         return leaders_body(st, -1, &cols);
@@ -4662,7 +4734,9 @@ static int refresh_rows(State st, const ColDef **cols)
         hist_scan(&g_histl);
         return build_hist_rows(st.page);
     case SCREEN_HOF:
-        hof_scan(&g_hofl);
+        hof_scan(&g_hofl, (int)st.cat);
+        if (g_hofl.n == 0 && st.cat != 0)
+            return msg_row(st.page, hof_msg(st.cat));
         return build_hof_rows(st.page);
     case SCREEN_MILESTONES:
         if (st.cat != 1) {
@@ -4791,7 +4865,7 @@ static int32_t row_entry(State st)
     if (g_hdr_seasons == 0)
         return -1;
     if (st.screen == SCREEN_HOF) {
-        hof_scan(&g_hofl);
+        hof_scan(&g_hofl, (int)st.cat);
         return row < (int32_t)g_hofl.n ? (int32_t)g_hofl.idx[row] : -1;
     }
     if (st.screen == SCREEN_LEADERS) {
@@ -5232,6 +5306,11 @@ static State step(State in, int32_t key)
             s.page--;
         return s;
     }
+    /* C53: TAB on HALL OF FAME cycles the position filter; page and cursor reset.
+     * Every other screen's TAB does nothing. */
+    if (s.screen == SCREEN_HOF && key == KEY_TAB)
+        return mk_state(SCREEN_HOF, 0, (s.cat + 1) % N_HOF_FILTERS);
+
     /* C54: A or a in CAREER mode flips the session-only active-only filter; page and row
      * reset, the category and the BY YEAR season stay. Other modes are untouched. */
     if (s.screen == SCREEN_LEADERS && (key == KEY_ACTIVE_CAP || key == KEY_ACTIVE_LOW)
@@ -5498,7 +5577,9 @@ static const ColDef *body_cols(State st)
     case SCREEN_HISTORY:
         return COLS_HISTORY;
     case SCREEN_HOF:
-        return COLS_HOF;
+        /* C53: the filtered-empty message row uses COLS_SINGLE */
+        hof_scan(&g_hofl, (int)st.cat);
+        return g_hofl.n == 0 && st.cat != 0 ? COLS_SINGLE : COLS_HOF;
     case SCREEN_LEADERS:
         return COLS_LEADERS;
     case SCREEN_FIND:
@@ -6045,7 +6126,7 @@ static const char *footer_of(State st)
     static const char *footers[6] = {
         "0-9 W P F SELECT   ESC EXIT",
         "PGUP PGDN   ESC MENU",
-        "PGUP PGDN   ESC MENU",
+        "TAB POSITION   PGUP PGDN   ESC MENU",
         "LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD",
         "LEFT RIGHT WATCH   PGUP PGDN   ESC MENU",
         "ENTER MENU   ESC MENU" };
@@ -6097,8 +6178,15 @@ static void screen_title(State st, char *dst)
         strcpy(dst, "DYNASTY");
     else if (st.screen == SCREEN_HISTORY)
         strcpy(dst, "SEASON HISTORY");
-    else if (st.screen == SCREEN_HOF)
-        strcpy(dst, "HALL OF FAME");
+    else if (st.screen == SCREEN_HOF) {
+        /* C53: the filter label after 'HALL OF FAME: ' when the cat is not ALL */
+        if (st.cat != 0) {
+            strcpy(dst, "HALL OF FAME: ");
+            strcat(dst, HOF_FILTER_LABELS[st.cat]);
+        } else {
+            strcpy(dst, "HALL OF FAME");
+        }
+    }
     else if (st.screen == SCREEN_LEADERS) {
         int mode = (int)(st.cat >> 5);
         const char *label = leader_cats(mode)[st.cat & 31].label;
@@ -7112,6 +7200,7 @@ int main(int argc, char **argv)
     _harderr(_hard_err_handler);
 #endif
 
+    hof_match_init();
     memset(g_hdr, 0, sizeof g_hdr);
     for (i = 1; i < argc; i++) {
         const uint8_t *v;
