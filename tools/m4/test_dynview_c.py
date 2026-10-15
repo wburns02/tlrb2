@@ -697,6 +697,25 @@ def test_about_pages_parity(tmp_path):
         check_parity(empty, tmp_path, 'about_e%d' % n, keys=keys)
 
 
+HOME, END = dynview.KEY_HOME, dynview.KEY_END
+
+ABOUT_HOME_END_SEQS = [
+    [56, END], [56, END, HOME], [56, PGDN, END], [56, END, PGUP],
+]
+
+
+def test_about_home_end_parity(tmp_path):
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'hist').mkdir()
+    ldir, _ = make_data(tmp_path / 'hist')
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    for n, keys in enumerate(ABOUT_HOME_END_SEQS):
+        check_parity(ldir, tmp_path, 'about_he%d' % n, keys=keys)
+        check_parity(empty, tmp_path, 'about_hee%d' % n, keys=keys)
+
+
 def test_hub_and_title_new_rows_parity(tmp_path):
     if not _fonts_ready():
         pytest.skip('fonts missing')

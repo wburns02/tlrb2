@@ -5112,3 +5112,39 @@ def test_c63_home_end_cursor_jumps(tmp_path):
     assert dynview.cursor_move((HC, 0, 1, 0), (HC, 0, 1, 0), dynview.KEY_HOME, data) == \
         (HC, 0, 1, 0)
 
+
+
+# ---------------------------------------------------------------- C66 HOME and END on paged screens
+def test_pager_home_end_about(tmp_path):
+    """HOME and END page on screens without a row cursor; ABOUT has 57 rows and 5 pages."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    ab = dynview.SCREEN_ABOUT
+    assert len(dynview.ABOUT_ROWS) == 57
+    # END from page 0 jumps to the last page, HOME back to 0
+    s, _ex = dynview.step(st(ab), dynview.KEY_END, data)
+    assert s == st(ab, 4)
+    s, _ex = dynview.step(s, dynview.KEY_HOME, data)
+    assert s == st(ab)
+    # both are no-ops at the ends
+    s, _ex = dynview.step(st(ab), dynview.KEY_HOME, data)
+    assert s == st(ab)
+    s, _ex = dynview.step(st(ab, 4), dynview.KEY_END, data)
+    assert s == st(ab, 4)
+    # END lands on the last page with rows (rows shown from page 4)
+    s, _ex = dynview.step(st(ab), dynview.KEY_END, data)
+    rows = dynview.rows(s, data)
+    assert rows and len(rows) <= dynview.ROWS_PER_PAGE
+
+
+def test_pager_home_end_one_page(tmp_path):
+    """A one-page paged screen (REVIEW: 11 rows) stays on page 0 for both keys."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    rv = dynview.SCREEN_REVIEW
+    assert not dynview.cursor_screen(st(rv))
+    assert dynview.total_rows(st(rv), data) == 11
+    s, _ex = dynview.step(st(rv), dynview.KEY_END, data)
+    assert s == st(rv)
+    s, _ex = dynview.step(s, dynview.KEY_HOME, data)
+    assert s == st(rv)

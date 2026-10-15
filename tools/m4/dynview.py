@@ -3132,6 +3132,13 @@ def step(state, key, data):
         if page > 0:
             page -= 1
         return (screen, page, cat), 0
+    # C66: HOME and END jump to the first and last page on screens without a row cursor
+    if key == KEY_HOME:
+        return (screen, 0, cat), 0
+    if key == KEY_END:
+        n = total_rows(state, data)
+        last = (n - 1) // ROWS_PER_PAGE if n > 0 else 0
+        return (screen, last, cat), 0
     if screen == SCREEN_HOF and key == KEY_TAB:
         # C53: TAB cycles the position filter; page and cursor reset
         return (SCREEN_HOF, 0, (cat + 1) % len(HOF_FILTERS)), 0

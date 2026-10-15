@@ -2193,3 +2193,14 @@ that order, has cells[0] starting with "GAME ") names the GAME row (a summary ro
 sits 3 below a GAME row and a title row directly above one, so neither ever matches,
 and neither do the message or leaders rows); k = the number of GAME rows before it and
 g = g_pl[k].g. Reads only; writes nothing.
+
+## C66. DYNVIEW HOME and END on paged screens (added 2026-10-15)
+On the screens without a row cursor whose PGUP / PGDN reach the generic pager at the
+end of step() (ABOUT THE MODS and any other such screen), the HOME key (0x4700) jumps
+to page 0 and the END key (0x4f00) to the last page, last = (n - 1) // ROWS_PER_PAGE
+when n > 0, else 0 (n = total_rows). The return is the same shape as the PGDN / PGUP
+branches (a (screen, page, cat) 3-tuple in Python, s with page set in C). Both keys
+are no-ops at the ends and on empty screens (page 0). The cursor screens keep the C63
+behaviour (they never reach the generic pager); the hub MENU, FIND typing, SETTINGS
+and every screen that returns before the generic pager are unchanged. No footer
+changes, C89 only, no new static data. Reads only; writes nothing.

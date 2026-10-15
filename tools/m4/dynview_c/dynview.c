@@ -5512,6 +5512,16 @@ static State step(State in, int32_t key)
             s.page--;
         return s;
     }
+    /* C66: HOME and END jump to the first and last page on screens without a row cursor */
+    if (key == KEY_HOME) {
+        s.page = 0;
+        return s;
+    }
+    if (key == KEY_END) {
+        int n = total_rows(s);
+        s.page = n > 0 ? (n - 1) / ROWS_PER_PAGE : 0;
+        return s;
+    }
     /* C53: TAB on HALL OF FAME cycles the position filter; page and cursor reset.
      * Every other screen's TAB does nothing. */
     if (s.screen == SCREEN_HOF && key == KEY_TAB)
