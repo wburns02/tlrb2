@@ -48,12 +48,26 @@ RATINGS = [n for n, _ in rollover.BATTER_RATINGS + rollover.PITCHER_RATINGS]
 PITCH_RATINGS = ('control', 'velocity', 'endurance')
 
 
+LAHMAN_FILES = ('HISTORY.DAT', 'TEAMID.DAT')
+
+
 def install_league(lg, src):
     """Copy every file of the built league src over the same-named files of the league dir lg.
-    Refuses (SystemExit) an empty src or a file name lg does not already have."""
+    Refuses (SystemExit) an empty src or a file name lg does not already have, except a V20 whose
+    stem (lower case) appears in a .MAJ of src (an expansion team) and LAHMAN_FILES."""
     names = sorted(n for n in os.listdir(src) if os.path.isfile(os.path.join(src, n)))
     have = set(os.listdir(lg))
-    missing = [n for n in names if n not in have]
+    maj = b''
+    for n in names:
+        if n.upper().endswith('.MAJ'):
+            with open(os.path.join(src, n), 'rb') as f:
+                maj += f.read()
+    # an expansion team (Lahman 1993/1998) brings a new V20 whose stem the built MAJ names (stems
+    # are 8-byte fields, so an 8-letter stem has no NUL); a Lahman build seeds HISTORY.DAT and
+    # writes TEAMID.DAT (1994+ realignment)
+    missing = [n for n in names if n not in have and n.upper() not in LAHMAN_FILES
+               and not (n.upper().endswith('.V20')
+                        and n[:-4].lower().encode('latin-1') in maj)]
     if not names or missing:
         sys.exit(f'--league {src}: not a league dir for {lg} (unknown files {missing[:5]})')
     for n in names:
