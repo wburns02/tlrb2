@@ -1491,7 +1491,7 @@ def test_settings_and_about_render_without_history(tmp_path):
 
 # ---------------------------------------------------------------- SEASON AWARDS (C7)
 SA = dynview.SCREEN_AWARDS
-AWARDS_FOOTER = 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'
+AWARDS_FOOTER = 'H HISTORY  LEFT RIGHT SEASON  PGUP PGDN  ESC'
 # award records (kind, entry index, value): season 2 has three; season 3 has all 40
 # kinds (AL 64..83, then NL 96..115). Values are signed; the file stores them as u16.
 AW_2 = [(64, 1, 45), (65, 4, 120), (96, 9, 70)]
@@ -3559,6 +3559,137 @@ def test_watch_state_and_clicks(tmp_path):
     assert dynview.click_to_key((MS, 0, 0), data, 159, 12) == (dynview.KEY_LEFT, None)
     assert dynview.click_to_key((MS, 0, 1), data, 161, 18) == (dynview.KEY_RIGHT, None)
 
+
+# ---------------------------------------------------------------- POSTSEASON LEADERS (C39)
+PM = dynview.SCREEN_LEADERS
+POST = 3 * dynview.MODE_SHIFT
+POST_LABELS = [c[0] for c in dynview.POST_CATS]
+
+
+def post_index(label):
+    return POST_LABELS.index(label)
+
+
+def test_post_totals_and_post_leader_totals(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    # two postseason WS games of season 3. Game 1 (g 0): HITTER (entry 0) bats twice
+    # (G counts the game once), ACE (5) pitches then bats for the same game. Game 2
+    # (g 1): PLAYER01 (1) bats. A flags 4 round header of entry 0 and rows of entry 3
+    # (no row) and 4096+ (ignored) round it out.
+    write_box(ldir, [
+        box_rec(3, 0, 4, 0 * 256 + 16, (5, 3, 9, 7, 1, 0, 0, 0), b=1, i=1),  # header: skipped
+        box_rec(3, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0)),
+        box_rec(3, 0, 2, 5, (72, 5, 2, 2, 1, 1, 8, 30)),       # ACE pitches game 1
+        box_rec(3, 0, 0, 5, (1, 0, 0, 0, 1, 0, 0, 0)),          # ACE bats game 1 too
+        box_rec(3, 1, 0, 0, (3, 0, 1, 0, 1, 2, 0, 2)),          # HITTER game 2
+        box_rec(3, 1, 2, 1, (12, 1, 1, 0, 0, 0, 2, 6)),         # PLAYER01 pitches game 2
+        box_rec(3, 1, 0, 4096, (9, 9, 9, 9, 9, 9, 9, 9)),       # entry >= 4096: ignored
+        box_rec(2, 0, 0, 3, (1, 0, 0, 0, 0, 0, 0, 0)),          # PLAYER03: one game
+    ])
+    data = dynview.load_data(str(ldir))
+    box = data['box']
+    # every entry below the cap matches post_totals (including None)
+    got = dynview.post_leader_totals(box)
+    for entry in range(4096):
+        pt = dynview.post_totals(box, entry)
+        assert got.get(entry) == (pt if pt is not None else None), entry
+    g0, t0 = got[0]
+    assert g0 == 2 and t0[1] == 7 and t0[2] == 3 and t0[5] == 1 and t0[7] == 1 \
+        and t0[10] == 2 and t0[0] == 2
+    g5, t5 = got[5]
+    assert g5 == 1 and t5[19] == 3 * 7 + 2 and t5[20] == 2 and t5[23] == 8 \
+        and t5[1] == 1 and t5[0] == 1
+    assert got[1][0] == 1
+    assert 4096 not in got and 3 in got
+
+
+def test_post_order_value_entry_and_cap(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    # entry 0: 2 games; entry 1: 1 game HR 3; entry 2: 1 game HR 3 (tie, entry order);
+    # entry 4096: 5 games (ignored). The mark of entry 2 is R (status 2), entry 0 H
+    # - entries 28+ are HoF: entry 0 here is HITTER (status 2 retired)
+    write_box(ldir, [box_rec(3, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0)),
+                     box_rec(3, 1, 0, 0, (3, 0, 1, 0, 1, 0, 0, 0)),
+                     box_rec(3, 0, 0, 1, (2, 0, 1, 0, 3, 0, 0, 0)),
+                     box_rec(3, 0, 0, 2, (2, 0, 1, 0, 3, 0, 0, 0)),
+                     box_rec(3, 0, 0, 4097, (9, 0, 0, 0, 0, 0, 0, 0))])
+    data = dynview.load_data(str(ldir))
+    box = data['box']
+    hr = dynview.post_order(box, dynview.POST_CATS[post_index('HR')])
+    # HR 3 tie: entry 1 before entry 2; entry 0's HR 1 last
+    assert hr == [(3, 1, 1), (3, 2, 1), (1, 0, 2)]
+    g = dynview.post_order(box, dynview.POST_CATS[0])     # G of the qualifiers
+    assert [it[:2] for it in g] == [(2, 0), (1, 1), (1, 2)]
+    ip = dynview.post_order(box, dynview.POST_CATS[post_index('IP')])
+    assert ip == []
+    # only the first POST_MAX
+    many = [box_rec(3, k % 7, 0, e, (1, 0, 0, 0, 0, 0, 0, 0))
+            for k, e in enumerate(range(3, 3 + 60))]
+    write_box(ldir, box_rec(3, 0, 0, 0, (1, 0, 0, 0, 0, 0, 0, 0)) and many)
+    data = dynview.load_data(str(ldir))
+    assert len(dynview.post_order(data['box'], dynview.POST_CATS[post_index('G')])) \
+        == dynview.POST_MAX
+
+
+def test_post_leaders_body_rows_title_and_row_entry(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    write_box(ldir, [box_rec(3, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0)),
+                     box_rec(3, 0, 0, 1, (1, 0, 2, 0, 0, 0, 1, 0)),
+                     box_rec(3, 0, 2, 1, (70, 5, 2, 2, 1, 1, 8, 28))])
+    data = dynview.load_data(str(ldir))
+    s = (PM, 0, POST + post_index('H'))
+    cols, rows = dynview.leaders_body(s, data)
+    assert cols == dynview.COLS_POST_LEADERS
+    assert rows == [('#1', 'HITTER, A', 'R', '1', '2'),
+                    ('#2', 'PLAYER01, B', ' ', '1', '2')]
+    assert dynview.footer_text(s, data) == dynview.FOOTERS[PM]
+    assert dynview.screen_title(s, data) == 'POSTSEASON LEADERS: H'
+    assert dynview.row_entry((PM, 0, POST + post_index('H'), 0), data) == 0  # row 0: entry 0
+    # IP formatting: a pitching row's 70 IP10 of PLAYER01 = 7.0
+    ip = dynview.leaders_body((PM, 0, POST + post_index('IP')), data)[1]
+    assert ip == [('#1', 'PLAYER01, B', ' ', '1', '7.0')]
+    s1, _ex = dynview.step(s, dynview.KEY_DOWN, data)
+    assert dynview.row_entry(s1, data) == 1
+    card, _ex = dynview.step(s1, dynview.KEY_ENTER, data)
+    assert card[0] == dynview.SCREEN_CARD and card[2] == 1
+    assert dynview.step(card, dynview.KEY_ESC, data)[0] == s1
+    assert dynview.row_entry((PM, 0, POST + post_index('H'), 5), data) is None
+
+
+def test_post_leaders_empty_message(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    s = (PM, 0, POST + post_index('G'))
+    assert dynview.leaders_body(s, data) == \
+        (dynview.COLS_SINGLE, [(dynview.NO_POST_TEXT,)])
+    assert dynview.screen_title(s, data) == 'POSTSEASON LEADERS: G'
+    assert dynview.footer_text(s, data) == dynview.FOOTERS[PM]
+    assert dynview.row_entry((PM, 0, POST + post_index('G'), 0), data) is None
+
+
+def test_post_tab_cycle_and_left_right(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    s = st(PM, 0, 2)                                       # CAREER RBI (CATS index 2)
+    for _ in range(3):                                     # -> SEASON -> BY YEAR -> POST
+        s, _ex = dynview.step(s, dynview.KEY_TAB, data)
+    assert s == (PM, 0, POST + post_index('RBI'))           # RBI carried into POST_CATS
+    assert dynview.screen_title(s, data) == 'POSTSEASON LEADERS: RBI'
+    s, _ex = dynview.step(s, dynview.KEY_TAB, data)         # POST -> CAREER
+    assert s == (PM, 0, 2)                                  # RBI keeps its CATS index
+    # BB (CAREER 7) stays BB on SEASON (index 8), then falls back to G on POST
+    assert dynview.step((PM, 0, 7), dynview.KEY_TAB, data)[0] == (PM, 0, 40)
+    # AVG -> POST falls back to index 0 (G)
+    s, _ex = dynview.step((PM, 0, 8), dynview.KEY_TAB, data)      # CAREER AVG -> SEASON
+    for _ in range(2):
+        s, _ex = dynview.step(s, dynview.KEY_TAB, data)           # -> BY YEAR -> POST
+    assert s == (PM, 0, POST)
+    # LEFT/RIGHT wrap within POST_CATS
+    s, _ex = dynview.step(s, dynview.KEY_LEFT, data)
+    assert s == (PM, 0, POST + len(POST_LABELS) - 1)
+    s, _ex = dynview.step(s, dynview.KEY_RIGHT, data)
+    s, _ex = dynview.step(s, dynview.KEY_RIGHT, data)
+    assert s == (PM, 0, POST + 1)
 
 # ---------------------------------------------------------------- C40 HONORS view
 def honors_league(tmp_path, name='honors'):

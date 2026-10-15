@@ -1599,6 +1599,111 @@ unchanged through 1996 (1993's 28 teams carry over); from 1997 the AL slot 8 tea
   KNOWN[target] with the same set-equality check (a set that does not match the league's
   abbreviations falls back to the generic rule). known=None behaves exactly as today.
 
+## C39. LEADERS postseason mode (added 2026-10-15)
+
+LEADERS (SCREEN_LEADERS) gains mode 3, POSTSEASON: the career leaders summed from the
+BOXSCORE.DAT player rows (the C23b/C26 layout, rows with idx == entry and flags != 4).
+Reads only; writes nothing. Python tools/m4/dynview.py is the reference; the C port
+dynview_c/dynview.c renders the same framebuffers and walks the same states.
+
+- POST_CATS = [('G', 'count', 0), ('H', 'count', 2), ('HR', 'count', 5), ('RBI', 'count', 7),
+  ('SB', 'count', 10), ('SO', 'count', 23), ('IP', 'ip', 19)]; leader_cats(MODE_POST)
+  returns POST_CATS (CAREER keeps CATS, SEASON and BY YEAR keep SEASON_CATS).
+- post_leader_totals(box) -> {entry: (games, t)}: for every entry with at least one player
+  row (flags != 4), exactly post_totals(box, entry) (same distinct (season, g) G and the
+  same sums). Built in one pass over box; entries >= POST_ENTRY_MAX (4096) are ignored.
+- post_order(box, cat) -> [(value, entry, games)]: value = t[cat[2]] (index 0 is G = games),
+  only value > 0, sorted value descending then entry ascending, the first POST_MAX (50).
+- Rows: rank '#k', NAME (entry_name 16), mark 'R' retired / 'H' HoF / ' ' otherwise (the
+  career_leader_cells rule), G (the entry's distinct postseason games), value formatted
+  with cat_format. COLS_POST_LEADERS = [('#', _cx(0), 5, 'L'), ('NAME', _cx(5), 16, 'L'),
+  (' ', _cx(22), 1, 'L'), ('G', _cx(23), 5, 'R'), ('VALUE', _cx(28), 14, 'R')]. No item:
+  one COLS_SINGLE row 'NO POSTSEASON GAMES RECORDED YET.'. Title 'POSTSEASON LEADERS: '
+  + label; the footer is CAREER's (FOOTERS[SCREEN_LEADERS]).
+- TAB cycles CAREER -> SEASON -> BY YEAR -> POSTSEASON -> CAREER ((mode + 1) % 4), the
+  same label carry-over rule (else index 0); BY YEAR still gets default_year(data).
+  LEFT/RIGHT wrap within POST_CATS. row_entry in MODE_POST returns post_order(...)[row]'s
+  entry, None past the end or on the message row; ENTER opens the card, ESC returns to the
+  same state (the existing open_card path). Every other screen, mode and frame unchanged.
+- C port: POST_CATS, COLS_POST_LEADERS and MODE_POST mirror Python; the accumulate is ONE
+  pass over BOXSCORE.DAT into FARDATA arrays indexed by entry (POST_ENTRY_MAX 4096), games
+  counted by the entry's last (season, g) key (the records of a game are contiguous), the
+  seven values in TOTALS index order; the scan is cached like the other scans (nothing in
+  DYNVIEW writes BOXSCORE.DAT); the top POST_MAX is kept like season_scan with the same
+  ordering and tie break. The host binary is rebuilt with gcc after the parity gate
+  (-Werror clean); DYNVIEW.EXE is untouched.
+
+## C28. AWARD HISTORY (added 2026-10-15)
+
+Screen 16 AWARD HISTORY, state (16, page, a, row) with a = the award code
+L * 20 + k (L 0 AL, 1 NL; k the award's kind offset 0..19, so kind =
+(64, 96)[L] + k). Opened by key H (72 or 104) from SEASON AWARDS (screen 9):
+the code of the cursor row's award record (the row's kind in (kind, file
+position) order when it is an award record, not a leader record or one of the
+six-winner fallback rows or the GG SS row), else 0. The SEASON AWARDS state is
+kept in data['awh_back'] (C: g_awh_back) and ESC on AWARD HISTORY returns it
+exactly (default (9, 0, 0) with nothing kept). Reads MILESTON.DAT and
+HISTORY.DAT; writes nothing.
+
+- Rows (award_history_items, newest season first over seasons
+  hist.seasons_recorded down to 1, at most LIST_MAX): the first file record of
+  the season with the kind gives (year_text(hist, season),
+  entry_name(hist, idx, 16), award_value(kind, value)) with entry
+  award_entry(hist, idx). A season with no record of the kind, when k <= 2,
+  season <= history.SEASON_COUNT and the season has no award record of any kind
+  at all, uses the fallback winner aw[L * 3 + k] of the season entry with value
+  '' (skipped when it is NO_AWARD). Otherwise the season is skipped. No row:
+  [(('NO WINNERS RECORDED',), None)] and COLS_SINGLE.
+- Columns COLS_AWHIST = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
+  ('VALUE', _cx(22), 20, 'R')]. Title award_label(kind) + ' HISTORY'
+  ('AWARD HISTORY' with no recorded season). Footer 'ENTER CARD  LEFT RIGHT
+  AWARD  PGUP PGDN  ESC'; the SEASON AWARDS footer becomes 'H HISTORY  LEFT
+  RIGHT SEASON  PGUP PGDN  ESC'.
+- Keys: LEFT/RIGHT step a by -1/+1 modulo 40 (page and row reset to 0); a title
+  click there is LEFT/RIGHT. It is a cursor screen (C13.4): UP/DOWN/PGUP/PGDN
+  move the row cursor, ENTER opens the PLAYER CARD of the row's entry (nothing
+  on a None row) and ESC on the card returns to the identical AWARD HISTORY
+  state.
+- C port: the same screens, keys, clicks, titles, footers and rows.
+  MILESTON.DAT is streamed the way SEASON AWARDS does (no whole-file buffer
+  beyond what the port already holds); the AWARD HISTORY rows live in a
+  FARDATA table of LIST_MAX entries (g_ah / g_ah_idx). Host binary rebuilt with
+  the gcc command in tools/m4/dynview_c/build_dynview.py (host build only; the
+  Watcom/DOS build and DYNVIEW.EXE are untouched).
+
+## C46. Lahman 1998-2012, 30 teams (added 2026-10-15)
+
+tools/lahman/build_season.py accepts 1977..2012 (YEAR_MAX 2012; 2013+ still exit 2). team_list is
+unchanged through 1997; from 1998 it is the 30-team form: AL slot 4 (stem clasale5) holds TBA (the
+AL's Milwaukee leaves; the AL is 14 teams), and the NL grows to 16, East CHN MON NYN PHI PIT SLN FLO
+MIL (MIL = clasnle8, slot 7), West ATL CIN HOU LAN SDN SFN COL ARI (ARI = clasnlw8, slot 15). TeamID
+switches carry in team_list:clasalw1 is ANA 1997..2004 and LAA from 2005, clasnle2 is MON through
+2004 and WAS from 2005, clasnle7 is FLO through 2011 and MIA in 2012.
+
+- 1998 (add_expansion_1998, right after add_expansion, before any rename): CLASALE5.V20 (at this
+  point still the template Milwaukee file) is copied to CLASNLE8.V20 with the header name MILWAUKEE
+  and abbr MIL (stadium kept) and CLASNLW7.V20 is copied to CLASNLW8.V20 as ARIZONA/ARI, stadium
+  grass; then CLASALE5.V20 itself becomes TAMPA BAY/TB, stadium grass. MAJ NL slots 7 and 15 get the
+  name, abbr and stem entries (the slots must be empty first, else ValueError, like add_expansion),
+  the AL slot 4 entry follows the TB rename, and the NL division counts go 7 -> 8 at 0x758c + 0x298
+  + d and 0x20e + 3 + d.
+- rename_anaheim is replaced by rename_teams, driven by the RENAMES table of (first, last, stem,
+  L, slot, name, abbr) rows: (1997, 2004, 'clasalw1', 0, 8, 'ANAHEIM', 'ANA'), (2005, 9999,
+  'clasalw1', 0, 8, 'LA ANGELS', 'LAA'), (2005, 9999, 'clasnle2', 1, 1, 'WASHINGTON', 'WAS'),
+  (2012, 9999, 'clasnle7', 1, 6, 'MIAMI', 'MIA'). Each row active for the year sets the V20 header
+  name/abbr and the MAJ league L slot entry's name (16 B NUL padded) and abbr. Called where
+  rename_anaheim was (year >= 1997, after add_expansion_1998).
+- realign_lahman: 1994+ writes TEAMID.DAT from the pre-realignment MAJ and realigns to 3 divisions
+  with the Lahman divID known table (HISTORY.DAT byte 0 = 1). For 1998+ the NL holds 16 teams, over
+  realign.realign's default 3-division cap of 15 (a tool cap; the GENERATED layout holds 8 teams a
+  division), so realign.realign takes a Python-only cap argument (default unchanged, the C port takes
+  none) and build_season passes cap=16. In the 2-division layout ARI fills NL slot 15, the hidden
+  ALL STARS 2 entry (NUL-led stem); after the realign slot 15 is free (NL West has 5 teams), so
+  realign_lahman copies the template MAJ's NL slot 15 name, abbr and stem back, as every other
+  league keeps it. Open: whether the game's All-Star game or the engine id of slot 15 care that ARI
+  held that id in TEAMID.DAT (rig check, C52).
+- 1977..1997 output is byte-identical to the pre-C46 build (V20s, MAJ, TEAMID.DAT, HISTORY.DAT).
+
 ## C40. PLAYER CARD honors (added 2026-10-15)
 
 PLAYER CARD state gains a row field: the state is (13, page, entry, view), view 0 = SEASONS
