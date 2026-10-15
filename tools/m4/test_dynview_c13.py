@@ -655,7 +655,8 @@ def test_card_pitcher_season_columns_and_career(tmp_path):
     (ldir / 'LEAGUE.MAJ').write_bytes(build_maj({0: [(0, 'BOS')]}))
     data = load(ldir)
     assert dynview.card_pitcher((CARD, 0, 0), data)
-    season, career = dynview.card_table((CARD, 0, 0), data)
+    season, career, post = dynview.card_table((CARD, 0, 0), data)
+    assert post is None
     assert season[0] == ('1993', 'BOS', '30', '15', '5', '2', '300.0', '200', '1.80', '5.0')
     assert career[2:] == ('30', '15', '5', '2', '300.0', '200', '1.80', '5.0')
 
@@ -1052,3 +1053,101 @@ def test_playoffs_keys_titles_and_walk_no_fonts(tmp_path):
     # PGUP and PGDN page as every list screen
     assert dynview.step((SP, 0, 0), PGDN, data) == ((SP, 0, 0), 0)
     assert dynview.screen_title((SPB, 0, 0), data) == '1995 AL DS GAME 1'
+
+
+# ---------------------------------------------------------------- C26 POSTSEASON row
+def test_post_totals_sums_by_entry(tmp_path):
+    """post_totals over a batter in 3 WS games and 2 round games (a round header with each
+    round game), a pitcher with IP10 72 + 15, a record of another entry ignored"""
+    ldir = tmp_path / 'post'
+    write_league(ldir, player_set(), seasons=3)
+    box = [box_rec(3, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0)),
+           box_rec(3, 1, 0, 0, (3, 0, 1, 2, 1, 0, 0, 2)),
+           box_rec(3, 2, 0, 0, (3, 1, 1, 0, 1, 0, 0, 1)),
+           box_rec(3, 16, 4, 0 * 256 + 16, (5, 3, 9, 7, 1, 0, 0, 0), b=1, i=1),
+           box_rec(3, 16, 0, 0, (2, 0, 1, 0, 0, 0, 1, 1)),
+           box_rec(3, 17, 4, 0 * 256 + 16, (2, 6, 8, 6, 0, 1, 0, 0), b=1, i=2),
+           box_rec(3, 17, 0, 0, (1, 0, 0, 1, 0, 0, 0, 0)),
+           # another entry's rows are ignored
+           box_rec(3, 0, 0, 1, (10, 0, 9, 9, 9, 0, 0, 9)),
+           # the pitcher: IP10 72 (7 2/3: outs 23) then 12 (1 2/3: outs 5), total 28 = 9.1 IP
+           box_rec(3, 0, 2, 5, (72, 5, 2, 2, 1, 1, 8, 30)),
+           box_rec(3, 16, 2, 5, (12, 1, 1, 0, 0, 0, 2, 6)),
+           # a flags 4 record carrying the same idx is a header, skipped
+           box_rec(3, 2, 4, 5, (9, 9, 9, 9, 9, 9, 9, 9))]
+    write_box(ldir, box)
+    data = load(ldir)
+    games, t = dynview.post_totals(data['box'], 0)
+    assert (games, t[0]) == (5, 5)                                    # 3 WS + 2 round games
+    assert t[1] == 4 + 3 + 3 + 2 + 1 and t[2] == 2 + 1 + 1 + 1 + 0
+    assert t[7] == 1 + 2 + 0 + 0 + 1 and t[5] == 0 + 1 + 1 + 0 + 0
+    assert t[10] == 0 + 2 + 1 + 1 + 0
+    assert all(t[i] == 0 for i in (3, 4, 6, 8, 9, 11, 12, 13, 14, 15, 19, 20, 23))
+    games, t = dynview.post_totals(data['box'], 5)
+    assert games == 2
+    assert t[19] == 28 and t[20] == 2 and t[23] == 10
+    assert t[0] == 2 and all(t[i] == 0 for i in (1, 2, 5, 7, 10, 13, 14, 15))
+    assert dynview.post_totals(data['box'], 6) is None                # no rows for entry 6
+    assert dynview.post_totals([], 0) is None
+
+
+def test_card_post_row_cells_and_paging(tmp_path):
+    """card_table's POST row: a batter with AVG from H/AB and a pitcher with IP '9.1',
+    ERA from ER/OUTS, W L SV and WAR '-'; 6 season rows per page with POST, 7 without;
+    the 8-line entry pages 6 + 2"""
+    ldir = tmp_path / 'postbat'
+    recs = [line(0, n, totals=tot(G=100 + n, AB=400 + n, H=100 + n, HR=n, RBI=n, SB=n),
+                 war10=10 * n) for n in range(1, 9)]
+    write_league(ldir, [player('ALPHA', first='B', totals=tot(G=800, AB=3604, H=904, HR=36),
+                               war10=80)], seasons=8, lines=recs)
+    write_box(ldir, [box_rec(3, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0)),
+                     box_rec(3, 1, 0, 0, (3, 0, 1, 2, 1, 0, 0, 2)),
+                     box_rec(3, 6, 0, 0, (3, 1, 1, 0, 1, 0, 0, 1)),
+                     box_rec(3, 16, 4, 0 * 256 + 16, (5, 3, 9, 7, 1, 0, 0, 0), b=1, i=1),
+                     box_rec(3, 16, 0, 0, (2, 0, 1, 0, 0, 0, 1, 1)),
+                     box_rec(3, 17, 4, 0 * 256 + 16, (2, 6, 8, 6, 0, 1, 0, 0), b=1, i=2),
+                     box_rec(3, 17, 0, 0, (1, 0, 0, 1, 0, 0, 0, 0))])
+    data = load(ldir)
+    assert dynview.card_rows((CARD, 0, 0), data) == 6
+    season, career, post = dynview.card_table((CARD, 0, 0), data)
+    assert len(season) == 6 and [r[0] for r in season] == \
+        ['2000', '1999', '1998', '1997', '1996', '1995']
+    # 3 WS games and 2 round games: G 5, AB 13, H 5 (AVG .384), HR 2, RBI 4, SB 4
+    assert post == ('POSTSEASON', '', '5', '13', '5', '2', '4', '4', '.384', '-')
+    assert career[0] == 'CAREER'
+    # the newest line first, 6 to a page: page 1 holds the last two seasons
+    s = press((CARD, 0, 0), PGDN, data)
+    assert s == (CARD, 1, 0)
+    season, _career, _post = dynview.card_table(s, data)
+    assert [r[0] for r in season] == ['1994', '1993']
+    assert dynview.rows(s, data)[-2][0] == 'CAREER'
+    assert dynview.rows(s, data)[-1] == post
+    assert dynview.total_rows(s, data) == 8
+    assert press(s, PGDN, data) == s                                  # the last page stays
+    # a pitcher: IP '9.1' (28 outs), ERA from ER / OUTS (2 * 2700 / 28), W L SV '-'
+    ldir2 = tmp_path / 'postpit'
+    write_league(ldir2, [player('ACE', first='A', pitcher=1, pos1=0,
+                                totals=tot(W=10, OUTS=500, ER=100, PSO=50))], seasons=2,
+                 lines=[line(0, 1, pitcher=1, pos1=0, totals=tot(G=20, W=5, OUTS=300,
+                                                                  ER=50, PSO=30), war10=20)])
+    # header records only: the idx here is the entry, so post_totals finds the player rows
+    write_box(ldir2, [box_rec(3, 0, 2, 0, (72, 5, 2, 2, 1, 1, 8, 30)),
+                      box_rec(3, 3, 2, 0, (12, 1, 1, 0, 0, 0, 2, 6)),
+                      box_rec(3, 0, 4, 0, (1, 2, 3, 4, 5, 6, 7, 8))])
+    data2 = load(ldir2)
+    assert dynview.card_pitcher((CARD, 0, 0), data2)
+    _season, _career, post = dynview.card_table((CARD, 0, 0), data2)
+    assert post == ('POSTSEASON', '', '2', '-', '-', '-', '9.1', '10', '1.92', '-')
+    # no box rows: the third item None and 7 season rows per page
+    ldir3 = tmp_path / 'nopost'
+    recs3 = [line(0, n, totals=tot(G=n, AB=100 + n, H=10 + n)) for n in range(1, 9)]
+    write_league(ldir3, [player('LONE', first='A')], seasons=8, lines=recs3)
+    data3 = load(ldir3)
+    assert dynview.post_totals(data3['box'], 0) is None
+    assert dynview.card_rows((CARD, 0, 0), data3) == 7
+    season, _career, post = dynview.card_table((CARD, 0, 0), data3)
+    assert post is None and len(season) == 7
+    assert dynview.total_rows((CARD, 0, 0), data3) == 8
+    # an entry that is not in the table: no crash, no POST row
+    assert dynview.card_table((CARD, 0, 99), data3) == \
+        ([(dynview.NO_CARD_TEXT,)], ('CAREER',), None)

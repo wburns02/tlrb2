@@ -1356,3 +1356,34 @@ two screens read off those records; it writes nothing.
   12th row, PLAYOFFS pages 0 and 1 and empty seasons, PBOX first game and after RIGHT, the WS
   box after RIGHT past the last round game (and back), the managed star, a 48-header season,
   headers out of g order, and 25 random key walks all match Python's framebuffer byte for byte.
+
+## C26. PLAYER CARD postseason line (added 2026-10-14)
+
+The PLAYER CARD (C13.5) gains a POSTSEASON row built from the BOXSCORE.DAT player rows (the
+World Series games g 0..6 and, since C23b, the round games g 16..63). Reads only; writes
+nothing. Python tools/m4/dynview.py is the reference; the C port dynview_c/dynview.c renders
+the same framebuffers.
+
+- post_totals(box, entry) -> (games, t) or None: over the box records with idx == entry and
+  flags != 4 (a flags 4 record is a C23b round header, not a player row), None when there is
+  none. A non-pitching row (flags & 2 == 0) sums AB += s[0], H += s[2], RBI += s[3],
+  HR += s[4], SB += s[7]; a pitching row sums OUTS += 3 * (s[0] // 10) + s[0] % 10
+  (IP10 = whole innings * 10 + thirds), ER += s[3], PSO += s[6]. games = the number of
+  distinct (season, g) pairs among those records. t is a 25-int TOTALS-order list with
+  G = games and the sums above, every other field 0.
+- card_table(s, data) returns (season rows, CAREER row, POST row or None). The POST row is
+  card_cells(t, 0, e['pitcher'], 'POSTSEASON', '') with the WAR cell replaced by '-' and,
+  for a pitcher, the W, L and SV cells (indexes 3, 4, 5) replaced by '-' too. The AVG / ERA
+  / IP columns come from the sums like any card row (AVG from H/AB, ERA from ER/OUTS,
+  IP from OUTS).
+- Season rows per page: card_rows(s, data) = 6 when the entry has a POST row, else
+  CARD_SEASON_ROWS (7). Paging (PGUP/PGDN bounds, the season slice in card_table,
+  total_rows) uses card_rows. With no POST row the card is byte-identical to C13.5.
+- Drawing with a POST row: the season rows sit at CARD_ROW_Y0 + r * ROW_H for r < 6, the
+  CAREER row one season row up (CARD_CAREER_Y - ROW_H = 161) drawn exactly as CAREER is
+  drawn today, and the POST row at CARD_CAREER_Y (172) drawn the same way with the label
+  'POSTSEASON' (not cut; it runs into the blank TM column).
+- C port: BOXSCORE.DAT is streamed the way the BOX screen streams it (16 B records, no
+  whole-file buffer); the sums are 32-bit integers; the sums are cached per entry and
+  recomputed only when the entry changes. Host builds with the gcc command in
+  tools/m4/dynview_c/build_dynview.py (-Werror clean); DYNVIEW.EXE is untouched.

@@ -393,6 +393,16 @@ static CardLine FARDATA g_card[CARD_MAX];
 static int g_ncard;
 static State g_card_back;       /* the list state the PLAYER CARD was opened from (C13.5) */
 
+/* C26 PLAYER CARD POST row: the postseason sums of the entry (g_post_entry; POST_UNSET is
+ * none yet), recomputed only when the entry changes. g_post_games 0 = no player rows
+ * (dynview.post_totals returns None), else the distinct (season, g) game count. */
+#define POST_UNSET (-1)
+#define POST_PAIR_MAX 1024
+static int32_t g_post_entry = POST_UNSET;
+static int g_post_games, g_post_pairs;
+static uint32_t FARDATA g_post_tot[NUM_TOT];
+static uint32_t FARDATA g_post_pair[POST_PAIR_MAX];   /* (season << 8) | g, each once */
+
 /* portrait pixels of the PLAYER CARD (48 x 56) */
 static uint8_t FARDATA g_portrait[PORTRAIT_W * PORTRAIT_H];
 
@@ -2373,6 +2383,73 @@ static int card_line(uint32_t off, Line *ln)
     return ok;
 }
 
+/* the postseason totals of entry (C26, dynview.post_totals) from the BOXSCORE.DAT player
+ * rows: idx == entry and flags != 4 (a flags 4 record is a round header, not a player row).
+ * Batting rows (bit1 clear) sum AB H RBI HR SB; pitching rows OUTS (IP10 = whole innings
+ * * 10 + thirds, so outs = 3 * (IP10 / 10) + IP10 % 10), ER and PSO. The distinct
+ * (season, g) pairs are one u32 key each, (season << 8) | g. g_post_games = the number of
+ * distinct keys (also the G total), g_post_tot the 25-int TOTALS sums, every other field 0.
+ * Returns g_post_games (0 when the entry has no player row); a missing BOXSCORE.DAT
+ * counts as no rows. */
+static int post_totals(int32_t entry)
+{
+    char path[600];
+    FILE *f;
+    uint8_t rb[16];
+    int had_any = 0;
+    if (g_post_entry == entry)
+        return g_post_games;
+    memset(g_post_tot, 0, sizeof g_post_tot);
+    g_post_games = 0;
+    g_post_pairs = 0;
+    do {
+        uint16_t season, idx;
+        uint8_t flags, pitch;
+        const uint8_t *st;
+        uint32_t key;
+        int k;
+        path_join(path, g_lgdir, "BOXSCORE.DAT");
+        f = fopen(path, "rb");
+        if (!f)
+            break;
+        while (fread(rb, 1, sizeof rb, f) == sizeof rb) {
+            season = (uint16_t)(rb[0] | ((uint16_t)rb[1] << 8));
+            idx = (uint16_t)(rb[4] | ((uint16_t)rb[5] << 8));
+            if (idx != (uint16_t)entry)
+                continue;
+            flags = rb[3];
+            if (flags == 4)
+                continue;
+            if (!had_any)
+                had_any = 1;
+            key = ((uint32_t)season << 8) | rb[2];
+            for (k = 0; k < g_post_pairs && g_post_pair[k] != key; k++)
+                ;
+            if (k == g_post_pairs && g_post_pairs < POST_PAIR_MAX) {
+                g_post_pair[g_post_pairs++] = key;
+                g_post_games++;
+            }
+            st = rb + 8;
+            pitch = flags & 2;
+            if (pitch) {
+                g_post_tot[19] += 3u * ((uint32_t)st[0] / 10u) + (uint32_t)(st[0] % 10);
+                g_post_tot[20] += st[3];
+                g_post_tot[23] += st[6];
+            } else {
+                g_post_tot[1] += st[0];
+                g_post_tot[2] += st[2];
+                g_post_tot[7] += st[3];
+                g_post_tot[5] += st[4];
+                g_post_tot[10] += st[7];
+            }
+        }
+        fclose(f);
+    } while (0);
+    g_post_tot[0] = (uint32_t)g_post_games;
+    g_post_entry = entry;
+    return g_post_games;
+}
+
 /* the file WANT (upper case) of dir: DOS names are case-blind, the host finds it in any case;
  * NULL when there is none (dynview.find_upper) */
 static FILE *open_upper(const char *dir, const char *want)
@@ -3964,11 +4041,13 @@ static State step(State in, int32_t key)
         s.page = (int16_t)(s.cat / ROWS_PER_PAGE);
         return s;
     }
-    /* PLAYER CARD: PGUP / PGDN page the season table, CARD_SEASON_ROWS lines a page (C13.5) */
+    /* PLAYER CARD: PGUP / PGDN page the season table, card_rows lines a page (C13.5,
+     * C26: 6 with a POST row, else CARD_SEASON_ROWS) */
     if (s.screen == SCREEN_CARD) {
+        int per = post_totals(s.cat) > 0 ? 6 : CARD_SEASON_ROWS;
         if (key == KEY_PGDN) {
             card_collect(s.cat);
-            if ((s.page + 1) * CARD_SEASON_ROWS < g_ncard)
+            if ((s.page + 1) * per < g_ncard)
                 s.page++;
         } else if (key == KEY_PGUP && s.page > 0) {
             s.page--;
@@ -4899,7 +4978,7 @@ static void draw_card_row(const ColDef *cols, char cells[][SLEN], int ncells, in
  * page's season rows (newest first) and the CAREER row at its fixed slot */
 static void draw_card(int32_t entry, int page)
 {
-    int valid = card_valid(entry), has_last = 0, pitch = 0, ncols, k, r;
+    int valid = card_valid(entry), has_last = 0, pitch = 0, ncols, k, r, per;
     Entry e;
     Line last;
     char info[5][SLEN], cells[CARD_CELLS][SLEN], yr[SLEN];
@@ -4943,8 +5022,9 @@ static void draw_card(int32_t entry, int page)
         strcpy(cells[0], NO_CARD_TEXT);
         draw_card_row(cols, cells, 1, CARD_ROW_Y0);
     } else {
-        for (r = 0; r < CARD_SEASON_ROWS; r++) {
-            int idx = g_ncard - 1 - (page * CARD_SEASON_ROWS + r);
+        per = post_totals(entry) > 0 ? 6 : CARD_SEASON_ROWS;
+        for (r = 0; r < per; r++) {
+            int idx = g_ncard - 1 - (page * per + r);
             Line ln;
             if (idx < 0 || !card_line(g_card[idx].off, &ln))
                 break;
@@ -4953,15 +5033,39 @@ static void draw_card(int32_t entry, int page)
             draw_card_row(cols, cells, ncols, CARD_ROW_Y0 + r * ROW_H);
         }
     }
-    /* CAREER: the entry's totals at the fixed slot after the season rows; its label is not cut */
-    if (valid) {
+    /* CAREER: the entry's totals at the fixed slot after the season rows; its label is not
+     * cut. With a POST row (C26) it sits one season row up, and the POSTSEASON row (the
+     * postseason sums of the entry) sits at CARD_CAREER_Y: WAR '-', for a pitcher also
+     * W, L and SV '-', the labels not cut (POSTSEASON runs into the blank TM column). */
+    if (valid && post_totals(entry) > 0) {
+        int ci;
+        card_cells(e.tot, e.war10, pitch, "", "", cells);
+        draw_card_row(cols, cells, ncols, CARD_CAREER_Y - ROW_H);
+        draw_text(g_fb, g_main, cols[0].x, CARD_CAREER_Y - ROW_H + 2,
+                  (const uint8_t *)"CAREER", C_BLACK);
+        card_cells(g_post_tot, 0, pitch, "", "", cells);
+        cells[0][0] = 0;
+        cells[1][0] = 0;
+        cells[9][0] = '-';
+        cells[9][1] = 0;
+        if (pitch) {
+            for (ci = 3; ci <= 5; ci++) {
+                cells[ci][0] = '-';
+                cells[ci][1] = 0;
+            }
+        }
+        draw_card_row(cols, cells, ncols, CARD_CAREER_Y);
+        draw_text(g_fb, g_main, cols[0].x, CARD_CAREER_Y + 2,
+                  (const uint8_t *)"POSTSEASON", C_BLACK);
+    } else if (valid) {
         card_cells(e.tot, e.war10, pitch, "", "", cells);
         draw_card_row(cols, cells, ncols, CARD_CAREER_Y);
     } else {
         cells[0][0] = 0;
         draw_card_row(cols, cells, 1, CARD_CAREER_Y);
     }
-    draw_text(g_fb, g_main, cols[0].x, CARD_CAREER_Y + 2, (const uint8_t *)"CAREER", C_BLACK);
+    if (!(valid && post_totals(entry) > 0))
+        draw_text(g_fb, g_main, cols[0].x, CARD_CAREER_Y + 2, (const uint8_t *)"CAREER", C_BLACK);
 }
 
 /* render into g_fb: panel, bold title with a drop shadow, gold header row,

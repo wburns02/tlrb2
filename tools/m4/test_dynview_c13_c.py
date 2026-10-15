@@ -641,3 +641,68 @@ def test_playoffs_hub_screen_parity(tmp_path):
                  [('L', 100, 35 + 11 * 11 + 3)]) == \
         check(ldir, tmp_path, 'c23c_open_P_again', [KP])
     assert check(ldir, tmp_path, 'c23c_hub_again', []) == hub
+
+
+# ---------------------------------------------------------------- C26 PLAYER CARD POST row
+def post_league(tmp_path, name, entry0_lines=8, pitcher=False):
+    """ALPHA (a batter, or a pitcher with pitcher) with entry0_lines seasons of lines, whose
+    entry 0 has box rows: 3 WS games and 2 round games (each round game with its flags 4
+    header); entry 1 HOTEL has no box rows"""
+    totals = (tot(G=20, W=5, L=3, SV=2, OUTS=300, ER=50, PSO=30) if pitcher else
+              tot(G=100, AB=400, H=120, HR=10, RBI=50, SB=10))
+    players = [player('ALPHA', first='B', pitcher=int(pitcher), pos1=0 if pitcher else 3,
+                      totals=totals, war10=50), player_set()[7]]
+    recs = [line(0, n, pitcher=int(pitcher), pos1=0 if pitcher else 3,
+                 totals=rand_totals(random.Random(n), pitcher),
+                 war10=10 * n) for n in range(1, entry0_lines + 1)]
+    ldir = league(tmp_path, players, seasons=entry0_lines, lines=recs, name=name)
+    bat = (0, 0, 2, 1, 0, 0, 1, 0)
+    write_box(ldir, [
+        box_rec(3, 0, 0, 0, bat),
+        box_rec(3, 1, 0, 0, (3, 0, 1, 2, 1, 0, 0, 2)),
+        box_rec(3, 2, 0, 0, (3, 1, 1, 0, 1, 0, 0, 1)),
+        box_rec(3, 16, 4, 0 * 256 + 16, (5, 3, 9, 7, 1, 0, 0, 0), b=1, i=1),
+        box_rec(3, 16, 0, 0, (2, 0, 1, 0, 0, 0, 1, 1)),
+        box_rec(3, 17, 4, 0 * 256 + 16, (2, 6, 8, 6, 0, 1, 0, 0), b=1, i=2),
+        box_rec(3, 17, 0, 0, (1, 0, 0, 1, 0, 0, 0, 0)),
+        box_rec(3, 0, 2, 0, (72, 5, 2, 2, 1, 1, 8, 30)),
+        box_rec(3, 3, 2, 0, (12, 1, 1, 0, 0, 0, 2, 6)),   # entry 0 also pitched (harmless)
+        box_rec(3, 0, 0, 1, (9, 9, 9, 9, 9, 9, 9, 9)),    # another entry: ignored
+    ])
+    return ldir
+
+
+@needs_fonts
+def test_card_post_batter_parity(tmp_path):
+    """a batter card with a POST row: page 0 (6 season rows, CAREER at 161, POSTSEASON at
+    172) and the nolines card of an entry with box rows but no lines"""
+    ldir = post_league(tmp_path, 'postbat')
+    check(ldir, tmp_path, 'c26_bat_p0', [K3, ENTER])
+    check(ldir, tmp_path, 'c26_bat_p1', [K3, ENTER, PGDN])
+    assert py_run(ldir, tmp_path, [K3, ENTER])[0] == (CARD, 0, 0)
+    check(ldir, tmp_path, 'c26_bat_pgdn', [K3, ENTER, PGDN, PGDN])
+
+
+@needs_fonts
+def test_card_post_pitcher_parity(tmp_path):
+    """a pitcher card with a POST row: W L SV and WAR cells '-', IP and ERA from the sums"""
+    ldir = post_league(tmp_path, 'postpit', entry0_lines=3, pitcher=True)
+    w_keys = [RIGHT] * CAREER_LABELS.index('W')
+    check(ldir, tmp_path, 'c26_pit', [K3] + w_keys + [ENTER])
+    check(ldir, tmp_path, 'c26_pit_pgdn', [K3] + w_keys + [ENTER, PGDN])
+
+
+@needs_fonts
+def test_card_post_paging_and_no_post(tmp_path):
+    """an 8-line entry with a POST row: page 1 (2 rows), PGDN past the last page and back;
+    HOTEL (no box rows): the frame is the unchanged 7-rows-per-page card"""
+    ldir = post_league(tmp_path, 'postpage')
+    page1 = check(ldir, tmp_path, 'c26_page1', [K3, ENTER, PGDN])
+    assert check(ldir, tmp_path, 'c26_page1_stays', [K3, ENTER, PGDN, PGDN]) == page1
+    assert check(ldir, tmp_path, 'c26_back_p0', [K3, ENTER, PGDN, PGUP]) == \
+        check(ldir, tmp_path, 'c26_page0', [K3, ENTER])
+    # HOTEL, entry 1: no box rows (only entry 0's), no net: an unchanged card
+    check(ldir, tmp_path, 'c26_not_post', [K3, DOWN, DOWN, DOWN, DOWN, DOWN, DOWN, DOWN,
+                                           DOWN, ENTER])
+    check(ldir, tmp_path, 'c26_not_post_pgdn', [K3, DOWN, DOWN, DOWN, DOWN, DOWN, DOWN,
+                                                DOWN, DOWN, ENTER, PGDN, PGDN, PGDN])
