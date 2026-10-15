@@ -214,7 +214,7 @@ static const char *PIT_LABEL[10] = { "LAST NAME", "FIRST NAME", "POSITION", "HAN
     "AGE", "CONTROL", "VELOCITY", "ENDURANCE", "FACE", "SAVE PLAYER" };
 
 static const char *FOOT_TEAM = "UP DOWN   ENTER PICK   ESC EXIT";
-static const char *FOOT_SLOT = "UP DOWN   ENTER PICK   ESC TEAMS";
+static const char *FOOT_SLOT = "UP DOWN  ENTER NEW  C COPY  ESC TEAMS";
 static const char *FOOT_CONFIRM = "ENTER REPLACE   ESC BACK";
 static const char *FOOT_DONE = "ENTER CREATE ANOTHER   ESC EXIT";
 static const char *FOOT_NAME = "TYPE NAME   UP DOWN   ESC SLOTS";
@@ -994,6 +994,91 @@ static void default_form(Form *f, int slot)
     f->face = (int16_t)(g_face_n > FACE_DEFAULT_N ? FACE_DEFAULT_N : 0);
 }
 
+/* C44 copy_form: the form of a copy of the slot's record (create.py copy_form).
+ * Names: record bytes 0..11 and 12..19 up to the first NUL, chars kept only when
+ * in NAME_CHARS, cut to LAST_MAX / FIRST_MAX. Position: pitchers 0 with
+ * POS2_OF[0]; a batter takes pos1 (1..9, else 1) and pos2 the hi nibble (1..15,
+ * else POS2_OF[pos]). Hands from byte 29 (bats nibble 3 counts as R, bit 3
+ * throws). Age clamped 18..45. Ratings: each nibble of the slot kind's order,
+ * 0 -> 1, over the cap -> the cap. Face: the u16 when it is in the FACE list,
+ * else default_form's face. */
+static void copy_form(Form *f, int slot)
+{
+    const uint8_t *rec = recp(slot);
+    int i, hands_code, bats_nib, nib, cap;
+    int n = g_face_n, list_len = face_walk_len();
+    int face = rec[27] | (rec[28] << 8);
+    int in_list, nord = 3, offs[6], shifts[6];
+    memset(f, 0, sizeof *f);
+    for (i = 0; i < 12; i++) {
+        char ch = (char)rec[i];
+        if (rec[i] == 0)
+            break;
+        if (i < 12 && (ch == ' ' || ch == '.' || ch == '\'' || ch == '-'
+                       || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z'))) {
+            if (strlen(f->last) < LAST_MAX)
+                f->last[strlen(f->last)] = ch;
+        }
+    }
+    for (i = 0; i < 8; i++) {
+        char ch = (char)rec[12 + i];
+        if (rec[12 + i] == 0)
+            break;
+        if (ch == ' ' || ch == '.' || ch == '\'' || ch == '-'
+                || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) {
+            if (strlen(f->first) < FIRST_MAX)
+                f->first[strlen(f->first)] = ch;
+        }
+    }
+    if (slot < PITCHER_SLOTS) {
+        f->pos = 0;
+        f->pos2 = (int16_t)POS2_OF[0];
+        offs[0] = 134; shifts[0] = 0;          /* control */
+        offs[1] = 134; shifts[1] = 4;          /* velocity */
+        offs[2] = 135; shifts[2] = 4;          /* endurance */
+    } else {
+        int pos1 = rec[31] & 15, pos2hi = rec[31] >> 4;
+        f->pos = (int16_t)(pos1 >= 1 && pos1 <= 9 ? pos1 : 1);
+        f->pos2 = (int16_t)(pos2hi >= 1 && pos2hi <= 15 ? pos2hi
+                            : POS2_OF[f->pos]);
+        offs[0] = 74; shifts[0] = 0;           /* power */
+        offs[1] = 74; shifts[1] = 4;           /* bunt */
+        offs[2] = 75; shifts[2] = 0;           /* hit and run */
+        offs[3] = 29; shifts[3] = 4;           /* speed */
+        offs[4] = 94; shifts[4] = 4;           /* range */
+        offs[5] = 94; shifts[5] = 0;           /* arm */
+        nord = 6;
+    }
+    for (i = 0; i < nord; i++) {
+        nib = (rec[offs[i]] >> shifts[i]) & 15;
+        cap = (slot < PITCHER_SLOTS && i == 2) ? PIT_ENDURANCE_CAP : RATING_CAP;
+        f->r[i] = (int16_t)(nib == 0 ? 1 : (nib > cap ? cap : nib));
+    }
+    /* HANDS (create.py): (bats, throws) -> index:
+     * R R 0, L L 1, S R 2, R L 3, L R 4, S L 5; bats nibble 3 counts as R */
+    hands_code = rec[29];
+    bats_nib = (hands_code >> 1) & 3;
+    {
+        static const int8_t HIDX[4][2] = {
+            { 1, 4 },           /* bats L: (L, L) 1, (L, R) 4 */
+            { 0, 3 },           /* bats R: (R, R) 0, (R, L) 3 */
+            { 2, 5 },           /* bats S: (S, R) 2, (S, L) 5 */
+            { 0, 3 } };         /* nibble 3 folds to R */
+        int throws_r = (hands_code & 8) != 0;
+        if (bats_nib == 3)
+            bats_nib = 1;
+        f->hands = HIDX[bats_nib][throws_r];
+    }
+    f->age = (int16_t)(rec[20] < AGE_MIN ? AGE_MIN
+                       : (rec[20] > AGE_MAX ? AGE_MAX : rec[20]));
+    in_list = face < n || (face >= FACE_CUSTOM_BASE
+                           && face < FACE_CUSTOM_BASE + list_len - n);
+    if (!in_list)
+        f->face = (int16_t)(n > FACE_DEFAULT_N ? FACE_DEFAULT_N : 0);
+    else
+        f->face = (int16_t)face;
+}
+
 static void make_slot_label(int s, char *dst)
 {
     if (s < PITCHER_SLOTS)
@@ -1106,6 +1191,15 @@ static int step_slot(State *st, int32_t key)
         default_form(&st->form, st->slot);
         st->screen = S_EDIT;
         st->cursor = 0;
+        return 0;
+    }
+    if (key == 67 || key == 99) {        /* C44: copy an occupied slot's player */
+        if (recp(st->cursor)[0]) {
+            st->slot = st->cursor;
+            copy_form(&st->form, st->slot);
+            st->screen = S_EDIT;
+            st->cursor = 0;
+        }
         return 0;
     }
     st->cursor = (int16_t)list_key(st->cursor, key, ROSTER_SLOTS);

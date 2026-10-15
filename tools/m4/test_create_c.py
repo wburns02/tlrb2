@@ -760,3 +760,36 @@ def test_parity_face_list_count_capped_981(tmp_path):
     st, _ = parity(tmp_path, keys, anms_path=anms, fonts=fonts)
     assert st['form']['face'] == 971
     parity(tmp_path, keys + [PGUP], anms_path=anms, fonts=fonts)
+
+
+# ---------------------------------------------------------------- parity: C44 C copy
+def test_parity_copy_c44(tmp_path):
+    """C44: key C on the slot list opens the prefilled edit form like Python. The slot
+    list footer with the new C COPY text, C on a pitcher, C on a lowercase c on a
+    batter, C on an empty slot (frame unchanged below the footer), C then edit then a
+    save of the copied record, and C typed on the team screen (no copy there)."""
+    fonts = synth_fonts(os.path.join(str(tmp_path), 'c44fonts'))
+    # the new FOOT_SLOT text on the slot screen itself
+    parity(tmp_path, [ENTER], fonts=fonts)
+    # C on a pitcher (slot 0: Adams) shows the copied form
+    parity(tmp_path, [ENTER] + [67], fonts=fonts)
+    # lowercase c on a batter (slot 16: Baker)
+    parity(tmp_path, [ENTER] + [DOWN] * 16 + [99], fonts=fonts)
+    # C on an empty slot: the frame is the plain slot list (footer only differs)
+    parity(tmp_path, [ENTER] + [DOWN, 67], fonts=fonts)
+    # copy, then a save: the record bytes equal Python's on the same keys
+    st, _ = parity(tmp_path, [ENTER] + [DOWN] * 16 + [99] + [DOWN] * 13 + [ENTER, ENTER],
+                   fonts=fonts)
+    assert st['screen'] == cr.S_DONE
+    assert st['form']['last'] == 'Baker' and st['form']['pos'] == 5
+    # ENTER on the slot list is unchanged: the default form, not the copy
+    parity(tmp_path, [ENTER] + [ENTER], fonts=fonts)
+    # C on the team screen does nothing
+    parity(tmp_path, [67, 99, ENTER], fonts=fonts)
+
+
+def test_parity_copy_foot_slot_text_c44():
+    """C44: the FOOT_SLOT texts match, and the C source text matches the Python."""
+    assert cr.FOOT_SLOT == 'UP DOWN  ENTER NEW  C COPY  ESC TEAMS'
+    src = open(os.path.join(HERE_C, 'create.c')).read()
+    assert ('static const char *FOOT_SLOT = "%s";' % cr.FOOT_SLOT) in src
