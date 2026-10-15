@@ -1824,3 +1824,32 @@ renders the same framebuffers and walks the same states.
   order); the kept standings state is a static pair like g_card_back. The host binary
   rebuilds with the gcc command in tools/m4/dynview_c/build_dynview.py (-Werror clean);
   DYNVIEW.EXE is untouched.
+
+## C58. DYNVIEW card browsing (added 2026-10-15)
+
+On the PLAYER CARD (SCREEN_CARD = 13, state (13, page, entry, view) with view 0 SEASONS,
+1 HONORS), LEFT (KEY_LEFT = 0x4b00) and RIGHT (KEY_RIGHT = 0x4d00) browse the entry rows
+of the list the card was opened from. Reads only; writes nothing. Python
+tools/m4/dynview.py is the reference; the C port dynview_c/dynview.c walks the same
+states over the static g_card_back and renders the same framebuffers.
+
+- b = unpack(data.get('card_back')) (C: g_card_back). When card_back is set and
+  cursor_screen(b), walk r = b[3] - 1 downward (LEFT) or b[3] + 1 upward (RIGHT) while
+  0 <= r < total_rows(b, data), taking the first r whose row_entry(cursor_state(b, r),
+  data) is not None (message rows and rows naming no player are skipped). Found:
+  data['card_back'] = cursor_state(b, r) and the state becomes
+  pack(SCREEN_CARD, 0, that entry, view) (the view kept, the page reset). Not found, or
+  card_back not a cursor screen (or absent): the state is unchanged.
+- ESC after a browse returns the moved card_back: the list with the cursor on the last
+  shown row; its page follows the row (cursor_state sets page = row // ROWS_PER_PAGE).
+- LEFT_RIGHT_SCREENS is unchanged; every other screen's LEFT/RIGHT behaviour is
+  identical, and the card's other keys (H, PGUP, PGDN, ESC) behave as before.
+- Footers: FOOTERS[SCREEN_CARD] = 'LEFT RIGHT  PGUP PGDN  H HONORS  ESC' (the SEASONS
+  view) and the HONORS view footer_text 'LEFT RIGHT  PGUP PGDN  H SEASONS  ESC'
+  (replacing the two 'PGUP PGDN ... ESC BACK' texts).
+- C port: the same rules over g_card_back with the -1 none sentinel of its row_entry;
+  C89, no new static array (the DOS image stays inside its total far-data budget).
+- Tests: test_dynview.py (browse, skip, clamps, ESC page, footers),
+  test_dynview_c13_c.py and test_dynview_c13.py (host and DOS framebuffer parity: the
+  HOF card then RIGHT, RIGHT across a page boundary then ESC, the LEADERS card then
+  LEFT, the HONORS view browse, and RIGHT on the last row).

@@ -4874,12 +4874,35 @@ static State step(State in, int32_t key)
     }
     /* PLAYER CARD (C40): H or h toggles the view (row 0 SEASONS 7 rows a page, C13.5 and
      * C26; row 1 HONORS HONOR_ROWS rows a page), page reset; ESC returns card_back from
-     * both views. PGUP/PGDN page the view (the season table card_rows lines a page). */
+     * both views. PGUP/PGDN page the view (the season table card_rows lines a page).
+     * C58: LEFT and RIGHT browse the entry rows of the list the card was opened from. */
     if (s.screen == SCREEN_CARD) {
         int per = post_totals(s.cat) > 0 ? 6 : CARD_SEASON_ROWS;
         if (key == 'H' || key == 'h') {
             s.row = s.row ? 0 : 1;
             s.page = 0;
+            return s;
+        }
+        if (key == KEY_LEFT || key == KEY_RIGHT) {
+            /* C58: the next (RIGHT) or previous (LEFT) row of g_card_back whose row_entry
+             * names a player: the card's entry and the view, page reset; the back state
+             * follows the row. No cursor back (never opened, or a non-cursor screen):
+             * the state is unchanged. */
+            int dir = (key == KEY_RIGHT) ? 1 : -1;
+            if (cursor_screen(g_card_back)) {
+                int32_t r = g_card_back.row + dir;
+                int n = total_rows(g_card_back);
+                while (r >= 0 && r < n) {
+                    int32_t e = row_entry(cursor_state(g_card_back, r));
+                    if (e >= 0) {
+                        g_card_back = cursor_state(g_card_back, r);
+                        s.page = 0;
+                        s.cat = e;
+                        return s;
+                    }
+                    r += dir;
+                }
+            }
             return s;
         }
         if (s.row) {
@@ -5873,8 +5896,8 @@ static const char *footer_of(State st)
     if (st.screen == SCREEN_MILESTONES && st.cat == 1)
         return "ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC";
     if (st.screen == SCREEN_CARD)
-        return st.row ? "PGUP PGDN  H SEASONS  ESC BACK"
-                      : "PGUP PGDN SEASONS  H HONORS  ESC BACK";
+        return st.row ? "LEFT RIGHT  PGUP PGDN  H SEASONS  ESC"
+                      : "LEFT RIGHT  PGUP PGDN  H HONORS  ESC";
     if (st.screen == SCREEN_MENU && (st.cat >> 4))
         return g_hdr_seasons == 0 ? "ENTER PLAY BALL" : "0-9 W SELECT   ENTER PLAY BALL";
     if (st.screen == SCREEN_SETTINGS)

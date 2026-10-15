@@ -929,9 +929,44 @@ def test_card_honors_parity(tmp_path):
     check(ldir, tmp_path, 'c40_hof', [K3, DOWN, DOWN, ENTER, ord('H')])
     # the SEASONS view with the new footer, and the two footers themselves
     check(ldir, tmp_path, 'c40_seasons_footer', open_alpha)
-    s, data = py_run(ldir, tmp_path, open_alpha)
-    assert dynview.footer_text(s, data) == 'PGUP PGDN SEASONS  H HONORS  ESC BACK'
-    assert dynview.footer_text((CARD, 0, 0, 1), data) == 'PGUP PGDN  H SEASONS  ESC BACK'
+    s6, data6 = py_run(ldir, tmp_path, open_alpha)
+    assert dynview.footer_text(s6, data6) == 'LEFT RIGHT  PGUP PGDN  H HONORS  ESC'
+    assert dynview.footer_text((CARD, 0, 0, 1), data6) == \
+        'LEFT RIGHT  PGUP PGDN  H SEASONS  ESC'
+
+
+# ---------------------------------------------------------------- C58 card LEFT/RIGHT
+@needs_fonts
+def test_c58_browse_parity_frames(tmp_path):
+    """C58: the card browses the list it was opened from. LEADERS CAREER H card then
+    RIGHT (to row 1's card, card_back row 1), ESC back to the moved row, the AWARDS
+    NONE-row skip, the HONORS view kept through a browse, and the LAST-row no-op."""
+    # the plain player_set league: CAREER H rows ALPHA(0), BRAVO, CHARLIE, DELTA...
+    ldir = league(tmp_path, player_set(), seasons=3, start=1990,
+                  lines=season_lines_fixture(), name='c58lead')
+    keys0 = [K3, ENTER]
+    run_pair(ldir, tmp_path, 'c58_card', keys0)
+    run_pair(ldir, tmp_path, 'c58_right', keys0 + [RIGHT])
+    assert py_run(ldir, tmp_path, keys0 + [RIGHT])[0] == (CARD, 0, 1)
+    assert py_run(ldir, tmp_path, keys0 + [RIGHT])[1]['card_back'] == (LEAD, 0, 0, 1)
+    run_pair(ldir, tmp_path, 'c58_right_esc', keys0 + [RIGHT, ESC])
+    assert py_run(ldir, tmp_path, keys0 + [RIGHT, ESC])[0] == (LEAD, 0, 0, 1)
+    # LEFT twice from the row-1 card stops at row 0
+    run_pair(ldir, tmp_path, 'c58_left_left', keys0 + [LEFT, LEFT])
+    assert py_run(ldir, tmp_path, keys0 + [LEFT, LEFT])[0] == (CARD, 0, 0)
+    # a NONE award row is skipped: the awards list rows 2 GLOVE C (NONE), then row 3
+    ms = [(3, 0, 64, 0), (3, 3, 65, 1000), (3, 0xffff, 66, 30), (3, 4, 67, 987),
+          (3, 6, 68, 999), (2, 0, 64, 1)]
+    ald = league(tmp_path, player_set(), seasons=3, start=1990, ms=ms, name='c58aw')
+    akeys = [K9, DOWN, ENTER]
+    run_pair(ald, tmp_path, 'c58_aw_card', akeys)
+    run_pair(ald, tmp_path, 'c58_aw_right_skip', akeys + [RIGHT])
+    run_pair(ald, tmp_path, 'c58_aw_right_esc', akeys + [RIGHT, ESC])
+    assert py_run(ald, tmp_path, akeys + [RIGHT])[0] == (CARD, 0, 4)
+    # the HONORS view is kept and the page reset through a browse
+    run_pair(ald, tmp_path, 'c58_aw_honors_right', akeys + [ord('H'), RIGHT, RIGHT])
+    assert py_run(ald, tmp_path, akeys + [ord('H'), RIGHT, RIGHT])[0] == (CARD, 0, 6, 1)
+
 
 
 @needs_fonts

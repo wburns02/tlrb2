@@ -3735,7 +3735,7 @@ def test_honors_rows_order_and_text(tmp_path):
     data = dynview.load_data(str(ldir))
     s = (dynview.SCREEN_CARD, 0, 0, 1)
     assert dynview.body_cols(s, data) == dynview.COLS_HONORS
-    assert dynview.footer_text(s, data) == 'PGUP PGDN  H SEASONS  ESC BACK'
+    assert dynview.footer_text(s, data) == 'LEFT RIGHT  PGUP PGDN  H SEASONS  ESC'
     rows = dynview.rows(s, data)
     # items of the same season keep file order: the season 2 records of ALPHA come as the
     # two leader records (positions 1 and 2) and then the milestone (position 3)
@@ -3939,3 +3939,88 @@ def test_c50_find_list_cap(tmp_path, monkeypatch):
     assert dynview.FIND_LIST == 300 and len(full) > 1
     monkeypatch.setattr(dynview, 'FIND_LIST', 1)
     assert dynview.find_rows(hist, 'SM') == full[:1]
+
+
+# ------------------------------------------------- C58 PLAYER CARD LEFT/RIGHT browse
+def test_c58_card_hof_browse_rows_and_view(tmp_path):
+    """From HALL OF FAME row 1: RIGHT shows row 2's entry with card_back row 2; LEFT twice
+    from row 1 stops at row 0; RIGHT on the last row is a no-op; H first keeps the HONORS
+    view through the browse. ESC then returns the moved row."""
+    ldir, _ = make_data(tmp_path)                      # HoF rows: PLAYER29, PLAYER28
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows(st(dynview.SCREEN_HOF), data) == \
+        dynview.hof_rows(data['hist'])
+    data['card_back'] = (dynview.SCREEN_HOF, 0, 0, 0)
+    s, _ex = dynview.step((dynview.SCREEN_CARD, 0, 29, 1), dynview.KEY_RIGHT, data)
+    assert s == (dynview.SCREEN_CARD, 0, 28, 1)
+    assert data['card_back'] == (dynview.SCREEN_HOF, 0, 0, 1)
+    s, _ex = dynview.step((dynview.SCREEN_CARD, 0, 28, 1), dynview.KEY_LEFT, data)
+    assert s == (dynview.SCREEN_CARD, 0, 29, 1)
+    assert data['card_back'] == (dynview.SCREEN_HOF, 0, 0)          # row 0 packed away
+    assert dynview.step(s, dynview.KEY_ESC, data)[0] == (dynview.SCREEN_HOF, 0, 0)
+    # past the 2-HoF list RIGHT is a no-op and the back state stays
+    data['card_back'] = (dynview.SCREEN_HOF, 0, 0, 1)
+    assert dynview.step((dynview.SCREEN_CARD, 0, 28, 0), dynview.KEY_RIGHT, data) == \
+        ((dynview.SCREEN_CARD, 0, 28, 0), 0)
+    assert data['card_back'] == (dynview.SCREEN_HOF, 0, 0, 1)
+
+
+def test_c58_card_browse_no_back_and_absent_back(tmp_path):
+    """No data['card_back'], or a back state that is not a cursor screen: LEFT/RIGHT are
+    no-ops; an explicit non-cursor back is left alone."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.step((dynview.SCREEN_CARD, 0, 0, 1), dynview.KEY_RIGHT, data) == \
+        ((dynview.SCREEN_CARD, 0, 0, 1), 0)
+    data['card_back'] = (dynview.SCREEN_STANDINGS, 0, 0)     # not a cursor screen
+    assert dynview.step((dynview.SCREEN_CARD, 0, 0, 1), dynview.KEY_LEFT, data) == \
+        ((dynview.SCREEN_CARD, 0, 0, 1), 0)
+    assert data['card_back'] == (dynview.SCREEN_STANDINGS, 0, 0)
+
+
+def test_c58_card_browse_none_row_skip_and_esc_page(tmp_path):
+    """LEFT and RIGHT take the first row in the direction whose row_entry names a player:
+    a row naming nobody (the NONE award slot) in between is skipped, both ends clamp to
+    no-ops, and ESC after a browse lands on the back list with the cursor on the shown
+    entry's row and its page."""
+    ms = award_league_ms() + [(3, 0xffff, 70, 987), (3, 0xffff, 72, 961)]
+    ldir = make_data(tmp_path, ms=ms)[0]
+    data = dynview.load_data(str(ldir))
+    rows = dynview.awards_rows(data['hist'], data['ms'], 3)
+    assert len(rows) == 42
+    ent = [dynview.row_entry((SA, 0, 0, r), data) for r in range(len(rows))]
+    assert ent[7] is None and ent[10] is None      # the NONE award rows
+    card = (dynview.SCREEN_CARD, 0, 0, 1)
+    data['card_back'] = (SA, 0, 0, 6)
+    s, _ex = dynview.step(card, dynview.KEY_RIGHT, data)
+    assert s == (dynview.SCREEN_CARD, 0, 8, 1)     # row 7 (NONE) skipped, view kept
+    assert data['card_back'] == (SA, 0, 0, 8)
+    data['card_back'] = (SA, 0, 0, 9)
+    s, _ex = dynview.step(card, dynview.KEY_LEFT, data)
+    assert s == (dynview.SCREEN_CARD, 0, 8, 1)     # row 8 backwards again, view kept
+    assert data['card_back'] == (SA, 0, 0, 8)
+    # LEFT past row 0 and RIGHT past the last row do nothing
+    data['card_back'] = (SA, 0, 0, 0)
+    assert dynview.step(card, dynview.KEY_LEFT, data) == (card, 0)
+    last = len(rows) - 1
+    data['card_back'] = (SA, 0, 0, last)
+    assert dynview.step(card, dynview.KEY_RIGHT, data) == (card, 0)
+    # ESC after a page-crossing browse: the back list on the moved row and its page
+    data['card_back'] = (SA, 0, 0, 20)
+    card20 = (dynview.SCREEN_CARD, 0, 19, 1)       # entry 19: NL ROOKIE (row 20; the AL
+    s, _ex = dynview.step(card20, dynview.KEY_RIGHT, data)   # MVP row 33 sorts after it)
+    back = data['card_back']
+    assert back[3] == 21 and back[1] == 1          # row 21 is on the list's page 1
+    assert dynview.step(s, dynview.KEY_ESC, data)[0] == back
+
+
+def test_c58_card_footers_both_views(tmp_path):
+    """The two card footers: SEASONS view and HONORS view."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.footer_text((dynview.SCREEN_CARD, 0, 0), data) == \
+        'LEFT RIGHT  PGUP PGDN  H HONORS  ESC'
+    assert dynview.footer_text((dynview.SCREEN_CARD, 0, 0, 1), data) == \
+        'LEFT RIGHT  PGUP PGDN  H SEASONS  ESC'
+    assert dynview.FOOTERS[dynview.SCREEN_CARD] == 'LEFT RIGHT  PGUP PGDN  H HONORS  ESC'
+

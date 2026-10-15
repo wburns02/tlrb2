@@ -2653,6 +2653,22 @@ def step(state, key, data):
         # 6 with a POST row, else CARD_SEASON_ROWS), HONORS HONOR_ROWS lines a page.
         if key in KEY_VIEW:
             return pack(SCREEN_CARD, 0, cat, 0 if s[3] else 1), 0
+        if key in (KEY_LEFT, KEY_RIGHT):
+            # C58: browse the entry rows of the list the card was opened from: the next
+            # (RIGHT) or previous (LEFT) row whose row_entry names a player, the view
+            # kept, the page reset, card_back following the row. No cursor back: no-op.
+            b = unpack(data['card_back']) if 'card_back' in data else None
+            if b is not None and cursor_screen(b):
+                d = -1 if key == KEY_LEFT else 1
+                r = b[3] + d
+                n = total_rows(b, data)
+                while 0 <= r < n:
+                    e = row_entry(cursor_state(b, r), data)
+                    if e is not None:
+                        data['card_back'] = cursor_state(b, r)
+                        return pack(SCREEN_CARD, 0, e, s[3]), 0
+                    r += d
+            return state, 0
         if s[3] == 1:
             n = len(honors_rows(data['hist'], data['ms'], cat))
             if key == KEY_PGDN and (page + 1) * HONOR_ROWS < n:
@@ -2980,7 +2996,7 @@ FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT STAT  TAB MODE  ENTER CARD',
-           SCREEN_CARD: 'PGUP PGDN SEASONS  H HONORS  ESC BACK',
+           SCREEN_CARD: 'LEFT RIGHT  PGUP PGDN  H HONORS  ESC',
            SCREEN_MILESTONES: 'LEFT RIGHT WATCH   PGUP PGDN   ESC MENU',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU',
            SCREEN_SETTINGS: 'UP DOWN MOVE   ENTER CHANGE   ESC MENU',
@@ -3007,7 +3023,7 @@ def footer_text(state, data=None):
     if screen == SCREEN_MILESTONES and cat == 1:
         return 'ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC'
     if screen == SCREEN_CARD and s[3] == 1:
-        return 'PGUP PGDN  H SEASONS  ESC BACK'
+        return 'LEFT RIGHT  PGUP PGDN  H SEASONS  ESC'
     if screen == SCREEN_LEADERS and cat >> 5 == MODE_BYYEAR:
         return 'LEFT RIGHT STAT  - + YEAR  TAB MODE'
     if screen == SCREEN_MENU and cat >> 4:
