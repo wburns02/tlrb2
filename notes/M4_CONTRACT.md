@@ -1415,6 +1415,40 @@ the same framebuffers.
   whole-file buffer); the sums are 32-bit integers; the sums are cached per entry and
   recomputed only when the entry changes. Host builds with the gcc command in
   tools/m4/dynview_c/build_dynview.py (-Werror clean); DYNVIEW.EXE is untouched.
+## C27. MILESTONES watch (added 2026-10-15)
+
+MILESTONES (SCREEN_MILESTONES = 4) gains WATCH, cat 1: the active players within 10% of an
+unreached career milestone mark. Mode 0 (cat 0) is today's MILESTON.DAT list, unchanged
+except its footer. Python tools/m4/dynview.py is the reference; the C port dynview_c/dynview.c
+renders the same framebuffers and walks the same states. Reads HISTORY.DAT only; writes
+nothing.
+
+- watch_items(hist) -> [(need, mark, kind, entry, now)]: for each entry with status
+  STATUS_ACTIVE, for each stat key of history.MILESTONE_CAREER (H, HR, RBI, SB, W, PSO, SV;
+  now the entry's career total at history.TOTALS.index(key)), the lowest mark of that key
+  with now < mark; keep the item when now * 10 >= mark * 9 (within 10%); need = mark - now.
+  Sorted by (need * 1000 // mark, need, entry, kind) ascending, at most LIST_MAX (kind the
+  MILESTONE_CAREER kind of the mark, so a mark two keys share keeps its own kind; a need tie
+  breaks by entry then kind).
+- watch_rows(hist): one row per item, NAME (entry_name 16), '%d %s' % (mark, label),
+  '%d' % now, '%d' % need; label = the key with PSO shown as SO. No item or no history: one
+  row ('NO ACTIVE PLAYER NEAR A MILESTONE',) with COLS_SINGLE (no cursor highlight).
+- Columns COLS_WATCH = [('NAME', _cx(0), 16, 'L'), ('MARK', _cx(17), 9, 'L'),
+  ('NOW', _cx(27), 6, 'R'), ('NEED', _cx(35), 6, 'R')]. Title 'MILESTONE WATCH' for cat 1,
+  'MILESTONES' for cat 0. Footers: cat 0 'LEFT RIGHT WATCH   PGUP PGDN   ESC MENU'; cat 1
+  'ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC'.
+- LEFT and RIGHT on MILESTONES toggle cat 0 <-> 1 and reset page and row to 0 (state
+  (4, 0, 1) or (4, 0, 0)); SCREEN_MILESTONES joins LEFT_RIGHT_SCREENS, so a title click is
+  LEFT or RIGHT on both modes. Mode 0 has no cursor and pages as before.
+- WATCH is a cursor screen (cursor_screen true for (4, *, 1)): UP / DOWN / PGUP / PGDN move
+  the cursor as on HOF; row_entry returns the row's entry (None on the message row or past
+  the end); ENTER opens the PLAYER CARD of the row's entry and ESC returns to the identical
+  WATCH state.
+- C port: HISTORY.DAT entries stream one 160 B record at a time (no whole-file buffer), the
+  MILESTONE_CAREER kinds, TOTALS keys and marks are fixed tables, the items live in a FARDATA
+  table of LIST_MAX entries, the need-per-mille sort key is 32-bit (need < 1000), and the
+  insert keeps the exact Python total order. Host builds with the gcc command in
+  tools/m4/dynview_c/build_dynview.py (-Werror clean); DYNVIEW.EXE is untouched.
 
 ## C34. CREATE auto-fill (added 2026-10-14)
 
@@ -1499,6 +1533,46 @@ This amends C2: "careers count dynasty seasons only" still holds for WAR10, top7
 but a Lahman league's career totals, seasons_played and award counts start from the real career
 before YEAR. The identity matches C2's (name bytes 0..19, birth = 1000 + season_no - age) at
 season_no 1, so the dynasty continues the seeded entry instead of appending a new zero one.
+
+## C44. CREATE copy a player (added 2026-10-15)
+
+On the CREATE slot list (S_SLOT), key C (67 or 99) on a slot whose roster record
+byte 0 is nonzero opens the edit screen for that slot with the record's player
+copied into the form (create.copy_form, the C port's copy_form); st['slot'] =
+the cursor, cursor 0, exactly like ENTER. On an empty slot (byte 0 == 0) C does
+nothing: the state is unchanged. ENTER is unchanged (default_form). C on the
+team screen does nothing.
+
+copy_form(image, slot, ctx) decodes the record:
+
+- last: bytes 0..11 up to the first NUL, latin-1, characters not in NAME_CHARS
+  (letters plus space . ' -) dropped, then cut to LAST_MAX = 11; first: bytes
+  12..19 the same with FIRST_MAX = 7. The record's case is kept (only typed
+  names are upper-cased).
+- A pitcher slot (slot < 16): pos 0, pos2 = POS2_OF[0]. A batter: pos = the
+  pos1 nibble of byte 31 when 1..9 else 1; pos2 = the hi nibble when 1..15 else
+  POS2_OF[pos].
+- hands: the index in HANDS of (bats, throws) decoded from byte 29: bats nibble
+  (bits 2..1; the code 3 counts as R) and throws bit 3 (1 R, 0 L).
+- age: byte 20 clamped to 18..45.
+- r: each nibble of the slot kind's rating order (PITCHER_/BATTER_RATING_ORDER,
+  form order), 0 -> 1, above RATING_CAP = 12 -> 12.
+- face: the u16 at bytes 27..28 when it is in the FACE list (face < n, or
+  400 <= face < 400 + face_walk_len(n, c) - n), else default_form's face for
+  the slot (30 when n > 30, else 0).
+
+Saving after a copy goes through the normal save path (S_CONFIRM on an occupied
+slot, then C10 build_record), so the saved record is rebuilt from the form and
+the stat line is the implied one, not the player's history.
+
+Footer: FOOT_SLOT becomes 'UP DOWN  ENTER NEW  C COPY  ESC TEAMS'; every other
+footer is unchanged.
+
+C port: create.c gains copy_form with the same rules and the C branch in its
+step_slot; the host binary is rebuilt with gcc after the parity gate. The
+parity tests cover the new FOOT_SLOT frame, C on a pitcher, lowercase c on a
+batter, C on an empty slot, ENTER unchanged, C on the team screen, and C then
+a save with identical V20 bytes.
 
 ## C38. Lahman 1994-1997, three divisions (added 2026-10-15)
 

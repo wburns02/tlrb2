@@ -39,7 +39,8 @@ LEFT, RIGHT = dynview.KEY_LEFT, dynview.KEY_RIGHT
 PGUP, PGDN = dynview.KEY_PGUP, dynview.KEY_PGDN
 MINUS, PLUS, EQUALS = dynview.KEY_MINUS, dynview.KEY_PLUS, dynview.KEY_EQUALS
 ARROWS = (LEFT, RIGHT, UP, DOWN, PGUP, PGDN)
-K1, K2, K3, K4, K7, K9 = (ord(c) for c in '123479')     # hub rows: history, HoF, leaders, ...
+K1, K2, K3, K4, K7, K9 = (ord(c) for c in '123479')     # hub rows: history, HoF, leaders,
+                                                        # milestones, settings, awards
 MENU, LEAD, SET, CARD = (dynview.SCREEN_MENU, dynview.SCREEN_LEADERS,
                          dynview.SCREEN_SETTINGS, dynview.SCREEN_CARD)
 SEASON, BY_YEAR = dynview.MODE_SHIFT, 2 * dynview.MODE_SHIFT
@@ -706,3 +707,41 @@ def test_card_post_paging_and_no_post(tmp_path):
                                            DOWN, ENTER])
     check(ldir, tmp_path, 'c26_not_post_pgdn', [K3, DOWN, DOWN, DOWN, DOWN, DOWN, DOWN,
                                                 DOWN, DOWN, ENTER, PGDN, PGDN, PGDN])
+
+
+# ---------------------------------------------------------------- C27 MILESTONES WATCH
+def watch_players():
+    """the C27 watch fixture's players (9 entries, 6 watch rows)"""
+    return [
+        player('HIT2950', first='A', totals=tot(H=2950, AB=8000)),
+        player('HIT1700', first='B', totals=tot(H=1700, AB=5000)),
+        player('HIT3100', first='C', totals=tot(H=3100, AB=9000)),
+        player('HR298', first='D', totals=tot(HR=298, AB=3000, H=800)),
+        player('HR395', first='E', totals=tot(HR=395, AB=3000, H=800)),
+        player('RETIRED', first='F', status=2, totals=tot(H=2990, AB=8000)),
+        player('KMAN', first='G', pitcher=1, pos1=0, totals=tot(PSO=2995, G=400,
+                                                               OUTS=8000)),
+        player('SBTIE1', first='H', totals=tot(SB=490)),
+        player('SBTIE2', first='I', totals=tot(SB=490)),
+    ]
+
+
+@needs_fonts
+def test_watch_parity_frames(tmp_path):
+    """MILESTONES mode 0 (the new footer), WATCH page 0 with the cursor on row 1, WATCH
+    empty (the message row), WATCH after ENTER (the card), and a title click that toggles
+    the mode; every frame matches Python's bytes"""
+    ldir = league(tmp_path, watch_players(), seasons=3, name='watch')
+    empty = league(tmp_path, [player('NONE', totals=tot(H=10))], seasons=1, name='watch0')
+    check(ldir, tmp_path, 'c27_ms0', [K4])
+    check(ldir, tmp_path, 'c27_watch', [K4, RIGHT])
+    check(ldir, tmp_path, 'c27_watch_row1', [K4, RIGHT, DOWN])
+    assert py_run(ldir, tmp_path, [K4, RIGHT, DOWN])[0] == (4, 0, 1, 1)
+    check(ldir, tmp_path, 'c27_watch_enter_card', [K4, RIGHT, DOWN, ENTER])
+    assert py_run(ldir, tmp_path, [K4, RIGHT, DOWN, ENTER])[0] == (CARD, 0, 3)
+    check(ldir, tmp_path, 'c27_watch_esc_back', [K4, RIGHT, DOWN, ENTER, ESC])
+    assert check(ldir, tmp_path, 'c27_watch_title_click', [K4, ('L', 100, 14)]) == \
+        check(ldir, tmp_path, 'c27_watch_key_right', [K4, RIGHT])
+    check(empty, tmp_path, 'c27_watch_empty', [K4, RIGHT])
+    check(empty, tmp_path, 'c27_ms0_empty', [K4])
+    check(ldir, tmp_path, 'c27_watch_pgdn', [K4, RIGHT, PGDN])

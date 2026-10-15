@@ -1151,3 +1151,135 @@ def test_card_post_row_cells_and_paging(tmp_path):
     # an entry that is not in the table: no crash, no POST row
     assert dynview.card_table((CARD, 0, 99), data3) == \
         ([(dynview.NO_CARD_TEXT,)], ('CAREER',), None)
+
+
+# ---------------------------------------------------------------- C27 MILESTONES WATCH
+MS = dynview.SCREEN_MILESTONES
+
+
+def watch_league(tmp_path):
+    """The C27 fixture: active batters at H 2950 (row) and 1700 (no row, 85% cut), HR 298
+    and HR 395 rows, a retired H 2990 (no row), a PSO 2995 pitcher, H 3100 (no higher H
+    mark) and two 500-SB ties (entry order breaks them)"""
+    players = [
+        player('HIT2950', first='A', totals=tot(H=2950, AB=8000)),
+        player('HIT1700', first='B', totals=tot(H=1700, AB=5000)),
+        player('HIT3100', first='C', totals=tot(H=3100, AB=9000)),
+        player('HR298', first='D', totals=tot(HR=298, AB=3000, H=800)),
+        player('HR395', first='E', totals=tot(HR=395, AB=3000, H=800)),
+        player('RETIRED', first='F', status=2, totals=tot(H=2990, AB=8000)),
+        player('KMAN', first='G', pitcher=1, pos1=0, totals=tot(PSO=2995, G=400,
+                                                               OUTS=8000)),
+        player('SBTIE1', first='H', totals=tot(SB=490)),
+        player('SBTIE2', first='I', totals=tot(SB=490)),
+    ]
+    ldir = tmp_path / 'watch'
+    write_league(ldir, players, seasons=3)
+    return load(ldir)
+
+
+def test_watch_items_selection_and_sort(tmp_path):
+    """active only, the lowest unreached mark per key, the 90% floor (now * 10 >= mark * 9),
+    no row once a key's top mark is reached; sorted by need per mille, need, entry, kind"""
+    data = watch_league(tmp_path)
+    hist = data['hist']
+    items = dynview.watch_items(hist)
+    # (need, mark, kind, entry, now); 1700 H (85%) and the retired 2990 are out, 3100 H too
+    assert items[0] == (5, 3000, 14, 6, 2995)          # PSO 2995: 1 per mille
+    assert items[1] == (2, 300, 3, 3, 298)             # HR 298: 6
+    assert items[2] == (5, 400, 4, 4, 395)             # HR 395: 12 (kind 4, the chosen
+    assert items[3] == (50, 3000, 2, 0, 2950)          #   mark's kind)
+    assert items[4][0] == items[5][0] == 10 and items[4][3] == 7 and items[5][3] == 8
+    assert len(items) == 6
+    # boundary: H 1815 is not within 10% of 2000 (1815 * 10 = 18150 < 18000 is false? the
+    # check is now * 10 >= mark * 9, and 1815 * 10 = 18150 >= 18000, so it IS kept, need 185);
+    # H 2700 is over 90% of 3000 too; H 2600 is not (26000 < 27000)
+    ldir2 = tmp_path / 'edge'
+    write_league(ldir2, [player('EDGE', totals=tot(H=1815))], seasons=1)
+    assert dynview.watch_items(load(ldir2)['hist']) == [(185, 2000, 1, 0, 1815)]
+    write_league(ldir2, [player('EDGE', totals=tot(H=2600))], seasons=1)
+    assert dynview.watch_items(load(ldir2)['hist']) == []
+
+
+def test_watch_rows_and_message(tmp_path):
+    """the rows, the SO label, the empty message row and COLS_SINGLE for it"""
+    data = watch_league(tmp_path)
+    assert dynview.watch_rows(data['hist']) == [
+        ('KMAN, G', '3000 SO', '2995', '5'),
+        ('HR298, D', '300 HR', '298', '2'),
+        ('HR395, E', '400 HR', '395', '5'),
+        ('HIT2950, A', '3000 H', '2950', '50'),
+        ('SBTIE1, H', '500 SB', '490', '10'),
+        ('SBTIE2, I', '500 SB', '490', '10')]
+    assert dynview.COLS_WATCH == [
+        ('NAME', dynview._cx(0), 16, 'L'), ('MARK', dynview._cx(17), 9, 'L'),
+        ('NOW', dynview._cx(27), 6, 'R'), ('NEED', dynview._cx(35), 6, 'R')]
+    ldir2 = tmp_path / 'nowatch'
+    write_league(ldir2, [player('NONE', totals=tot(H=10))], seasons=1)
+    data2 = load(ldir2)
+    assert dynview.rows((MS, 0, 1), data2) == \
+        [('NO ACTIVE PLAYER NEAR A MILESTONE',)]
+    assert dynview.body_cols((MS, 0, 1), data2) == dynview.COLS_SINGLE
+
+
+def test_watch_left_right_titles_footers_toggle(tmp_path):
+    """LEFT and RIGHT toggle the mode and reset page and row; titles and both footers"""
+    data = watch_league(tmp_path)
+    press = lambda s, k: dynview.step(s, k, data)[0]
+    s = press((MS, 2, 0), dynview.KEY_RIGHT)
+    assert s == (MS, 0, 1)
+    assert press(s, dynview.KEY_RIGHT) == (MS, 0, 0)
+    assert press((MS, 0, 0), dynview.KEY_LEFT) == (MS, 0, 1)
+    assert press((MS, 0, 1), dynview.KEY_LEFT) == (MS, 0, 0)
+    assert dynview.screen_title((MS, 0, 0), data) == 'MILESTONES'
+    assert dynview.screen_title((MS, 0, 1), data) == 'MILESTONE WATCH'
+    assert dynview.footer_text((MS, 0, 0), data) == \
+        'LEFT RIGHT WATCH   PGUP PGDN   ESC MENU'
+    assert dynview.footer_text((MS, 0, 1), data) == \
+        'ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC'
+    assert dynview.body_cols((MS, 0, 0), data) == dynview.COLS_MILESTONES
+    assert dynview.body_cols((MS, 0, 1), data) == dynview.COLS_WATCH
+    # a click on the title band is LEFT or RIGHT on both modes; a click on the footer PGDNs
+    assert dynview.click_to_key((MS, 0, 0), data, 100, 14) == (dynview.KEY_LEFT, None)
+    assert dynview.click_to_key((MS, 0, 1), data, 200, 20) == (dynview.KEY_RIGHT, None)
+
+
+def test_watch_cursor_enter_and_mode0_plain(tmp_path):
+    """WATCH cursor: DOWN moves, PGDN pages, ENTER opens the card, ESC returns to the same
+    WATCH state, ENTER on the message row does nothing; mode 0 has no cursor and PGDN pages"""
+    data = watch_league(tmp_path)
+    press = lambda s, k: dynview.step(s, k, data)[0]
+    assert not dynview.cursor_screen((MS, 0, 0))
+    assert dynview.cursor_screen((MS, 0, 1))
+    s = press((MS, 0, 1), dynview.KEY_DOWN)
+    assert s == (MS, 0, 1, 1)
+    assert dynview.row_entry(s, data) == 3                       # HR298
+    s2, _ex = dynview.step(s, dynview.KEY_ENTER, data)
+    assert s2 == (dynview.SCREEN_CARD, 0, 3)
+    assert dynview.step(s2, dynview.KEY_ESC, data)[0] == s       # the identical WATCH state
+    # the same state (MS, 0, 1) with 14 rows: cursor PGDN moves to row 12 on page 1
+    ldir2 = tmp_path / 'pages'
+    players = [player('FILL%02d' % k, totals=tot(SB=490 - k, H=100)) for k in range(14)]
+    write_league(ldir2, players, seasons=1)
+    data2 = load(ldir2)
+    press2 = lambda s, k: dynview.step(s, k, data2)[0]
+    s3 = press2((MS, 0, 1), dynview.KEY_PGDN)
+    assert s3 == (MS, 1, 1, 12)
+    assert dynview.step((MS, 0, 1, 11), dynview.KEY_ENTER, data2)[0] == \
+        (dynview.SCREEN_CARD, 0, 11)
+    # the message row: no entry, ENTER keeps the state
+    ldir3 = tmp_path / 'msg'
+    write_league(ldir3, [player('QUIET', totals=tot(H=10))], seasons=1)
+    data3 = load(ldir3)
+    assert dynview.row_entry((MS, 0, 1, 0), data3) is None
+    assert dynview.step((MS, 0, 1), dynview.KEY_ENTER, data3) == ((MS, 0, 1), 0)
+    # mode 0: UP/DOWN do nothing (no cursor), ENTER nothing, PGDN pages the milestone list
+    assert dynview.step((MS, 0, 0), dynview.KEY_DOWN, data)[0] == (MS, 0, 0)
+    assert dynview.step((MS, 0, 0), dynview.KEY_ENTER, data) == ((MS, 0, 0), 0)
+    ldir4 = tmp_path / 'mspage'
+    from test_dynview import write_mileston
+    write_league(ldir4, [player('A%02d' % k) for k in range(9)], seasons=3)
+    write_mileston(str(ldir4 / 'MILESTON.DAT'), [(3, k % 9, 3, 300) for k in range(14)])
+    data4 = load(ldir4)
+    assert dynview.step((MS, 1, 0), dynview.KEY_PGDN, data4)[0] == (MS, 1, 0)
+    assert dynview.step((MS, 0, 0), dynview.KEY_PGDN, data4)[0] == (MS, 1, 0)
