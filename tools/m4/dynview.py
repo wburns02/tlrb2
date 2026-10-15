@@ -1975,23 +1975,70 @@ def card_cells(t, war10, pitcher, first, team):
             '%d' % t[7], '%d' % t[10], fmt_avg(avg_of(t)), fmt_war10(war10))
 
 
+def post_totals(box, entry):
+    """The postseason totals of entry from the BOXSCORE.DAT player rows (C26): WS and C23b
+    round games, the records with idx == entry and flags != 4 (a flags 4 record is a round
+    header, not a player row), None when there is none. Batting rows (bit1 clear) sum
+    AB H RBI HR SB; pitching rows OUTS (IP10 = whole innings * 10 + thirds), ER and PSO.
+    Returns (games, t): games the number of distinct (season, g) pairs, t a 25-int
+    TOTALS-order list with G = games and the sums above, every other field 0."""
+    t, games = None, set()
+    for season, g, flags, idx, _b, _i, st in box:
+        if idx != entry or flags == 4:
+            continue
+        if t is None:
+            t = [0] * 25
+        games.add((season, g))
+        if flags & 2:
+            t[19] += 3 * (st[0] // 10) + st[0] % 10
+            t[20] += st[3]
+            t[23] += st[6]
+        else:
+            t[1] += st[0]
+            t[2] += st[2]
+            t[7] += st[3]
+            t[5] += st[4]
+            t[10] += st[7]
+    if t is None:
+        return None
+    t[0] = len(games)
+    return t[0], t
+
+
+def card_rows(s, data):
+    """Season rows per page of the PLAYER CARD (C26): 6 when the entry has a POSTSEASON row,
+    else CARD_SEASON_ROWS (7)."""
+    return 6 if post_totals(data['box'], s[2]) is not None else CARD_SEASON_ROWS
+
+
 def card_table(s, data):
-    """(season rows of the page, CAREER row) of the PLAYER CARD (C13.5): the entry's lines newest
-    first, CARD_SEASON_ROWS to a page; one NO_CARD_TEXT row with no lines. CAREER is the
-    entry's totals, not the sum of the lines."""
+    """(season rows of the page, CAREER row, POST row or None) of the PLAYER CARD (C13.5,
+    C26): the entry's lines newest first, card_rows to a page; one NO_CARD_TEXT row with no
+    lines. CAREER is the entry's totals, not the sum of the lines. POST the postseason
+    totals of the entry (post_totals): card_cells with 'POSTSEASON' as the label and '-'
+    for WAR (and W, L, SV for a pitcher)."""
     hist = data['hist']
     if not 0 <= s[2] < n_entries(hist):
-        return [(NO_CARD_TEXT,)], ('CAREER',)
+        return [(NO_CARD_TEXT,)], ('CAREER',), None
     e = hist.read_entry(s[2])
     lines = card_lines(s, data)
+    post = post_totals(data['box'], s[2])
     if not lines:
         season = [(NO_CARD_TEXT,)]
     else:
-        newest = lines[::-1][s[1] * CARD_SEASON_ROWS:(s[1] + 1) * CARD_SEASON_ROWS]
+        per = card_rows(s, data)
+        newest = lines[::-1][s[1] * per:(s[1] + 1) * per]
         season = [card_cells(ln['totals'], ln['WAR10'], e['pitcher'],
                              year_text(hist, ln['season']),
                              data['abbrs'].get(ln['team'], '?')) for ln in newest]
-    return season, card_cells(e['totals'], e['WAR10'], e['pitcher'], 'CAREER', '')
+    career = card_cells(e['totals'], e['WAR10'], e['pitcher'], 'CAREER', '')
+    if post is None:
+        return season, career, None
+    cells = list(card_cells(post[1], 0, e['pitcher'], 'POSTSEASON', ''))
+    cells[9] = '-'
+    if e['pitcher']:
+        cells[3] = cells[4] = cells[5] = '-'
+    return season, career, tuple(cells)
 
 
 def card_info(s, data):
@@ -2095,8 +2142,11 @@ def rows(state, data):
     s = unpack(state)
     screen, page, cat = s[0], s[1], s[2]
     if screen == SCREEN_CARD:
-        season, career = card_table(s, data)
-        return season + [career]
+        season, career, post = card_table(s, data)
+        out = season + [career]
+        if post is not None:
+            out.append(post)
+        return out
     if screen == SCREEN_SETTINGS:
         return settings_rows(data)[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_ABOUT:
@@ -2234,8 +2284,11 @@ def step(state, key, data):
             return state, 0
         return (SCREEN_SETTINGS, cat // ROWS_PER_PAGE, cat), 0
     if screen == SCREEN_CARD:
-        # PGUP/PGDN page the season table, CARD_SEASON_ROWS lines a page (C13.5)
-        if key == KEY_PGDN and (page + 1) * CARD_SEASON_ROWS < len(card_lines(s, data)):
+        # PGUP/PGDN page the season table, card_rows lines a page (C13.5, C26: 6 with a
+        # POST row, else CARD_SEASON_ROWS)
+        per = card_rows(s, data)
+        n = len(card_lines(s, data))
+        if key == KEY_PGDN and (page + 1) * per < n:
             return (SCREEN_CARD, page + 1, cat), 0
         if key == KEY_PGUP and page > 0:
             return (SCREEN_CARD, page - 1, cat), 0
@@ -2599,12 +2652,17 @@ def draw_card(fb, s, data, main_ft):
                       h, C_BLACK)
         else:
             draw_text(fb, main_ft, x, CARD_HDR_Y + 2, h, C_BLACK)
-    season, career = card_table(s, data)
+    season, career, post = card_table(s, data)
     for r, cells in enumerate(season):
         draw_row(fb, main_ft, cols, cells, CARD_ROW_Y0 + r * ROW_H, C_BLACK, C_ROW_TAN)
-    # CAREER: the entry's totals at the fixed slot after the season rows; its label is not cut
-    draw_row(fb, main_ft, cols, ('',) + career[1:], CARD_CAREER_Y, C_BLACK, C_ROW_TAN)
-    draw_text(fb, main_ft, cols[0][1], CARD_CAREER_Y + 2, 'CAREER', C_BLACK)
+    # CAREER (with a POST row: one season row up, card_rows rows per page) at its fixed slot
+    careery = CARD_CAREER_Y - ROW_H if post is not None else CARD_CAREER_Y
+    draw_row(fb, main_ft, cols, ('',) + career[1:], careery, C_BLACK, C_ROW_TAN)
+    draw_text(fb, main_ft, cols[0][1], careery + 2, 'CAREER', C_BLACK)
+    if post is not None:
+        # POSTSEASON (C26): the postseason totals under CAREER, the label not cut
+        draw_row(fb, main_ft, cols, ('',) + post[1:], CARD_CAREER_Y, C_BLACK, C_ROW_TAN)
+        draw_text(fb, main_ft, cols[0][1], CARD_CAREER_Y + 2, 'POSTSEASON', C_BLACK)
 
 
 def render(state, data):
