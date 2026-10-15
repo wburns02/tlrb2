@@ -1987,6 +1987,67 @@ opened from FIND still returns card_back with the query kept.
   to MENU now pins the prompt row, and a C50 test that pinned the MENU footer on a
   non-empty query pins the CLEAR footer.
 
+## C61. DYNVIEW MILESTONES row cursor (added 2026-10-15)
+- MILESTONES cat 0 is a cursor screen (state (4, page, 0, row)): cursor_screen is True for
+  SCREEN_MILESTONES in both modes. milestone_items(hist, ms) is the row-order list the screen
+  shows: MILESTON.DAT records with kind < AWARD_KIND_MIN, newest season first, within a
+  season in file order, at most LIST_MAX; every item is (season, idx, kind, value).
+  milestone_rows builds its YEAR, NAME, EVENT cells from milestone_items (same output as
+  before).
+- row_entry on cat 0: items = milestone_items(hist, data['ms']); return items[row][1] when
+  row < len(items) and that idx < n_entries(hist) and idx != history.NO_AWARD, else None.
+  ENTER on a cat 0 row whose row_entry is not None opens the PLAYER CARD through the
+  generic cursor path (open_card stores card_back = the full list state); ESC on the card
+  returns to that state with the row kept. ENTER on a row of a NO_AWARD record, an
+  out-of-range idx or an empty list does nothing.
+- PGUP/PGDN on cat 0 move the cursor like every cursor screen (cursor_move; the cursor
+  goes to the new page's first row when the page changes), no longer paging without the
+  cursor. LEFT/RIGHT still toggle the mode and reset page and row; cat 1 (WATCH) behaves
+  as in C27.
+- Footers: FOOTERS[SCREEN_MILESTONES] (cat 0) =
+  'ENTER CARD  LEFT RIGHT WATCH  PGUP PGDN  ESC'; the cat 1 footer (footer_text) is
+  unchanged ('ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC').
+- Reads only; writes nothing.
+- C port (dynview.c): cursor_screen drops its cat == 1 condition; row_entry adds the cat 0
+  branch (ms_scan into g_msl, the record's idx rejected when NO_AWARD or past the entry
+  table); footer_of's cat 0 string updated. No new static array (the ms_scan List buffer
+  already existed); the host binary is rebuilt with gcc after the change (C89 only).
+- Tests: test_dynview.py (milestone_items == milestone_rows order, DOWN, ENTER row 1 card
+  and ESC back, NO_AWARD row None, empty-list ENTER no-op, footers, LEFT/RIGHT toggle,
+  cat 1 unchanged), test_dynview_c13.py (the WATCH test that pinned the old cat 0 footer
+  and the no-cursor-in-mode-0 rule pins the new behaviour), test_dynview_c13_c.py
+  (framebuffer parity: cat 0 with the new footer and the cursor on row 1, PGDN, the card
+  from row 1 and ESC back, a NO_AWARD row, an empty list, cat 1 unchanged).
+
+## C58. DYNVIEW card browsing (added 2026-10-15)
+
+On the PLAYER CARD (SCREEN_CARD = 13, state (13, page, entry, view) with view 0 SEASONS,
+1 HONORS), LEFT (KEY_LEFT = 0x4b00) and RIGHT (KEY_RIGHT = 0x4d00) browse the entry rows
+of the list the card was opened from. Reads only; writes nothing. Python
+tools/m4/dynview.py is the reference; the C port dynview_c/dynview.c walks the same
+states over the static g_card_back and renders the same framebuffers.
+
+- b = unpack(data.get('card_back')) (C: g_card_back). When card_back is set and
+  cursor_screen(b), walk r = b[3] - 1 downward (LEFT) or b[3] + 1 upward (RIGHT) while
+  0 <= r < total_rows(b, data), taking the first r whose row_entry(cursor_state(b, r),
+  data) is not None (message rows and rows naming no player are skipped). Found:
+  data['card_back'] = cursor_state(b, r) and the state becomes
+  pack(SCREEN_CARD, 0, that entry, view) (the view kept, the page reset). Not found, or
+  card_back not a cursor screen (or absent): the state is unchanged.
+- ESC after a browse returns the moved card_back: the list with the cursor on the last
+  shown row; its page follows the row (cursor_state sets page = row // ROWS_PER_PAGE).
+- LEFT_RIGHT_SCREENS is unchanged; every other screen's LEFT/RIGHT behaviour is
+  identical, and the card's other keys (H, PGUP, PGDN, ESC) behave as before.
+- Footers: FOOTERS[SCREEN_CARD] = 'LEFT RIGHT  PGUP PGDN  H HONORS  ESC' (the SEASONS
+  view) and the HONORS view footer_text 'LEFT RIGHT  PGUP PGDN  H SEASONS  ESC'
+  (replacing the two 'PGUP PGDN ... ESC BACK' texts).
+- C port: the same rules over g_card_back with the -1 none sentinel of its row_entry;
+  C89, no new static array (the DOS image stays inside its total far-data budget).
+- Tests: test_dynview.py (browse, skip, clamps, ESC page, footers),
+  test_dynview_c13_c.py (host and DOS framebuffer parity: the
+  HOF card then RIGHT, RIGHT across a page boundary then ESC, the LEADERS card then
+  LEFT, the HONORS view browse, and RIGHT on the last row).
+
 ## C62. DYNVIEW BOX SCORE row cursor (added 2026-10-15)
 BOX SCORE (SCREEN_BOX 12, state (12, page, cat, row) with cat = seasons_back * 8 + game)
 and PLAYOFF BOX (SCREEN_PBOX 15, cat = seasons_back * 64 + (g - 16)) are cursor screens:

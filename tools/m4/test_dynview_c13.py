@@ -601,7 +601,7 @@ def test_card_season_rows_newest_first_and_paging(tmp_path):
     assert press((CARD, 0, 0), PGUP, data) == (CARD, 0, 0)
     assert dynview.total_rows(s, data) == 9
     assert dynview.screen_title(s, data) == 'B ALPHA'
-    assert dynview.footer_text(s, data) == 'PGUP PGDN SEASONS  H HONORS  ESC BACK'
+    assert dynview.footer_text(s, data) == 'LEFT RIGHT  PGUP PGDN  H HONORS  ESC'
 
 
 def test_card_with_no_lines_and_missing_entry(tmp_path):
@@ -1238,7 +1238,7 @@ def test_watch_left_right_titles_footers_toggle(tmp_path):
     assert dynview.screen_title((MS, 0, 0), data) == 'MILESTONES'
     assert dynview.screen_title((MS, 0, 1), data) == 'MILESTONE WATCH'
     assert dynview.footer_text((MS, 0, 0), data) == \
-        'LEFT RIGHT WATCH   PGUP PGDN   ESC MENU'
+        'ENTER CARD  LEFT RIGHT WATCH  PGUP PGDN  ESC'      # C61: the cat 0 footer
     assert dynview.footer_text((MS, 0, 1), data) == \
         'ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC'
     assert dynview.body_cols((MS, 0, 0), data) == dynview.COLS_MILESTONES
@@ -1250,10 +1250,11 @@ def test_watch_left_right_titles_footers_toggle(tmp_path):
 
 def test_watch_cursor_enter_and_mode0_plain(tmp_path):
     """WATCH cursor: DOWN moves, PGDN pages, ENTER opens the card, ESC returns to the same
-    WATCH state, ENTER on the message row does nothing; mode 0 has no cursor and PGDN pages"""
+    WATCH state, ENTER on the message row does nothing; mode 0 is a cursor screen too
+    (C61): DOWN moves, ENTER opens, PGDN moves the cursor like every cursor screen"""
     data = watch_league(tmp_path)
     press = lambda s, k: dynview.step(s, k, data)[0]
-    assert not dynview.cursor_screen((MS, 0, 0))
+    assert dynview.cursor_screen((MS, 0, 0))                # C61: mode 0 is a cursor screen
     assert dynview.cursor_screen((MS, 0, 1))
     s = press((MS, 0, 1), dynview.KEY_DOWN)
     assert s == (MS, 0, 1, 1)
@@ -1277,16 +1278,19 @@ def test_watch_cursor_enter_and_mode0_plain(tmp_path):
     data3 = load(ldir3)
     assert dynview.row_entry((MS, 0, 1, 0), data3) is None
     assert dynview.step((MS, 0, 1), dynview.KEY_ENTER, data3) == ((MS, 0, 1), 0)
-    # mode 0: UP/DOWN do nothing (no cursor), ENTER nothing, PGDN pages the milestone list
+    # mode 0 (C61): DOWN moves the milestone cursor, ENTER opens the row's card,
+    # PGDN moves the cursor to the new page's first row
     assert dynview.step((MS, 0, 0), dynview.KEY_DOWN, data)[0] == (MS, 0, 0)
-    assert dynview.step((MS, 0, 0), dynview.KEY_ENTER, data) == ((MS, 0, 0), 0)
     ldir4 = tmp_path / 'mspage'
     from test_dynview import write_mileston
     write_league(ldir4, [player('A%02d' % k) for k in range(9)], seasons=3)
     write_mileston(str(ldir4 / 'MILESTON.DAT'), [(3, k % 9, 3, 300) for k in range(14)])
     data4 = load(ldir4)
+    assert dynview.step((MS, 0, 0), dynview.KEY_DOWN, data4)[0] == (MS, 0, 0, 1)
+    assert dynview.step((MS, 0, 0, 1), dynview.KEY_ENTER, data4)[0] == \
+        (dynview.SCREEN_CARD, 0, 1)
     assert dynview.step((MS, 1, 0), dynview.KEY_PGDN, data4)[0] == (MS, 1, 0)
-    assert dynview.step((MS, 0, 0), dynview.KEY_PGDN, data4)[0] == (MS, 1, 0)
+    assert dynview.step((MS, 0, 0), dynview.KEY_PGDN, data4)[0] == (MS, 1, 0, 12)
 # ---------------------------------------------------------------- C28 AWARD HISTORY
 AH = dynview.SCREEN_AWHIST
 K_HUP, K_HLOW = 72, 104
@@ -1588,3 +1592,21 @@ def test_c54_no_active_qualifiers(tmp_path):
     # categories other than H: WAR has no qualifier, but the filter empties it too
     assert dynview.leaders_body((LEAD, 0, cidx('WAR')), data) == \
         (dynview.COLS_SINGLE, [('NO ACTIVE QUALIFIERS.',)])
+
+# ---------------------------------------------------------------- C58 (the DOS frames are in test_dynview_c13_c.py)
+def test_c58_hof_browse_esc_state(tmp_path):
+    """HOF card of row 1, RIGHT to row 2, ESC lands on HOF with the cursor on row 2"""
+    players = player_set()
+    for i, hof in ((0, 2), (1, 3), (2, 3)):
+        players[i].update(status=3, hof=hof)
+    ldir = tmp_path / 'c58hof'
+    write_league(ldir, players, seasons=3, start=1990)
+    data = load(ldir)
+    s = (dynview.SCREEN_MENU, 0, 0)
+    for k in (ord('2'), DOWN, ENTER, RIGHT, ESC):
+        s, _ex = dynview.step(s, k, data)
+    assert s == (dynview.SCREEN_HOF, 0, 0, 2)
+    assert dynview.footer_text((dynview.SCREEN_CARD, 0, 0), data) == \
+        'LEFT RIGHT  PGUP PGDN  H HONORS  ESC'
+    assert dynview.footer_text((dynview.SCREEN_CARD, 0, 0, 1), data) == \
+        'LEFT RIGHT  PGUP PGDN  H SEASONS  ESC'
