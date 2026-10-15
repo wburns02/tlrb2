@@ -748,6 +748,50 @@ def test_watch_parity_frames(tmp_path):
     check(ldir, tmp_path, 'c27_watch_pgdn', [K4, RIGHT, PGDN])
 
 
+# ---------------------------------------------------------------- C61 MILESTONES row cursor
+def ms_row_league(tmp_path, name):
+    """15 entries, MILESTON records with kind 2 and 32 (the 3000 HITS and 51 HR rows in
+    file order; a NO_AWARD record sorts in as a NONE row)"""
+    players = [player('P%02d' % e, totals=tot(H=10 + e)) for e in range(15)]
+    ms = [(3, 0, 2, 3000), (3, 1, 32, 51), (3, 0xffff, 2, 2000), (2, 2, 5, 500)]
+    for s in range(12, 28):                      # rows past one page (24 + 4 = 28)
+        ms.append((2, s, 2, 100 + s))
+    return league(tmp_path, players, seasons=3, name=name, ms=ms)
+
+
+@needs_fonts
+def test_milestones_cursor_parity_frames(tmp_path):
+    """cat 0 with the new footer and the cursor on row 1, PGDN to page 1 (cursor row 12),
+    the card opened from row 1 and ESC back with the row kept, cat 1 unchanged; every
+    frame matches Python's bytes"""
+    ldir = ms_row_league(tmp_path, 'ms61')
+    empty = league(tmp_path, [player('NONE', totals=tot(H=10))], seasons=1, name='ms61e')
+    st, data = py_run(ldir, tmp_path, [K4, DOWN])
+    assert st == (4, 0, 0, 1)
+    assert dynview.milestone_items(data['hist'], data['ms'])[1][1] == 1   # row 1 is entry 1
+    check(ldir, tmp_path, 'c61_ms0_row1', [K4, DOWN])
+    check(ldir, tmp_path, 'c61_ms0_pgdn', [K4, PGDN])
+    st, _data = py_run(ldir, tmp_path, [K4, PGDN])
+    assert st == (4, 1, 0, 12)
+    check(ldir, tmp_path, 'c61_ms0_enter_card', [K4, DOWN, ENTER])
+    st, _data = py_run(ldir, tmp_path, [K4, DOWN, ENTER])
+    assert st == (CARD, 0, 1)
+    check(ldir, tmp_path, 'c61_ms0_esc_back', [K4, DOWN, ENTER, ESC])
+    st, _data = py_run(ldir, tmp_path, [K4, DOWN, ENTER, ESC])
+    assert st == (4, 0, 0, 1)
+    # row 2 is the NO_AWARD record: no card, the state stays
+    st, data = py_run(ldir, tmp_path, [K4, DOWN, DOWN])
+    assert st == (4, 0, 0, 2)
+    assert dynview.row_entry(st, data) is None
+    check(ldir, tmp_path, 'c61_ms0_no_award', [K4, DOWN, DOWN, ENTER])
+    # an empty list: ENTER does nothing; no message row either (mode 0 has none)
+    check(empty, tmp_path, 'c61_ms0_empty', [K4, ENTER])
+    # the WATCH behaviour is unchanged (C27): cursor row 1, the card, ESC back
+    wl = league(tmp_path, watch_players(), seasons=3, name='ms61w')
+    check(wl, tmp_path, 'c61_watch_row1', [K4, RIGHT, DOWN])
+    check(wl, tmp_path, 'c61_watch_card_esc', [K4, RIGHT, DOWN, ENTER, ESC])
+
+
 # ---------------------------------------------------------------- C28 AWARD HISTORY
 def awhist_players():
     """the C28 fixture players (8 entries; the names match test_dynview_c13.awhist_league)"""

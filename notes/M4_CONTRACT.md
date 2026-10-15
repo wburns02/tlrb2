@@ -1898,3 +1898,36 @@ g_lead_active, like the other session values) renders the same framebuffers.
   frame, a card from the ACTIVE list and ESC back, and A pressed in SEASON mode). The
   test that pinned the old footer text (the SEASON LEADERS column test of
   test_dynview_c13.py) pins the new one.
+
+
+## C61. DYNVIEW MILESTONES row cursor (added 2026-10-15)
+- MILESTONES cat 0 is a cursor screen (state (4, page, 0, row)): cursor_screen is True for
+  SCREEN_MILESTONES in both modes. milestone_items(ms) is the row-order list the screen
+  shows: MILESTON.DAT records with kind < AWARD_KIND_MIN, newest season first, within a
+  season in file order, at most LIST_MAX; every item is (season, idx, kind, value).
+  milestone_rows builds its YEAR, NAME, EVENT cells from milestone_items (same output as
+  before).
+- row_entry on cat 0: items = milestone_items(data['ms']); return items[row][1] when
+  row < len(items) and that idx < n_entries(hist) and idx != history.NO_AWARD, else None.
+  ENTER on a cat 0 row whose row_entry is not None opens the PLAYER CARD through the
+  generic cursor path (open_card stores card_back = the full list state); ESC on the card
+  returns to that state with the row kept. ENTER on a row of a NO_AWARD record, an
+  out-of-range idx or an empty list does nothing.
+- PGUP/PGDN on cat 0 move the cursor like every cursor screen (cursor_move; the cursor
+  goes to the new page's first row when the page changes), no longer paging without the
+  cursor. LEFT/RIGHT still toggle the mode and reset page and row; cat 1 (WATCH) behaves
+  as in C27.
+- Footers: FOOTERS[SCREEN_MILESTONES] (cat 0) =
+  'ENTER CARD  LEFT RIGHT WATCH  PGUP PGDN  ESC'; the cat 1 footer (footer_text) is
+  unchanged ('ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC').
+- Reads only; writes nothing.
+- C port (dynview.c): cursor_screen drops its cat == 1 condition; row_entry adds the cat 0
+  branch (ms_scan into g_msl, the record's idx rejected when NO_AWARD or past the entry
+  table); footer_of's cat 0 string updated. No new static array (the ms_scan List buffer
+  already existed); the host binary is rebuilt with gcc after the change (C89 only).
+- Tests: test_dynview.py (milestone_items == milestone_rows order, DOWN, ENTER row 1 card
+  and ESC back, NO_AWARD row None, empty-list ENTER no-op, footers, LEFT/RIGHT toggle,
+  cat 1 unchanged), test_dynview_c13.py (the WATCH test that pinned the old cat 0 footer
+  and the no-cursor-in-mode-0 rule pins the new behaviour), test_dynview_c13_c.py
+  (framebuffer parity: cat 0 with the new footer and the cursor on row 1, PGDN, the card
+  from row 1 and ESC back, a NO_AWARD row, an empty list, cat 1 unchanged).
