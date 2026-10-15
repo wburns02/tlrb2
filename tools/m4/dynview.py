@@ -1644,7 +1644,9 @@ def playoff_rows(hist, box, teams, season, stems=None, mask=0):
     (`AL DIVISION SERIES` and the like), then per game the three rows series_rows makes
     for a WS game, then the summary row series_rows makes over the series' first game's
     two teams with the WINS threshold 3 for the division series and 4 for the LCS. Managed
-    team ids have '*' prepended to their TEAM cell; game and title header rows never."""
+    team ids have '*' prepended to their TEAM cell; game and title header rows never.
+    After the series rows, when post_leaders gives a row, the POSTSEASON LEADERS block
+    (C30): the title row ('POSTSEASON LEADERS', '', '', '', '') then the leader rows."""
     if season > history.SEASON_COUNT:
         return [('NO PLAYOFF ROUNDS RECORDED',)]
     names = dict(teams)
@@ -1692,6 +1694,10 @@ def playoff_rows(hist, box, teams, season, stems=None, mask=0):
             out.append((starred(lead), '', '', '',
                         ('WINS %d-%d' if a >= (3 if rnd == 1 else 4)
                          else 'LEADS %d-%d') % (a, b2)))
+    leaders = post_leaders(hist, box, season)
+    if leaders:
+        out.append(('POSTSEASON LEADERS', '', '', '', ''))
+        out.extend(leaders)
     return out
 
 
@@ -1722,8 +1728,9 @@ def post_leaders(hist, box, season):
     seen = {}                                     # idx -> [H, HR, RBI, SB, SO, ER, OUTS]
     n_seen = 0
     for rec in box:
-        _season, _g, flags, idx, _b, _i, s = rec
-        if (flags & 4) != 0 or idx >= hist_n or idx == history.NO_AWARD:
+        rec_season, _g, flags, idx, _b, _i, s = rec
+        if (rec_season != season or (flags & 4) != 0 or idx >= hist_n
+                or idx == history.NO_AWARD):
             continue
         t = seen.get(idx)
         if t is None:
@@ -1763,9 +1770,7 @@ def post_leaders(hist, box, season):
 
 def playoffs_body(state, data):
     """(cols, rows) of PLAYOFFS: the season cat seasons back from the newest. A lone
-    message row uses COLS_SINGLE (as WORLD SERIES does); no history gives no rows. A
-    season with real round rows gains the POSTSEASON LEADERS block (C30) when
-    post_leaders returns a row: the title row then the leader rows."""
+    message row uses COLS_SINGLE (as WORLD SERIES does); no history gives no rows."""
     hist = data['hist']
     if hist.seasons_recorded == 0:
         return COLS_SINGLE, []
@@ -1774,11 +1779,6 @@ def playoffs_body(state, data):
                         data.get('team_stems'), data['mask'])
     if len(rows) == 1 and len(rows[0]) == 1:
         return COLS_SINGLE, rows
-    if len(rows) > 1:
-        leaders = post_leaders(hist, data['box'], season)
-        if leaders:
-            rows.append(('POSTSEASON LEADERS', '', '', '', ''))
-            rows.extend(leaders)
     return COLS_SERIES, rows
 
 
