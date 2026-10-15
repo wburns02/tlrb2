@@ -89,7 +89,7 @@ FOOT_CONFIRM = 'ENTER REPLACE   ESC BACK'
 FOOT_DONE = 'ENTER CREATE ANOTHER   ESC EXIT'
 FOOT_NAME = 'TYPE NAME   UP DOWN   ESC SLOTS'
 FOOT_SAVE = 'ENTER SAVE   UP DOWN   ESC SLOTS'
-FOOT_FIELD = 'UP DOWN  LEFT RIGHT  A AUTO  ESC SLOTS'
+FOOT_FIELD = 'UP DOWN LEFT RIGHT  A AUTO  N NAME  ESC'
 MSG_NAME = 'TYPE A LAST NAME FIRST'
 BUDGET_BAT = (0, 36, 45, 54)              # C31: points per budget mode, batters
 BUDGET_PIT = (0, 18, 24, 28)              # pitchers
@@ -481,6 +481,19 @@ def _autofill(st):
     st['form']['r'][:n] = r
 
 
+def _random_name(st):
+    """C37: key N picks a random name from the rookie pools with the session
+    seed: seed = (seed * 1103515245 + 12345) % 2**31, last =
+    rookies.LAST_NAMES[(seed >> 16) % len(LAST_NAMES)], then again for first =
+    rookies.FIRST_NAMES[(seed >> 16) % len(FIRST_NAMES)]. st['seed'] keeps the
+    final value. Nothing else in the state changes."""
+    seed = (st['seed'] * 1103515245 + 12345) % 2 ** 31
+    st['form']['last'] = rookies.LAST_NAMES[(seed >> 16) % len(rookies.LAST_NAMES)]
+    seed = (seed * 1103515245 + 12345) % 2 ** 31
+    st['form']['first'] = rookies.FIRST_NAMES[(seed >> 16) % len(rookies.FIRST_NAMES)]
+    st['seed'] = seed
+
+
 def _step_edit(st, key, ctx):
     fields = _edit_fields(st['slot'] < PITCHER_SLOTS)
     fld = fields[st['cursor']][0]
@@ -493,6 +506,8 @@ def _step_edit(st, key, ctx):
         st['budget'] = (st['budget'] + 1) % 4              # C31: cycle the point budget
     elif key in (65, 97) and fld not in ('last', 'first'):
         _autofill(st)                                      # C34: the A auto-fill
+    elif key in (78, 110) and fld not in ('last', 'first'):
+        _random_name(st)                                   # C37: the N random name
     elif key == KEY_ENTER:
         if fld == 'save':
             if form['last'] == '':

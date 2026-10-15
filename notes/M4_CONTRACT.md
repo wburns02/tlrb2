@@ -1445,3 +1445,31 @@ are exactly as before.
 - C port: create.c carries seed (uint32_t) in State, set to 1 by start_state, with
   the same LCG, modulus, cap rule and footer; the host binary is rebuilt with gcc
   after the parity gate.
+
+## C37. CREATE random name (added 2026-10-14)
+
+The CREATE edit screen (create._step_edit and the C port) gains key N random name.
+It does not change the V20 record build: save_slot, build_record and every saved
+byte are exactly as before (the picked names go into the form, so a record saved
+after N stores them in bytes 0..11 last and 12..19 first, as typed names always
+did).
+
+- Key N (78 or 110) on the edit screen, when the current field is not 'last' or
+  'first' (there N types a letter as before), picks the new player's name from
+  the rookie pools (rookies.LAST_NAMES, 128 entries; rookies.FIRST_NAMES, 64
+  entries) with the session seed: seed = (seed * 1103515245 + 12345) % 2**31
+  (uint32_t arithmetic in C), then st['form']['last'] =
+  LAST_NAMES[(seed >> 16) % 128], then seed = lcg(seed) again and
+  st['form']['first'] = FIRST_NAMES[(seed >> 16) % 64]. st['seed'] keeps the
+  final value, so the next N draws the next pair. Nothing else changes: cursor,
+  msg, budget, ratings, face, image.
+- Footer: a rating field's footer (FOOT_FIELD) becomes
+  'UP DOWN LEFT RIGHT  A AUTO  N NAME  ESC' (39 chars); every other footer is
+  unchanged.
+- C port: create.c carries the two pools as static const char * const FARDATA
+  arrays (C37_LAST_NAMES LAST_POOL_N = 128, C37_FIRST_NAMES FIRST_POOL_N = 64)
+  in the rookies.py order, and random_name() with the same LCG, modulus and
+  indexing; the host binary is rebuilt with gcc after the parity gate. The
+  parity tests read both Python lists and the C source text and require them
+  identical, and cover five N presses on one form, N then A then a save, the
+  FOOT_FIELD frame, and an N typed into the last name.
