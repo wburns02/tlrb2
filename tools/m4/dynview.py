@@ -1891,13 +1891,21 @@ def box_line(hist, rec):
     return (name,) + tuple('%d' % v for v in (s[0], s[1], s[2], s[3], s[5], s[6]))
 
 
-def box_rows(hist, ms, box, teams, season, g):
-    """BOX SCORE rows of game g of season: the visitor, then the home side. Each side is a
-    team row (AB R H RBI BB SO), its batting rows, a PITCHING row (IP H R ER BB SO) and
-    its pitching rows; box records of (season, g) in file order, at most BOX_RECS_MAX.
-    One message row past the history table, without the game's kind 192 + g record or
-    without any box record of it."""
-    msg = [('NO BOX SCORE RECORDED',)]
+def box_player_idx(hist, rec):
+    """The record's entry index as a card target (C62): None when it is NO_AWARD or past
+    the history table, else the index."""
+    idx = rec[3]
+    if idx == history.NO_AWARD or idx >= n_entries(hist):
+        return None
+    return idx
+
+
+def box_walks(hist, ms, box, teams, season, g):
+    """(rows, entries) of the BOX SCORE of game g of season, built from one walk so the
+    two never drift (C62): rows is box_rows' output, entries the player entry named by
+    each row (a record idx within the history table, else None) - None on the team header,
+    the PITCHING header, the message row and a '?' record."""
+    msg = ([('NO BOX SCORE RECORDED',)], [None])
     if season > history.SEASON_COUNT:
         return msg
     game = first_record(ms, season, SERIES_GAME_KIND + g)
@@ -1908,14 +1916,38 @@ def box_rows(hist, ms, box, teams, season, g):
         return msg
     v, h = game[0] >> 8, game[0] & 255
     names = dict(teams)
-    out = []
+    rows, entries = [], []
     for t, tid in ((0, v), (1, h)):
-        out.append((names.get(tid, 'TEAM %d' % tid), 'AB', 'R', 'H', 'RBI', 'BB', 'SO'))
+        rows.append((names.get(tid, 'TEAM %d' % tid), 'AB', 'R', 'H', 'RBI', 'BB', 'SO'))
+        entries.append(None)
         side = [r for r in recs if (r[2] & 1) == t]
-        out += [box_line(hist, r) for r in side if not (r[2] & 2)]
-        out.append(('PITCHING', 'IP', 'H', 'R', 'ER', 'BB', 'SO'))
-        out += [box_line(hist, r) for r in side if r[2] & 2]
-    return out
+        for r in side:
+            if r[2] & 2:
+                continue
+            rows.append(box_line(hist, r))
+            entries.append(box_player_idx(hist, r))
+        rows.append(('PITCHING', 'IP', 'H', 'R', 'ER', 'BB', 'SO'))
+        entries.append(None)
+        for r in side:
+            if not r[2] & 2:
+                continue
+            rows.append(box_line(hist, r))
+            entries.append(box_player_idx(hist, r))
+    return rows, entries
+
+
+def box_rows(hist, ms, box, teams, season, g):
+    """BOX SCORE rows of game g of season: the visitor, then the home side. Each side is a
+    team row (AB R H RBI BB SO), its batting rows, a PITCHING row (IP H R ER BB SO) and
+    its pitching rows; box records of (season, g) in file order, at most BOX_RECS_MAX.
+    One message row past the history table, without the game's kind 192 + g record or
+    without any box record of it."""
+    return box_walks(hist, ms, box, teams, season, g)[0]
+
+
+def box_entries(hist, ms, box, teams, season, g):
+    """The entry named by each box_rows row (C62), for the PLAYER CARD cursor."""
+    return box_walks(hist, ms, box, teams, season, g)[1]
 
 
 def box_body(state, data):
@@ -1937,12 +1969,11 @@ def series_game(ms, season, g):
     return first_record(ms, season, SERIES_GAME_KIND + g) is not None
 
 
-def pbox_rows(hist, box, teams, season, g):
-    """PLAYOFF BOX rows of round game g of season: box_rows' layout for the records of
-    (season, g) excluding the flags-4 header, at most BOX_RECS_MAX, the two teams from
-    the header's idx. One message row without a flags-4 header record or without any
-    other record of the game."""
-    msg = [('NO BOX SCORE RECORDED',)]
+def pbox_walks(hist, box, teams, season, g):
+    """(rows, entries) of the PLAYOFF BOX of round game g of season, built from one walk
+    (C62): rows is pbox_rows' output, entries the player entry named by each row, None on
+    every non-player row (team header, PITCHING header, message, '?')."""
+    msg = ([('NO BOX SCORE RECORDED',)], [None])
     if season > history.SEASON_COUNT:
         return msg
     heads = [r for r in box if r[0] == season and r[1] == g and r[2] == 4
@@ -1955,14 +1986,37 @@ def pbox_rows(hist, box, teams, season, g):
         return msg
     v, h = heads[0][3] >> 8, heads[0][3] & 255
     names = dict(teams)
-    out = []
+    rows, entries = [], []
     for t, tid in ((0, v), (1, h)):
-        out.append((names.get(tid, 'TEAM %d' % tid), 'AB', 'R', 'H', 'RBI', 'BB', 'SO'))
+        rows.append((names.get(tid, 'TEAM %d' % tid), 'AB', 'R', 'H', 'RBI', 'BB', 'SO'))
+        entries.append(None)
         side = [r for r in recs if (r[2] & 1) == t]
-        out += [box_line(hist, r) for r in side if not (r[2] & 2)]
-        out.append(('PITCHING', 'IP', 'H', 'R', 'ER', 'BB', 'SO'))
-        out += [box_line(hist, r) for r in side if r[2] & 2]
-    return out
+        for r in side:
+            if r[2] & 2:
+                continue
+            rows.append(box_line(hist, r))
+            entries.append(box_player_idx(hist, r))
+        rows.append(('PITCHING', 'IP', 'H', 'R', 'ER', 'BB', 'SO'))
+        entries.append(None)
+        for r in side:
+            if not r[2] & 2:
+                continue
+            rows.append(box_line(hist, r))
+            entries.append(box_player_idx(hist, r))
+    return rows, entries
+
+
+def pbox_rows(hist, box, teams, season, g):
+    """PLAYOFF BOX rows of round game g of season: box_rows' layout for the records of
+    (season, g) excluding the flags-4 header, at most BOX_RECS_MAX, the two teams from
+    the header's idx. One message row without a flags-4 header record or without any
+    other record of the game."""
+    return pbox_walks(hist, box, teams, season, g)[0]
+
+
+def pbox_entries(hist, box, teams, season, g):
+    """The entry named by each pbox_rows row (C62), for the PLAYER CARD cursor."""
+    return pbox_walks(hist, box, teams, season, g)[1]
 
 
 def pbox_body(state, data):
@@ -2142,10 +2196,10 @@ def unpack(state):
 def cursor_screen(s):
     """True on the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode),
     SEASON AWARDS, AWARD HISTORY (C28), SEASON HISTORY (C56), SEASON STANDINGS (C57),
-    the offseason RETIREMENTS phase and MILESTONES (C27/C61: cat 0 the milestones list,
-    cat 1 WATCH)."""
+    the offseason RETIREMENTS phase, MILESTONES (C27/C61: cat 0 the milestones list,
+    cat 1 WATCH) and the BOX SCORE and PLAYOFF BOX (C62)."""
     if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_AWHIST,
-                SCREEN_HISTORY, SCREEN_STANDINGS):
+                SCREEN_HISTORY, SCREEN_STANDINGS, SCREEN_BOX, SCREEN_PBOX):
         return True
     if s[0] == SCREEN_MILESTONES:
         return True
@@ -2294,7 +2348,8 @@ def leaders_body(state, data):
 
 def row_entry(s, data):
     """The player entry named by the cursor row of s (C13.4), or None: a message row, an award
-    with no player, an empty list, or no history. SEASON STANDINGS has no player card (C57)."""
+    with no player, an empty list, no history, or a BOX SCORE / PLAYOFF BOX row that is not a
+    player row (C62). SEASON STANDINGS has no player card (C57)."""
     hist = data['hist']
     if hist.seasons_recorded == 0:
         return None
@@ -2332,6 +2387,14 @@ def row_entry(s, data):
         q = data.get('find', '')
         items = [t for t in _find_order(hist, q)]
         return items[row][2] if row < len(items) else None
+    if s[0] == SCREEN_BOX:
+        rows, entries = box_walks(hist, data['ms'], data['box'], data['teams'],
+                                  hist.seasons_recorded - (s[2] >> 3), s[2] & 7)
+        return entries[row] if row < len(entries) else None
+    if s[0] == SCREEN_PBOX:
+        rows, entries = pbox_walks(hist, data['box'], data['teams'],
+                                   hist.seasons_recorded - (s[2] >> 6), (s[2] & 63) + 16)
+        return entries[row] if row < len(entries) else None
     if s[0] == SCREEN_OFFSEASON:
         ret = retire_entries(hist)
         return ret[row][0] if row < len(ret) else None
@@ -2929,6 +2992,7 @@ def step(state, key, data):
         return state, 0
     if screen == SCREEN_BOX and key in (KEY_LEFT, KEY_RIGHT):
         # to the previous (LEFT) or next (RIGHT) game of the season that has a record
+        # (C62: the cursor row resets to 0 when the game changes)
         bcat, g = cat >> 3, cat & 7
         season = data['hist'].seasons_recorded - bcat
         have = [k for k in range(SERIES_GAMES) if series_game(data['ms'], season, k)]
@@ -2937,18 +3001,19 @@ def step(state, key, data):
         else:
             to = [k for k in have if k > g][:1]
         if to:
-            return (SCREEN_BOX, 0, bcat * 8 + to[0]), 0
+            return pack(SCREEN_BOX, 0, bcat * 8 + to[0]), 0
         if key == KEY_LEFT and have and g == have[0] \
                 and 1 <= season <= history.SEASON_COUNT:
             # LEFT on the season's first WS game with a record, when the season has
             # round games: the last round game's PLAYOFF BOX
             games = playoff_games(data['box'], season)
             if games:
-                return (SCREEN_PBOX, 0, bcat * 64 + games[-1][0] - 16), 0
+                return pack(SCREEN_PBOX, 0, bcat * 64 + games[-1][0] - 16), 0
         return state, 0
     if screen == SCREEN_PBOX and key in (KEY_LEFT, KEY_RIGHT):
         # to the previous (LEFT) or next (RIGHT) round game of the season (by g); RIGHT
         # past the last opens the first WORLD SERIES box of the season that has one
+        # (C62: the cursor row resets to 0 when the game changes)
         bcat, g = cat >> 6, (cat & 63) + 16
         season = data['hist'].seasons_recorded - bcat
         games = playoff_games(data['box'], season)
@@ -2957,11 +3022,11 @@ def step(state, key, data):
         else:
             to = [q for q in games if q[0] > g][:1]
         if to:
-            return (SCREEN_PBOX, 0, bcat * 64 + to[0][0] - 16), 0
+            return pack(SCREEN_PBOX, 0, bcat * 64 + to[0][0] - 16), 0
         if key == KEY_RIGHT:
             have = [k for k in range(SERIES_GAMES) if series_game(data['ms'], season, k)]
             if have:
-                return (SCREEN_BOX, 0, bcat * 8 + have[0]), 0
+                return pack(SCREEN_BOX, 0, bcat * 8 + have[0]), 0
         return state, 0
     if screen == SCREEN_PLAYOFFS and key == KEY_ENTER:
         # the box of the first game whose GAME row is on the current page (the season's
@@ -3222,9 +3287,9 @@ FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
            SCREEN_AWHIST: 'ENTER CARD  LEFT RIGHT AWARD  PGUP PGDN  ESC',
            SCREEN_STANDINGS: 'ENTER TEAM  LEFT RIGHT SEASON  PGUP PGDN ESC',
            SCREEN_SERIES: '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
-           SCREEN_BOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC SERIES',
+           SCREEN_BOX: 'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC',
            SCREEN_PLAYOFFS: 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
-           SCREEN_PBOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC PLAYOFFS',
+           SCREEN_PBOX: 'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC',
            SCREEN_FIND: 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'}
 
 

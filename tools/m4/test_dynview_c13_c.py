@@ -645,6 +645,70 @@ def test_playoffs_hub_screen_parity(tmp_path):
     assert check(ldir, tmp_path, 'c23c_hub_again', []) == hub
 
 
+# ---------------------------------------------------------------- C62 BOX / PBOX row cursor
+def box_cursor_league(tmp_path, name):
+    """3 seasons, entries 0 ALPHA (batting rows) and 4 ECHO (pitching rows) of two WS
+    games (kind 192 / 193 MILESTON records), one round game with a flags 4 header and
+    its rows for the PBOX; team names through the MAJ"""
+    ldir = league(tmp_path, player_set(), seasons=3, name=name,
+                  ms=[(3, 0, 192, 5 * 256 + 3), (3, 0, 193, 3 * 256 + 16)],
+                  teams=TEAMS)
+    write_box(ldir, [
+        box_rec(3, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0)),
+        box_rec(3, 0, 0, 1, (3, 0, 1, 0, 0, 2, 0, 0)),
+        box_rec(3, 0, 2, 4, (72, 5, 2, 2, 1, 1, 8, 30)),
+        box_rec(3, 0, 2, 0xffff, (10, 1, 0, 0, 0, 1, 0, 3)),
+        box_rec(3, 16, 4, 5 * 256 + 3, (5, 3, 9, 7, 1, 0, 0, 0), b=1, i=1),
+        box_rec(3, 16, 0, 2, (2, 0, 1, 0, 0, 0, 1, 1)),
+        box_rec(3, 16, 2, 6, (80, 5, 2, 2, 1, 1, 8, 30)),
+    ])
+    return ldir
+
+
+@needs_fonts
+def test_box_pbox_row_cursor_parity(tmp_path):
+    """C62 frame parity: the BOX footer, the cursor on a batting row and on a pitching
+    row, the card of a batting row and ESC back with the row kept, ENTER on a header row
+    (the unchanged frame), PGDN; the PBOX cursor and its card rows ('?' records: the
+    frame is the every-row-lit cursor on the headers too)"""
+    ldir = box_cursor_league(tmp_path, 'boxcur')
+    _, data = py_run(ldir, tmp_path, [87, 49])
+    assert dynview.FOOTERS[dynview.SCREEN_BOX] == \
+        'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN  ESC'
+    assert py_run(ldir, tmp_path, [87, 49, RIGHT])[0] == (dynview.SCREEN_BOX, 0, 1)
+    assert dynview.row_entry((dynview.SCREEN_BOX, 0, 0, 1), data) == 0
+    assert dynview.row_entry((dynview.SCREEN_BOX, 0, 0, 4), data) == 4   # ECHO pitching
+    assert dynview.row_entry((dynview.SCREEN_BOX, 0, 0, 0), data) is None
+    # the box: 2 team headers + 2 batting rows + 2 PITCHING headers + 2 pitching rows
+    n = dynview.total_rows((dynview.SCREEN_BOX, 0, 0), data)
+    assert n == 8 == len(dynview.box_entries(data['hist'], data['ms'], data['box'],
+                                             data['teams'], 3, 0))
+    check(ldir, tmp_path, 'c62_box', [87, 49])
+    check(ldir, tmp_path, 'c62_box_cursor_bat', [87, 49, DOWN])
+    check(ldir, tmp_path, 'c62_box_cursor_pit', [87, 49, DOWN, DOWN, DOWN, DOWN])
+    check(ldir, tmp_path, 'c62_box_enter_card', [87, 49, DOWN, ENTER])
+    assert py_run(ldir, tmp_path, [87, 49, DOWN, ENTER])[0] == (CARD, 0, 0)
+    check(ldir, tmp_path, 'c62_box_card_esc', [87, 49, DOWN, ENTER, ESC])
+    assert py_run(ldir, tmp_path, [87, 49, DOWN, ENTER, ESC])[0] == \
+        (dynview.SCREEN_BOX, 0, 0, 1)
+    check(ldir, tmp_path, 'c62_box_enter_header', [87, 49, ENTER])
+    check(ldir, tmp_path, 'c62_box_pgdn', [87, 49, PGDN])
+    check(ldir, tmp_path, 'c62_box_right_reset', [87, 49, DOWN, RIGHT])
+    assert py_run(ldir, tmp_path, [87, 49, DOWN, RIGHT])[0] == (dynview.SCREEN_BOX, 0, 1)
+    check(ldir, tmp_path, 'c62_box_left_back', [87, 49, RIGHT, LEFT])
+    # the round game's player rows open their cards: CHARLIE (entry 2), GOLF (entry 6)
+    check(ldir, tmp_path, 'c62_pbox', [KP, ENTER])
+    check(ldir, tmp_path, 'c62_pbox_cursor', [KP, ENTER, DOWN])
+    check(ldir, tmp_path, 'c62_pbox_card', [KP, ENTER, DOWN, ENTER])
+    assert py_run(ldir, tmp_path, [KP, ENTER, DOWN, ENTER])[0] == (CARD, 0, 2)
+    check(ldir, tmp_path, 'c62_pbox_card_pit', [KP, ENTER, DOWN, DOWN, DOWN, ENTER])
+    assert py_run(ldir, tmp_path, [KP, ENTER, DOWN, DOWN, DOWN, ENTER])[0] == (CARD, 0, 6)
+    check(ldir, tmp_path, 'c62_pbox_esc', [KP, ENTER, DOWN, ENTER, ESC])
+    # a header row names no card
+    assert dynview.row_entry((dynview.SCREEN_PBOX, 0, 0, 0),
+                             py_run(ldir, tmp_path, [KP, ENTER])[1]) is None
+
+
 # ---------------------------------------------------------------- C26 PLAYER CARD POST row
 def post_league(tmp_path, name, entry0_lines=8, pitcher=False):
     """ALPHA (a batter, or a pitcher with pitcher) with entry0_lines seasons of lines, whose

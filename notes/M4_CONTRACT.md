@@ -2048,6 +2048,31 @@ states over the static g_card_back and renders the same framebuffers.
   HOF card then RIGHT, RIGHT across a page boundary then ESC, the LEADERS card then
   LEFT, the HONORS view browse, and RIGHT on the last row).
 
+## C62. DYNVIEW BOX SCORE row cursor (added 2026-10-15)
+BOX SCORE (SCREEN_BOX 12, state (12, page, cat, row) with cat = seasons_back * 8 + game)
+and PLAYOFF BOX (SCREEN_PBOX 15, cat = seasons_back * 64 + (g - 16)) are cursor screens:
+CURSOR_KEYS move the cursor (cursor_move, page = row // 12) and ENTER with row_entry not
+None opens the PLAYER CARD (open_card: data['card_back'] = the packed box state, the row
+kept); ESC on the card returns to it exactly. row_entry reads
+box_entries(hist, ms, box, teams, season, g) / pbox_entries(hist, box, teams, season, g):
+a list the same length as box_rows / pbox_rows, item r = the record idx of a player row
+when idx < n_entries(hist) and idx != history.NO_AWARD, else None (team header, PITCHING
+header, 'NO BOX SCORE RECORDED' message row, '?' rows). Both are built from the same walk
+as their row lists, so lists and entries cannot drift.
+- PGUP / PGDN now move the cursor like on every cursor screen (the paging they did without
+  a cursor before changes state only through cursor_move). LEFT / RIGHT keep the game
+  stepping exactly: a step to another game gives page 0 and row 0 (pack drops the 0 row);
+  with no game to step to the state is unchanged, the row kept. ESC on BOX still goes to
+  SERIES, on PBOX to PLAYOFFS.
+- FOOTERS[SCREEN_BOX] = FOOTERS[SCREEN_PBOX] = 'ENTER CARD  LEFT RIGHT GAME  PGUP PGDN
+  ESC'.
+- C port: one shared int16_t g_box_idx[BOX_MAX_RECS + 4] (2 bytes to a row, well inside
+  the DOS far-data budget) filled while box_body / build_pbox build the rows, cleared to
+  -1 when a message row returns; box_row_entry / pbox_row_entry count the rows with a
+  page - 1 walk and read it. C89; the host binary rebuilds with gcc -Werror; DYNVIEW.EXE
+  is untouched.
+- Reads only; writes nothing.
+
 ## C57. DYNVIEW STANDINGS row to TEAM HISTORY (added 2026-10-15)
 
 SEASON STANDINGS (SCREEN_STANDINGS = 10, state (10, page, cat, row); cat = seasons back
