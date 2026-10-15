@@ -3689,7 +3689,7 @@ static int post_leader_rows(int n)
                 keys[k + 1][0] = v;
                 keys[k + 1][1] = sl;
             }
-        for (i = 0; i < 3 && i < nk; i++) {
+        for (i = 0; i < 3 && i < nk && n < PLAYOFF_ROWS_MAX; i++) {
             char nm[NAME_CAP_MAX], txt[SLEN];
             const PlDr *d = &g_pldr[keys[i][1]];
             entry_name(d->idx, 17, nm);
@@ -3697,9 +3697,8 @@ static int post_leader_rows(int n)
                 sprintf(txt, "%u.%u IP", (unsigned)(d->s[6] / 3),
                         (unsigned)(d->s[6] % 3));
             else if (cat == 6)
-                sprintf(txt, "%u.%02u ERA",
-                        (unsigned)((d->s[5] * 2700u / d->s[6]) / 100u),
-                        (unsigned)((d->s[5] * 2700u / d->s[6]) % 100u));
+                sprintf(txt, "%u.%02u ERA", (unsigned)(keys[i][0] / 100u),
+                        (unsigned)(keys[i][0] % 100u));   /* the 32-bit key */
             else
                 sprintf(txt, fmts[cat], (unsigned)d->s[cat]);
             ser_pser_put(n++, nm, "", "", "", txt);
@@ -3786,9 +3785,12 @@ static int build_playoffs(long season)
             ser_pser_put(n++, tmp, "", "", "", aux);
         }
     }
-    if (g_pldr_n > 0) {                     /* C30: the POSTSEASON LEADERS block */
-        ser_pser_put(n++, "POSTSEASON LEADERS", "", "", "", "");
-        n = post_leader_rows(n);
+    if (g_pldr_n > 0 && n + 1 < PLAYOFF_ROWS_MAX) {  /* C30: the POSTSEASON LEADERS block */
+        int m;
+        ser_pser_put(n, "POSTSEASON LEADERS", "", "", "", "");
+        m = post_leader_rows(n + 1);
+        if (m > n + 1)                      /* the title only over a leader row */
+            n = m;
     }
     return n;
 }

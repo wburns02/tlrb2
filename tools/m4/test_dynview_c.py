@@ -2308,3 +2308,58 @@ def test_c30_cap_256_parity(tmp_path):
     check_parity(ldir, tmp_path, 'c30cap_p1', keys=[80, PGDN])
     data = dynview.load_data(str(ldir))
     assert dynview.total_rows((dynview.SCREEN_PLAYOFFS, 0, 0), data) == 9
+
+
+def test_c30_zero_rows_no_title_and_high_er_parity(tmp_path):
+    """C30: a season whose player rows sum to nothing in every category gives no title
+    row; an ERA over 25 ER (past 16-bit ER * 2700) prints the same text in both ports"""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    hdrs = [T.round_hdr(3, 16, 0, 16, 1, 0, 1, 5, 3, 9, 7, 1, 0),
+            T.round_hdr(3, 17, 0, 16, 1, 0, 2, 2, 6, 8, 6, 0, 1)]
+    (tmp_path / 'plc30z').mkdir(parents=True, exist_ok=True)
+    ldir = T.make_series(tmp_path / 'plc30z', T.game_ms(3, (0,)))
+    T.write_box(ldir, hdrs + [T.box_rec(3, 16, 0, 1, (3, 0, 0, 0, 0, 0, 0, 0)),
+                              T.box_rec(3, 16, 2, 2, (0, 0, 0, 0, 0, 0, 0, 0))])
+    rows = dynview.rows((dynview.SCREEN_PLAYOFFS, 0, 0), dynview.load_data(str(ldir)))
+    assert len(rows) == 8 and ('POSTSEASON LEADERS', '', '', '', '') not in rows
+    check_parity(ldir, tmp_path, 'c30z_p0', keys=[80])
+    (tmp_path / 'plc30r').mkdir(parents=True, exist_ok=True)
+    ldir = T.make_series(tmp_path / 'plc30r', T.game_ms(3, (0,)))
+    T.write_box(ldir, hdrs + [T.box_rec(3, 16, 2, 2, (90, 30, 30, 30, 0, 0, 1, 0))])
+    data = dynview.load_data(str(ldir))
+    got = []
+    for p in range(2):
+        got.extend(dynview.rows((dynview.SCREEN_PLAYOFFS, p, 0), data))
+    assert got[-1][4] == '30.00 ERA'
+    check_parity(ldir, tmp_path, 'c30r_p0', keys=[80, PGDN])
+
+
+def test_dos_c30_high_er_parity(tmp_path):
+    """Headless DOSBox-X: the POSTSEASON LEADERS ERA of a 30-ER pitcher (ER * 2700 past
+    16 bits) on PLAYOFFS page 1 (/KEYS:80,0x5100), compared with Python"""
+    if not _dos_ready():
+        pytest.skip('DYNVIEW.EXE or dosbox-x missing')
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'plc30d').mkdir(parents=True, exist_ok=True)
+    ldir = T.make_series(tmp_path / 'plc30d', T.game_ms(3, (0,)))
+    T.write_box(ldir, [T.round_hdr(3, 16, 0, 16, 1, 0, 1, 5, 3, 9, 7, 1, 0),
+                       T.round_hdr(3, 17, 0, 16, 1, 0, 2, 2, 6, 8, 6, 0, 1),
+                       T.box_rec(3, 16, 2, 2, (90, 30, 30, 30, 0, 0, 1, 0))])
+    d = str(tmp_path / 'dosc30')
+    os.makedirs(os.path.join(d, 'LEAGUE'))
+    os.makedirs(os.path.join(d, 'FONTS'))
+    for f in os.listdir(str(ldir)):
+        shutil.copy2(os.path.join(str(ldir), f), os.path.join(d, 'LEAGUE', f))
+    for f in ('MAIN.FNT', 'BOLD.FNT', 'DEFAULT.PAL'):
+        shutil.copy2(os.path.join(FILES, f), os.path.join(d, 'FONTS', f))
+    rc = run_dos(d, ['DYNVIEW.EXE /RAW:OUT.RAW /KEYS:80,0x5100 LEAGUE FONTS'])
+    assert rc == 0, f'dos rc {rc}'
+    dos_raw = open(os.path.join(d, 'OUT.RAW'), 'rb').read()
+    py = fb_python(ldir, keys=[80, PGDN], font_dir=FILES)
+    if dos_raw != py:
+        i = next(k for k in range(min(len(dos_raw), len(py)))
+                 if dos_raw[k] != py[k])
+        pytest.fail(f'dos c30: first diff at pixel ({i % 320}, {i // 320}): '
+                    f'python {py[i]} c {dos_raw[i]}')
