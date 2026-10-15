@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 import dynview
 import history
 from test_teamids import build_maj
+from test_dynview import box_rec, write_box, game_ms
 
 ENTER, ESC = dynview.KEY_ENTER, dynview.KEY_ESC
 UP, DOWN = dynview.KEY_UP, dynview.KEY_DOWN
@@ -984,3 +985,70 @@ def test_seasline_header_byte_3_must_be_zero(tmp_path):
     b[3] = 1
     p.write_bytes(bytes(b))
     assert dynview.load_lines(str(ldir)) == []
+
+
+# ---------------------------------------------------------------- C23c hub and clicks
+def test_hub_rows_and_key_p(tmp_path):
+    """C23c: the 12-row hub, key P and p (80/112) opening PLAYOFFS, a click on the hub's
+    PLAYOFFS row giving ord('P'), and the hub footer unchanged"""
+    ldir = tmp_path / 'hub'
+    write_league(ldir, player_set(), seasons=3)
+    data = load(ldir)
+    assert dynview.MENU_ROWS[11] == 'P  PLAYOFFS'
+    assert len(dynview.MENU_ROWS) == 12
+    assert dynview.total_rows(HUB, data) == 12
+    assert dynview.rows(HUB, data)[11] == ('P  PLAYOFFS',)
+    assert dynview.SCREEN_PLAYOFFS == 14 and dynview.SCREEN_PBOX == 15
+    for key in (80, 112):
+        assert press(HUB, key, data) == (dynview.SCREEN_PLAYOFFS, 0, 0)
+    assert dynview.click_to_key(HUB, data, 100, 35 + 11 * 11 + 3) == (80, None)
+    assert dynview.footer_text(HUB, data) == '0-9 W SELECT   ESC EXIT'
+    assert dynview.TITLE_FOOTER == '0-9 W SELECT   ENTER PLAY BALL'
+    assert dynview.FOOTERS[dynview.SCREEN_PLAYOFFS] == \
+        'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
+    assert dynview.FOOTERS[dynview.SCREEN_PBOX] == \
+        'LEFT RIGHT GAME   PGUP PGDN   ESC PLAYOFFS'
+
+
+def test_playoffs_keys_titles_and_walk_no_fonts(tmp_path):
+    """C23c state machine without fonts: LEFT and RIGHT seasons, PGUP and PGDN, ENTER's
+    box choice by page, the PBOX walk and ESC, LEFT from the WS box into the PBOX, the
+    empty season's keys and the titles"""
+    ldir = tmp_path / 'pl'
+    write_league(ldir, player_set(), seasons=3, ms=[(3, 0, 192, 5 * 256 + 3)])
+    write_box(ldir, [
+        box_rec(3, 16, 4, 0 * 256 + 16, (5, 3, 9, 7, 1, 0, 0, 0), b=1, i=1),
+        box_rec(3, 16, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)),
+        box_rec(3, 16, 2, 0xffff, (80, 5, 2, 2, 1, 1, 8, 30)),
+        box_rec(3, 17, 4, 0 * 256 + 16, (2, 6, 8, 6, 0, 1, 0, 0), b=1, i=2),
+        box_rec(3, 17, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)),
+        box_rec(3, 17, 2, 0xffff, (80, 5, 2, 2, 1, 1, 8, 30)),
+    ])
+    data = load(ldir)
+    SP, SPB, SB = dynview.SCREEN_PLAYOFFS, dynview.SCREEN_PBOX, dynview.SCREEN_BOX
+    assert dynview.screen_title((SP, 0, 0), data) == '1995 PLAYOFFS'
+    assert dynview.screen_title((SP, 0, 1), data) == '1994 PLAYOFFS'
+    assert dynview.screen_title((SPB, 0, 0), data) == '1995 AL DS GAME 1'
+    assert dynview.screen_title((SPB, 0, 1), data) == '1995 AL DS GAME 2'
+    # one AL DS series of 2 games (1-1: SERIES)
+    rows = dynview.playoffs_body((SP, 0, 0), data)[1]
+    assert rows[0][0] == 'AL DIVISION SERIES'
+    assert rows[1] == ('GAME 1', '', '', '', '')
+    assert rows[-1] == ('SERIES', '', '', '', 'TIED 1-1')
+    assert dynview.step((SP, 0, 0), ENTER, data) == ((SPB, 0, 0), 0)
+    # ESC from PBOX to PLAYOFFS, LEFT and RIGHT walk the round games
+    assert dynview.step((SPB, 0, 1), ESC, data) == ((SP, 0, 0), 0)
+    assert dynview.step((SPB, 0, 0), RIGHT, data) == ((SPB, 0, 1), 0)
+    assert dynview.step((SPB, 0, 1), LEFT, data) == ((SPB, 0, 0), 0)
+    # the season's WS game 1 (kind 192 record): LEFT from it opens the last round box
+    assert dynview.step((SB, 0, 0), LEFT, data) == ((SPB, 0, 1), 0)
+    # the empty season (cat 1): the message row and the no-op keys
+    assert dynview.rows((SP, 0, 1), data) == [('NO PLAYOFF ROUNDS RECORDED',)]
+    assert dynview.step((SP, 0, 1), ENTER, data) == ((SP, 0, 1), 0)
+    assert dynview.body_cols((SP, 0, 1), data) == dynview.COLS_SINGLE
+    assert dynview.step((SP, 0, 1), LEFT, data) == ((SP, 0, 2), 0)
+    assert dynview.step((SP, 0, 2), RIGHT, data) == ((SP, 0, 1), 0)
+    assert dynview.step((SP, 0, 0), RIGHT, data) == ((SP, 0, 0), 0)
+    # PGUP and PGDN page as every list screen
+    assert dynview.step((SP, 0, 0), PGDN, data) == ((SP, 0, 0), 0)
+    assert dynview.screen_title((SPB, 0, 0), data) == '1995 AL DS GAME 1'

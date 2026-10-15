@@ -1310,3 +1310,49 @@ case) from each dir, ignoring missing files and dirs. record_season does not cal
 in its default (no-argument) mode only deletes the eight archive names from the snapshot dir
 (the pre dir) and from the live league dir after do_run returned 0; nothing is deleted with
 explicit arguments (PRE HIST RET), and a rename failure leaves everything as it was.
+
+## C23c. DYNVIEW PLAYOFFS (added 2026-10-14)
+
+Finding: the C23b BOXSCORE.DAT round records (flags 4, g 16..63) had no viewer. DYNVIEW gains
+two screens read off those records; it writes nothing.
+
+- Hub: MENU_ROWS gains a 12th row 'P  PLAYOFFS'; key P or p (80/112) opens (SCREEN_PLAYOFFS,
+  0, 0); a click on the row gives ord('P'). Hub rows, footers (FOOTERS[SCREEN_MENU],
+  TITLE_FOOTER) and every other hub key are unchanged.
+- State (dynview.py, byte-exact in dynview.c): SCREEN_PLAYOFFS = 14 with cat = seasons back,
+  SCREEN_PBOX = 15 with cat = seasons back * 64 + (g - 16).
+- playoff_games(box, season) -> [(g, idx, b, i, stats)] of the season's flags-4 records with
+  g >= 16, g ascending (sorted; the writer emits g order). 48 headers at most are kept in the
+  C port's FARDATA table, streamed from BOXSCORE.DAT like the BOX screen (no whole-file
+  buffer).
+- playoff_rows: past the history table or with no game, one message row
+  ('NO PLAYOFF ROUNDS RECORDED',) with COLS_SINGLE. Otherwise per series (consecutive games
+  with the same b): a title row ('%s %s' % (('AL','NL')[L], ('DIVISION SERIES',
+  'CHAMPIONSHIP SERIES')[rnd - 1]), '', '', '', ''), then per game the three rows
+  series_rows makes for a WS game (GAME k with k = i; visitor and home rows with R, H, E
+  from stats (vR, hR, vH, hH, vE, hE) and W on the side with more runs; the C18 managed star
+  on TEAM cells of game rows and the summary, never on a header row), then the summary row
+  over the series' first game's two teams with the WINS threshold 3 for rnd 1 and 4 for rnd 2
+  (WINS/LEADS a-b, else SERIES TIED a-a). Columns COLS_SERIES.
+- PLAYOFFS keys: LEFT/RIGHT step seasons exactly as WORLD SERIES (add to the same branch and
+  to LEFT_RIGHT_SCREENS; a title click is LEFT/RIGHT), PGUP/PGDN page, title
+  '%d PLAYOFFS' % year_of(hist, season) ('PLAYOFFS' with no season), footer
+  'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'. ENTER opens the box of the first game whose
+  GAME row is on the current page (the nth GAME row is the nth playoff game; the season's
+  first round game when no GAME row is on the page), when the season has one.
+- PBOX: rows are box_rows' layout for the records of (season, g) excluding the flags-4 header,
+  at most BOX_RECS_MAX, the two teams from the header's idx; message row 'NO BOX SCORE
+  RECORDED' without a header or without any other record. Title '%d %s %s GAME %d' % (year,
+  ('AL','NL')[L], ('DS','LCS')[rnd - 1], i), 'PLAYOFF BOX SCORE' without a season or header.
+  Footer 'LEFT RIGHT GAME   PGUP PGDN   ESC PLAYOFFS'. LEFT/RIGHT step to the previous/next
+  round game of the season by g over playoff_games; RIGHT past the last round game opens the
+  first WORLD SERIES box of the season that has one ((SCREEN_BOX, 0, cat * 64 >> ... ) =
+  (SCREEN_BOX, 0, (cat >> 6) * 8 + g0)); LEFT on the season's first WS game with a record, when
+  the season has round games, opens the last round game's PBOX ((SCREEN_PBOX, 0,
+  (cat >> 3) * 64 + lastg - 16)); ESC returns (SCREEN_PLAYOFFS, 0, cat >> 6).
+- The existing WORLD SERIES and BOX SCORE screens are unchanged otherwise; their filters stay
+  (season, g) with g < 7.
+- C port parity (tools/m4/dynview_c/dynview.c, gcc host build with -Werror): the hub with the
+  12th row, PLAYOFFS pages 0 and 1 and empty seasons, PBOX first game and after RIGHT, the WS
+  box after RIGHT past the last round game (and back), the managed star, a 48-header season,
+  headers out of g order, and 25 random key walks all match Python's framebuffer byte for byte.

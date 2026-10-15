@@ -23,6 +23,7 @@ import history
 import pytest
 import realign
 import teamids
+import m4.test_dynview as T
 from m4.test_dynview import (make_data, write_player, write_season,
                              write_mileston, st, make_offseason, ROSTER_BODY,
                              big_league, make_awards, make_standings,
@@ -39,7 +40,7 @@ WATCOM = '/mnt/nvme/tools/openwatcom'
 HERE_C = os.path.join(HERE, 'dynview_c')
 HOST = os.path.join(HERE_C, 'dynview_host')
 EXE = os.path.join(HERE_C, 'DYNVIEW.EXE')
-FILES = '/mnt/nvme/tlrb2/files'
+FILES = os.environ.get('DYNVIEW_FILES', '/mnt/nvme/tlrb2/files')
 DOSBOX = '/mnt/nvme/src/dosbox-x/src/dosbox-x'
 
 FB_SIZE = 64000
@@ -59,11 +60,13 @@ _build()
 
 
 def toks(seq):
-    """key sequence -> /KEYS: token string (decimal, hex keys as 0x)."""
+    """key sequence -> /KEYS: token string (decimal, hex keys as 0x, Lx.y a click)."""
     out = []
     for k in seq:
-        if k in (dynview.KEY_LEFT, dynview.KEY_RIGHT, dynview.KEY_UP,
-                 dynview.KEY_DOWN, dynview.KEY_PGUP, dynview.KEY_PGDN):
+        if isinstance(k, tuple):
+            out.append('L%d.%d' % (k[1], k[2]))
+        elif k in (dynview.KEY_LEFT, dynview.KEY_RIGHT, dynview.KEY_UP,
+                   dynview.KEY_DOWN, dynview.KEY_PGUP, dynview.KEY_PGDN):
             out.append('0x%04x' % k)
         else:
             out.append(str(k))
@@ -106,6 +109,14 @@ def fb_python(ldir, keys=None, review=False, font_dir=FILES, offseason=False,
     else:
         s = (dynview.SCREEN_MENU, 0, 0)
     for k in (keys or []):
+        if isinstance(k, tuple):              # ('L', x, y): a left click (C13.6)
+            key, row = dynview.click_to_key(s, data, k[1], k[2])
+            if key is None:
+                continue
+            if row is not None:
+                s = dynview.cursor_to(s, row)
+            s, _ex = dynview.step(s, key, data)
+            continue
         s, _ex = dynview.step(s, k, data)
     return bytes(dynview.render(s, data))
 
@@ -1205,6 +1216,11 @@ def _fonts_ready():
     return os.path.exists(os.path.join(FILES, 'MAIN.FNT'))
 
 
+def _synth_fonts_ready():
+    """a DYNVIEW_FILES override with its own MAIN.FNT also counts (no game files needed)"""
+    return FILES != '/mnt/nvme/tlrb2/files' or _fonts_ready()
+
+
 def test_dos_build():
     exe2 = os.path.join(HERE_C, 'DYNVIEW2.EXE')
     if not os.path.isdir(WATCOM):
@@ -1865,3 +1881,153 @@ def test_c19_signings_releases_parity(tmp_path):
     # mask 0 regression
     write_mask(ldir, 0)
     check_offseason(ldir, tmp_path, 'c19_fa_m0', 4)
+
+
+# ---------------- test C23c: PLAYOFFS (hub key P) and round box scores ----------------
+
+def make_playoffs_mask(tmp_path):
+    """a make_playoffs league with BOSTON (id 0) managed (the mask byte 12 set)"""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    ldir = T.make_playoffs(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[12] = 1
+    p.write_bytes(bytes(d))
+    return ldir
+
+
+PLAYOFF_SEQS = [
+    ('open_P', [80]),
+    ('open_p_lower', [112]),
+    ('click_hub_row11', None),                  # a click at the 12th hub row
+    ('p0_pgdn', [80, PGDN]),
+    ('p0_pgdn_pgdn', [80, PGDN, PGDN]),
+    ('p4', [80] + [PGDN] * 4),
+    ('p4_pgdn_stays', [80] + [PGDN] * 5),
+    ('left_season', [80, LEFT]),
+    ('right_stays', [80, RIGHT]),
+    ('enter_first_game', [80, ENTER]),
+    ('p1_enter', [80, PGDN, ENTER]),
+    ('pbox_first', [80, ENTER]),
+    ('pbox_right_walk', [80, ENTER, RIGHT]),
+    ('pbox_right_to_ws', [80, ENTER] + [RIGHT] * 13),
+    ('ws_left_to_pbox', [87, 49, LEFT]),
+    ('pbox_esc', [80, ENTER, ESC]),
+]
+
+
+def test_playoffs_parity(tmp_path):
+    """C23c: the hub frame with the 12th row, PLAYOFFS pages and seasons, ENTER's box
+    choice, the PBOX walk into and back out of the WS box, and a click on the hub's
+    PLAYOFFS row all match Python pixel for pixel."""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'pl').mkdir(parents=True, exist_ok=True)
+    ldir = T.make_playoffs(tmp_path / 'pl')
+    for tag, keys in PLAYOFF_SEQS:
+        if keys is None:
+            check_parity(ldir, tmp_path, 'pl_click_hub_row11',
+                         keys=[('L', 100, 35 + 11 * 11 + 3)])
+        else:
+            check_parity(ldir, tmp_path, 'pl_' + tag, keys=keys)
+
+
+def test_playoffs_empty_parity(tmp_path):
+    """a season with no round games: the message row, its pages, and ENTER doing
+    nothing there"""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'ple').mkdir(parents=True, exist_ok=True)
+    ldir = make_series(tmp_path / 'ple', T.game_ms(3, (0, 1)))
+    check_parity(ldir, tmp_path, 'ple_p0', keys=[80])
+    check_parity(ldir, tmp_path, 'ple_p1', keys=[80, PGDN])
+    check_parity(ldir, tmp_path, 'ple_left', keys=[80, LEFT])
+    check_parity(ldir, tmp_path, 'ple_enter', keys=[80, ENTER])
+    check_parity(ldir, tmp_path, 'ple_pgdn_enter', keys=[80, PGDN, ENTER])
+
+
+def test_playoffs_managed_cap_and_order_parity(tmp_path):
+    """the managed star on the round rows; the 48 header cap; headers written out of g
+    order draw in g order; a season with WS games but no round records; 25 random key
+    walks over a league with both WS and round records"""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    ldir = make_playoffs_mask(tmp_path / 'plm')
+    check_parity(ldir, tmp_path, 'plm_p0', keys=[80])
+    check_parity(ldir, tmp_path, 'plm_pbox', keys=[80, ENTER])
+
+    tmp3 = tmp_path / 'cap48'
+    tmp3.mkdir()
+    ldir3 = make_series(tmp3, T.game_ms(3, (0,)))
+    recs = []
+    for gi in range(48):
+        g = 16 + gi
+        recs.append(T.round_hdr(3, g, 16, 24, 2, 1, 1, 1, 0, 2, 1, 0, 0))
+        recs.append(T.box_rec(3, g, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)))
+    recs += T.BOX_G0
+    T.write_box(ldir3, recs)
+    check_parity(ldir3, tmp_path, 'plcap_p0', keys=[80])
+    check_parity(ldir3, tmp_path, 'plcap_end', keys=[80, ENTER] + [RIGHT] * 47)
+    check_parity(ldir3, tmp_path, 'plcap_ws_left', keys=[87, 49, LEFT])
+    check_parity(ldir3, tmp_path, 'plcap_ws_left_empty', keys=[87, 50, LEFT])
+
+    tmp4 = tmp_path / 'gorder'
+    tmp4.mkdir()
+    ldir4 = make_series(tmp4, T.game_ms(3, (0,)))
+    recs = [T.round_hdr(3, 18, 0, 16, 1, 0, 3, 4, 2, 8, 6, 1, 0),
+            T.round_hdr(3, 16, 0, 16, 1, 0, 1, 5, 3, 9, 7, 1, 0),
+            T.round_hdr(3, 17, 0, 16, 1, 0, 2, 2, 6, 8, 6, 0, 1)]
+    recs += [T.box_rec(3, g, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)) for g in (16, 17, 18)]
+    recs += [T.box_rec(3, g, 2, 0xffff, (80, 5, 2, 2, 1, 1, 8, 30)) for g in (16, 17, 18)]
+    recs += T.BOX_G0
+    T.write_box(ldir4, recs)
+    check_parity(ldir4, tmp_path, 'plg_p0', keys=[80])
+    check_parity(ldir4, tmp_path, 'plg_enter', keys=[80, PGDN, PGDN, ENTER])
+
+    tmp5 = tmp_path / 'rand'
+    tmp5.mkdir()
+    ldir5 = make_series(tmp5, series_recs(3, SERIES7) + series_recs(2, SERIES6))
+    recs = [rr for g in range(16, 21) for rr in
+            (T.round_hdr(3, g, 0, 16, 1, 0, g - 15, 5, 3, 9, 7, 1, 0),
+             T.box_rec(3, g, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)))]
+    recs += T.BOX_G0
+    T.write_box(ldir5, recs)
+    rng = random.Random(7)
+    keypool = [ESC, ENTER, ord('0'), ord('1'), ord('2'), ord('3'), ord('4'), ord('5'),
+               ord('9'), ord('P'), ord('p'), 87, 119, LEFT, RIGHT,
+               dynview.KEY_UP, dynview.KEY_DOWN, PGUP, PGDN]
+    for n in range(25):
+        seq = [rng.choice(keypool) for _ in range(rng.randrange(1, 25))]
+        check_parity(ldir5, tmp_path, 'plr%02d' % n, keys=seq)
+
+
+def test_playoffs_sparse_g_and_long_box_parity(tmp_path):
+    """brain gate (C23c): round games at g 16, 20, 30, 40 (ENTER on page 1 opens the box
+    of g 40, not g 16 + its list index), and a 44-record box score on g 20 drawn on every
+    page (the C box rows follow the page and the record buffer holds BOX_MAX_RECS)."""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    tmp = tmp_path / 'sparse'
+    tmp.mkdir()
+    ldir = make_series(tmp, T.game_ms(3, (0,)))
+    recs = [T.round_hdr(3, 16, 0, 1, 1, 0, 1, 3, 1, 7, 5, 0, 1),
+            T.round_hdr(3, 20, 2, 3, 1, 0, 1, 2, 4, 6, 9, 1, 0, s=1),
+            T.round_hdr(3, 30, 0, 2, 2, 0, 1, 5, 0, 10, 3, 0, 0),
+            T.round_hdr(3, 40, 16, 17, 2, 1, 1, 1, 2, 4, 8, 2, 0)]
+    for g in (16, 30, 40):
+        recs.append(T.box_rec(3, g, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)))
+    for n in range(44):
+        side, pitch = n % 2, 1 if n % 11 == 0 else 0
+        stats = ((30 + n, 3, 2, 1, 0, 1, 4, 9) if pitch
+                 else (4, n % 3, n % 4, n % 2, 0, 1, n % 5, 0))
+        recs.append(T.box_rec(3, 20, side | (pitch << 1), 0xffff, stats))
+    recs += T.BOX_G0
+    T.write_box(ldir, recs)
+    check_parity(ldir, tmp_path, 'sp_p1_enter', keys=[80, PGDN, ENTER])
+    check_parity(ldir, tmp_path, 'sp_long_p0', keys=[80, ENTER, RIGHT])
+    for k in range(1, 5):
+        check_parity(ldir, tmp_path, 'sp_long_p%d' % k, keys=[80, ENTER, RIGHT] + [PGDN] * k)
+    check_parity(ldir, tmp_path, 'sp_long_back', keys=[80, ENTER, RIGHT, PGDN, PGDN, PGUP])
+    data = dynview.load_data(str(ldir))
+    s = (dynview.SCREEN_PLAYOFFS, 1, 0)
+    assert dynview.step(s, dynview.KEY_ENTER, data)[0] == (dynview.SCREEN_PBOX, 0, 24)

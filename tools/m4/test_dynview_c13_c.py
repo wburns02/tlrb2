@@ -21,6 +21,7 @@ import dynview
 import pytest
 from test_dynview_c13 import (line, player, player_set, portrait_frame,
                               season_lines_fixture, tot, write_league)
+from m4.test_dynview import box_rec, write_box
 from test_teamids import build_maj
 
 FILES = os.environ.get('DYNVIEW_FILES', '/mnt/nvme/tlrb2/files')
@@ -594,3 +595,49 @@ def test_dos_big_season_hr_matches_python(tmp_path):
     assert rc == 0, 'dos rc %d' % rc
     dos = open(str(d / 'OUT.RAW'), 'rb').read()
     assert_frames(dos, py_fb(ldir, tmp_path, keys), 'dos big SEASON HR')
+
+
+# ---------------------------------------------------------------- C23c PLAYOFFS parity
+KP = ord('P')
+Kp = ord('p')
+
+def playoff_league(tmp_path):
+    """the season-lines league with round box records (AL DS two games), the WS game-1
+    MILESTON record, and the box rows of that WS game for the BOX LEFT fallback"""
+    ldir = league(tmp_path, lines=season_lines_fixture(), start=1990,
+                  ms=[(3, 0, 192, 5 * 256 + 3)])
+    write_box(ldir, [
+        box_rec(3, 16, 4, 0 * 256 + 16, (5, 3, 9, 7, 1, 0, 0, 0), b=1, i=1),
+        box_rec(3, 16, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)),
+        box_rec(3, 16, 2, 0xffff, (80, 5, 2, 2, 1, 1, 8, 30)),
+        box_rec(3, 17, 4, 0 * 256 + 16, (2, 6, 8, 6, 0, 1, 0, 0), b=1, i=2),
+        box_rec(3, 17, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)),
+        box_rec(3, 17, 2, 0xffff, (80, 5, 2, 2, 1, 1, 8, 30)),
+    ])
+    return ldir
+
+
+@needs_fonts
+def test_playoffs_hub_screen_parity(tmp_path):
+    """the hub's 12th row, key P and p, the PLAYOFFS pages and seasons, ENTER on pages 0
+    and 1, the empty season's message, ESC back out of the PBOX, and a click on the
+    hub's PLAYOFFS row"""
+    ldir = playoff_league(tmp_path)
+    hub = check(ldir, tmp_path, 'c23c_hub', [])
+    assert check(ldir, tmp_path, 'c23c_open_P', [KP]) == \
+        check(ldir, tmp_path, 'c23c_open_p', [Kp])
+    check(ldir, tmp_path, 'c23c_click_hub_row11', [('L', 100, 35 + 11 * 11 + 3)])
+    check(ldir, tmp_path, 'c23c_playoffs_p0', [KP])
+    check(ldir, tmp_path, 'c23c_playoffs_p0_pgdn', [KP, PGDN])
+    check(ldir, tmp_path, 'c23c_playoffs_left', [KP, LEFT])
+    check(ldir, tmp_path, 'c23c_playoffs_right_stays', [KP, RIGHT])
+    check(ldir, tmp_path, 'c23c_playoffs_left_left', [KP, LEFT, LEFT])
+    check(ldir, tmp_path, 'c23c_empty_enter', [KP, LEFT, ENTER])
+    check(ldir, tmp_path, 'c23c_enter_first_game', [KP, ENTER])
+    check(ldir, tmp_path, 'c23c_pbox_esc', [KP, ENTER, ESC])
+    check(ldir, tmp_path, 'c23c_pbox_right', [KP, ENTER, RIGHT])
+    check(ldir, tmp_path, 'c23c_pbox_ws_left', [87, 49, LEFT])
+    assert check(ldir, tmp_path, 'c23c_click_equals_P',
+                 [('L', 100, 35 + 11 * 11 + 3)]) == \
+        check(ldir, tmp_path, 'c23c_open_P_again', [KP])
+    assert check(ldir, tmp_path, 'c23c_hub_again', []) == hub

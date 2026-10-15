@@ -68,6 +68,8 @@ SCREEN_STANDINGS = 10
 SCREEN_SERIES = 11
 SCREEN_BOX = 12
 SCREEN_CARD = 13
+SCREEN_PLAYOFFS = 14
+SCREEN_PBOX = 15
 # LEADERS modes (C13.3): cat = mode * 32 + category index
 MODE_CAREER, MODE_SEASON, MODE_BYYEAR = 0, 1, 2
 MODE_SHIFT = 32
@@ -84,7 +86,7 @@ BODY_Y0, TITLE_Y0, TITLE_Y1, FOOTER_Y0 = 35, 8, 20, 183
 SET_START = 2
 # the screens where LEFT and RIGHT step something (a title click there is LEFT or RIGHT)
 LEFT_RIGHT_SCREENS = (SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_STANDINGS, SCREEN_SERIES,
-                      SCREEN_BOX)
+                      SCREEN_BOX, SCREEN_PLAYOFFS)
 N_CATS = 18
 
 # MILESTON.DAT kinds from this one up are award and leader records (C7), not milestones
@@ -93,11 +95,11 @@ AWARD_KIND_MIN = 64
 AWARD_MAX = 64
 
 # the hub (SCREEN_MENU) rows: key 1..9 opens screen key - 48, key 0 SEASON STANDINGS,
-# key W (87 or 119) WORLD SERIES
+# key W (87 or 119) WORLD SERIES, key P (80 or 112) PLAYOFFS
 MENU_ROWS = ['1  SEASON HISTORY', '2  HALL OF FAME', '3  LEADERS',
              '4  MILESTONES', '5  LAST SEASON REVIEW', '6  OFFSEASON',
              '7  DYNASTY SETTINGS', '8  ABOUT THE MODS', '9  SEASON AWARDS',
-             '0  SEASON STANDINGS', 'W  WORLD SERIES']
+             '0  SEASON STANDINGS', 'W  WORLD SERIES', 'P  PLAYOFFS']
 
 # HISTORY.DAT header fields used by DYNASTY SETTINGS: byte 10 era, bytes 12..15 mask
 HDR_SIZE = 32
@@ -1497,6 +1499,86 @@ def series_body(state, data):
     return COLS_SERIES, rows
 
 
+def playoff_games(box, season):
+    """[(g, idx, b, i, stats)] of the season's flags-4 header records with g >= 16, g
+    ascending (the round headers come in g order; the sort keeps that when they don't)."""
+    games = [(r[1], r[3], r[4], r[5], r[6]) for r in box
+             if r[0] == season and r[2] == 4 and r[1] >= 16]
+    games.sort(key=lambda t: t[0])
+    return games
+
+
+def playoff_rows(hist, box, teams, season, stems=None, mask=0):
+    """PLAYOFFS rows of season: past the history table or with no game, one message row.
+    Otherwise per series (consecutive games with the same b), a title row
+    (`AL DIVISION SERIES` and the like), then per game the three rows series_rows makes
+    for a WS game, then the summary row series_rows makes over the series' first game's
+    two teams with the WINS threshold 3 for the division series and 4 for the LCS. Managed
+    team ids have '*' prepended to their TEAM cell; game and title header rows never."""
+    if season > history.SEASON_COUNT:
+        return [('NO PLAYOFF ROUNDS RECORDED',)]
+    names = dict(teams)
+
+    def starred(t):
+        name = names.get(t, 'TEAM %d' % t)
+        if stems is not None and t < 32 and ((mask >> t) & 1) != 0:
+            name = '*' + name
+        return name
+
+    games = playoff_games(box, season)
+    if not games:
+        return [('NO PLAYOFF ROUNDS RECORDED',)]
+    out = []
+    k = 0
+    while k < len(games):
+        b = games[k][2]
+        rnd, L = b & 3, (b >> 2) & 1
+        rows = [games[k]]
+        j = k + 1
+        while j < len(games) and games[j][2] == b:
+            rows.append(games[j])
+            j += 1
+        k = j
+        out.append(('%s %s' % (('AL', 'NL')[L], ('DIVISION SERIES',
+                                                'CHAMPIONSHIP SERIES')[rnd - 1]),
+                    '', '', '', ''))
+        wins = Counter()
+        v1, h1 = rows[0][1] >> 8, rows[0][1] & 255
+        for g, idx, _b, i, stats in rows:
+            v, h = idx >> 8, idx & 255
+            vr, hr = stats[0], stats[1]
+            out.append(('GAME %d' % i, '', '', '', ''))
+            out.append((starred(v), '%d' % vr, '%d' % stats[2], '%d' % stats[4],
+                        'W' if vr > hr else ''))
+            out.append((starred(h), '%d' % hr, '%d' % stats[3], '%d' % stats[5],
+                        'W' if hr > vr else ''))
+            if vr != hr:
+                wins[v if vr > hr else h] += 1
+        w1, w2 = wins[v1], wins[h1]
+        if w1 == w2:
+            out.append(('SERIES', '', '', '', 'TIED %d-%d' % (w1, w2)))
+        else:
+            lead, a, b2 = (v1, w1, w2) if w1 > w2 else (h1, w2, w1)
+            out.append((starred(lead), '', '', '',
+                        ('WINS %d-%d' if a >= (3 if rnd == 1 else 4)
+                         else 'LEADS %d-%d') % (a, b2)))
+    return out
+
+
+def playoffs_body(state, data):
+    """(cols, rows) of PLAYOFFS: the season cat seasons back from the newest. A lone
+    message row uses COLS_SINGLE (as WORLD SERIES does); no history gives no rows."""
+    hist = data['hist']
+    if hist.seasons_recorded == 0:
+        return COLS_SINGLE, []
+    rows = playoff_rows(hist, data['box'], data['teams'],
+                        hist.seasons_recorded - state[2],
+                        data.get('team_stems'), data['mask'])
+    if len(rows) == 1 and len(rows[0]) == 1:
+        return COLS_SINGLE, rows
+    return COLS_SERIES, rows
+
+
 def box_line(hist, rec):
     """one BOXSCORE.DAT record as a row: NAME, then the batting numbers AB R H RBI BB SO, or
     for a pitching row IP (d.d), H R ER BB SO"""
@@ -1552,6 +1634,49 @@ def box_body(state, data):
 def series_game(ms, season, g):
     """True when season has its WORLD SERIES game g (kind 192 + g record)."""
     return first_record(ms, season, SERIES_GAME_KIND + g) is not None
+
+
+def pbox_rows(hist, box, teams, season, g):
+    """PLAYOFF BOX rows of round game g of season: box_rows' layout for the records of
+    (season, g) excluding the flags-4 header, at most BOX_RECS_MAX, the two teams from
+    the header's idx. One message row without a flags-4 header record or without any
+    other record of the game."""
+    msg = [('NO BOX SCORE RECORDED',)]
+    if season > history.SEASON_COUNT:
+        return msg
+    heads = [r for r in box if r[0] == season and r[1] == g and r[2] == 4
+             and g >= 16][:1]
+    if not heads:
+        return msg
+    recs = [r for r in box if r[0] == season and r[1] == g and r[2] != 4]
+    recs = recs[:BOX_RECS_MAX]
+    if not recs:
+        return msg
+    v, h = heads[0][3] >> 8, heads[0][3] & 255
+    names = dict(teams)
+    out = []
+    for t, tid in ((0, v), (1, h)):
+        out.append((names.get(tid, 'TEAM %d' % tid), 'AB', 'R', 'H', 'RBI', 'BB', 'SO'))
+        side = [r for r in recs if (r[2] & 1) == t]
+        out += [box_line(hist, r) for r in side if not (r[2] & 2)]
+        out.append(('PITCHING', 'IP', 'H', 'R', 'ER', 'BB', 'SO'))
+        out += [box_line(hist, r) for r in side if r[2] & 2]
+    return out
+
+
+def pbox_body(state, data):
+    """(cols, rows) of the PLAYOFF BOX in state: round game cat & 63 + 16 of the season
+    cat >> 6 seasons back from the newest. A lone message row uses COLS_SINGLE; no
+    history gives no rows."""
+    hist = data['hist']
+    if hist.seasons_recorded == 0:
+        return COLS_SINGLE, []
+    cat = state[2]
+    rows = pbox_rows(hist, data['box'], data['teams'],
+                     hist.seasons_recorded - (cat >> 6), (cat & 63) + 16)
+    if len(rows) == 1 and len(rows[0]) == 1:
+        return COLS_SINGLE, rows
+    return COLS_BOX, rows
 
 
 # ---------------------------------------------------------------- offseason
@@ -1948,6 +2073,10 @@ def total_rows(state, data):
         n = series_body(s, data)[1]
     elif screen == SCREEN_BOX:
         n = box_body(s, data)[1]
+    elif screen == SCREEN_PLAYOFFS:
+        n = playoffs_body(s, data)[1]
+    elif screen == SCREEN_PBOX:
+        n = pbox_body(s, data)[1]
     elif screen == SCREEN_SETTINGS:
         n = settings_rows(data)
     elif screen == SCREEN_ABOUT:
@@ -1995,6 +2124,12 @@ def rows(state, data):
     if screen == SCREEN_BOX:
         body = box_body(state, data)[1]
         return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
+    if screen == SCREEN_PLAYOFFS:
+        body = playoffs_body(state, data)[1]
+        return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
+    if screen == SCREEN_PBOX:
+        body = pbox_body(state, data)[1]
+        return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_HISTORY:
         all_rows = history_rows(hist, data.get('league_dir'), data.get('team_stems'),
                                 data['mask'])
@@ -2036,6 +2171,8 @@ def step(state, key, data):
             return (SCREEN_MENU, 0, 0), 1
         if screen == SCREEN_BOX:
             return (SCREEN_SERIES, 0, cat >> 3), 0
+        if screen == SCREEN_PBOX:
+            return (SCREEN_PLAYOFFS, 0, cat >> 6), 0
         if screen == SCREEN_CARD:
             return data.get('card_back', (SCREEN_MENU, 0, 0)), 0
         return (SCREEN_MENU, 0, 0), 0
@@ -2046,6 +2183,8 @@ def step(state, key, data):
             return (key - 48, 0, 0), 0
         if key in (87, 119):
             return (SCREEN_SERIES, 0, 0), 0
+        if key in (80, 112):
+            return (SCREEN_PLAYOFFS, 0, 0), 0
         if key == KEY_ENTER and cat >> 4:
             return state, 1
         return state, 0
@@ -2126,7 +2265,52 @@ def step(state, key, data):
             to = [k for k in have if k > g][:1]
         if to:
             return (SCREEN_BOX, 0, bcat * 8 + to[0]), 0
+        if key == KEY_LEFT and have and g == have[0] \
+                and 1 <= season <= history.SEASON_COUNT:
+            # LEFT on the season's first WS game with a record, when the season has
+            # round games: the last round game's PLAYOFF BOX
+            games = playoff_games(data['box'], season)
+            if games:
+                return (SCREEN_PBOX, 0, bcat * 64 + games[-1][0] - 16), 0
         return state, 0
+    if screen == SCREEN_PBOX and key in (KEY_LEFT, KEY_RIGHT):
+        # to the previous (LEFT) or next (RIGHT) round game of the season (by g); RIGHT
+        # past the last opens the first WORLD SERIES box of the season that has one
+        bcat, g = cat >> 6, (cat & 63) + 16
+        season = data['hist'].seasons_recorded - bcat
+        games = playoff_games(data['box'], season)
+        if key == KEY_LEFT:
+            to = [q for q in games if q[0] < g][-1:]
+        else:
+            to = [q for q in games if q[0] > g][:1]
+        if to:
+            return (SCREEN_PBOX, 0, bcat * 64 + to[0][0] - 16), 0
+        if key == KEY_RIGHT:
+            have = [k for k in range(SERIES_GAMES) if series_game(data['ms'], season, k)]
+            if have:
+                return (SCREEN_BOX, 0, bcat * 8 + have[0]), 0
+        return state, 0
+    if screen == SCREEN_PLAYOFFS and key == KEY_ENTER:
+        # the box of the first game whose GAME row is on the current page (the season's
+        # first round game when none is), when the season has one. The GAME rows come in
+        # the games' order, so the nth GAME row of the season is the nth playoff game.
+        season = data['hist'].seasons_recorded - cat
+        games = playoff_games(data['box'], season)
+        if not games:
+            return state, 0
+        all_rows = playoffs_body((SCREEN_PLAYOFFS, 0, cat), data)[1]
+        lo = page * ROWS_PER_PAGE
+        seen = 0
+        for r in all_rows[:lo]:
+            if r[0].startswith('GAME '):
+                seen += 1
+        choose = games[0][0]
+        for r in all_rows[lo:lo + ROWS_PER_PAGE]:
+            if r[0].startswith('GAME '):
+                if seen < len(games):
+                    choose = games[seen][0]
+                break
+        return (SCREEN_PBOX, 0, cat * 64 + choose - 16), 0
     if key == KEY_PGDN:
         n = total_rows(state, data)
         if page * ROWS_PER_PAGE + ROWS_PER_PAGE < n:
@@ -2165,7 +2349,7 @@ def step(state, key, data):
         if not newer:
             return state, 0
         return pack(SCREEN_LEADERS, 0, cat, 0, newer[0]), 0
-    if screen in (SCREEN_AWARDS, SCREEN_STANDINGS, SCREEN_SERIES) \
+    if screen in (SCREEN_AWARDS, SCREEN_STANDINGS, SCREEN_SERIES, SCREEN_PLAYOFFS) \
             and key in (KEY_LEFT, KEY_RIGHT):
         # LEFT goes back a season while one is left (shown season > 1), RIGHT forward
         if key == KEY_LEFT and data['hist'].seasons_recorded - cat > 1:
@@ -2236,7 +2420,9 @@ FOOTERS = {SCREEN_MENU: '0-9 W SELECT   ESC EXIT',
            SCREEN_AWARDS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU',
            SCREEN_STANDINGS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU',
            SCREEN_SERIES: '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
-           SCREEN_BOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC SERIES'}
+           SCREEN_BOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC SERIES',
+           SCREEN_PLAYOFFS: 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
+           SCREEN_PBOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC PLAYOFFS'}
 
 
 TITLE_FOOTER = '0-9 W SELECT   ENTER PLAY BALL'
@@ -2304,6 +2490,17 @@ def screen_title(state, data):
     if screen == SCREEN_BOX:
         return '%d WS GAME %d' % (year_of(hist, n - (cat >> 3)), (cat & 7) + 1) if n \
             else 'WS BOX SCORE'
+    if screen == SCREEN_PLAYOFFS:
+        return '%d PLAYOFFS' % year_of(hist, n - cat) if n else 'PLAYOFFS'
+    if screen == SCREEN_PBOX:
+        heads = [r for r in data['box']
+                 if r[0] == n - (cat >> 6) and r[1] == (cat & 63) + 16 and r[2] == 4][:1]
+        if heads and n:
+            b, i = heads[0][4], heads[0][5]
+            rnd, L = b & 3, (b >> 2) & 1
+            return '%d %s %s GAME %d' % (year_of(hist, n - (cat >> 6)),
+                                         ('AL', 'NL')[L], ('DS', 'LCS')[rnd - 1], i)
+        return 'PLAYOFF BOX SCORE'
     if screen == SCREEN_AWARDS:
         return '%d AWARDS' % year_of(hist, n - cat) if n else 'SEASON AWARDS'
     if screen == SCREEN_STANDINGS:
@@ -2342,6 +2539,10 @@ def body_cols(state, data):
         return series_body(state, data)[0]
     if state[0] == SCREEN_BOX:
         return box_body(state, data)[0]
+    if state[0] == SCREEN_PLAYOFFS:
+        return playoffs_body(state, data)[0]
+    if state[0] == SCREEN_PBOX:
+        return pbox_body(state, data)[0]
     if state[0] == SCREEN_LEADERS:
         return leaders_body(state, data)[0]
     return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
