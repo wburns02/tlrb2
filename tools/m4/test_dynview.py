@@ -1900,7 +1900,7 @@ def test_leader_kinds_outside_ranges_ignored(tmp_path):
 
 # ---------------------------------------------------------------- standings
 SS = dynview.SCREEN_STANDINGS
-STAND_FOOTER = 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'
+STAND_FOOTER = 'T TEAM  LEFT RIGHT SEASON  PGUP PGDN  ESC'
 # MAJ team names by league-global id: AL id 5 has no stem (its row reads 'TEAM 5');
 # ids 14 and 15 are not teams in the MAJ
 AL_NAMES = {0: 'BOSTON', 1: 'DETROIT', 2: 'CLEVELAND', 3: 'NEW YORK', 4: 'CHICAGO',

@@ -1632,3 +1632,45 @@ dynview_c/dynview.c renders the same framebuffers and walks the same states.
   DYNVIEW writes BOXSCORE.DAT); the top POST_MAX is kept like season_scan with the same
   ordering and tie break. The host binary is rebuilt with gcc after the parity gate
   (-Werror clean); DYNVIEW.EXE is untouched.
+
+## C29. TEAM HISTORY (added 2026-10-15)
+
+Screen 17 TEAM HISTORY (SCREEN_TEAMHIST), state (17, page, t) with cat = the stable team
+id. Opened from SEASON STANDINGS by T (84 or 116): t is the lowest id of data['teams']
+whose mask bit is set, else data['teams'][0][0]; nothing happens when data['teams'] is
+empty. The standings state is kept in data['th_back'] (one level, like the card) and ESC
+returns it exactly; a T with no prior open defaults that to (SCREEN_STANDINGS, 0, 0).
+Reads HISTORY.DAT season entries (read_season_entry, season <=
+history.SEASON_COUNT) and the C23b BOXSCORE.DAT round headers (playoff_games); writes
+nothing. Python tools/m4/dynview.py is the reference; the C port dynview_c/dynview.c
+renders the same framebuffers and walks the same states.
+
+- team_history_rows(hist, box, teams, t): newest season first over seasons
+  min(hist.seasons_recorded, SEASON_COUNT) down to 1, one row per season where
+  t has W + L > 0: (year_text(hist, season), '%d' % W, '%d' % L, fmt_avg(PCT), FINISH,
+  RESULT) with PCT = W * 1000 // (W + L). FINISH = the 1-based rank of t, as an ordinal
+  ('1ST', '2ND', '3RD', then '%dTH' from 4; 11..13 always TH) among the teams of t's
+  league (id // 16) with W + L > 0 and the same division_of(se, id), ordered as
+  standings_block orders them (PCT desc, W desc, id asc). RESULT: 'CHAMPION' when
+  t == champion; else 'PENNANT' when t is the al_pennant or nl_pennant; else 'LCS'
+  when t is a team of any rnd 2 (b & 3) header of that season; else 'DS' over any
+  rnd 1 header; else ''. No row: one message row ('NO SEASONS RECORDED',) with
+  COLS_SINGLE. The year label is the loop season (start year + season - 1), not the
+  entry's stored season_no.
+- COLS_TEAMHIST = [('YEAR', _cx(0), 4, 'L'), ('W', _cx(5), 4, 'R'), ('L', _cx(10), 4, 'R'),
+  ('PCT', _cx(15), 5, 'R'), ('FINISH', _cx(22), 6, 'L'), ('RESULT', _cx(30), 12, 'L')].
+  Title '%s  %d TITLES  %d PENNANTS' (name = the display of t in data['teams'],
+  'TEAM %d' % t when absent; titles = CHAMPION rows, pennants = CHAMPION or PENNANT
+  rows). Footer 'LEFT RIGHT TEAM   PGUP PGDN   ESC'; the SEASON STANDINGS footer becomes
+  'T TEAM  LEFT RIGHT SEASON  PGUP PGDN  ESC'.
+- Keys: LEFT/RIGHT step t to the previous/next id of data['teams'] (wrapping), page 0;
+  PGUP/PGDN page as every list screen; ESC per the rule above. SCREEN_TEAMHIST joins
+  LEFT_RIGHT_SCREENS, so a title-band click is LEFT or RIGHT.
+- C port: the rows live in a FARDATA buffer of 64 (TEAMHIST_MAX); the round headers are
+  read by streaming BOXSCORE.DAT the way the C23c PLAYOFFS screen does
+  (playoff_headers, no whole-file buffer) with the LCS (rnd 2) scan over all headers
+  before the DS (rnd 1) scan; season entries stream read_season like STANDINGS; the
+  finish rank's insertion keeps the exact standings order (equal records keep id
+  order); the kept standings state is a static pair like g_card_back. The host binary
+  rebuilds with the gcc command in tools/m4/dynview_c/build_dynview.py (-Werror clean);
+  DYNVIEW.EXE is untouched.
