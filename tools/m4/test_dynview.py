@@ -3451,7 +3451,13 @@ def test_playoff_rows_titles_games_and_summaries(tmp_path):
     # a title row keeps its full text (CELL_CUT covers it: 18 chars fit)
 
     rows = playoffs_all_rows((SP, 0, 0), data)
-    assert len(rows) == 50 == dynview.total_rows((SP, 0, 0), data)
+    # C30: the season's player rows (16 headers skipped, 16 '?' batting + 16 '?' pitching)
+    # tally: HITTER 2 H, PLAYER02 1 H 1 RBI, ACE 8 SO 7.2 IP 3.60 ERA, PLAYER06 5 SO
+    # 10.0 IP 2 ER 3.60 ERA -> the block test_c30_league_of_4096 pins exactly
+    assert len(rows) == 60 == dynview.total_rows((SP, 0, 0), data)
+    assert rows[50] == ('POSTSEASON LEADERS', '', '', '', '')
+    assert rows[51] == ('HITTER, A', '', '', '', '2 H')
+    assert rows[52] == ('PLAYER02, B', '', '', '', '1 H')
     # series 0: the title, three games, the 2-1 lead below the DS threshold
     assert rows[0] == ('AL DIVISION SERIES', '', '', '', '')
     assert rows[1] == ('GAME 1', '', '', '', '')
@@ -3479,8 +3485,8 @@ def test_playoff_rows_titles_games_and_summaries(tmp_path):
 
 
 def test_playoffs_managed_star(tmp_path):
-    """C18: the managed star rides on the round rows' TEAM cells and the summary, never
-    on a GAME or title row."""
+    """the managed star on PLAYOFFS; the POSTSEASON LEADERS rows end at_SB rows and the
+    leaders keep the no-star message (the tally reads the box, the names read the entries)"""
     ldir = make_playoffs(tmp_path)
     p = ldir / 'HISTORY.DAT'
     d = bytearray(p.read_bytes())
@@ -3496,6 +3502,10 @@ def test_playoffs_managed_star(tmp_path):
     assert rows[24] == ('MILWAUKEE', '', '', '', 'WINS 3-1')
     assert rows[38] == ('*BOSTON', '', '', '', 'WINS 4-0')
     assert rows[49] == ('COLORADO', '', '', '', 'LEADS 3-0')
+    # C30: the leaders block still appends after the 50 round rows (the same tallies)
+    assert rows[50] == ('POSTSEASON LEADERS', '', '', '', '')
+    assert len(rows) == 60
+    assert rows[51] == ('HITTER, A', '', '', '', '2 H')
 
 
 def test_playoff_box_rows_and_title(tmp_path):
@@ -4077,3 +4087,291 @@ def test_c50_find_list_cap(tmp_path, monkeypatch):
     assert dynview.FIND_LIST == 300 and len(full) > 1
     monkeypatch.setattr(dynview, 'FIND_LIST', 1)
     assert dynview.find_rows(hist, 'SM') == full[:1]
+
+
+
+# ---------------------------------------------------------------- C30 PLAYOFFS postseason leaders
+def pl_round_hdrs():
+    """the two flags-4 heads of the C30 tests: g 16 and 17, AL DS (b 1), games 1 and 2"""
+    return [round_hdr(3, 16, 0, 16, 1, 0, 1, 5, 3, 9, 7, 1, 0),
+            round_hdr(3, 17, 0, 16, 1, 0, 2, 2, 6, 8, 6, 0, 1)]
+
+
+LEAD_TITLE = ('POSTSEASON LEADERS', '', '', '', '')
+
+
+def post_leaders_rows(tmp_path, recs, name='c30'):
+    """the POSTSEASON LEADERS block of a make_series season-3 league whose BOXSCORE.DAT
+    holds pl_round_hdrs() plus recs (the rows before it included)"""
+    (tmp_path / name).mkdir(parents=True, exist_ok=True)
+    ldir = make_series(tmp_path / name, [])
+    write_box(ldir, pl_round_hdrs() + list(recs))
+    data = dynview.load_data(str(ldir))
+    rows = dynview.playoffs_body((SP, 0, 0), data)[1]
+    i = rows.index(LEAD_TITLE)
+    return rows[:i], rows[i:]
+
+
+def test_c30_season_rows_ws_and_rounds_categories_texts(tmp_path):
+    """batters and pitchers spread over a WS game and the round games; the seven
+    categories in order with the exact value texts; ERA needs 27 outs (the 26-out
+    pitcher absent, the 27-out one present); a tie on H by entry index; NO_AWARD and
+    out-of-range idx are ignored"""
+    pre, lead = post_leaders_rows(tmp_path, [
+        box_rec(3, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0)),          # WS game 1 batting
+        box_rec(3, 0, 2, 5, (14, 4, 1, 4, 0, 0, 5, 0)),         # WS game 1 pitching
+        box_rec(3, 17, 0, 0, (0, 0, 14, 7, 2, 0, 0, 0)),        # round game 2 batting
+        box_rec(3, 17, 2, 0xffff, (14, 1, 0, 1, 0, 0, 0, 0)),    # NO_AWARD: ignored
+        box_rec(3, 16, 0, 100, (1, 0, 99, 0, 0, 0, 0, 0)),      # past 30 entries: ignored
+        box_rec(3, 16, 0, 1, (0, 0, 20, 0, 0, 0, 0, 3)),        # PLAYER01: 20 H
+        box_rec(3, 16, 0, 2, (0, 0, 20, 0, 0, 0, 0, 0)),        # PLAYER02: 20 H
+        box_rec(3, 16, 2, 2, (4, 4, 1, 4, 0, 0, 5, 0)),          # PLAYER02: 26 outs, no ERA
+        box_rec(3, 16, 2, 5, (100, 4, 0, 4, 0, 0, 8, 0)),        # ACE: 28 outs 9.1 IP
+        box_rec(3, 16, 0, 12, (1, 0, 0, 0, 0, 0, 0, 8)),         # SO 8 tie, entry 12
+        box_rec(3, 16, 0, 19, (1, 0, 0, 0, 0, 0, 0, 8)),         # SO 8 tie, entry 19
+    ])
+    assert len(pre) == 8 and pre[0][0] == 'AL DIVISION SERIES' and pre[-1][4] == 'TIED 1-1'
+    assert pre[-1][0] == 'SERIES'
+    assert lead == [
+        LEAD_TITLE,
+        ('PLAYER01, B', '', '', '', '20 H'), ('PLAYER02, B', '', '', '', '20 H'),
+        ('HITTER, A', '', '', '', '16 H'),                      # the H tie: idx 1 < 2
+        ('HITTER, A', '', '', '', '2 HR'),                      # the WS HR only
+        ('HITTER, A', '', '', '', '8 RBI'),
+        ('PLAYER12, B', '', '', '', '8 SB'), ('PLAYER19, B', '', '', '', '8 SB'),
+        ('PLAYER01, B', '', '', '', '3 SB'),
+        ('ACE, P', '', '', '', '13 SO'), ('PLAYER02, B', '', '', '', '5 SO'),
+        ('ACE, P', '', '', '', '12.1 IP'), ('PLAYER02, B', '', '', '', '1.1 IP'),
+        ('ACE, P', '', '', '', '5.83 ERA')]                     # 27+ outs only
+    # a batter with only SO 1 (a batting row's sixth stat) has no H: the categories
+    # H HR RBI SB IP ERA all give no row, only SO shows
+    (tmp_path / 'c30b').mkdir(parents=True, exist_ok=True)
+    ldir = make_series(tmp_path / 'c30b', [])
+    write_box(ldir, pl_round_hdrs() + [box_rec(3, 16, 2, 1, (20, 4, 0, 0, 0, 0, 1, 0))])
+    rows = dynview.playoffs_body((SP, 0, 0), dynview.load_data(str(ldir)))[1]
+    i = rows.index(LEAD_TITLE)
+    assert rows[i + 1:] == [('PLAYER01, B', '', '', '', '1 SO'),
+                            ('PLAYER01, B', '', '', '', '2.0 IP')]
+
+
+def test_c30_leaders_cap_top3_and_pages(tmp_path):
+    """at most 3 rows per category, ties by entry index; the leaders ride the last page
+    and ENTER on it still opens the season's first round game"""
+    pre, lead = post_leaders_rows(tmp_path, [
+        box_rec(3, 16, 0, e, (1, 0, 3, 0, 0, 0, 0, 0)) for e in range(1, 6)
+    ], name='c30d')
+    assert lead == [LEAD_TITLE,
+                    ('PLAYER01, B', '', '', '', '3 H'), ('PLAYER02, B', '', '', '', '3 H'),
+                    ('PLAYER03, B', '', '', '', '3 H')]
+    pre3, lead3 = post_leaders_rows(tmp_path, [
+        box_rec(3, 16, 0, e, (1, 0, 3, 0, 0, 0, 0, 3)) for e in range(1, 5)
+    ], name='c30e')
+    assert lead3 == [LEAD_TITLE,
+                     ('PLAYER01, B', '', '', '', '3 H'), ('PLAYER02, B', '', '', '', '3 H'),
+                     ('PLAYER03, B', '', '', '', '3 H'),
+                     ('PLAYER01, B', '', '', '', '3 SB'), ('PLAYER02, B', '', '', '', '3 SB'),
+                     ('PLAYER03, B', '', '', '', '3 SB')]
+    # the 13-row league: page 1 holds the two leaders past the cut
+    (tmp_path / 'c30p').mkdir(parents=True, exist_ok=True)
+    ldir = make_series(tmp_path / 'c30p', [])
+    write_box(ldir, pl_round_hdrs() + [
+        box_rec(3, 16, 0, 0, (1, 0, 41, 0, 0, 0, 0, 0)),
+        box_rec(3, 16, 0, 1, (1, 0, 27, 0, 0, 0, 0, 0)),
+        box_rec(3, 16, 0, 2, (1, 0, 20, 0, 0, 0, 0, 0))])
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((SP, 0, 0), data) == 12
+    assert dynview.rows((SP, 0, 0), data)[-1] == ('PLAYER02, B', '', '', '', '20 H')
+    assert dynview.rows((SP, 1, 0), data) == []
+    s, _ex = dynview.step((SP, 0, 0), dynview.KEY_ENTER, data)
+    assert s == (SPB, 0, 0)
+    # the 13-row league (a 4th H-20 batter below the top 3 keeps: 3 leaders, the SO of
+    # entry 0's 1, IP and ERA rows) still never spills past 12
+    (tmp_path / 'c30p2').mkdir(parents=True, exist_ok=True)
+    ldir = make_series(tmp_path / 'c30p2', [])
+    write_box(ldir, pl_round_hdrs() + [
+        box_rec(3, 16, 0, 0, (1, 0, 41, 0, 0, 0, 0, 1)),
+        box_rec(3, 16, 0, 1, (1, 0, 27, 0, 0, 0, 0, 0)),
+        box_rec(3, 16, 0, 2, (1, 0, 20, 0, 0, 0, 0, 0)),
+        box_rec(3, 16, 0, 3, (1, 0, 20, 0, 0, 0, 0, 0)),
+        box_rec(3, 16, 2, 0, (91, 4, 0, 1, 0, 0, 0, 0)),
+        box_rec(3, 16, 2, 1, (90, 4, 0, 1, 0, 0, 0, 0))])
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((SP, 0, 0), data) == 17
+    assert dynview.rows((SP, 1, 0), data)[-1] == ('PLAYER01, B', '', '', '', '1.00 ERA')
+    s, _ex = dynview.step((SP, 1, 0), dynview.KEY_ENTER, data)
+    assert s == (SPB, 0, 0)                                    # the leaders never enter
+    # the multi-page rows round-trip through rows()
+    all_rows = playoffs_all_rows((SP, 0, 0), data)
+    assert all_rows[:12] == dynview.rows((SP, 0, 0), data)
+    assert all_rows[12:] == dynview.rows((SP, 1, 0), data)
+
+
+def test_c30_cap_257_entries(tmp_path):
+    """the 257th distinct entry in file order is not tallied"""
+    pre, lead = post_leaders_rows(tmp_path, [
+        box_rec(3, 16, 0, e, (1, 0, 3, 0, 0, 0, 0, 0)) for e in range(257)])
+    assert lead == [LEAD_TITLE,
+                    ('HITTER, A', '', '', '', '3 H'), ('PLAYER01, B', '', '', '', '3 H'),
+                    ('PLAYER02, B', '', '', '', '3 H')]
+    # a row of an already tallied entry keeps counting while rows of later entries drop:
+    # entry 0 has two rows in the first 256 (H 10 + 3), entry 257 (the 258th distinct)
+    # never shows
+    recs = [box_rec(3, 16, 0, 0, (1, 0, 10, 0, 0, 0, 0, 0))]
+    recs += [box_rec(3, 16, 0, e, (1, 0, 3, 0, 0, 0, 0, 0)) for e in range(1, 258)]
+    pre, lead = post_leaders_rows(tmp_path, recs, name='c30h')
+    assert lead == [LEAD_TITLE,
+                    ('HITTER, A', '', '', '', '10 H'), ('PLAYER01, B', '', '', '', '3 H'),
+                    ('PLAYER02, B', '', '', '', '3 H')]
+
+
+def test_c30_no_round_headers_message(tmp_path):
+    """a season with player rows but no round header keeps the lone message row"""
+    (tmp_path / 'c30n').mkdir(parents=True, exist_ok=True)
+    ldir = make_series(tmp_path / 'c30n', [])
+    write_box(ldir, [box_rec(3, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0))])
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows((SP, 0, 0), data) == [('NO PLAYOFF ROUNDS RECORDED',)]
+    assert dynview.body_cols((SP, 0, 0), data) == dynview.COLS_SINGLE
+    assert dynview.playoffs_body((SP, 0, 0), data) == (dynview.COLS_SINGLE,
+                                                       [('NO PLAYOFF ROUNDS RECORDED',)])
+
+
+def test_c30_ip_and_era_texts(tmp_path):
+    """'9.1 IP' for 28 outs, the era100 text (er * 2700 // outs), the 27-out floor
+    boundary (27 in, 26 out)"""
+    pre, lead = post_leaders_rows(tmp_path, [
+        box_rec(3, 16, 2, 0, (91, 4, 0, 1, 0, 0, 0, 4)),          # 28 outs -> 9.1 IP; 1 ER 0.03
+        box_rec(3, 16, 2, 1, (90, 4, 0, 1, 0, 0, 0, 3)),          # 27 outs -> 9.0 IP; 1 ER 0.10
+        box_rec(3, 16, 2, 2, (82, 4, 0, 1, 0, 0, 0, 5)),          # 26 outs: absent
+    ], name='c30j')
+    assert lead == [LEAD_TITLE,
+                    ('HITTER, A', '', '', '', '9.1 IP'), ('PLAYER01, B', '', '', '', '9.0 IP'),
+                    ('PLAYER02, B', '', '', '', '8.2 IP'),
+                    ('HITTER, A', '', '', '', '0.96 ERA'), ('PLAYER01, B', '', '', '', '1.00 ERA')]
+
+
+def test_c30_league_of_4096_and_ws_rows_shape(tmp_path):
+    """the parity shape: two round headers, a WS MILESTON game, and the whole box of
+    playoff_recs: BODY unchanged (the 50 rows above), the leaders after"""
+    ldir = make_playoffs(tmp_path)
+    data = dynview.load_data(str(ldir))
+    rows = dynview.playoffs_body((SP, 0, 0), data)[1]
+    assert len(rows) == 60 == dynview.total_rows((SP, 0, 0), data)
+    assert rows[50] == LEAD_TITLE
+    assert rows[51:] == [('HITTER, A', '', '', '', '2 H'), ('PLAYER02, B', '', '', '', '1 H'),
+                         ('HITTER, A', '', '', '', '1 RBI'), ('ACE, P', '', '', '', '8 SO'),
+                         ('PLAYER06, B', '', '', '', '5 SO'), ('PLAYER06, B', '', '', '', '10.0 IP'),
+                         ('ACE, P', '', '', '', '7.2 IP'), ('PLAYER01, B', '', '', '', '0.1 IP'),
+                         ('PLAYER06, B', '', '', '', '3.60 ERA')]
+    # the paged rows agree (a 5-page walk lands the leaders on page 4)
+    got = [r for p in range(5) for r in dynview.rows((SP, p, 0), data)]
+    assert got == rows
+    assert LEAD_TITLE in dynview.rows((SP, 4, 0), data)
+    assert dynview.rows((SP, 4, 0), data)[8:] == rows[56:]
+
+
+def test_c30_other_season_rows_ignored(tmp_path):
+    """player rows of another season never tally into the season's leaders block"""
+    pre, lead = post_leaders_rows(tmp_path, [
+        box_rec(3, 16, 0, 1, (0, 0, 5, 0, 0, 0, 0, 0)),
+        box_rec(2, 16, 0, 1, (0, 0, 9, 0, 0, 0, 0, 0)),
+        box_rec(4, 0, 0, 2, (0, 0, 9, 0, 0, 0, 0, 0)),
+    ], name='c30s')
+    assert lead == [LEAD_TITLE, ('PLAYER01, B', '', '', '', '5 H')]
+
+def test_c54_a_toggles_only_in_career(tmp_path):
+    """A/a flips data['lead_active'] in CAREER mode and resets page and row; in every other
+    LEADERS mode it is a no-op that leaves the flag untouched."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert data['lead_active'] is False
+    s, _ex = dynview.step((PM, 2, 0, 7), 65, data)                # A on CAREER page 2, row 7
+    assert s == (PM, 0, 0) and data['lead_active'] is True
+    s, _ex = dynview.step(s, 97, data)                            # a flips it back
+    assert s == (PM, 0, 0) and data['lead_active'] is False
+    # SEASON, BY YEAR, POST: the state and the flag are unchanged
+    for cat, year in ((dynview.MODE_SHIFT, 0),
+                      (2 * dynview.MODE_SHIFT, 2),
+                      (3 * dynview.MODE_SHIFT, 0)):
+        before = (PM, 1, cat + 3, 9, year) if year else (PM, 1, cat + 3, 9)
+        s, _ex = dynview.step(before, 65, data)
+        assert s == before and data['lead_active'] is False, cat
+    # other screens: A does what it did (nothing)
+    s, _ex = dynview.step((dynview.SCREEN_HOF, 0, 0), 65, data)
+    assert s == (dynview.SCREEN_HOF, 0, 0) and data['lead_active'] is False
+
+
+def test_c54_order_ranks_title_footer_and_empty(tmp_path):
+    """The active filter keeps only status 1 entries, re-ranks from #1, the title flips both
+    ways, the footer gained A ACTIVE, and every category still counts its ranks within the
+    filtered list."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    s, _ex = dynview.step((PM, 0, 0), 65, data)
+    full = [i for _v, i, _e in dynview.career_order(data['hist'], 0)]
+    active = [i for i in full
+              if data['hist'].read_entry(i)['status'] == history.STATUS_ACTIVE]
+    assert [i for _v, i, _e in dynview.career_order(data['hist'], 0, True)] == active
+    rows = dynview.leaders_body((PM, 0, 0), data)[1]
+    assert [r[0] for r in rows] == ['#%d' % (n + 1) for n in range(len(rows))]
+    assert set(r[2].strip() for r in rows) == {''}               # no R or H marks: all active
+    assert rows[0][1:] == \
+        dynview.leaders_rows(data['hist'], 0)[full.index(active[0])][1:]
+    assert dynview.screen_title(s, data) == 'ACTIVE LEADERS: H'
+    assert dynview.footer_text(s, data) == \
+        'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD'
+    s, _ex = dynview.step(s, 65, data)                            # back off: CAREER again
+    assert data['lead_active'] is False
+    assert dynview.screen_title((PM, 0, 0), data) == 'CAREER LEADERS: H'
+    # MVP AWARDS under the filter: ranks recount within the qualifiers
+    s, _ex = dynview.step((PM, 0, 16), 65, data)
+    mvp = dynview.leaders_body((PM, 0, 16), data)[1]
+    assert [r[0] for r in mvp] == ['#%d' % (n + 1) for n in range(len(mvp))]
+    assert dynview.screen_title((PM, 0, 16), data) == 'ACTIVE LEADERS: MVP AWARDS'
+
+
+def test_c54_message_row_when_none_qualify(tmp_path):
+    """Every entry retired: the ACTIVE H list is one 'NO ACTIVE QUALIFIERS.' row with
+    COLS_SINGLE; the unfiltered list is unchanged."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    hist = data['hist']
+    for i in range(dynview.n_entries(hist)):
+        hist.d[hist.entry_offset(i) + 22] = history.STATUS_RETIRED
+    data['lead_active'] = True
+    assert dynview.leaders_body((PM, 0, 0), data) == \
+        (dynview.COLS_SINGLE, [('NO ACTIVE QUALIFIERS.',)])
+    assert dynview.total_rows((PM, 0, 0), data) == 1
+    unfiltered = dynview.load_data(str(ldir))
+    assert dynview.leaders_body((PM, 0, 0), unfiltered)[1][0][2] == 'R'
+
+
+def test_c54_flag_survives_tab_card_and_menu(tmp_path):
+    """The flag is session state: it survives the TAB round trip, LEFT/RIGHT, the PLAYER
+    CARD walk and ESC to MENU, and the cursor entry under the filter opens that entry's
+    card."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    s = press((PM, 0, 0), 65, data)                               # A on
+    assert data['lead_active'] is True
+    s = press(s, dynview.KEY_TAB, data)                           # -> SEASON
+    assert data['lead_active'] is True
+    for _n in range(3):                                           # BY YEAR, POST, CAREER
+        s = press(s, dynview.KEY_TAB, data)                       # H keeps its label
+    assert s == (PM, 0, 0) and data['lead_active'] is True
+    assert dynview.screen_title(s, data) == 'ACTIVE LEADERS: H'
+    s = press(s, dynview.KEY_RIGHT, data)                         # category steps, flag stays
+    assert data['lead_active'] is True
+    assert dynview.screen_title(s, data) == 'ACTIVE LEADERS: HR'
+    # the cursor entry under the filter opens that entry's card
+    entry = dynview.row_entry((PM, 0, 0), data)
+    assert entry == [i for _v, i, _e in dynview.career_order(data['hist'], 0, True)][0]
+    card, _ex = dynview.step((PM, 0, 0), dynview.KEY_ENTER, data)
+    assert card == (dynview.SCREEN_CARD, 0, entry)
+    assert data['lead_active'] is True
+    back, _ex = dynview.step(card, dynview.KEY_ESC, data)
+    assert back == (PM, 0, 0) and data['lead_active'] is True
+    menu, _ex = dynview.step(back, dynview.KEY_ESC, data)
+    assert menu == (dynview.SCREEN_MENU, 0, 0) and data['lead_active'] is True
+    # open_card kept the list state like on any other screen
+    assert data.get('card_back') == (PM, 0, 0)

@@ -1210,3 +1210,58 @@ def test_hof_filter_empty_leagues_frames(tmp_path):
                   seasons=2, name='hofnone')
     check(none, tmp_path, 'c53_nohof_all', [K2])
     assert py_run(none, tmp_path, [K2])[0] == (dynview.SCREEN_HOF, 0, 0)
+
+# ---------------------------------------------------------------- C54 LEADERS active-only
+def active_league(tmp_path, name='c54'):
+    """Six career batters: three active (H 3000 / 2000 / 2000), two retired and one HoF
+    (the retired ones lead the unfiltered list), with season lines for the TAB walk"""
+    players = [player('ALPHA', totals=tot(H=3000, AB=9000)),
+               player('BRAVO', totals=tot(H=2000, AB=3000)),
+               player('CHARLIE', totals=tot(H=2000, AB=3000)),
+               player('DELTA', status=2, totals=tot(H=2500, AB=3000)),
+               player('ECHO', status=3, totals=tot(H=2400, AB=3000)),
+               player('FOXTROT', status=2, totals=tot(H=100))]
+    return league(tmp_path, players, name=name)
+
+
+@needs_fonts
+def test_c54_career_active_parity(tmp_path):
+    """The CAREER LEADERS frame with the new footer, the ACTIVE frame after A, the ACTIVE
+    frame with the cursor on row 1, the empty ACTIVE message frame, and A in SEASON mode
+    (the frame is unchanged) all match Python's bytes"""
+    ldir = active_league(tmp_path)
+    check(ldir, tmp_path, 'c54_career_new_footer', [K3])
+    act = check(ldir, tmp_path, 'c54_active', [K3, ord('A')])
+    assert check(ldir, tmp_path, 'c54_active_a_lower', [K3, ord('a')]) == act
+    check(ldir, tmp_path, 'c54_active_row1', [K3, ord('A'), DOWN])
+    empty = league(tmp_path, [player('ALPHA', status=2, totals=tot(H=3000, AB=9000))],
+                   name='c54empty')
+    check(empty, tmp_path, 'c54_active_empty', [K3, ord('A')])
+    season = check(ldir, tmp_path, 'c54_season_base', [K3, TAB])
+    assert check(ldir, tmp_path, 'c54_season_a_stays', [K3, TAB, ord('A')]) == season
+    # the unfiltered career frame ranks the retired players first again after 'a'
+    career = check(ldir, tmp_path, 'c54_career_again', [K3, ord('A'), ord('A')])
+    assert career == check(ldir, tmp_path, 'c54_career_plain', [K3])
+
+
+@needs_fonts
+def test_c54_active_flag_survives_and_card_parity(tmp_path):
+    """The flag survives the TAB round trip to SEASON and back, the PLAYER CARD opened from
+    the ACTIVE list and ESC back to it, LEFT/RIGHT, and ESC to MENU"""
+    ldir = active_league(tmp_path)
+    act = check(ldir, tmp_path, 'c54_h_after_tabs', [K3, ord('A'), TAB, TAB, TAB, TAB])
+    assert check(ldir, tmp_path, 'c54_active_plain', [K3, ord('A')]) == act
+    card = check(ldir, tmp_path, 'c54_card_from_active', [K3, ord('A'), ENTER])
+    assert py_run(ldir, tmp_path, [K3, ord('A'), ENTER])[0] == (CARD, 0, 0)
+    assert check(ldir, tmp_path, 'c54_card_esc_back', [K3, ord('A'), ENTER, ESC]) == \
+        check(ldir, tmp_path, 'c54_active_plain2', [K3, ord('A')])
+    assert card != act
+    check(ldir, tmp_path, 'c54_menu_after_card_esc', [K3, ord('A'), ENTER, ESC, ESC])
+    s, data = py_run(ldir, tmp_path, [K3, ord('A')])
+    order = [i for _v, i, _e in dynview.career_order(data['hist'], 0, True)]
+    assert order == [0, 1, 2]                # the retired entries lead the unfiltered list
+    assert dynview.row_entry(s, data) == 0
+    assert dynview.screen_title(s, data) == 'ACTIVE LEADERS: H'
+    # the filter re-ranks behind the cursor: row 1 is entry 1 (BRAVO)
+    down, data2 = py_run(ldir, tmp_path, [K3, ord('A'), DOWN])
+    assert dynview.row_entry(down, data2) == 1

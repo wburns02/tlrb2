@@ -1856,3 +1856,76 @@ and build_hof_rows formats only the page's rows from the List); the host binary 
 rebuilt with gcc after the parity gate. Parity covers the ALL frame with the new footer,
 P, OF with the cursor on row 1, the empty-filter message row, the card from a filtered
 row and ESC back.
+## C30. PLAYOFFS postseason leaders (added 2026-10-15)
+
+The PLAYOFFS screen (SCREEN_PLAYOFFS = 14, state (14, page, cat), cat = seasons
+back) gains the POSTSEASON LEADERS block after the round rows. Reads
+BOXSCORE.DAT and HISTORY.DAT; writes nothing. Python tools/m4/dynview.py is the
+reference; the C port dynview_c/dynview.c renders the same framebuffers.
+
+- post_leaders(hist, box, season): every player row (flags & 4 == 0, any g: WS
+  and round games) of the season in file order with idx < n_entries(hist) and
+  idx != history.NO_AWARD tallies into per-entry sums; only the first
+  POST_LEADER_MAX = 256 distinct entries in file order are tallied (later new
+  entries are ignored; rows of already tallied entries keep counting). Batting
+  sums H (s[2]), HR (s[4]), RBI (s[3]), SB (s[7]); pitching sums SO (s[6]),
+  ER (s[3]) and OUTS = 3 * (IP10 // 10) + IP10 % 10.
+- Categories in this order: H, HR, RBI, SB, SO (descending value, value > 0),
+  IP (OUTS descending, OUTS > 0), ERA (ERA ascending, only entries with
+  OUTS >= 27). ERA value era100 = ER * 2700 // OUTS. Ties by entry index
+  ascending. At most 3 rows per category: (entry_name(hist, idx, 17), '', '', '',
+  text); the texts are '%d H', '%d HR', '%d RBI', '%d SB', '%d SO',
+  '%d.%d IP' % (OUTS // 3, OUTS % 3) and '%d.%02d ERA' % (era100 // 100,
+  era100 % 100). A category with no qualifier gives no row.
+- playoffs_body appends the block when the season has at least one round header
+  (the C23c rows are not the message row) and post_leaders returns at least one
+  row: the title row ('POSTSEASON LEADERS', '', '', '', '') then the leader
+  rows, all in COLS_SERIES (the leader name takes the TEAM column). Everything
+  before is unchanged; paging (ROWS_PER_PAGE) and ENTER (the box of the first
+  GAME row on the page, else the season's first round game; leader rows are
+  never GAME rows) are unchanged.
+- C port: the same rows. BOXSCORE.DAT is streamed the way the PLAYOFFS screen
+  already does (no whole-file buffer); the tally is a FARDATA table of
+  POST_LEADER_MAX entries (idx u16; H, HR, RBI, SB, SO, ER u16; OUTS u16). Host
+  binary rebuilt with the gcc command in tools/m4/dynview_c/build_dynview.py
+  (host build only; the Watcom/DOS build and DYNVIEW.EXE are untouched).
+
+## C54. DYNVIEW LEADERS active-only toggle (added 2026-10-15)
+
+LEADERS gains a session-only active-only filter for the CAREER mode (A or a; the state
+tuple is unchanged, the filter is not part of it). Reads only; writes nothing. Python
+tools/m4/dynview.py is the reference; the C port dynview_c/dynview.c (static
+g_lead_active, like the other session values) renders the same framebuffers.
+
+- data['lead_active'] (C: static int g_lead_active), default False (load_data sets it
+  False). In CAREER mode (cat >> 5 == MODE_CAREER) A / a (65, 97) flips it and returns
+  (3, 0, cat, 0 [year]) with the same cat and the BY YEAR season: page and row reset to
+  0. In any other LEADERS mode, and on any other screen, A / a does what it did
+  (ENTER walks the offseason, letters type on FIND); the state and the flag are
+  unchanged.
+- career_order(hist, cat_index, active=False) and career_leader_cells(hist, cat_index,
+  active=False) take the filter. With active True only entries with status ==
+  history.STATUS_ACTIVE (1) qualify, filtered before the LIST_MAX cut; the sort order
+  (value descending, ERA ascending, then entry index ascending) is unchanged and the
+  '#n' rank counts within the filtered list. leaders_body and the cursor-entry lookup
+  (row_entry) pass data.get('lead_active', False) in CAREER mode; other modes pass
+  nothing.
+- Titles: CAREER mode shows 'ACTIVE LEADERS: ' + label with the flag, 'CAREER LEADERS: '
+  without. The other modes ignore the flag ('SEASON LEADERS: ', 'POSTSEASON LEADERS: ',
+  the BY YEAR year label). FOOTERS[SCREEN_LEADERS] =
+  'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD' (the BY YEAR footer is unchanged).
+- CAREER with the flag and no qualifier: one row ('NO ACTIVE QUALIFIERS.',) with
+  COLS_SINGLE (the cursor is not drawn there, as on the other message rows). The flag
+  persists across TAB, LEFT/RIGHT, the PLAYER CARD and ESC to MENU for the session; TAB
+  to another mode and back to CAREER shows the filtered list again.
+- C port: dynview.c mirrors the flag in its leaders_scan (the entry pass skips non-active
+  entries), its leaders_body empty branch (the msg_row), its screen_title and footer_of,
+  and the step A/a branch (page and row reset, cat and year kept); the host binary is
+  rebuilt with gcc after the change (C89 only, no new arrays over 2 KB: the flag is one
+  int, the DOS parity tests fail with pixel diffs when the far-data budget is exceeded).
+- Tests: test_dynview.py (model), test_dynview_c13.py (model, the seasonal fixture) and
+  test_dynview_c13_c.py (host framebuffer parity: the CAREER frame with the new footer,
+  the ACTIVE frame, the ACTIVE frame with the cursor on row 1, the empty ACTIVE message
+  frame, a card from the ACTIVE list and ESC back, and A pressed in SEASON mode). The
+  test that pinned the old footer text (the SEASON LEADERS column test of
+  test_dynview_c13.py) pins the new one.
