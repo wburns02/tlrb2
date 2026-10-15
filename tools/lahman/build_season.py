@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Lahman season -> playable TLRB2 league (H1).
 usage: build_season.py YEAR OUT_DIR [--db PATH] [--template DIR]
-YEAR 1977..1993. Copies the template league dir to OUT_DIR (must not exist or be empty), then (1993:
-the two NL expansion teams), rewrites the 28 CLAS*.V20 files, seeds HISTORY.DAT with the players'
-Lahman careers before YEAR (C36, seed_history), then rebuilds ALLSTAR1/2 from them (C9,
-rosters.refresh_allstars). MAJ and every V20 header bytes 0..110 are kept from the template (1993: the
+YEAR 1977..1997. Copies the template league dir to OUT_DIR (must not exist or be empty), then (1993:
+the two NL expansion teams; 1997: CAL renamed ANAHEIM/ANA), rewrites the 28 CLAS*.V20 files, seeds
+HISTORY.DAT with the players' Lahman careers before YEAR (C36, seed_history), then rebuilds ALLSTAR1/2
+from them (C9, rosters.refresh_allstars). 1994+ adds TEAMID.DAT (from the pre-realignment MAJ) and
+realigns the MAJ to 3 divisions with the Lahman alignment (C38, realign_lahman). MAJ and every V20
+header bytes 0..110 are kept from the template (1993: the
 MAJ NL slot entries and division counts are patched, C15's UTIL NEW TEAM fields). Exit 0 ok, 2 on any
 error."""
 import os
@@ -23,7 +25,7 @@ from m4 import rosters                                            # noqa: E402 (
 
 DB = '/mnt/nvme/tlrb2/lahman/lahmansbaseballdb.sqlite'
 TEMPLATE = '/mnt/nvme/tlrb2/hist/template/CLASSIC'
-YEAR_MIN, YEAR_MAX = 1977, 1993
+YEAR_MIN, YEAR_MAX = 1977, 1997
 
 # 1977-1992 alignment, slot = division*8 + i (all-star team is slot 15): AL East 0..6, AL West
 # 8..14, NL East 0..5, NL West 8..14. Files clasale1..7, clasalw1..7, clasnle1..6, clasnlw1..6.
@@ -36,10 +38,13 @@ NL_TEAMS = ['CHN', 'MON', 'NYN', 'PHI', 'PIT', 'SLN',
 
 def team_list(year=1992):
     """[(stem, Lahman teamID, MAJ slot)] for the season: the 26 pre-1993 teams; 1993 adds
-    the two NL expansion teams (East 7th FLO slot 6, West 7th COL slot 14)."""
+    the two NL expansion teams (East 7th FLO slot 6, West 7th COL slot 14). 1997 renames
+    the AL slot 8 team's Lahman teamID to ANA."""
     out = []
     for i, tid in enumerate(AL_TEAMS):
         et = i < 7
+        if i == 7 and year >= 1997:
+            tid = 'ANA'
         out.append(('clasale%d' % (i + 1) if et else 'clasalw%d' % (i - 6),
                     tid, i if et else i + 1))
     nl = list(NL_TEAMS)
@@ -95,6 +100,28 @@ def add_expansion(out_dir):
     for d in (0, 1):
         img[0x758c + 0x298 + d] = 7
         img[0x20e + 3 + d] = 7
+    open(maj, 'wb').write(bytes(img))
+
+
+# 1997: CAL became ANA (Lahman teamID 'ANA'): the V20 header and the MAJ AL slot 8 entry.
+RENAME_1997 = ('clasalw1', 8, 'ANAHEIM', 'ANA')
+
+
+def rename_anaheim(out_dir):
+    """1997: the clasalw1 team's V20 header name/abbr become ANAHEIM/ANA, and the MAJ AL
+    slot 8 entry's name (16 B NUL padded) and abbr follow."""
+    stem, slot, name, abbr = RENAME_1997
+    path = os.path.join(out_dir, stem.upper() + '.V20')
+    t = v20.Team.load(path)
+    t.set_name(name)
+    t.set_abbr(abbr)
+    t.save(path)
+    maj = _maj_path(out_dir)
+    img = bytearray(open(maj, 'rb').read())
+    b = 0x21d + 0x0f + 16 * slot
+    img[b:b + 16] = name.encode('latin-1').ljust(16, b'\0')
+    b = 0x21d + 0x18f + 3 * slot
+    img[b:b + 3] = abbr.encode('latin-1').ljust(3, b'\0')
     open(maj, 'wb').write(bytes(img))
 
 
@@ -477,6 +504,44 @@ def seed_history(db, year, out_dir, placed):
     c.close()
 
 
+def realign_lahman(db, year, out_dir):
+    """C38: 1994+ leagues are written already realigned to 3 divisions with the Lahman
+    alignment. Writes TEAMID.DAT from the pre-realignment MAJ (stable ids = the 2-division
+    engine ids), realigns the MAJ, then sets HISTORY.DAT byte 0 = 1 (the season is rolled,
+    START NEW SEASON > GENERATED starts it)."""
+    from m4 import realign
+    from m4 import teamids
+    maj = _maj_path(out_dir)
+    d = open(maj, 'rb').read()
+    c = sqlite3.connect('file:%s?mode=ro' % db, uri=True)
+    div = dict(c.execute('select teamID, divID from teams where yearID=?', (year,)))
+    c.close()
+    known = {}
+    for L, prefix in ((0, 'clasal'), (1, 'clasnl')):
+        s = teamids.S[L]
+        names = [[] for _ in range(3)]
+        for stem, tid, slot in team_list(year):
+            if not stem.startswith(prefix):
+                continue
+            if tid not in div:
+                raise ValueError('Lahman teams table has no divID for %s (year %d)'
+                                 % (tid, year))
+            a = s + teamids.O_ABBR + 3 * slot
+            names['EWC'.index(div[tid])].append(
+                bytes(d[a:a + 3]).rstrip(b'\0').decode('latin-1'))
+        known[L] = names
+    table = teamids.make_table(d)
+    open(os.path.join(out_dir, teamids.TABLE_NAME), 'wb').write(table)
+    new, reason = realign.realign(d, 3, known=known)
+    if reason is not None:
+        raise ValueError(reason)
+    open(maj, 'wb').write(new)
+    hp = os.path.join(out_dir, 'HISTORY.DAT')
+    img = bytearray(open(hp, 'rb').read())
+    img[0] = 1
+    open(hp, 'wb').write(bytes(img))
+
+
 def main(argv):
     usage = 'usage: build_season.py YEAR OUT_DIR [--db PATH] [--template DIR]'
     year, out, db, template = None, None, DB, TEMPLATE
@@ -530,9 +595,13 @@ def main(argv):
             os.chmod(os.path.join(out, f), 0o644)
         if year >= 1993:
             add_expansion(out)
+        if year >= 1997:
+            rename_anaheim(out)
         placed = build_league(db, year, out, template)
         seed_history(db, year, out, placed)
         rosters.refresh_allstars(out)               # else the template's classic stars play the first All-Star game
+        if year >= 1994:
+            realign_lahman(db, year, out)
     except Exception as e:
         print('build failed: %s' % e)
         return 2

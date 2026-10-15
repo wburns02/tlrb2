@@ -1499,3 +1499,28 @@ This amends C2: "careers count dynasty seasons only" still holds for WAR10, top7
 but a Lahman league's career totals, seasons_played and award counts start from the real career
 before YEAR. The identity matches C2's (name bytes 0..19, birth = 1000 + season_no - age) at
 season_no 1, so the dynasty continues the seeded entry instead of appending a new zero one.
+
+## C38. Lahman 1994-1997, three divisions (added 2026-10-15)
+
+tools/lahman/build_season.py accepts 1977..1997 (YEAR_MAX 1997; 1998+ still exit 2). team_list is
+unchanged through 1996 (1993's 28 teams carry over); from 1997 the AL slot 8 team is Lahman 'ANA'.
+
+- 1994+ (realign_lahman, after seed_history and the All-Star rebuild): the league dir gains TEAMID.DAT
+  written from the pre-realignment MAJ by the C12.3 no-file rule, so every team's stable id is its
+  2-division engine id (AL slot, NL slot + 16); the ids survive the realignment unchanged.
+- The MAJ is written already realigned to 3 divisions (C12.5 layout) with the real Lahman alignment:
+  divID 'E'/'W'/'C' of the year's teams table, teams in team_list order inside each division, passed
+  to realign.realign as a Python-only known table. The known lists hold the MAJ's NUL-stripped
+  abbreviations; a franchise whose Lahman teamID changed in the 3-division era maps by
+  ML4->MIL, KCA->KC, SLN->SL, LAN->LA, SDN->SD, SFN->SF, and CAL->ANA in 1997. A teams-table row
+  without a divID is an error (exit 2). 0x20a = 0xf3, 0x20d = 3, counts 5/4/5 per league.
+- HISTORY.DAT byte 0 = 1 for 1994+ (rolled, next season not started): DYNASTY does not roll the 0xf3
+  MAJ; the player starts the season with START NEW SEASON > GENERATED (C12.6), and DYNASTY clears
+  byte 0 itself. 1993 and earlier keep byte 0 = 0 and no TEAMID.DAT.
+- 1997 also renames the clasalw1 team: V20 header name ANAHEIM / abbr ANA and the MAJ AL slot 8 name
+  (16 B NUL padded) and abbr; the roster is built from Lahman 'ANA' rows.
+- 1977..1993 output is byte-identical to the pre-C38 build (V20s, MAJ, HISTORY.DAT, no TEAMID.DAT).
+- realign.realign (Python only; the C port realign.h is unchanged and stays byte-identical to the
+  default path) gains an optional `known` argument: a {league: division lists} table replacing
+  KNOWN[target] with the same set-equality check (a set that does not match the league's
+  abbreviations falls back to the generic rule). known=None behaves exactly as today.
