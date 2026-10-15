@@ -1770,8 +1770,8 @@ CARD of hof_order(hist, cat)[row]; ESC returns to the identical HOF state (cat k
 through card_back.
 
 C port: the same constants and rules; HOF_MATCH is a one-byte 9 x 2 x 16 table built at
-boot (no far array over 64 KB, the per-page rows live compact in a far HofRow buffer of
-LIST_MAX with 24-byte cells and are copied per page); the host binary is rebuilt with
-gcc after the parity gate. Parity covers the ALL frame with the new footer, P, OF with
-the cursor on row 1, the empty-filter message row, the card from a filtered row and ESC
-back.
+boot (no far array over 64 KB, no static array over 2 KB: hof_scan fills the List keybox
+and build_hof_rows formats only the page's rows from the List); the host binary is
+rebuilt with gcc after the parity gate. Parity covers the ALL frame with the new footer,
+P, OF with the cursor on row 1, the empty-filter message row, the card from a filtered
+row and ESC back.

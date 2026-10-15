@@ -2240,15 +2240,6 @@ static void cat_format(const CatDef *c, uint32_t v, char *dst)
 
 /* ---------------- top-K list scans ---------------- */
 
-/* HOF row cells (NAME, IND, YRS, H/W, HR/K, AV/ER, WAR), kept compact and formatted
- * per page; each row's entry index (-1 none). The rows of the screen's filter (C53),
- * at most LIST_MAX: a far Row array of LIST_MAX would be far over one segment. */
-typedef struct {
-    uint16_t entry;                     /* the entry index of the row */
-    char cells[7][24];
-} HofRow;
-static HofRow FARDATA g_hofrows[LIST_MAX];
-
 /* the filter label texts (C53): 'HALL OF FAME: ' + label when the cat is not ALL */
 static const char *const HOF_FILTER_LABELS[N_HOF_FILTERS] = {
     "ALL", "P", "C", "1B", "2B", "3B", "SS", "OF", "DH" };
@@ -3726,51 +3717,34 @@ static int build_hist_rows(int page)
     return n;
 }
 
-/* HOF row: NAME, IND, YRS, H/W, HR/SO(PSO), AVG/ERA, WAR. The screen's filter's rows
- * live compact in g_hofrows (built once per hof_scan call), the page's copied out. */
+/* HOF row of page from the g_hofl scan (dynview.hof_rows; the filter was already
+ * applied by hof_scan): NAME, IND, YRS, H/W, HR/SO(PSO), AVG/ERA, WAR */
 static int build_hof_rows(int page)
 {
-    int n = 0, k, c, r0 = page * ROWS_PER_PAGE, r;
-    HofRow *src;
+    int n = 0, k, r0 = page * ROWS_PER_PAGE, r;
+    Entry e;
+    char nm[NAME_CAP_MAX];
     for (r = r0; r < g_hofl.n && r < (page + 1) * ROWS_PER_PAGE; r++, n++) {
-        src = &g_hofrows[r];
+        read_entry(&e, g_hofl.idx[r]);
         g_rows[n].ncells = 7;
-        for (c = 0; c < 7; c++)
-            strcpy(g_rows[n].cells[c], src->cells[c]);
+        name_display(e.name, 12, nm);
+        strcpy(g_rows[n].cells[0], nm[0] ? nm : "?");
+        year_text(e.hof_season, g_rows[n].cells[1]);
+        sprintf(g_rows[n].cells[2], "%u", (unsigned)e.seasons_played);
+        if (e.pitcher) {
+            fmt_count((int32_t)e.tot[13], g_rows[n].cells[3]);
+            fmt_count((int32_t)e.tot[23], g_rows[n].cells[4]);
+            fmt_era100((int32_t)era100_of(e.tot), g_rows[n].cells[5]);
+        } else {
+            fmt_count((int32_t)e.tot[2], g_rows[n].cells[3]);
+            fmt_count((int32_t)e.tot[5], g_rows[n].cells[4]);
+            fmt_avg((int32_t)avg_of(e.tot), g_rows[n].cells[5]);
+        }
+        fmt_war10(e.war10, g_rows[n].cells[6]);
     }
     for (k = n; k < MAX_ROWS; k++)
         g_rows[k].ncells = 0;
     return n;
-}
-
-/* the screen's filtered HOF rows into g_hofrows (dynview.hof_rows of the filter);
- * the filter was already applied by hof_scan. */
-static void hof_build_all(int f)
-{
-    int r;
-    Entry e;
-    char nm[NAME_CAP_MAX];
-    HofRow *row;
-    (void)f;
-    for (r = 0; r < g_hofl.n; r++) {
-        row = &g_hofrows[r];
-        read_entry(&e, g_hofl.idx[r]);
-        row->entry = (uint16_t)g_hofl.idx[r];
-        name_display(e.name, 12, nm);
-        strcpy(row->cells[0], nm[0] ? nm : "?");
-        year_text(e.hof_season, row->cells[1]);
-        sprintf(row->cells[2], "%u", (unsigned)e.seasons_played);
-        if (e.pitcher) {
-            fmt_count((int32_t)e.tot[13], row->cells[3]);
-            fmt_count((int32_t)e.tot[23], row->cells[4]);
-            fmt_era100((int32_t)era100_of(e.tot), row->cells[5]);
-        } else {
-            fmt_count((int32_t)e.tot[2], row->cells[3]);
-            fmt_count((int32_t)e.tot[5], row->cells[4]);
-            fmt_avg((int32_t)avg_of(e.tot), row->cells[5]);
-        }
-        fmt_war10(e.war10, row->cells[6]);
-    }
 }
 
 /* leaders row: rank (restarted per page), NAME, status mark, YRS, value */
@@ -4189,7 +4163,6 @@ static int total_rows(State st)
         if (!g_hdr_seasons)
             return 0;
         hof_scan(&g_hofl, (int)st.cat);
-        hof_build_all((int)st.cat);
         return g_hofl.n;
     case SCREEN_LEADERS:
         return leaders_body(st, -1, &cols);
@@ -4269,7 +4242,6 @@ static int refresh_rows(State st, const ColDef **cols)
         return build_hist_rows(st.page);
     case SCREEN_HOF:
         hof_scan(&g_hofl, (int)st.cat);
-        hof_build_all((int)st.cat);
         if (g_hofl.n == 0 && st.cat != 0)
             return msg_row(st.page, hof_msg(st.cat));
         return build_hof_rows(st.page);
@@ -4394,8 +4366,7 @@ static int32_t row_entry(State st)
         return -1;
     if (st.screen == SCREEN_HOF) {
         hof_scan(&g_hofl, (int)st.cat);
-        hof_build_all((int)st.cat);
-        return row < (int32_t)g_hofl.n ? (int32_t)g_hofrows[row].entry : -1;
+        return row < (int32_t)g_hofl.n ? (int32_t)g_hofl.idx[row] : -1;
     }
     if (st.screen == SCREEN_LEADERS) {
         int mode = (int)(st.cat >> 5), idx = (int)(st.cat & 31), seen = 0;
@@ -5000,7 +4971,6 @@ static const ColDef *body_cols(State st)
     case SCREEN_HOF:
         /* C53: the filtered-empty message row uses COLS_SINGLE */
         hof_scan(&g_hofl, (int)st.cat);
-        hof_build_all((int)st.cat);
         return g_hofl.n == 0 && st.cat != 0 ? COLS_SINGLE : COLS_HOF;
     case SCREEN_LEADERS:
         return COLS_LEADERS;
@@ -5535,7 +5505,7 @@ static const char *footer_of(State st)
 {
     static const char *footers[6] = {
         "0-9 W SELECT   ESC EXIT",
-        "TAB POSITION   PGUP PGDN   ESC MENU",
+        "PGUP PGDN   ESC MENU",
         "TAB POSITION   PGUP PGDN   ESC MENU",
         "LEFT RIGHT STAT  TAB MODE  ENTER CARD",
         "LEFT RIGHT WATCH   PGUP PGDN   ESC MENU",
