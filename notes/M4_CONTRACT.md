@@ -1930,6 +1930,41 @@ g_lead_active, like the other session values) renders the same framebuffers.
   test that pinned the old footer text (the SEASON LEADERS column test of
   test_dynview_c13.py) pins the new one.
 
+
+## C56. DYNVIEW HISTORY cursor and STANDINGS jump (added 2026-10-15)
+
+SEASON HISTORY (SCREEN_HISTORY = 1, history_rows newest first) joins the cursor
+screens (C13.4 rules) and ENTER on a row opens that season's SEASON STANDINGS.
+Reads only; writes nothing.
+
+- history_pos(hist) -> [pos, ...]: the season-entry positions
+  (pos = 1..n, n = min(hist.seasons_recorded, SEASON_COUNT)) sorted by
+  (-season_no, pos), the exact order of history_rows' rows; history_rows keeps
+  its exact output.
+- SCREEN_HISTORY is in cursor_screen (Python and the C port): UP/DOWN/PGUP/PGDN
+  move the row cursor exactly as on HALL OF FAME (cursor_move, cursor_state,
+  pack(screen, row // ROWS_PER_PAGE, cat, row)), the cursor row is highlighted
+  the same way (C_TITLE_RED with white text), and no history
+  (seasons_recorded == 0) means no rows, so the cursor keys do nothing.
+- ENTER on HISTORY row r (r < len(rows)): cat = hist.seasons_recorded -
+  history_pos(hist)[r]; when cat >= 0, data['st_back'] = the packed HISTORY
+  state (cursor kept) and the new state is pack(SCREEN_STANDINGS, 0, cat).
+  Otherwise nothing happens.
+- ESC on SEASON STANDINGS: when data has 'st_back', return it and delete the
+  key (one level); otherwise MENU as before. STANDINGS entered any other way
+  (key 0 on the hub, TEAM HISTORY's th_back) deletes data['st_back'] first, so
+  a later ESC goes to MENU. T on STANDINGS (TEAM HISTORY) leaves st_back
+  untouched: ESC from TEAM HISTORY returns the standings state, a second ESC
+  then returns HISTORY.
+- FOOTERS[SCREEN_HISTORY] = 'ENTER STANDINGS   PGUP PGDN   ESC MENU' (Python
+  and the C port).
+- C port: cursor_screen, hist_scan (which already yields the rows' positions
+  in order) and one static State + flag pair (g_st_back, g_st_have, the
+  g_th_back pattern) for the kept HISTORY state; C89, no new static array, so
+  the DOS far-data budget is untouched. DYNVIEW.EXE is untouched; the host
+  binary rebuilds with the gcc command in tools/m4/dynview_c/build_dynview.py
+  (-Werror clean).
+
 ## C59. DYNVIEW FIND ESC clears (added 2026-10-15)
 FIND PLAYER (SCREEN_FIND 18, state pack(18, page, 0, row); the query in data['find'], the
 C port's static g_find_q) gained a first ESC: ESC with a non-empty query clears it and
