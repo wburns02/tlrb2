@@ -1071,8 +1071,103 @@ def test_budget_off_save_identical(tmp_path):
     want = cr.build_record(form, False, cr.year_byte(cr.read_v20(lg, 'BOS')), grp)
     assert rec == want
 
+# ---------------------------------------------------------------- C34: A auto-fill
+A_KEY, A_ALT = 65, 97                              # key A on the edit screen
 
-# ---------------------------------------------------------------- teams: stable ids (C12.3)
+
+def _no_seed_r(st):
+    """Snapshot of a state with the seed and the ratings values removed."""
+    import copy
+    out = copy.deepcopy(st)
+    out.pop('seed')
+    out['form'].pop('r')
+    return out
+
+
+def test_autofill_batter_each_mode(tmp_path):
+    """A on a batter rating field fills to the mode's budget (REGULAR when OFF), every
+    rating lands in 1..12, the seed carries the draw, and nothing else changes."""
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    for b, target, seed, r in ((0, 45, 429995104, [8, 5, 6, 10, 6, 10]),
+                               (1, 36, 1686638315, [8, 4, 4, 9, 4, 7]),
+                               (2, 45, 429995104, [8, 5, 6, 10, 6, 10]),
+                               (3, 54, 1675280054, [9, 6, 10, 12, 6, 11])):
+        st = to_edit(ctx, 0, 17)
+        st, _ = walk(ctx, [DOWN] * 6 + [66] * b, st)   # POWER row, mode b
+        before = _no_seed_r(st)
+        st2, _ = walk(ctx, [A_ALT], st)
+        assert st2['form']['r'] == r and st2['seed'] == seed, b
+        assert all(1 <= v <= 12 for v in r), b
+        assert st2['budget'] == b
+        assert _no_seed_r(st2) == before, b            # cursor, msg, budget, names as before
+
+
+def test_autofill_twice_different(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 17)
+    st, _ = walk(ctx, [DOWN] * 6 + [A_ALT], st)        # OFF: REGULAR target 45
+    assert (st['seed'], st['form']['r']) == (429995104, [8, 5, 6, 10, 6, 10])
+    st, _ = walk(ctx, [A_KEY], st)                     # the next A draws another spread
+    assert (st['seed'], st['form']['r']) == (1495896251, [9, 8, 7, 6, 9, 6])
+
+
+def test_autofill_pitcher_star_caps_and_keeps_r3(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 0)                            # P1 pitcher
+    st, _ = walk(ctx, [DOWN] * 5 + [66] * 3 + [A_KEY], st)   # CONTROL row, STAR
+    assert (st['seed'], st['form']['r']) == (1303003706, [12, 7, 9])
+    assert sum(st['form']['r']) == 28 and st['form']['r'][2] <= 10
+    # a pitcher-slot form with 6 ratings: r[3..5] untouched
+    st = dict(cr.start_state(), screen=cr.S_EDIT, slot=1, budget=3,
+              form=cr.blank_form())
+    st2, _ = walk(ctx, [DOWN] * 5 + [A_ALT], st)
+    assert st2['form']['r'] == [12, 7, 9, 6, 6, 6] and st2['seed'] == 1303003706
+
+
+def test_autofill_a_types_in_name_fields(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 16)
+    st, _ = walk(ctx, [A_KEY], st)
+    assert (st['form']['last'], st['seed'], st['budget']) == ('A', 1, 0)
+    st, _ = walk(ctx, [DOWN, A_ALT, UP], st)
+    assert (st['form']['first'], st['form']['last'], st['seed']) == ('A', 'A', 1)
+
+
+def test_autofill_save_under_regula_no_msg2(tmp_path):
+    """A under REGULAR: spent == cap 45, so SAVE saves (no msg 2)."""
+    lg = make_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    before = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
+    st = to_edit(ctx, 0, 17)
+    st, _ = walk(ctx, typed('Oak') + [DOWN] * 6 + [66, 66, A_ALT] + [DOWN] * 7
+                 + [ENTER], st)
+    assert (st['screen'], st['msg']) == (cr.S_DONE, 0)
+    assert open(os.path.join(lg, 'BOS.V20'), 'rb').read() != before
+
+
+def test_autofill_seed_survives_create_another(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 17)
+    st, _ = walk(ctx, typed('Oak') + [DOWN] * 6 + [A_ALT] + [DOWN] * 7 + [ENTER], st)
+    assert st['seed'] == 429995104
+    st, _ = walk(ctx, [ENTER], st)                     # CREATE ANOTHER
+    st, _ = walk(ctx, [ENTER, ENTER], st)              # back into an edit screen
+    assert (st['screen'], st['seed']) == (cr.S_EDIT, 429995104)
+    st, _ = walk(ctx, [DOWN] * 5 + [A_KEY], st)        # the next A draws from it
+    assert (st['seed'], st['form']['r']) == (127474245, [9, 6, 9])
+
+
+def test_foot_field_text_c34():
+    """C34: the rating-field footer gained 'A AUTO'; the other footers are unchanged."""
+    assert cr.FOOT_FIELD == 'UP DOWN  LEFT RIGHT  A AUTO  ESC SLOTS'
+    assert cr.FOOT_NAME == 'TYPE NAME   UP DOWN   ESC SLOTS'
+    assert cr.FOOT_SAVE == 'ENTER SAVE   UP DOWN   ESC SLOTS'
+    assert cr.FOOT_TEAM == 'UP DOWN   ENTER PICK   ESC EXIT'
+    assert cr.FOOT_SLOT == 'UP DOWN   ENTER PICK   ESC TEAMS'
+    assert cr.FOOT_CONFIRM == 'ENTER REPLACE   ESC BACK'
+    assert cr.FOOT_DONE == 'ENTER CREATE ANOTHER   ESC EXIT'
+
+
 def write_table(d, entries):
     """TEAMID.DAT of d: entries = {k: stem} (k 0..31), every other entry NUL."""
     tab = bytearray(256)

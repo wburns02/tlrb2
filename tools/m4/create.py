@@ -89,7 +89,7 @@ FOOT_CONFIRM = 'ENTER REPLACE   ESC BACK'
 FOOT_DONE = 'ENTER CREATE ANOTHER   ESC EXIT'
 FOOT_NAME = 'TYPE NAME   UP DOWN   ESC SLOTS'
 FOOT_SAVE = 'ENTER SAVE   UP DOWN   ESC SLOTS'
-FOOT_FIELD = 'UP DOWN   LEFT RIGHT CHANGE   ESC SLOTS'
+FOOT_FIELD = 'UP DOWN  LEFT RIGHT  A AUTO  ESC SLOTS'
 MSG_NAME = 'TYPE A LAST NAME FIRST'
 BUDGET_BAT = (0, 36, 45, 54)              # C31: points per budget mode, batters
 BUDGET_PIT = (0, 18, 24, 28)              # pitchers
@@ -358,7 +358,7 @@ def default_form(image, slot, n_faces):
 
 def start_state():
     return {'screen': S_TEAM, 'cursor': 0, 'team': 0, 'slot': 0, 'form': blank_form(),
-            'msg': 0, 'budget': 0, 'image': bytes(IMAGE_LEN)}
+            'msg': 0, 'budget': 0, 'seed': 1, 'image': bytes(IMAGE_LEN)}
 
 
 def _copy(st):
@@ -459,6 +459,28 @@ def _budget_cap(st):
     return (BUDGET_PIT if st['slot'] < PITCHER_SLOTS else BUDGET_BAT)[st['budget']]
 
 
+def _autofill(st):
+    """C34: key A auto-fill of the ratings from the session seed. The n ratings
+    (3 on a pitcher slot) start at 1 and gain one point per seeded LCG step until
+    they sum to the current mode's budget (REGULAR when the mode is OFF):
+    seed = (seed * 1103515245 + 12345) % 2**31, i = (seed >> 16) % n, and a step
+    adds nothing when r[i] is at its cap. st['seed'] keeps the final value, so the
+    next A gives another spread. Nothing else in the state changes."""
+    pitcher = st['slot'] < PITCHER_SLOTS
+    n = 3 if pitcher else 6
+    target = (BUDGET_PIT if pitcher else BUDGET_BAT)[st['budget'] or 2]
+    r = [1] * n
+    seed = st['seed']
+    while sum(r) < target:
+        seed = (seed * 1103515245 + 12345) % 2 ** 31
+        i = (seed >> 16) % n
+        cap = PIT_ENDURANCE_CAP if pitcher and i == 2 else RATING_CAP
+        if r[i] < cap:
+            r[i] += 1
+    st['seed'] = seed
+    st['form']['r'][:n] = r
+
+
 def _step_edit(st, key, ctx):
     fields = _edit_fields(st['slot'] < PITCHER_SLOTS)
     fld = fields[st['cursor']][0]
@@ -469,6 +491,8 @@ def _step_edit(st, key, ctx):
         st['cursor'] = _list_key(st['cursor'], key, len(fields))
     elif key in (66, 98) and fld not in ('last', 'first'):
         st['budget'] = (st['budget'] + 1) % 4              # C31: cycle the point budget
+    elif key in (65, 97) and fld not in ('last', 'first'):
+        _autofill(st)                                      # C34: the A auto-fill
     elif key == KEY_ENTER:
         if fld == 'save':
             if form['last'] == '':

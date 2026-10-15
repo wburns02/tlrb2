@@ -1415,3 +1415,33 @@ the same framebuffers.
   whole-file buffer); the sums are 32-bit integers; the sums are cached per entry and
   recomputed only when the entry changes. Host builds with the gcc command in
   tools/m4/dynview_c/build_dynview.py (-Werror clean); DYNVIEW.EXE is untouched.
+
+## C34. CREATE auto-fill (added 2026-10-15)
+
+The CREATE edit screen (create._step_edit and the C port) gains key A auto-fill. It
+does not change the V20 record build: save_slot, build_record and every saved byte
+are exactly as before.
+
+- Session state st['seed'], an int set to 1 by start_state and kept across every
+  screen change and CREATE ANOTHER (like budget).
+- Key A (65 or 97) on the edit screen, when the current field is not 'last' or
+  'first' (there A types a letter as before), auto-fills the ratings. Nothing else
+  changes: cursor, msg, budget, name, face, image.
+- n = 3 ratings on a pitcher slot (r0..r2), 6 otherwise. Target = the current
+  mode's budget (BUDGET_PIT / BUDGET_BAT at st['budget']), or the REGULAR budget
+  (index 2) when the mode is OFF. The n ratings are set to 1 and points are added
+  one at a time until their sum equals the target. Each point: seed =
+  (seed * 1103515245 + 12345) % 2**31 (uint32_t arithmetic in C), i = (seed >> 16)
+  % n, then r[i] += 1 when r[i] is below its cap (PIT_ENDURANCE_CAP = 10 for a
+  pitcher's r2, else RATING_CAP = 12); a capped step adds nothing and consumes the
+  draw. Ratings r[n..5] of a pitcher form are untouched.
+- st['seed'] keeps the final value after the fill, so the next A on the same form
+  gives another spread. From seed 1: a batter under REGULAR (45 points) ends at
+  seed 429995104 with [8, 5, 6, 10, 6, 10] and a second A at 1495896251 with
+  [9, 8, 7, 6, 9, 6]; a pitcher under STAR (28 points) ends at 1303003706 with
+  [12, 7, 9].
+- Footer: a rating field's footer (FOOT_FIELD) becomes
+  'UP DOWN  LEFT RIGHT  A AUTO  ESC SLOTS'; every other footer is unchanged.
+- C port: create.c carries seed (uint32_t) in State, set to 1 by start_state, with
+  the same LCG, modulus, cap rule and footer; the host binary is rebuilt with gcc
+  after the parity gate.
