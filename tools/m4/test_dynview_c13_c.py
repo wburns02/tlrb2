@@ -788,3 +788,16 @@ def test_post_leaders_parity(tmp_path):
     assert dynview.screen_title(s, data) == 'POSTSEASON LEADERS: H'
     assert dynview.footer_text(s, data) == dynview.FOOTERS[LEAD]
     assert dynview.leaders_body(s, data)[0] == dynview.COLS_POST_LEADERS
+
+
+@needs_fonts
+def test_post_leaders_entry_past_history_parity(tmp_path):
+    """a BOXSCORE.DAT index past HISTORY.DAT's entries (below POST_ENTRY_MAX) lists as '?'
+    with no mark in both ports, and never crashes the Python reference"""
+    ldir = post_league(tmp_path, 'postpast')
+    write_box(ldir, [box_rec(3, 0, 0, 4000, (4, 1, 3, 1, 0, 0, 1, 0)),
+                     box_rec(3, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0))])
+    check(ldir, tmp_path, 'c39_post_past', [K3, TAB, TAB, TAB])
+    s, data = py_run(ldir, tmp_path, [K3, TAB, TAB, TAB])
+    rows = dynview.leaders_body(s, data)[1]
+    assert rows[0][1:3] == ('?', ' ')

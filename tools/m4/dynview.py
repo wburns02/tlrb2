@@ -2030,7 +2030,8 @@ def leaders_body(state, data):
             return COLS_SINGLE, [(NO_POST_TEXT,)]
         out = []
         for k, (val, entry, games) in enumerate(items, 1):
-            status = hist.read_entry(entry)['status']
+            # a BOXSCORE.DAT index past HISTORY.DAT's entries: name '?', no mark
+            status = hist.read_entry(entry)['status'] if entry < n_entries(hist) else 0
             mark = 'R' if status == history.STATUS_RETIRED \
                 else ('H' if status == history.STATUS_HOF else ' ')
             out.append(('#%d' % k, entry_name(hist, entry, 16), mark, '%d' % games,

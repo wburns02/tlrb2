@@ -3624,7 +3624,10 @@ static int build_post_rows(const CatDef *c, int page)
         Entry e;
         char nm[NAME_CAP_MAX], val[24];
         const PostItem *it = &g_post_top[r];
-        read_entry(&e, it->entry);
+        memset(&e, 0, sizeof e);
+        /* a BOXSCORE.DAT index past HISTORY.DAT's entries: name '?', no mark */
+        if (it->entry < g_entry_count)
+            read_entry(&e, it->entry);
         g_rows[n].ncells = 5;
         sprintf(g_rows[n].cells[0], "#%u", (unsigned)r + 1u);
         name_display(e.name, 16, nm);
