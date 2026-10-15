@@ -970,3 +970,540 @@ def test_parity_foot_release_text_c69():
     assert cr.FOOT_RELEASE == 'Y RELEASE   N ESC BACK'
     src = open(os.path.join(HERE_C, 'create.c')).read()
     assert ('static const char *FOOT_RELEASE = "%s";' % cr.FOOT_RELEASE) in src
+
+
+# ---------------------------------------------------------------- C76: TRADE parity
+import glob  # noqa: E402
+
+from m4.test_create import (trade_league, std_league, trade_keys, _bat, _pit, _pair,  # noqa: E402
+                            _team, A_BATTERS, B_BATTERS, OTHER_TEAMS, slot_keys, T_KEY, Y_KEY,
+                            N_KEY)
+import rosters  # noqa: E402
+
+TRADES_TXT = 'TRADES.TXT'
+
+
+def _league_files(d):
+    """{name: bytes} of the regular files of a league dir."""
+    out = {}
+    for name in sorted(os.listdir(d)):
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            out[name] = open(p, 'rb').read()
+    return out
+
+
+def trade_parity(tmp_path, keys, base):
+    """parity() with synthetic fonts, plus every other file of the two leagues (TRADES.TXT
+    included, present on both or neither) equal. Returns the Python state."""
+    fonts = synth_fonts(tempfile.mkdtemp(dir=str(tmp_path)))
+    st, cwd = parity(tmp_path, keys, base=base, fonts=fonts)
+    work = os.path.dirname(cwd)
+    py = _league_files(os.path.join(work, 'py_league'))
+    cl = _league_files(os.path.join(work, 'c_league'))
+    assert sorted(py) == sorted(cl)
+    for name in py:
+        assert py[name] == cl[name], name
+    return st
+
+
+def _std_base(tmp_path, **kw):
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    return std_league(os.path.join(work, 'mk'), **kw)
+
+
+def test_parity_trade_screens_c76(tmp_path):
+    """Frames of the three trade screens, the T on an empty slot and the ESC / N chain."""
+    base = _std_base(tmp_path)
+    for keys in ([ENTER, T_KEY],                                  # S_TRADE_TEAM
+                 slot_keys(17) + [T_KEY], slot_keys(17) + [ord('t'), DOWN, DOWN],
+                 slot_keys(17) + [T_KEY, ENTER],                  # S_TRADE_PICK
+                 slot_keys(17) + [T_KEY, ENTER] + [DOWN] * 14 + [PGDN, PGUP, PGDN],
+                 slot_keys(17) + [T_KEY, ENTER, DOWN, ENTER],     # ENTER on an empty slot
+                 trade_keys(17, 19),                              # S_TRADE_OFFER
+                 trade_keys(17, 19, tail=[ord('x')]),
+                 trade_keys(17, 19, tail=[N_KEY]), trade_keys(17, 19, tail=[ord('n')]),
+                 trade_keys(17, 19, tail=[ESC]), trade_keys(17, 19, tail=[ESC, ESC]),
+                 trade_keys(17, 19, tail=[ESC, ESC, ESC]),
+                 trade_keys(17, 19, tail=[ESC, ESC, ESC, ESC]),
+                 [ENTER, DOWN, T_KEY],                            # T on an empty slot
+                 [ENTER, DOWN, ord('t'), ENTER]):
+        trade_parity(tmp_path, keys, base)
+
+
+def test_parity_trade_team_rows_above_and_below_a_c76(tmp_path):
+    """The team list without A for A = BOS, NYA, CHI and SLN, and the cursor restored on ESC."""
+    base = _std_base(tmp_path)
+    for a in (0, 2, 3, 4):
+        for row in (0, 1, 2, 3):
+            keys = [DOWN] * a + slot_keys(16) + [T_KEY] + [DOWN] * row
+            trade_parity(tmp_path, keys, base)
+            st = trade_parity(tmp_path, keys + [ENTER], base)
+            assert st['screen'] == cr.S_TRADE_PICK
+            st = trade_parity(tmp_path, keys + [ENTER, DOWN, DOWN, ESC], base)
+            assert (st['screen'], st['cursor']) == (cr.S_TRADE_TEAM, row)
+    trade_parity(tmp_path, [DOWN] * 3 + slot_keys(16) + [T_KEY, PGDN, PGUP, UP], base)
+
+
+def test_parity_trade_accept_with_repair_c76(tmp_path):
+    """The accepted trade: both V20 files byte for byte (headers repaired both sides) and the
+    TRADES.TXT line, plus the S_SLOT frame with TRADE ACCEPTED."""
+    base = _std_base(tmp_path, a_hdr={122: 17, 158: 2, 222: 18}, b_hdr={194: 19, 222: 21})
+    st = trade_parity(tmp_path, trade_keys(17, 19, tail=[Y_KEY]), base)
+    assert (st['screen'], st['msg']) == (cr.S_SLOT, 'TRADE ACCEPTED')
+    st = trade_parity(tmp_path, trade_keys(17, 19, tail=[ord('y')]), base)
+    assert st['msg'] == 'TRADE ACCEPTED'
+    trade_parity(tmp_path, trade_keys(17, 19, tail=[Y_KEY, DOWN]), base)     # the message clears
+    # no reserve to fill the places: repair leaves the bytes, both sides
+    base2 = _std_base(tmp_path, a_hdr={122: 17, 158: 2, 194: 17}, b_hdr={194: 19})
+    assert trade_parity(tmp_path, trade_keys(17, 19, tail=[Y_KEY]), base2)['msg'] \
+        == 'TRADE ACCEPTED'
+
+
+def test_parity_trade_pitchers_and_other_teams_c76(tmp_path):
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    a = _team(_pair(0, _pit('Dunn', 'Di', 40, 2)), _pair(1, _pit('Xan', 'Xi', 35, 7)))
+    b = _team(_pair(0, _pit('Fry', 'Fo', 92, 10)), _pair(1, _pit('Gum', 'Gi', 86, 10)),
+              _pair(2, _pit('Hob', 'Hu', 80, 10)), _pair(5, _pit('Ing', 'Io', 40, 2)))
+    base = trade_league(os.path.join(work, 'mk'), a, b, others=OTHER_TEAMS)
+    assert trade_parity(tmp_path, trade_keys(0, 5, tail=[Y_KEY]), base)['msg'] \
+        == 'TRADE ACCEPTED'
+    assert trade_parity(tmp_path, trade_keys(1, 5, tail=[Y_KEY]), base)['msg'] \
+        == 'TRADE ACCEPTED'                                         # SP bonus: B has 3 SP
+    for get in (0, 1, 2):
+        assert trade_parity(tmp_path, trade_keys(0, get, tail=[Y_KEY]), base)['msg'] \
+            == 'DECLINED: UNTOUCHABLE'
+    # trade with CHI and SLN as B
+    for row in (2, 3):
+        trade_parity(tmp_path, trade_keys(0, 0, b=row, tail=[Y_KEY]), base)
+
+
+def test_parity_trade_declines_c76(tmp_path):
+    """Each decline message and frame; nothing written (files equal Python's, which equal the
+    start)."""
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    a = _team(_pair(0, _pit('Dunn', 'Di', 40, 2)), _pair(16, _bat('Ok', 'A', 38)),
+              _pair(17, _bat('Low', 'B', 37)), _pair(18, _bat('Axe', 'Al', 90)))
+    b = dict(B_BATTERS)
+    b.update(_pair(0, _pit('Fry', 'Fo', 92, 10)))
+    base = trade_league(os.path.join(work, 'mk'), a, b, others=OTHER_TEAMS)
+    start = _league_files(base)
+    cases = ((0, 16, 'DECLINED: SAME TYPE ONLY'), (16, 0, 'DECLINED: SAME TYPE ONLY'),
+             (18, 16, 'DECLINED: UNTOUCHABLE'), (18, 18, 'DECLINED: UNTOUCHABLE'),
+             (17, 19, 'DECLINED: NOT ENOUGH VALUE'), (16, 19, 'TRADE ACCEPTED'))
+    for give, get, msg in cases:
+        st = trade_parity(tmp_path, trade_keys(give, get, tail=[Y_KEY]), base)
+        assert st['msg'] == msg
+    for give, get, msg in cases[:5]:
+        st = trade_parity(tmp_path, trade_keys(give, get, tail=[Y_KEY, ord('y'), ord('x')]), base)
+        assert st['msg'] == 0 and st['screen'] == cr.S_TRADE_OFFER
+    assert _league_files(base) == start
+    # a decline keeps the offer screen, N backs out of it
+    st = trade_parity(tmp_path, trade_keys(17, 19, tail=[Y_KEY, ord('n')]), base)
+    assert (st['screen'], st['cursor']) == (cr.S_TRADE_PICK, 19)
+
+
+def test_parity_trade_need_bonus_c76(tmp_path):
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    a = _team(_pair(16, _bat('Need', 'A', 36, pos2=1)), _pair(17, _bat('Plain', 'B', 36)),
+              _pair(18, _bat('Elbow', 'C', 36, pos2=3)), _pair(19, _bat('Inf', 'D', 36, pos2=11)))
+    base = trade_league(os.path.join(work, 'mk'), a, B_BATTERS, others=OTHER_TEAMS)
+    for give, msg in ((16, 'TRADE ACCEPTED'), (17, 'DECLINED: NOT ENOUGH VALUE'),
+                      (18, 'DECLINED: NOT ENOUGH VALUE'), (19, 'DECLINED: NOT ENOUGH VALUE')):
+        assert trade_parity(tmp_path, trade_keys(give, 19, tail=[Y_KEY]), base)['msg'] == msg
+    # a B whose catcher covers C: the thinnest position is 3B (second position 3 and IF count)
+    b = dict(B_BATTERS)
+    b.update(_pair(22, _bat('Cat', 'Cy', 20, pos2=1)))
+    base = trade_league(os.path.join(work, 'mk2'), a, b, others=OTHER_TEAMS)
+    for give, msg in ((16, 'DECLINED: NOT ENOUGH VALUE'), (18, 'TRADE ACCEPTED'),
+                      (19, 'TRADE ACCEPTED'), (17, 'DECLINED: NOT ENOUGH VALUE')):
+        assert trade_parity(tmp_path, trade_keys(give, 19, tail=[Y_KEY]), base)['msg'] == msg
+
+
+def _py_trades(base, keys, tmp_path):
+    """TRADES.TXT bytes after the Python state machine runs keys on a copy of the league."""
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    lg = os.path.join(work, 'copy')
+    shutil.copytree(base, lg)
+    ctx = cr.load_ctx(lg, synth_fonts(os.path.join(work, 'fonts')), os.path.join(work, 'none'))
+    st = cr.start_state()
+    for k in keys:
+        st, _ = cr.step(st, k, ctx)
+    return open(os.path.join(lg, TRADES_TXT), 'rb').read()
+
+
+def test_parity_trade_season_numbers_c76(tmp_path):
+    """TRADES.TXT season = HISTORY.DAT seasons recorded + 1: 301 for a u16 of 300, 1 for a
+    missing, a 3 byte, an empty and a directory HISTORY.DAT, 8 for a 6 byte one."""
+    for hist, want in ((bytes([0, 0, 0, 0, 44, 1]) + bytes(26), b'301'), (None, b'1'),
+                       (b'', b'1'), (bytes([1, 2, 3]), b'1'), (bytes([0, 0, 0, 0, 7, 0]), b'8'),
+                       ('dir', b'1'), (bytes(32), b'1')):
+        base = _std_base(tmp_path)
+        h = os.path.join(base, 'HISTORY.DAT')
+        if hist == 'dir':
+            os.mkdir(h)
+        elif hist is not None:
+            open(h, 'wb').write(hist)
+        trade_parity(tmp_path, trade_keys(17, 19, tail=[Y_KEY]), base)
+        assert _py_trades(base, trade_keys(17, 19, tail=[Y_KEY]), tmp_path) \
+            == b'TRADE %s BOS Bo Bell DET Hal Hart\r\n' % want
+
+
+def test_parity_trades_txt_appended_c76(tmp_path):
+    base = _std_base(tmp_path)
+    old = b'TRADE 3 AAA Old One BBB Old Two\r\nTRADE 3 CCC x DDD y'
+    open(os.path.join(base, TRADES_TXT), 'wb').write(old)
+    keys = trade_keys(16, 19, tail=[Y_KEY, DOWN, DOWN, T_KEY, ENTER] + [DOWN] * 21
+                      + [ENTER, Y_KEY])
+    st = trade_parity(tmp_path, keys, base)
+    assert st['msg'] == 'TRADE ACCEPTED'
+
+
+def test_parity_trade_write_errors_c76(tmp_path):
+    """TRADES.TXT a directory, and (not root) a read-only V20: TRADE FAILED, the other V20
+    still written, no TRADES.TXT line; both sides alike."""
+    base = _std_base(tmp_path)
+    os.mkdir(os.path.join(base, TRADES_TXT))
+    st = trade_parity(tmp_path, trade_keys(17, 19, tail=[Y_KEY]), base)
+    assert st['msg'] == 'TRADE FAILED' and st['screen'] == cr.S_SLOT
+    if os.geteuid() != 0:
+        for locked in ('BOS.V20', 'DET.V20'):
+            base = _std_base(tmp_path)
+            os.chmod(os.path.join(base, locked), 0o444)
+            try:
+                st = trade_parity(tmp_path, trade_keys(17, 19, tail=[Y_KEY]), base)
+            finally:
+                os.chmod(os.path.join(base, locked), 0o644)
+            assert st['msg'] == 'TRADE FAILED'
+
+
+def test_parity_trade_no_other_team_c76(tmp_path):
+    from m4.test_create import make_league
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    base = make_league(os.path.join(work, 'mk'), spec={0: (b'BOS', b'BOSTON')},
+                       recs={0: A_BATTERS})
+    for keys in ([ENTER] + [DOWN] * 16 + [T_KEY],
+                 [ENTER] + [DOWN] * 16 + [T_KEY, ENTER, DOWN, PGDN],
+                 [ENTER] + [DOWN] * 16 + [T_KEY, ESC]):
+        trade_parity(tmp_path, keys, base)
+
+
+def _wide_team(rng, n_pit, n_bat, base_v=30):
+    recs = {}
+    for s in range(n_pit):
+        end = rng.choice([1, 2, 4, 6, 7, 10])
+        v = 2 * end + 3 * rng.randint(4, 24)
+        recs.update(_pair(s, _pit('P%d' % s, 'A', v, end)))
+    for s in range(16, 16 + n_bat):
+        recs.update(_pair(s, _bat('B%d' % s, 'A', base_v + rng.randint(0, 40),
+                                  pos2=rng.choice([0, 0, 1, 3, 4, 10, 11]))))
+    return recs
+
+
+def trade_session(rng, n):
+    """Random key walk over the trade screens: list keys, ENTER, ESC, T, Y, N."""
+    vocab = [UP, DOWN, DOWN, DOWN, PGDN, PGUP, ENTER, ENTER, ENTER, ESC, T_KEY, T_KEY, ord('t'),
+             Y_KEY, Y_KEY, ord('y'), N_KEY, ord('n'), ord('D'), ord('x')]
+    return [DOWN] * rng.randint(0, 4) + [ENTER] + [rng.choice(vocab) for _ in range(n)]
+
+
+@pytest.mark.parametrize('seed', [1, 2, 3, 4, 5, 6])
+def test_parity_trade_random_sessions_c76(tmp_path, seed):
+    import random
+    rng = random.Random(seed)
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    others = {15: _wide_team(rng, 8, 14), 16: _wide_team(rng, 9, 12), 17: _wide_team(rng, 7, 15)}
+    base = trade_league(os.path.join(work, 'mk'), _wide_team(rng, 9, 16),
+                        _wide_team(rng, 10, 15), others=others,
+                        a_hdr={111: 0, 122: 16, 158: 2, 194: 17, 222: 18, 223: 19},
+                        b_hdr={111: 1, 122: 17, 158: 2, 194: 18, 222: 16})
+    for _ in range(6):
+        trade_parity(tmp_path, trade_session(rng, rng.randint(40, 160)), base)
+
+
+def test_parity_trade_session_makes_trades_c76(tmp_path):
+    """The random walk is not vacuous: over the seeds of the session test, accepted trades and
+    every decline message occur."""
+    import random
+    seen = set()
+    for seed in range(1, 7):
+        rng = random.Random(seed)
+        work = tempfile.mkdtemp(dir=str(tmp_path))
+        others = {15: _wide_team(rng, 8, 14), 16: _wide_team(rng, 9, 12),
+                  17: _wide_team(rng, 7, 15)}
+        base = trade_league(os.path.join(work, 'mk'), _wide_team(rng, 9, 16),
+                            _wide_team(rng, 10, 15), others=others)
+        for _ in range(6):
+            keys = trade_session(rng, rng.randint(40, 160))
+            copy = os.path.join(work, 'run')
+            shutil.rmtree(copy, ignore_errors=True)
+            shutil.copytree(base, copy)
+            ctx = cr.load_ctx(copy, synth_fonts(os.path.join(work, 'fonts')),
+                              os.path.join(work, 'none'))
+            st = cr.start_state()
+            for k in keys:
+                st, _ = cr.step(st, k, ctx)
+                if st['msg'] in cr.MSG_TRADE:
+                    seen.add(st['msg'])
+    assert set(cr.MSG_TRADE[:4]) <= seen
+
+
+def test_parity_trade_texts_c76():
+    src = open(os.path.join(HERE_C, 'create.c')).read()
+    for name in ('FOOT_TRADE_TEAM', 'FOOT_TRADE_PICK', 'FOOT_TRADE_OFFER'):
+        assert ('static const char *%s = "%s";' % (name, getattr(cr, name))) in src
+    for text in cr.MSG_TRADE:
+        assert '"%s"' % text in src
+    assert '"TRADE: PICK A TEAM"' in src and '"PROPOSE A TRADE"' in src
+    assert cr.S_TRADE_TEAM == 6 and '#define S_TRADE_TEAM 6' in src
+    assert '#define S_TRADE_PICK 7' in src and '#define S_TRADE_OFFER 8' in src
+
+
+# ---------------------------------------------------------------- C76: trade.h against rosters.py
+HARNESS_C = r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include "trade.h"
+
+static uint8_t a[V20_SIZE], b[V20_SIZE];
+
+int main(int argc, char **argv)
+{
+    FILE *f;
+    unsigned long n, i;
+    int s, give, get;
+    if (argc != 3)
+        return 2;
+    f = fopen(argv[2], "rb");
+    if (!f)
+        return 2;
+    if (fread(&n, sizeof n, 1, f) != 1)
+        return 2;
+    for (i = 0; i < n; i++) {
+        if (argv[1][0] == 'v') {                 /* images: V, SP, need, top 3 per slot */
+            if (fread(a, 1, V20_SIZE, f) != V20_SIZE)
+                return 2;
+            for (s = 0; s < 80; s++)
+                printf("%ld %d\n", (long)value(RIMG(a, s)), sp_rp(RIMG(a, s)));
+            printf("need %d\n", tr_need(a));
+            for (s = 0; s < 40; s++)
+                printf("top3 %d\n", IS_ON(a, s) ? tr_top3(a, s) : -1);
+        } else {                                  /* verdict: give, get, image A, image B */
+            give = fgetc(f);
+            get = fgetc(f);
+            if (fread(a, 1, V20_SIZE, f) != V20_SIZE || fread(b, 1, V20_SIZE, f) != V20_SIZE)
+                return 2;
+            printf("%d\n", tr_verdict(a, give, b, get));
+        }
+    }
+    fclose(f);
+    return 0;
+}
+'''
+
+
+@pytest.fixture(scope='module')
+def trade_harness(tmp_path_factory):
+    d = tmp_path_factory.mktemp('trade_h')
+    src = os.path.join(str(d), 'harness.c')
+    open(src, 'w').write(HARNESS_C)
+    exe = os.path.join(str(d), 'harness')
+    r = subprocess.run(['gcc', '-std=c99', '-O1', '-Wall', '-Wextra', '-Werror',
+                        '-I', HERE_C, '-o', exe, src], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return exe
+
+
+def _run_harness(exe, mode, blob, count, tmp_path):
+    path = os.path.join(str(tmp_path), 'cases.bin')
+    open(path, 'wb').write(struct.pack('<Q', count) + blob)
+    r = subprocess.run([exe, mode, path], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0
+    return r.stdout.split('\n')[:-1]
+
+
+def _rand_rec(rng, pitcher):
+    rec = bytearray(143)
+    rec[0:5] = b'ABCDE'
+    rec[20] = rng.randint(17, 43)
+    rec[21] = 100
+    pos1 = 0 if pitcher else rng.randint(1, 9)
+    if rng.random() < 0.08:
+        pos1 = rng.randint(0, 15)                  # a stray group / pitcher code
+    rec[31] = pos1 | (rng.choice([0, 0, 1, 2, 3, 5, 8, 10, 11, 12, 13, 14, 15]) << 4)
+    for off in (0x1d, 0x4a, 0x4b, 0x5e, 0x86, 0x87):
+        rec[off] = rng.randint(0, 255)
+    rec[142] = rng.choice([0, 0, 0, 1, 2, 3, 4, 5, 5, 6, 77, 255])
+    return bytes(rec)
+
+
+def _rand_image(rng):
+    img = bytearray(11735)
+    for s in range(40):
+        if rng.random() < 0.85:
+            rec = _rand_rec(rng, s < 16 if rng.random() < 0.95 else s >= 16)
+            img[295 + 143 * s:295 + 143 * (s + 1)] = rec
+    return bytes(img)
+
+
+def _guard_value(rec):
+    try:
+        return rosters.value(rec)
+    except IndexError:
+        return cr._value(rec)
+
+
+def test_trade_h_value_sp_need_top3_match_python_c76(tmp_path, trade_harness):
+    import random
+    rng = random.Random(76)
+    imgs = [_rand_image(rng) for _ in range(40)]
+    imgs.append(bytes(11735))                                  # nobody named
+    out = _run_harness(trade_harness, 'v', b''.join(imgs), len(imgs), tmp_path)
+    k = 0
+    for img in imgs:
+        for s in range(80):
+            rec = img[295 + 143 * s:295 + 143 * (s + 1)]
+            v, sp = out[k].split()
+            k += 1
+            assert int(v) == _guard_value(rec), (s, rec.hex())
+            assert int(sp) == (rosters.sp_rp(rec) == 'SP')
+        assert out[k] == 'need %d' % cr.trade_need(img)
+        k += 1
+        for s in range(40):
+            want = (s in cr.trade_top3(img, s < 16)) if img[295 + 143 * s] else -1
+            assert int(out[k].split()[1]) == int(want)
+            k += 1
+    assert k == len(out)
+
+
+def test_trade_h_value_equals_rosters_value_exactly_c76(tmp_path, trade_harness):
+    """No guard: records whose grade byte is 0..5 (or whose age makes the grade moot) give
+    rosters.value exactly, over the age range and the 16 position codes."""
+    import random
+    rng = random.Random(7)
+    recs = []
+    for _ in range(6000):
+        rec = bytearray(_rand_rec(rng, rng.random() < 0.4))
+        rec[142] = rng.randint(0, 5)
+        rec[20] = rng.randint(0, 50)
+        rec[31] = rng.randint(0, 255)
+        recs.append(bytes(rec))
+    blob = b''
+    for i in range(0, len(recs), 80):
+        chunk = recs[i:i + 80]
+        im = bytearray(11735)
+        for j, rec in enumerate(chunk):
+            im[295 + 143 * j:295 + 143 * (j + 1)] = rec
+        blob += bytes(im)
+    n = (len(recs) + 79) // 80
+    out = _run_harness(trade_harness, 'v', blob, n, tmp_path)
+    k = 0
+    for i in range(n):
+        for j in range(80):
+            idx = i * 80 + j
+            v = int(out[k].split()[0])
+            k += 1 + (0 if j < 79 else 41)
+            if idx < len(recs):
+                assert v == rosters.value(recs[idx]), recs[idx].hex()
+
+
+def test_trade_h_verdict_matches_python_c76(tmp_path, trade_harness):
+    import random
+    rng = random.Random(1976)
+    cases, blob = [], b''
+    codes = {None: 0}
+    codes.update({m: i + 1 for i, m in enumerate(cr.MSG_TRADE[:3])})
+    for _ in range(700):
+        a, b = _rand_image(rng), _rand_image(rng)
+        give = rng.choice([s for s in range(40) if a[295 + 143 * s]] or [0])
+        get = rng.choice([s for s in range(40) if b[295 + 143 * s]] or [0])
+        if not a[295 + 143 * give] or not b[295 + 143 * get]:
+            continue
+        cases.append(codes[cr.trade_verdict({'image': a, 'bimage': b, 'give': give,
+                                             'get': get})])
+        blob += bytes([give, get]) + a + b
+    out = _run_harness(trade_harness, 'x', blob, len(cases), tmp_path)
+    assert [int(x) for x in out] == cases
+    assert {0, 1, 2, 3} <= set(cases), sorted(set(cases))
+
+
+def test_trade_h_synthetic_fixture_records_c76(tmp_path, trade_harness):
+    """The fixtures of the Python tests: every record of the standard league's two team
+    images (and the need / top 3 on them)."""
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    lg = std_league(os.path.join(work, 'L'))
+    imgs = [cr.read_v20(lg, 'BOS'), cr.read_v20(lg, 'DET')]
+    out = _run_harness(trade_harness, 'v', b''.join(imgs), 2, tmp_path)
+    k = 0
+    for img in imgs:
+        for s in range(80):
+            rec = img[295 + 143 * s:295 + 143 * (s + 1)]
+            assert int(out[k].split()[0]) == rosters.value(rec)
+            k += 1
+        assert out[k] == 'need %d' % cr.trade_need(img)
+        k += 41
+
+
+def test_trade_h_real_stock_v20_c76(tmp_path, trade_harness):
+    files = []
+    for pat in ('/mnt/nvme/tlrb2/fixtures/t4/s1_pre/**/*.V20', '/mnt/nvme/tlrb2/files/*.V20',
+                '/mnt/nvme/tlrb2/files/**/*.V20'):
+        files += glob.glob(pat, recursive=True)
+    imgs = []
+    for p in sorted(set(files)):
+        d = open(p, 'rb').read()
+        if len(d) == 11735:
+            imgs.append(d)
+    if not imgs:
+        pytest.skip('no real V20 under /mnt/nvme/tlrb2')
+    imgs = imgs[:12]
+    out = _run_harness(trade_harness, 'v', b''.join(imgs), len(imgs), tmp_path)
+    k = 0
+    for img in imgs:
+        for s in range(80):
+            rec = img[295 + 143 * s:295 + 143 * (s + 1)]
+            assert int(out[k].split()[0]) == _guard_value(rec)
+            k += 1
+        assert out[k] == 'need %d' % cr.trade_need(img)
+        k += 41
+
+
+def test_trade_h_is_standalone_and_c89_clean_c76(tmp_path):
+    """trade.h compiles alone (it includes repair.h) with -Werror and, as C89, with the
+    declaration-after-statement warning on."""
+    stub = os.path.join(str(tmp_path), 'stub.c')
+    open(stub, 'w').write('#include <stdio.h>\n#include "trade.h"\n'
+                          'int main(void){uint8_t r[143]={0};printf("%d\\n",(int)value(r));'
+                          'return 0;}\n')
+    for std in ('-std=c99', '-std=gnu89'):
+        r = subprocess.run(['gcc', std, '-pedantic', '-Wall', '-Wextra', '-Werror',
+                            '-Wdeclaration-after-statement', '-I', HERE_C, '-o',
+                            os.path.join(str(tmp_path), 'stub'), stub],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+
+
+def test_create_c_does_not_touch_rosters_sources_c76():
+    """create.c includes trade.h and repair.h; the rosters / dynview sources stay out of it."""
+    src = open(os.path.join(HERE_C, 'create.c')).read()
+    assert '#include "trade.h"' in src and '#include "../repair.h"' in src
+    assert 'rosters.c' not in src and 'dynview.c' not in src
+
+
+def test_parity_trade_top3_ties_c76(tmp_path):
+    """Four equal-V batters on B: ties go to the lower slot, so 16..18 are untouchable and 19
+    is not (same files and frames both sides)."""
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    a = _team(_pair(16, _bat('Axe', 'Al', 90)), _pair(17, _bat('Bell', 'Bo', 50)))
+    b = _team(*[_pair(16 + i, _bat('B%d' % i, 'X', 50)) for i in range(4)])
+    base = trade_league(os.path.join(work, 'mk'), a, b, others=OTHER_TEAMS)
+    for get, msg in ((16, 'DECLINED: UNTOUCHABLE'), (17, 'DECLINED: UNTOUCHABLE'),
+                     (18, 'DECLINED: UNTOUCHABLE'), (19, 'TRADE ACCEPTED')):
+        assert trade_parity(tmp_path, trade_keys(16, get, tail=[Y_KEY]), base)['msg'] == msg
+    # pitchers tie the same way
+    pa = _team(_pair(0, _pit('Hi', 'A', 92, 10)))
+    pb = _team(*[_pair(i, _pit('P%d' % i, 'X', 40, 2)) for i in range(4)])
+    base = trade_league(os.path.join(work, 'mk2'), pa, pb, others=OTHER_TEAMS)
+    for get, msg in ((0, 'DECLINED: UNTOUCHABLE'), (2, 'DECLINED: UNTOUCHABLE'),
+                     (3, 'TRADE ACCEPTED')):
+        assert trade_parity(tmp_path, trade_keys(0, get, tail=[Y_KEY]), base)['msg'] == msg

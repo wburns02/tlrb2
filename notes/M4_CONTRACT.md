@@ -2360,3 +2360,109 @@ order, the wrong-size skip, the refusals and every key.
 
 Gate fix (brain, 2026-10-15): repair (rosters.repair and repair.h) skips a header list byte >= 40 (other than
 0xff) and leaves it as is; before, C indexed chg[40] out of bounds and Python raised IndexError at 80 and up.
+
+## C76. CREATE TRADE (added 2026-10-15)
+
+CREATE (tools/m4/create.py reference, tools/m4/create_c/create.c port) gets a TRADE flow: from the slot list of
+the open team A, T on an occupied slot picks player X; the user picks a team B and one of its players Y; B
+accepts or declines by the ROSTERS value V plus a need bonus, inside a band. An accepted trade swaps the two
+record pairs (record + season twin), repairs both header lists, writes both V20 files and appends a line to
+TRADES.TXT.
+
+### Behaviour (Python)
+
+1. S_SLOT: T or t on an occupied slot sets st['give'] = that slot and opens S_TRADE_TEAM; on an empty slot
+   it does nothing.
+2. S_TRADE_TEAM: the team list (COLS_TEAM rows, cursor, same keys as S_TEAM) without team A. ENTER loads
+   B's image and opens S_TRADE_PICK; ESC returns to S_SLOT with the cursor on st['give'].
+3. S_TRADE_PICK: B's 40 slots exactly as S_SLOT draws them (read only). ENTER on an occupied slot sets
+   st['get'] and opens S_TRADE_OFFER; on an empty slot nothing; ESC returns to S_TRADE_TEAM, cursor on B.
+4. S_TRADE_OFFER: rows `GIVE <pname X>` and `GET  <pname Y>` (COLS_ONE), footer `Y PROPOSE   N ESC BACK`.
+   N, n or ESC returns to S_TRADE_PICK with the cursor on st['get']. Y or y evaluates (rule 5).
+5. B decides, first matching rule wins:
+   a. X and Y of different types (one pitcher slot < 16, the other not): `DECLINED: SAME TYPE ONLY`.
+   b. Y in B's top 3 of its type by V: `DECLINED: UNTOUCHABLE`.
+   c. eff = V(X) + bonus, bonus = (V(X) * 32) >> 8 when (batters) can_play(X, need(B)) or (pitchers)
+      sp_rp(X) == 'SP' and B has fewer than 5 named SP in slots 0..15; else 0.
+      eff * 100 < V(Y) * (100 - BAND): `DECLINED: NOT ENOUGH VALUE`.
+   d. otherwise accepted.
+   A decline sets st['msg'] and stays on S_TRADE_OFFER; nothing is written.
+6. Accepted: pX = copy_pair(A, give), pY = copy_pair(B, get); vacate both; write_pair(A, give, pY);
+   write_pair(B, get, pX) (each player takes the other's slot); rosters.repair(A, {give}) and
+   rosters.repair(B, {get}); then any leftover bench or reserve byte (194..236) holding the moved slot that
+   repair left pointing at a now different player stays as repair leaves it (repair is the rule). Write B's
+   file, then A's (whole file, as release_slot), then append `TRADE <season> <STEMA> <NAMEX> <STEMB>
+   <NAMEY>` + CRLF to TRADES.TXT in the league dir (created when missing), season = seasons_recorded + 1
+   (1 when HISTORY.DAT is missing or unreadable), names by rosters.pname, stems upper case. st['image']
+   becomes A's new image; S_SLOT with the cursor on give and st['msg'] = `TRADE ACCEPTED`.
+7. A file write error leaves st['msg'] = `TRADE FAILED` (best effort, like release_slot; no rollback
+   beyond not appending the TRADES.TXT line when either V20 write failed).
+
+### Behaviour (C port)
+
+8. create.c matches create.py frame for frame and byte for byte (both V20 files and TRADES.TXT) on every
+   test fixture. value(), sp_rp, can_play, the need count and top3 go in a new header
+   tools/m4/create_c/trade.h (copied from rosters.c / dynview.c logic; do not edit rosters.c or dynview.c).
+   It reuses repair.h (C69) for repair. C89, OpenWatcom large model, at most one new static image buffer
+   (B's V20, 11735 B, allowed like C69's pool image), no other new array over 2 KB, 8.3 names.
+
+### What the build fixed where the rules above are silent
+
+Screens and keys. S_TRADE_TEAM = 6, S_TRADE_PICK = 7, S_TRADE_OFFER = 8 (C: #define S_TRADE_TEAM 6, ...).
+The new state keys are st['give'], st['get'], st['bteam'] (B's index in ctx['teams']) and st['bimage'] (B's
+image, read by read_v20 on ENTER of S_TRADE_TEAM). S_TRADE_TEAM, S_TRADE_PICK and S_TRADE_OFFER open with the
+cursor on 0; the cursor of S_TRADE_TEAM counts rows of the list without A, so ESC from S_TRADE_PICK puts it
+on B's row (bteam when B is below A in the team list, bteam - 1 when above). N, n and ESC on S_TRADE_OFFER go
+back; every other key there is a no-op, and so are ENTER on an empty slot of S_TRADE_PICK and every
+key but the list keys, ENTER and ESC on S_TRADE_TEAM and S_TRADE_PICK. A league whose only team is A has an
+empty trade team list: one dim row `NO TEAMS FOUND` (hl off), ENTER does nothing.
+
+Titles and footers. S_TRADE_TEAM: title `TRADE: PICK A TEAM`, footer `UP DOWN   ENTER PICK   ESC BACK`
+(FOOT_TRADE_TEAM). S_TRADE_PICK: the S_SLOT list of B (same title `PICK A SLOT: <B display>`, columns, rows
+and highlight), footer `UP DOWN  ENTER PICK  ESC BACK` (FOOT_TRADE_PICK). S_TRADE_OFFER: title
+`PROPOSE A TRADE`, FOOT_TRADE_OFFER. The message of a decline replaces the footer text on S_TRADE_OFFER
+(and, as C69, on S_SLOT for TRADE ACCEPTED / TRADE FAILED); any next key clears it first (step()).
+MSG_TRADE = (`DECLINED: SAME TYPE ONLY`, `DECLINED: UNTOUCHABLE`, `DECLINED: NOT ENOUGH VALUE`,
+`TRADE ACCEPTED`, `TRADE FAILED`).
+
+Rules 5a to 5c. Type is by slot (give < 16 against get < 16); the V of a player is rosters.value of its
+roster record (the player's own record, not its slot). `_value` (create.py) and trade.h read a development
+grade byte (record byte 142) above 5 as 0, where rosters.value would raise IndexError (C: read past GM);
+for 0..5 it is rosters.value exactly. need(B) is dynview.draft_need computed on B's image: for q = 1..8 the
+count of named slots 16..39 whose record satisfies can_play(rec, q), the q with the smallest count, ties to
+the lower q; a second position counts through can_play like any other (group codes OF, IF, OI, CO, CI, C3
+cover what rosters.GROUP_COVER says). B's top 3 is rosters step 6's top3 for B's image: named slots of the
+type (0..15 or 16..39) by (-V, slot), the first 3. The SP count is the named slots 0..15 of B whose record
+has endurance >= 6 (Y itself counts). The band edge is exact: eff * 100 == V(Y) * 95 is accepted.
+
+Accept and write. repair is called with {give} on A and {get} on B and nothing is done afterwards (no 0xff
+clean-up like C69's release; a lineup or bench byte repair cannot fill keeps pointing at the slot, which now
+holds the other team's player). Files: B's V20, then A's, each written whole (`wb`), a V20 write that fails
+(open or write error, or a stem with no file) sets the failure flag but the other file is still written (no
+rollback). The TRADES.TXT line is appended (`ab`, file created when missing, existing bytes kept) only when
+both V20 writes worked; a failing append is also TRADE FAILED. On failure the state still takes the new
+images: st['image'] = A's new image, S_SLOT, cursor on give, st['msg'] = `TRADE FAILED` instead of
+`TRADE ACCEPTED`; st['bimage'] = B's new image.
+
+TRADES.TXT. Line = `TRADE %d %s %s %s %s` % (season, STEMA, NAMEX, STEMB, NAMEY) + b'\r\n': STEMA and STEMB
+are the MAJ stems of A and B upper-cased (ASCII), NAMEX is X (the player A gives) and NAMEY is Y (the player
+A gets), both rosters.pname (First Last, each part cut at its first NUL, stripped like str.strip). So the
+name after a stem is the one that team gave up; the ROSTERS.TXT TRADE line of rosters step 6 lists the player
+who joined the team first, the other way round. The file is `TRADES.TXT` in the league dir, found by that
+exact upper-case name. season = HISTORY.DAT (found by that upper-case name in the league dir) seasons recorded
+(the u16 at bytes 4..5, a file shorter than 6 bytes reads the missing bytes as 0) + 1; 1 when it is missing
+or cannot be read (a directory).
+
+C port. msg codes (int) 6 DECLINED: SAME TYPE ONLY, 7 DECLINED: UNTOUCHABLE, 8 DECLINED: NOT ENOUGH VALUE,
+9 TRADE ACCEPTED, 10 TRADE FAILED (codes 0..5 as C69). trade.h holds value (rosters.value, v_of of
+rosters.c), sp_rp (1 = SP), tr_need, tr_top3, tr_sp_count and tr_verdict (0 accept, 1 type, 2 untouchable,
+3 value) plus tr_pname (rosters.pname); it includes repair.h for the layout macros, can_play, score and fld_w,
+needs <stdint.h> and <string.h> (it includes both) and compiles alone with -Werror and as C89. B's image
+lives in the C69 pool buffer (`#define g_bimg g_poolimg`): a release and a trade never overlap and B is read
+again on every ENTER of S_TRADE_TEAM, so this build adds no new static array at all. do_trade needs
+no array over 600 bytes on the stack (repair runs in place on the two images). rosters.c, dynview.c,
+repair.h and every built .EXE are untouched. Tests: test_create.py (C76 section: navigation, the four
+rules, bonuses, bytes, TRADES.TXT, season, failures, render) and test_create_c.py (the same fixtures through
+create_host with synthetic fonts, frames, every file of both leagues, a random key walk, and the trade.h
+harness: value, sp_rp, need, top 3 and verdict against the Python reference on random images, on the
+fixtures and on every record of a real stock V20 when /mnt/nvme/tlrb2 has one).

@@ -23,6 +23,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
+import history  # noqa: E402
 import ratings  # noqa: E402
 import rookies  # noqa: E402
 import rosters  # noqa: E402
@@ -32,11 +33,13 @@ from dynview import (C_BLACK, C_WHITE, C_DRED, C_TITLE_RED, C_HEADER_GOLD,  # no
                      C_ROW_TAN, C_GRID_GRAY, FB_SIZE, FB_W, KEY_ESC, KEY_ENTER,  # noqa: E402
                      KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_PGUP, KEY_PGDN,  # noqa: E402
                      ROW_H, ROWS_PER_PAGE, CHAR_W, _cx, draw_text, text_width,  # noqa: E402
-                     rect, draw_panel, name_display, team_disp, v20_path,  # noqa: E402
+                     rect, draw_panel, name_display, team_disp, v20_path, find_upper,  # noqa: E402
+                     ascii_upper,  # noqa: E402
                      parse_keys, load_fonts, load_palette, write_png)  # noqa: E402
 
 # ---------------------------------------------------------------- constants
-S_TEAM, S_SLOT, S_EDIT, S_CONFIRM, S_DONE, S_RELEASE = range(6)
+(S_TEAM, S_SLOT, S_EDIT, S_CONFIRM, S_DONE, S_RELEASE,
+ S_TRADE_TEAM, S_TRADE_PICK, S_TRADE_OFFER) = range(9)
 KEY_BACK = 8
 
 RECORD_LEN = rookies.RECORD_LEN           # 143
@@ -87,6 +90,9 @@ COLS_ONE = [(' ', _cx(0), 42, 'L')]
 FOOT_TEAM = 'UP DOWN   ENTER PICK   ESC EXIT'
 FOOT_SLOT = 'UP DOWN  ENTER NEW  C COPY  ESC TEAMS'
 FOOT_RELEASE = 'Y RELEASE   N ESC BACK'
+FOOT_TRADE_TEAM = 'UP DOWN   ENTER PICK   ESC BACK'
+FOOT_TRADE_PICK = 'UP DOWN  ENTER PICK  ESC BACK'
+FOOT_TRADE_OFFER = 'Y PROPOSE   N ESC BACK'
 FOOT_CONFIRM = 'ENTER REPLACE   ESC BACK'
 FOOT_DONE = 'ENTER CREATE ANOTHER   ESC EXIT'
 FOOT_NAME = 'TYPE NAME   UP DOWN   ESC SLOTS'
@@ -95,6 +101,10 @@ FOOT_FIELD = 'UP DOWN LEFT RIGHT  A AUTO  N NAME  ESC'
 MSG_NAME = 'TYPE A LAST NAME FIRST'
 MSG_BUDGET = 'OVER THE POINT BUDGET, PRESS B'
 MSG_POOL = ('POOL FULL', 'NO RESERVE')
+MSG_TRADE = ('DECLINED: SAME TYPE ONLY', 'DECLINED: UNTOUCHABLE',
+             'DECLINED: NOT ENOUGH VALUE', 'TRADE ACCEPTED', 'TRADE FAILED')
+TRADE_NEED_BONUS = 32                     # C76: the need bonus, /256 of V(X)
+TRADE_SP_WANTED = 5                       # a team with fewer named SP than this wants one
 BUDGET_BAT = (0, 36, 45, 54)              # C31: points per budget mode, batters
 BUDGET_PIT = (0, 18, 24, 28)              # pitchers
 BUDGET_NAMES = ('OFF', 'ROOKIE', 'REGULAR', 'STAR')
@@ -388,6 +398,116 @@ def release_slot(st, ctx):
     return 'ok', n
 
 
+# ---------------------------------------------------------------- trade
+def _value(rec):
+    """rosters.value(rec); a development grade byte (142) past rollover.GM reads as 0, so
+    a corrupt record never raises."""
+    if rec[142] > 5:
+        rec = bytearray(rec)
+        rec[142] = 0
+    return rosters.value(rec)
+
+
+def _named(image, lo, hi):
+    return [s for s in range(lo, hi) if record(image, s)[0]]
+
+
+def trade_top3(image, pitch):
+    """The 3 named slots of one type (pitchers 0..15, batters 16..39) with the highest
+    V, ties to the lower slot (rosters step 6)."""
+    slots = _named(image, 0, PITCHER_SLOTS) if pitch \
+        else _named(image, PITCHER_SLOTS, ROSTER_SLOTS)
+    return set(sorted(slots, key=lambda s: (-_value(record(image, s)), s))[:3])
+
+
+def trade_need(image):
+    """dynview.draft_need on an image: the position q 1..8 with the fewest named batters
+    (slots 16..39) that can play it, ties to the lower q."""
+    best, best_n = 1, None
+    for q in range(1, 9):
+        n = sum(1 for s in _named(image, PITCHER_SLOTS, ROSTER_SLOTS)
+                if rosters.can_play(record(image, s), q))
+        if best_n is None or n < best_n:
+            best, best_n = q, n
+    return best
+
+
+def trade_verdict(st):
+    """Team B's answer to the offer of st['give'] (team A's image) for st['get'] (st['bimage']):
+    the first matching rule of C76 gives the decline message, else None (accepted)."""
+    give, get = st['give'], st['get']
+    x, y = record(st['image'], give), record(st['bimage'], get)
+    pitch = give < PITCHER_SLOTS
+    if pitch != (get < PITCHER_SLOTS):
+        return MSG_TRADE[0]
+    if get in trade_top3(st['bimage'], pitch):
+        return MSG_TRADE[1]
+    vx, vy = _value(x), _value(y)
+    eff = vx
+    if pitch:
+        sp = sum(1 for s in _named(st['bimage'], 0, PITCHER_SLOTS)
+                 if rosters.sp_rp(record(st['bimage'], s)) == 'SP')
+        if rosters.sp_rp(x) == 'SP' and sp < TRADE_SP_WANTED:
+            eff += (vx * TRADE_NEED_BONUS) >> 8
+    elif rosters.can_play(x, trade_need(st['bimage'])):
+        eff += (vx * TRADE_NEED_BONUS) >> 8
+    if eff * 100 < vy * (100 - rosters.T['BAND']):
+        return MSG_TRADE[2]
+    return None
+
+
+def trade_season(league_dir):
+    """The season number of a TRADES.TXT line: HISTORY.DAT's seasons recorded + 1; 1 when the
+    file is missing or unreadable."""
+    path = find_upper(league_dir, 'HISTORY.DAT')
+    if path is None:
+        return 1
+    try:
+        return history.History.load(path).seasons_recorded + 1
+    except OSError:
+        return 1
+
+
+def trade_players(st, ctx):
+    """Execute the accepted trade of st['give'] (team A) for st['get'] (team B): the record
+    pairs swap, each takes the other's slot, rosters.repair on both headers, then B's V20,
+    A's V20 (whole files) and the TRADES.TXT line (only when both V20 writes worked).
+    st['image'] / st['bimage'] take the new images. Returns True when every write worked."""
+    give, get = st['give'], st['get']
+    a, b = bytearray(st['image']), bytearray(st['bimage'])
+    px, py = rosters.copy_pair(a, give), rosters.copy_pair(b, get)
+    rosters.vacate(a, give)
+    rosters.vacate(b, get)
+    rosters.write_pair(a, give, py)
+    rosters.write_pair(b, get, px)
+    rosters.repair(a, {give})
+    rosters.repair(b, {get})
+    stem_a = ctx['teams'][st['team']][1]
+    stem_b = ctx['teams'][st['bteam']][1]
+    ok = True
+    for stem, img in ((stem_b, b), (stem_a, a)):
+        path = v20_path(ctx['league_dir'], stem.encode('latin-1'))
+        if path is None:
+            ok = False
+            continue
+        try:
+            with open(path, 'wb') as fh:
+                fh.write(bytes(img))
+        except OSError:
+            ok = False
+    if ok:
+        line = 'TRADE %d %s %s %s %s\r\n' % (trade_season(ctx['league_dir']),
+                                              ascii_upper(stem_a), rosters.pname(px[0]),
+                                              ascii_upper(stem_b), rosters.pname(py[0]))
+        try:
+            with open(os.path.join(ctx['league_dir'], 'TRADES.TXT'), 'ab') as fh:
+                fh.write(line.encode('latin-1'))
+        except OSError:
+            ok = False
+    st['image'], st['bimage'] = bytes(a), bytes(b)
+    return ok
+
+
 def control_return(path):
     """CONTROL[1] = CONTROL[0] in place, when the file has at least 2 bytes."""
     try:
@@ -474,7 +594,8 @@ def copy_form(image, slot, ctx):
 
 def start_state():
     return {'screen': S_TEAM, 'cursor': 0, 'team': 0, 'slot': 0, 'form': blank_form(),
-            'msg': '', 'budget': 0, 'seed': 1, 'image': bytes(IMAGE_LEN)}
+            'msg': '', 'budget': 0, 'seed': 1, 'image': bytes(IMAGE_LEN),
+            'give': 0, 'get': 0, 'bteam': 0, 'bimage': bytes(IMAGE_LEN)}
 
 
 def _copy(st):
@@ -572,6 +693,11 @@ def _step_slot(st, key, ctx):
             st['slot'] = st['cursor']
             st['screen'] = S_RELEASE
         return st, False
+    if key in (84, 116):                     # C76: trade an occupied slot's player
+        if record(st['image'], st['cursor'])[0]:
+            st['give'] = st['cursor']
+            st['screen'], st['cursor'] = S_TRADE_TEAM, 0
+        return st, False
     st['cursor'] = _list_key(st['cursor'], key, ROSTER_SLOTS)
     return st, False
 
@@ -589,6 +715,49 @@ def _step_release(st, key, ctx):
             st['msg'] = MSG_POOL[0]
         else:
             st['msg'] = MSG_POOL[1]
+    return st, False
+
+
+def _trade_teams(st, ctx):
+    """C76: the list indexes of the teams B may be: every team but A, in list order."""
+    return [i for i in range(len(ctx['teams'])) if i != st['team']]
+
+
+def _step_trade_team(st, key, ctx):
+    cand = _trade_teams(st, ctx)
+    if key == KEY_ESC:
+        st['screen'], st['cursor'] = S_SLOT, st['give']
+    elif key == KEY_ENTER and cand:
+        st['bteam'] = cand[st['cursor']]
+        st['bimage'] = read_v20(ctx['league_dir'], ctx['teams'][st['bteam']][1])
+        st['screen'], st['cursor'] = S_TRADE_PICK, 0
+    else:
+        st['cursor'] = _list_key(st['cursor'], key, len(cand))
+    return st, False
+
+
+def _step_trade_pick(st, key, ctx):
+    if key == KEY_ESC:
+        st['screen'], st['cursor'] = S_TRADE_TEAM, _trade_teams(st, ctx).index(st['bteam'])
+    elif key == KEY_ENTER:
+        if record(st['bimage'], st['cursor'])[0]:
+            st['get'] = st['cursor']
+            st['screen'], st['cursor'] = S_TRADE_OFFER, 0
+    else:
+        st['cursor'] = _list_key(st['cursor'], key, ROSTER_SLOTS)
+    return st, False
+
+
+def _step_trade_offer(st, key, ctx):
+    if key == KEY_ESC or key in (78, 110):
+        st['screen'], st['cursor'] = S_TRADE_PICK, st['get']
+    elif key in (89, 121):
+        verdict = trade_verdict(st)
+        if verdict:
+            st['msg'] = verdict
+        else:
+            st['msg'] = MSG_TRADE[3] if trade_players(st, ctx) else MSG_TRADE[4]
+            st['screen'], st['cursor'] = S_SLOT, st['give']
     return st, False
 
 
@@ -732,13 +901,14 @@ def _step_done(st, key, ctx):
 
 _STEPS = {S_TEAM: _step_team, S_SLOT: _step_slot, S_EDIT: _step_edit,
           S_CONFIRM: _step_confirm, S_DONE: _step_done,
-          S_RELEASE: _step_release}
+          S_RELEASE: _step_release, S_TRADE_TEAM: _step_trade_team,
+          S_TRADE_PICK: _step_trade_pick, S_TRADE_OFFER: _step_trade_offer}
 
 
 def step(state, key, ctx):
-    """(state, exit_flag). Every key first clears msg (0; a pool message on
-    S_SLOT / S_RELEASE is a string, falsy when cleared either way). ESC on TEAM
-    and on DONE exits; every other ESC goes back one screen."""
+    """(state, exit_flag). Every key first clears msg (0; a pool or trade message on
+    S_SLOT / S_RELEASE / S_TRADE_OFFER is a string, falsy when cleared either way).
+    ESC on TEAM and on DONE exits; every other ESC goes back one screen."""
     st = _copy(state)
     st['msg'] = 0
     return _STEPS[st['screen']](st, key, ctx)
@@ -770,6 +940,22 @@ def _list_view(st, ctx):
     if scr == S_RELEASE:
         title, cols, rows, _foot, hl = _list_view(dict(st, screen=S_SLOT), ctx)
         return title, cols, rows, FOOT_RELEASE, hl
+    if scr == S_TRADE_TEAM:
+        cand = _trade_teams(st, ctx)
+        if not cand:
+            return ('TRADE: PICK A TEAM', COLS_TEAM, [('NO TEAMS FOUND', '')],
+                    FOOT_TRADE_TEAM, False)
+        rows = [(ctx['teams'][i][2], 'AMERICAN' if ctx['teams'][i][0] < 16 else 'NATIONAL')
+                for i in cand]
+        return 'TRADE: PICK A TEAM', COLS_TEAM, rows, FOOT_TRADE_TEAM, True
+    if scr == S_TRADE_PICK:
+        title, cols, rows, _foot, hl = _list_view(
+            dict(st, screen=S_SLOT, image=st['bimage'], team=st['bteam']), ctx)
+        return title, cols, rows, FOOT_TRADE_PICK, hl
+    if scr == S_TRADE_OFFER:
+        rows = [('GIVE ' + rosters.pname(record(st['image'], st['give'])),),
+                ('GET  ' + rosters.pname(record(st['bimage'], st['get'])),)]
+        return 'PROPOSE A TRADE', COLS_ONE, rows, FOOT_TRADE_OFFER, False
     if scr == S_CONFIRM:
         old = record(st['image'], st['slot'])
         rows = [('THIS REPLACES ' + name_display(old[0:20], 18),),
@@ -904,7 +1090,7 @@ def render(st, ctx):
     draw_panel(fb)
     _draw_title(fb, bold_ft, title)
     _draw_list(fb, main_ft, cols, rows, st['cursor'], hl,
-               st['msg'] if st['msg'] and st['screen'] in (S_SLOT, S_RELEASE)
+               st['msg'] if st['msg'] and st['screen'] in (S_SLOT, S_RELEASE, S_TRADE_OFFER)
                else footer)
     return fb
 

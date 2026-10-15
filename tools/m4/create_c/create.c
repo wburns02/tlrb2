@@ -37,6 +37,9 @@
 #pragma GCC diagnostic pop
 #endif
 
+/* C76: the TRADE decision (value, SP / RP, need, top 3, verdict), pure image views */
+#include "trade.h"
+
 /* teamids.h has helpers this file does not call; gcc -Werror would stop on them */
 #if defined(__GNUC__) && !defined(__WATCOMC__)
 #pragma GCC diagnostic push
@@ -85,6 +88,9 @@
 #define S_CONFIRM 3
 #define S_DONE 4
 #define S_RELEASE 5
+#define S_TRADE_TEAM 6
+#define S_TRADE_PICK 7
+#define S_TRADE_OFFER 8
 
 /* V20 layout: 295 byte header, then 80 records of 143 bytes; record s is the roster
  * half of slot s, record s + 40 its season half */
@@ -157,6 +163,7 @@ typedef struct {
 typedef struct {
     int16_t screen, cursor, team, slot, msg, budget;
     int16_t msgn;               /* C69: the POOLn of a RELEASED TO POOLn message */
+    int16_t give, get, bteam;   /* C76: slot of A given, slot of B asked for, B's team index */
     uint32_t seed;              /* C34: session auto-fill seed, 1 at start */
     Form form;
 } State;
@@ -197,6 +204,9 @@ static int g_face_c;             /* PORTRAIT.ANM count c, capped at FACE_TABLE_M
 static uint8_t g_face_grp[FACE_TABLE_MAX];
 static uint8_t g_px[PORTRAIT_W * PORTRAIT_H];
 static uint8_t FARDATA g_poolimg[V20_SIZE];   /* C69: the pools' image buffer */
+/* C76: team B's V20 image shares the pool buffer (a release and a trade never overlap;
+ * B is read again on every ENTER of the trade team list) */
+#define g_bimg g_poolimg
 static State g_state;
 static int g_saved;
 
@@ -231,6 +241,9 @@ static const char *PIT_LABEL[10] = { "LAST NAME", "FIRST NAME", "POSITION", "HAN
 static const char *FOOT_TEAM = "UP DOWN   ENTER PICK   ESC EXIT";
 static const char *FOOT_SLOT = "UP DOWN  ENTER NEW  C COPY  ESC TEAMS";
 static const char *FOOT_RELEASE = "Y RELEASE   N ESC BACK";
+static const char *FOOT_TRADE_TEAM = "UP DOWN   ENTER PICK   ESC BACK";
+static const char *FOOT_TRADE_PICK = "UP DOWN  ENTER PICK  ESC BACK";
+static const char *FOOT_TRADE_OFFER = "Y PROPOSE   N ESC BACK";
 static const char *FOOT_CONFIRM = "ENTER REPLACE   ESC BACK";
 static const char *FOOT_DONE = "ENTER CREATE ANOTHER   ESC EXIT";
 static const char *FOOT_NAME = "TYPE NAME   UP DOWN   ESC SLOTS";
@@ -244,6 +257,9 @@ static const char *BUDGET_NAMES[4] = { "OFF", "ROOKIE", "REGULAR", "STAR" };
 static const char *MSG_BUDGET = "OVER THE POINT BUDGET, PRESS B";
 /* C69: pool release messages (st->msg indexes MSG_POOL; 0 = cleared) */
 static const char *MSG_POOL[2] = { "POOL FULL", "NO RESERVE" };
+/* C76: trade messages (st->msg 6..10 index MSG_TRADE) */
+static const char *MSG_TRADE[5] = { "DECLINED: SAME TYPE ONLY", "DECLINED: UNTOUCHABLE",
+    "DECLINED: NOT ENOUGH VALUE", "TRADE ACCEPTED", "TRADE FAILED" };
 
 /* C37: the rookie name pools (rookies.LAST_NAMES / FIRST_NAMES, identical order;
  * the pointer arrays kept out of DGROUP like the other big tables). LAST_NAMES has
@@ -690,16 +706,21 @@ static void load_teams(const char *league)
 
 /* the team image: header plus 80 records, zero padded when the file is shorter or
  * missing */
-static void read_image(int team)
+static void read_image_to(int team, uint8_t *dst)
 {
     FILE *f;
     const char *stem = g_teams[team].stem;
-    memset(g_image, 0, IMAGE_LEN);
+    memset(dst, 0, IMAGE_LEN);
     f = v20_fopen((const uint8_t *)stem, (int)strlen(stem), "rb");
     if (!f)
         return;
-    (void)fread(g_image, 1, IMAGE_LEN, f);
+    (void)fread(dst, 1, IMAGE_LEN, f);
     fclose(f);
+}
+
+static void read_image(int team)
+{
+    read_image_to(team, g_image);
 }
 
 /* ---------------- faces and portraits ---------------- */
@@ -1141,6 +1162,96 @@ static int do_release(State *st, int *pn)
     return 0;
 }
 
+/* ---------------- C76: trade ---------------- */
+
+/* the file written whole: 1 when it opened, every byte was written and it closed */
+static int write_file_ok(const char *path, const uint8_t *img, int len)
+{
+    FILE *f = fopen(path, "wb");
+    int ok;
+    if (!f)
+        return 0;
+    ok = fwrite(img, 1, (size_t)len, f) == (size_t)len;
+    if (fclose(f) != 0)
+        ok = 0;
+    return ok;
+}
+
+/* the accepted trade of st->give (team A, g_image) for st->get (team B, g_bimg)
+ * (create.py trade_players): the record pairs swap (each takes the other's slot), the
+ * managed repair on both headers, then B's V20, A's V20 (whole files) and, when both
+ * wrote, the TRADES.TXT line. g_image and g_bimg take the new images. 1 when every write
+ * worked, else 0. */
+static int do_trade(State *st)
+{
+    int give = st->give, get = st->get;
+    int ok = 1, i;
+    uint8_t px[2 * V20_REC], py[2 * V20_REC];
+    uint8_t chg[40];
+    char nx[24], ny[24], sa[9], sb[9], line[128], path[300];
+    uint8_t hd[6];
+    unsigned long season = 1;
+    FILE *f;
+
+    memcpy(px, RIMG(g_image, give), V20_REC);
+    memcpy(px + V20_REC, RIMG(g_image, give + 40), V20_REC);
+    memcpy(py, RIMG(g_bimg, get), V20_REC);
+    memcpy(py + V20_REC, RIMG(g_bimg, get + 40), V20_REC);
+    tr_pname(px, nx);
+    tr_pname(py, ny);
+    for (i = 0; g_teams[st->team].stem[i]; i++)
+        sa[i] = (char)ascii_up((uint8_t)g_teams[st->team].stem[i]);
+    sa[i] = 0;
+    for (i = 0; g_teams[st->bteam].stem[i]; i++)
+        sb[i] = (char)ascii_up((uint8_t)g_teams[st->bteam].stem[i]);
+    sb[i] = 0;
+    /* vacate both slots, then each takes the other's pair */
+    memset(RIMG(g_image, give), 0, V20_REC);
+    memset(RIMG(g_image, give + 40), 0, V20_REC);
+    memset(RIMG(g_bimg, get), 0, V20_REC);
+    memset(RIMG(g_bimg, get + 40), 0, V20_REC);
+    memcpy(RIMG(g_image, give), py, V20_REC);
+    memcpy(RIMG(g_image, give + 40), py + V20_REC, V20_REC);
+    memcpy(RIMG(g_bimg, get), px, V20_REC);
+    memcpy(RIMG(g_bimg, get + 40), px + V20_REC, V20_REC);
+    memset(chg, 0, sizeof chg);
+    chg[give] = 1;
+    repair(g_image, chg);
+    memset(chg, 0, sizeof chg);
+    chg[get] = 1;
+    repair(g_bimg, chg);
+    /* B's file, then A's, whole; either failing leaves the TRADES.TXT line out */
+    if (!v20_stem_path((const uint8_t *)g_teams[st->bteam].stem,
+                       (int)strlen(g_teams[st->bteam].stem), path, sizeof path)
+        || !write_file_ok(path, g_bimg, V20_SIZE))
+        ok = 0;
+    if (!v20_stem_path((const uint8_t *)g_teams[st->team].stem,
+                       (int)strlen(g_teams[st->team].stem), path, sizeof path)
+        || !write_file_ok(path, g_image, V20_SIZE))
+        ok = 0;
+    if (!ok)
+        return 0;
+    /* season = HISTORY.DAT seasons recorded (u16 at byte 4) + 1; 1 without a readable file */
+    memset(hd, 0, sizeof hd);
+    path_join(path, g_lgdir, "HISTORY.DAT");
+    f = fopen(path, "rb");
+    if (f) {
+        (void)fread(hd, 1, sizeof hd, f);
+        fclose(f);
+        season = ((unsigned long)hd[4] | ((unsigned long)hd[5] << 8)) + 1UL;
+    }
+    sprintf(line, "TRADE %lu %s %s %s %s\r\n", season, sa, nx, sb, ny);
+    path_join(path, g_lgdir, "TRADES.TXT");
+    f = fopen(path, "ab");
+    if (!f)
+        return 0;
+    if (fwrite(line, 1, strlen(line), f) != strlen(line))
+        ok = 0;
+    if (fclose(f) != 0)
+        ok = 0;
+    return ok;
+}
+
 /* ---------------- state machine ---------------- */
 
 /* blank_form: no names, position 1, pos2 = POS2_OF[1], age 22, every rating 6, hands 0,
@@ -1388,7 +1499,83 @@ static int step_slot(State *st, int32_t key)
         }
         return 0;
     }
+    if (key == 84 || key == 116) {       /* C76: trade an occupied slot's player */
+        if (recp(st->cursor)[0]) {
+            st->give = st->cursor;
+            st->screen = S_TRADE_TEAM;
+            st->cursor = 0;
+        }
+        return 0;
+    }
     st->cursor = (int16_t)list_key(st->cursor, key, ROSTER_SLOTS);
+    return 0;
+}
+
+/* C76: the teams B may be are every team but A: list index k is team k below A, k + 1
+ * from A up */
+static int trade_nteams(void)
+{
+    return g_nteams > 0 ? g_nteams - 1 : 0;
+}
+
+static int step_trade_team(State *st, int32_t key)
+{
+    int n = trade_nteams();
+    if (key == KEY_ESC) {
+        st->screen = S_SLOT;
+        st->cursor = st->give;
+        return 0;
+    }
+    if (key == KEY_ENTER && n) {
+        st->bteam = (int16_t)(st->cursor < st->team ? st->cursor : st->cursor + 1);
+        read_image_to(st->bteam, g_bimg);
+        st->screen = S_TRADE_PICK;
+        st->cursor = 0;
+        return 0;
+    }
+    st->cursor = (int16_t)list_key(st->cursor, key, n);
+    return 0;
+}
+
+static int step_trade_pick(State *st, int32_t key)
+{
+    if (key == KEY_ESC) {
+        st->screen = S_TRADE_TEAM;
+        st->cursor = (int16_t)(st->bteam < st->team ? st->bteam : st->bteam - 1);
+        return 0;
+    }
+    if (key == KEY_ENTER) {
+        if (IS_ON(g_bimg, st->cursor)) {
+            st->get = st->cursor;
+            st->screen = S_TRADE_OFFER;
+            st->cursor = 0;
+        }
+        return 0;
+    }
+    st->cursor = (int16_t)list_key(st->cursor, key, ROSTER_SLOTS);
+    return 0;
+}
+
+/* msg codes: 6 DECLINED: SAME TYPE ONLY, 7 UNTOUCHABLE, 8 NOT ENOUGH VALUE (tr_verdict
+ * 1..3 plus 5), 9 TRADE ACCEPTED, 10 TRADE FAILED */
+static int step_trade_offer(State *st, int32_t key)
+{
+    int v;
+    if (key == KEY_ESC || key == 78 || key == 110) {
+        st->screen = S_TRADE_PICK;
+        st->cursor = st->get;
+        return 0;
+    }
+    if (key == 89 || key == 121) {
+        v = tr_verdict(g_image, st->give, g_bimg, st->get);
+        if (v) {
+            st->msg = (int16_t)(5 + v);
+        } else {
+            st->msg = do_trade(st) ? 9 : 10;
+            st->screen = S_SLOT;
+            st->cursor = st->give;
+        }
+    }
     return 0;
 }
 
@@ -1641,6 +1828,12 @@ static int step(State *st, int32_t key)
         return step_confirm(st, key);
     case S_RELEASE:
         return step_release(st, key);
+    case S_TRADE_TEAM:
+        return step_trade_team(st, key);
+    case S_TRADE_PICK:
+        return step_trade_pick(st, key);
+    case S_TRADE_OFFER:
+        return step_trade_offer(st, key);
     default:
         return step_done(st, key);
     }
@@ -1680,6 +1873,33 @@ static void list_view(const State *st, ListView *lv)
         lv->footer = FOOT_RELEASE;
         lv->nrows = ROSTER_SLOTS;
         break;
+    case S_TRADE_TEAM:
+        strcpy(lv->title, "TRADE: PICK A TEAM");
+        lv->cols = COLS_TEAM;
+        lv->ncols = NCOLS(COLS_TEAM);
+        lv->footer = FOOT_TRADE_TEAM;
+        lv->nrows = trade_nteams();
+        if (lv->nrows == 0) {
+            lv->nrows = 1;
+            lv->hl = 0;
+        }
+        break;
+    case S_TRADE_PICK:
+        strcpy(lv->title, "PICK A SLOT: ");
+        strcat(lv->title, g_teams[st->bteam].disp);
+        lv->cols = COLS_SLOT;
+        lv->ncols = NCOLS(COLS_SLOT);
+        lv->footer = FOOT_TRADE_PICK;
+        lv->nrows = ROSTER_SLOTS;
+        break;
+    case S_TRADE_OFFER:
+        strcpy(lv->title, "PROPOSE A TRADE");
+        lv->cols = COLS_ONE;
+        lv->ncols = NCOLS(COLS_ONE);
+        lv->footer = FOOT_TRADE_OFFER;
+        lv->nrows = 2;
+        lv->hl = 0;
+        break;
     case S_CONFIRM:
         strcpy(lv->title, "REPLACE PLAYER");
         lv->cols = COLS_ONE;
@@ -1699,6 +1919,21 @@ static void list_view(const State *st, ListView *lv)
     }
 }
 
+/* the cells of slot row i of a team image (create.py _list_view, S_SLOT rows) */
+static void slot_cells(const uint8_t *img, int i, char cells[5][SLEN])
+{
+    const uint8_t *rec = RIMG(img, i);
+    make_slot_label(i, cells[0]);
+    if (rec[0]) {
+        name_display(rec, 20, cells[1]);
+        strcpy(cells[2], POS_LABELS[rec[31] & 15]);
+        sprintf(cells[3], "%d", rec[20]);
+        strcpy(cells[4], slot_role(img, i));
+    } else {
+        strcpy(cells[1], "(EMPTY)");
+    }
+}
+
 /* the cells of list row i (create.py _list_view rows) */
 static void list_cells(const State *st, int i, char cells[5][SLEN])
 {
@@ -1715,17 +1950,32 @@ static void list_cells(const State *st, int i, char cells[5][SLEN])
         strcpy(cells[1], g_teams[i].lg < 16 ? "AMERICAN" : "NATIONAL");
         break;
     case S_SLOT:
-    case S_RELEASE: {
-        const uint8_t *rec = recp(i);
-        make_slot_label(i, cells[0]);
-        if (rec[0]) {
-            name_display(rec, 20, cells[1]);
-            strcpy(cells[2], POS_LABELS[rec[31] & 15]);
-            sprintf(cells[3], "%d", rec[20]);
-            strcpy(cells[4], slot_role(g_image, i));
-        } else {
-            strcpy(cells[1], "(EMPTY)");
+    case S_RELEASE:
+        slot_cells(g_image, i, cells);
+        break;
+    case S_TRADE_TEAM: {
+        int t = i < st->team ? i : i + 1;
+        if (trade_nteams() == 0) {
+            strcpy(cells[0], "NO TEAMS FOUND");
+            break;
         }
+        strcpy(cells[0], g_teams[t].disp);
+        strcpy(cells[1], g_teams[t].lg < 16 ? "AMERICAN" : "NATIONAL");
+        break;
+    }
+    case S_TRADE_PICK:
+        slot_cells(g_bimg, i, cells);
+        break;
+    case S_TRADE_OFFER: {
+        char nm[24];
+        if (i == 0) {
+            tr_pname(RIMG(g_image, st->give), nm);
+            strcpy(cells[0], "GIVE ");
+        } else {
+            tr_pname(RIMG(g_bimg, st->get), nm);
+            strcpy(cells[0], "GET  ");
+        }
+        strcat(cells[0], nm);
         break;
     }
     case S_CONFIRM:
@@ -1938,10 +2188,13 @@ static void render(const State *st)
     list_view(st, &lv);
     draw_panel();
     draw_title(lv.title);
-    /* C69: on the slot and release lists a message replaces the footer */
-    if (st->msg >= 3 && (st->screen == S_SLOT || st->screen == S_RELEASE)) {
+    /* C69 / C76: on the slot, release and trade offer screens a message replaces the footer */
+    if (st->msg >= 3 && (st->screen == S_SLOT || st->screen == S_RELEASE
+                         || st->screen == S_TRADE_OFFER)) {
         if (st->msg == 5)
             sprintf(msgbuf, "RELEASED TO POOL%d", st->msgn);
+        else if (st->msg >= 6)
+            strcpy(msgbuf, MSG_TRADE[st->msg - 6]);
         else
             strcpy(msgbuf, MSG_POOL[st->msg - 3]);
         lv.footer = msgbuf;
