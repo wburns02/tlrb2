@@ -88,7 +88,8 @@ No database. The "migration" equivalent is the V20 / MAJ / HISTORY.DAT byte layo
   `ROSTERS /EXPAND` runs on each one. Stock UTIL started by hand from the DOS prompt shows a black screen (needs the
   frontend handoff); reach it via MAIN > UTILITIES. To capture a pre-/EXPAND state on a throwaway install, set a flag
   file in the `:util` route and copy the league dir at `:start` when it exists.
-- DOSBox: launch only through the rig scripts (Xvfb :98, SDL_VIDEODRIVER=x11, WAYLAND_DISPLAY unset); an agent shell
+- DOSBox: launch only through the rig scripts (Xvfb :98 by default; TLRB2_RIG_DISPLAY and TLRB2_RIG_LOGS select a
+  second rig display and log dir so two rigs never share a pidfile or screen; SDL_VIDEODRIVER=x11, WAYLAND_DISPLAY unset); an agent shell
   inherits DISPLAY=:0 and would open on Will's desktop. Kill your session when done. Rig typing: `rig.key` is ignored
   by DOSBox-X, use `rig.type_text` or `xdotool key`. A stock text field drops the first key right after the focus click.
 - `HISTORY.DAT` season writes are guarded by `season_no <= SEASON_COUNT` (64); a season past 64 must never land on the

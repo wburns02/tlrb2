@@ -11,9 +11,9 @@ import time
 from PIL import Image, ImageOps
 import pytesseract
 
-DISPLAY = ':98'
+DISPLAY = os.environ.get('TLRB2_RIG_DISPLAY', ':98')
 GAME_X, GAME_Y, GAME_W, GAME_H = 192, 201, 640, 400
-SHOTS = '/mnt/nvme/tlrb2/logs/t6/shots'
+SHOTS = os.path.join(os.environ.get('TLRB2_RIG_LOGS', '/mnt/nvme/tlrb2/logs/t6'), 'shots')
 ENV = dict(os.environ, DISPLAY=DISPLAY)
 ENV.pop('WAYLAND_DISPLAY', None)
 

@@ -3,7 +3,8 @@
 # usage: dyn_launch.sh INSTALL_ROOT [PIDFILE]
 
 INSTALL_ROOT="${1:-/mnt/nvme/tlrb2/work/dyn/c/TONY2}"
-PIDF="${2:-/mnt/nvme/tlrb2/logs/t6/dosboxx.pid}"
+RIG_LOGS="${TLRB2_RIG_LOGS:-/mnt/nvme/tlrb2/logs/t6}"
+PIDF="${2:-$RIG_LOGS/dosboxx.pid}"
 MOUNT_ROOT="${INSTALL_ROOT%/*}"  # Parent dir (c not c/TONY2)
 
 OLD=$(cat "$PIDF" 2>/dev/null)
@@ -25,10 +26,10 @@ done
 sleep 1
 
 # Launch
-export DISPLAY=:98 SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=x11
+export DISPLAY="${TLRB2_RIG_DISPLAY:-:98}" SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=x11
 unset WAYLAND_DISPLAY
-mkdir -p /mnt/nvme/tlrb2/logs/t6
-cd /mnt/nvme/tlrb2/logs/t6
+mkdir -p "$RIG_LOGS"
+cd "$RIG_LOGS"
 setsid /mnt/nvme/src/dosbox-x/src/dosbox-x -conf "$HOME/tlrb2/conf/tlrb2-x.conf" \
   -set mixer nosound=true \
   -c "mount c \"$MOUNT_ROOT\"" \

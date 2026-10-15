@@ -29,7 +29,7 @@ import rig
 import screens
 
 INSTALL = '/mnt/nvme/tlrb2/work/dyn/c/TONY2'
-LOGS = '/mnt/nvme/tlrb2/logs/t6'
+LOGS = os.environ.get('TLRB2_RIG_LOGS', '/mnt/nvme/tlrb2/logs/t6')
 SEASON_TIMEOUT = 40 * 60      # one season sims in ~10 min on this rig; generous
 
 
