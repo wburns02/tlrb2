@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for the C29 TEAM HISTORY screen (tools/m4/dynview.py and the C port).
 Model rows, the state walk and the frame parity need the synthetic fonts and the
-host binary; rendering tests skip without /mnt/nvme/tlrb2/files (DYNVIEW_FILES).
+host binary; rendering tests skip without the fonts (DYNVIEW_FILES).
 Run:  python3 -m pytest -q tools/m4/test_c29_teamhist.py
 """
 import os
@@ -16,6 +16,7 @@ import pytest
 from test_dynview import (make_standings, STAND_SEASONS, write_standings, box_rec,
                           write_box, game_ms)
 from test_dynview_c13 import load, make_fonts
+from test_dynview_c13_c import needs_fonts
 
 STH = dynview.SCREEN_TEAMHIST
 SS = dynview.SCREEN_STANDINGS
@@ -270,11 +271,10 @@ def test_teamhist_title_click_walk(tmp_path):
     assert press((STH, 0, ids[-1]), key, data) == (STH, 0, ids[0])
 
 
+@needs_fonts
 def test_teamhist_render_frames(tmp_path):
     """The hosted render of a champion team's history (frames are 64000 B and the
     title carries the team's title line) and the standings' new footer."""
-    if not os.path.exists(os.path.join('/mnt/nvme/tlrb2/files', 'MAIN.FNT')):
-        pytest.skip('/mnt/nvme/tlrb2/files missing')
     fonts = make_fonts(tmp_path / 'fonts')
     ldir = th_league(tmp_path)
     data = load(ldir, fonts)
