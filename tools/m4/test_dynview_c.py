@@ -2224,3 +2224,142 @@ def test_teamhist_walk_and_esc_parity(tmp_path):
     check_parity(ldir, tmp_path, 'c29_walk_t_esc_esc', keys=[48, 84, ESC])
     # a click on the standings title: LEFT/RIGHT still step the season there
     check_parity(ldir, tmp_path, 'c29_stand_title_click', keys=[48, ('L', 100, 14)])
+
+def test_c30_leaders_last_page_parity(tmp_path):
+    """C30: the POSTSEASON LEADERS block (the season's player rows through the first 256
+    distinct entries, the make_playoffs box is the 60-row shape) on the last page, its
+    seasons walk and pages match Python pixel for pixel"""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'plc30').mkdir(parents=True, exist_ok=True)
+    ldir = T.make_playoffs(tmp_path / 'plc30')
+    check_parity(ldir, tmp_path, 'c30_p4', keys=[80, PGDN, PGDN, PGDN, PGDN])
+    check_parity(ldir, tmp_path, 'c30_p4_pgdn_stays', keys=[80] + [PGDN] * 5)
+    check_parity(ldir, tmp_path, 'c30_p4_left', keys=[80] + [PGDN] * 4 + [LEFT])
+    check_parity(ldir, tmp_path, 'c30_p4_enter', keys=[80] + [PGDN] * 4 + [ENTER])
+
+
+def test_c30_leaders_page_mix_parity(tmp_path):
+    """C30: a page mixing the last two-cell row and the leaders block, the 27-out ERA
+    floor (a 26-out pitcher absent) and a 3-accepts IP text walk both ports alike"""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'plc30m').mkdir(parents=True, exist_ok=True)
+    ldir = T.make_series(tmp_path / 'plc30m', T.game_ms(3, (0,)))
+    recs = [T.round_hdr(3, 16, 0, 16, 1, 0, 1, 5, 3, 9, 7, 1, 0),
+            T.round_hdr(3, 17, 0, 16, 1, 0, 2, 2, 6, 8, 6, 0, 1),
+            # the WS game rows (cat 0 page 0 rows 0..1) and four batters + two pitchers
+            T.BOX_G0[0], T.BOX_G0[3],
+            T.box_rec(3, 16, 0, 0, (1, 0, 41, 0, 0, 0, 0, 1)),
+            T.box_rec(3, 16, 0, 1, (1, 0, 27, 0, 0, 0, 0, 0)),
+            T.box_rec(3, 16, 0, 2, (1, 0, 20, 0, 0, 0, 0, 0)),
+            T.box_rec(3, 16, 0, 3, (1, 0, 20, 0, 0, 0, 0, 0)),
+            T.box_rec(3, 16, 2, 0, (91, 4, 0, 1, 0, 0, 0, 0)),
+            T.box_rec(3, 16, 2, 1, (90, 4, 0, 1, 0, 0, 0, 0)),
+            T.box_rec(3, 16, 2, 2, (82, 4, 0, 1, 0, 0, 0, 5))]
+    T.write_box(ldir, recs)
+    check_parity(ldir, tmp_path, 'c30m_p0', keys=[80])
+    check_parity(ldir, tmp_path, 'c30m_p0_pgdn', keys=[80, PGDN])
+    check_parity(ldir, tmp_path, 'c30m_p1_pgdn', keys=[80, PGDN, PGDN])
+    check_parity(ldir, tmp_path, 'c30m_p1_enter', keys=[80, PGDN, PGDN, ENTER])
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((dynview.SCREEN_PLAYOFFS, 0, 0), data) == 19
+    got = []
+    for p in range(3):
+        got.extend(dynview.rows((dynview.SCREEN_PLAYOFFS, p, 0), data))
+    assert got[8:] == [
+        ('POSTSEASON LEADERS', '', '', '', ''),
+        ('HITTER, A', '', '', '', '43 H'), ('PLAYER01, B', '', '', '', '27 H'),
+        ('PLAYER02, B', '', '', '', '21 H'), ('HITTER, A', '', '', '', '1 RBI'),
+        ('HITTER, A', '', '', '', '1 SB'), ('HITTER, A', '', '', '', '9.1 IP'),
+        ('PLAYER01, B', '', '', '', '9.0 IP'), ('PLAYER02, B', '', '', '', '8.2 IP'),
+        ('HITTER, A', '', '', '', '0.96 ERA'), ('PLAYER01, B', '', '', '', '1.00 ERA')]
+    assert dynview.rows((dynview.SCREEN_PLAYOFFS, 1, 0), data) == got[12:24]
+
+
+def test_c30_no_player_rows_parity(tmp_path):
+    """C30: round headers without any player row: no leaders block (the 8 message rows
+    of the two headers never appear); the no-box season keeps its message"""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'plc30e').mkdir(parents=True, exist_ok=True)
+    ldir = T.make_series(tmp_path / 'plc30e', T.game_ms(3, (0,)))
+    T.write_box(ldir, [T.round_hdr(3, 16, 0, 16, 1, 0, 1, 5, 3, 9, 7, 1, 0),
+                       T.round_hdr(3, 17, 0, 16, 1, 0, 2, 2, 6, 8, 6, 0, 1)])
+    check_parity(ldir, tmp_path, 'c30e_p0', keys=[80])
+    data = dynview.load_data(str(ldir))
+    all_rows = dynview.rows((dynview.SCREEN_PLAYOFFS, 0, 0), data)
+    assert all_rows[-1] == ('SERIES', '', '', '', 'TIED 1-1')
+    assert len(all_rows) == 8
+    check_parity(ldir, tmp_path, 'c30e_enter', keys=[80, ENTER])
+
+
+def test_c30_cap_256_parity(tmp_path):
+    """C30: the 257-entry cap: 258 distinct one-H batters, only the first 256 tally, so
+    H has entries 0..2 (the lowest indexes) and entry 257 never shows"""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'plc30c').mkdir(parents=True, exist_ok=True)
+    ldir = T.make_series(tmp_path / 'plc30c', T.game_ms(3, (0,)))
+    recs = [T.round_hdr(3, 16, 0, 16, 1, 0, 1, 5, 3, 9, 7, 1, 0)]
+    recs += [T.box_rec(3, 16, 0, e, (1, 0, 1, 0, 0, 0, e == 257, 0)) for e in range(258)]
+    T.write_box(ldir, recs)
+    check_parity(ldir, tmp_path, 'c30cap_p0', keys=[80])
+    check_parity(ldir, tmp_path, 'c30cap_p1', keys=[80, PGDN])
+    data = dynview.load_data(str(ldir))
+    assert dynview.total_rows((dynview.SCREEN_PLAYOFFS, 0, 0), data) == 9
+
+
+def test_c30_zero_rows_no_title_and_high_er_parity(tmp_path):
+    """C30: a season whose player rows sum to nothing in every category gives no title
+    row; an ERA over 25 ER (past 16-bit ER * 2700) prints the same text in both ports"""
+    if not _synth_fonts_ready():
+        pytest.skip('fonts missing')
+    hdrs = [T.round_hdr(3, 16, 0, 16, 1, 0, 1, 5, 3, 9, 7, 1, 0),
+            T.round_hdr(3, 17, 0, 16, 1, 0, 2, 2, 6, 8, 6, 0, 1)]
+    (tmp_path / 'plc30z').mkdir(parents=True, exist_ok=True)
+    ldir = T.make_series(tmp_path / 'plc30z', T.game_ms(3, (0,)))
+    T.write_box(ldir, hdrs + [T.box_rec(3, 16, 0, 1, (3, 0, 0, 0, 0, 0, 0, 0)),
+                              T.box_rec(3, 16, 2, 2, (0, 0, 0, 0, 0, 0, 0, 0))])
+    rows = dynview.rows((dynview.SCREEN_PLAYOFFS, 0, 0), dynview.load_data(str(ldir)))
+    assert len(rows) == 8 and ('POSTSEASON LEADERS', '', '', '', '') not in rows
+    check_parity(ldir, tmp_path, 'c30z_p0', keys=[80])
+    (tmp_path / 'plc30r').mkdir(parents=True, exist_ok=True)
+    ldir = T.make_series(tmp_path / 'plc30r', T.game_ms(3, (0,)))
+    T.write_box(ldir, hdrs + [T.box_rec(3, 16, 2, 2, (90, 30, 30, 30, 0, 0, 1, 0))])
+    data = dynview.load_data(str(ldir))
+    got = []
+    for p in range(2):
+        got.extend(dynview.rows((dynview.SCREEN_PLAYOFFS, p, 0), data))
+    assert got[-1][4] == '30.00 ERA'
+    check_parity(ldir, tmp_path, 'c30r_p0', keys=[80, PGDN])
+
+
+def test_dos_c30_high_er_parity(tmp_path):
+    """Headless DOSBox-X: the POSTSEASON LEADERS ERA of a 30-ER pitcher (ER * 2700 past
+    16 bits) on PLAYOFFS page 1 (/KEYS:80,0x5100), compared with Python"""
+    if not _dos_ready():
+        pytest.skip('DYNVIEW.EXE or dosbox-x missing')
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    (tmp_path / 'plc30d').mkdir(parents=True, exist_ok=True)
+    ldir = T.make_series(tmp_path / 'plc30d', T.game_ms(3, (0,)))
+    T.write_box(ldir, [T.round_hdr(3, 16, 0, 16, 1, 0, 1, 5, 3, 9, 7, 1, 0),
+                       T.round_hdr(3, 17, 0, 16, 1, 0, 2, 2, 6, 8, 6, 0, 1),
+                       T.box_rec(3, 16, 2, 2, (90, 30, 30, 30, 0, 0, 1, 0))])
+    d = str(tmp_path / 'dosc30')
+    os.makedirs(os.path.join(d, 'LEAGUE'))
+    os.makedirs(os.path.join(d, 'FONTS'))
+    for f in os.listdir(str(ldir)):
+        shutil.copy2(os.path.join(str(ldir), f), os.path.join(d, 'LEAGUE', f))
+    for f in ('MAIN.FNT', 'BOLD.FNT', 'DEFAULT.PAL'):
+        shutil.copy2(os.path.join(FILES, f), os.path.join(d, 'FONTS', f))
+    rc = run_dos(d, ['DYNVIEW.EXE /RAW:OUT.RAW /KEYS:80,0x5100 LEAGUE FONTS'])
+    assert rc == 0, f'dos rc {rc}'
+    dos_raw = open(os.path.join(d, 'OUT.RAW'), 'rb').read()
+    py = fb_python(ldir, keys=[80, PGDN], font_dir=FILES)
+    if dos_raw != py:
+        i = next(k for k in range(min(len(dos_raw), len(py)))
+                 if dos_raw[k] != py[k])
+        pytest.fail(f'dos c30: first diff at pixel ({i % 320}, {i // 320}): '
+                    f'python {py[i]} c {dos_raw[i]}')

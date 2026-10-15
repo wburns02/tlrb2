@@ -56,6 +56,8 @@ KEY_UP, KEY_DOWN = 0x4800, 0x5000
 KEY_TAB = 9
 KEY_MINUS, KEY_PLUS, KEY_EQUALS = 45, 43, 61
 KEY_CARD = (67, 99)
+# LEADERS active-only toggle (C54): A / a in CAREER mode
+KEY_ACTIVE = (65, 97)
 # PLAYER CARD view toggle key (C40)
 KEY_VIEW = (72, 104)
 CURSOR_KEYS = (KEY_UP, KEY_DOWN, KEY_PGUP, KEY_PGDN)
@@ -317,6 +319,7 @@ def load_data(league_dir, font_dir=None, game_dir='.', anms_dir='ANMS'):
             'team_stems': settings_team_stems(league_dir),
             'fmt': realign.wanted_for_dir(league_dir),
             'lines': load_lines(league_dir), 'abbrs': team_abbrs(league_dir),
+            'lead_active': False,
             'game_dir': game_dir, 'anms_dir': anms_dir}
 
 
@@ -1086,23 +1089,46 @@ def year_text(hist, n):
     return '%d' % year_of(hist, n)
 
 
-def hof_order(hist):
-    """[(entry index, entry)] of status 3 entries by (HoF season descending, index ascending),
-    at most LIST_MAX (the HALL OF FAME rows and their cursor entries)."""
+# ---------------------------------------------------------------- hall of fame
+# HALL OF FAME position filters (C53): cat is the filter index 0..8 and TAB cycles it.
+# P is any pitcher; OF covers LF, CF and RF.
+HOF_FILTERS = [('ALL', None), ('P', None), ('C', (1,)), ('1B', (2,)), ('2B', (3,)),
+               ('3B', (4,)), ('SS', (5,)), ('OF', (6, 7, 8)), ('DH', (9,))]
+
+
+def hof_label(f):
+    """The title label of filter f ('HALL OF FAME: ' + label on the screen)."""
+    return HOF_FILTERS[f][0]
+
+
+def hof_match(e, f):
+    """True when entry e shows under filter f (C53): ALL everything, P any pitcher,
+    else a batter whose pos1 is one of the filter's positions."""
+    if f == 0:
+        return True
+    if f == 1:
+        return e['pitcher'] != 0
+    return e['pitcher'] == 0 and e['pos1'] in HOF_FILTERS[f][1]
+
+
+def hof_order(hist, f=0):
+    """[(entry index, entry)] of status 3 entries that match filter f (hof_match, C53)
+    by (HoF season descending, index ascending), at most LIST_MAX (the HALL OF FAME
+    rows and their cursor entries); the filter applies before the LIST_MAX cut."""
     items = []
     for i in range(n_entries(hist)):
         e = hist.read_entry(i)
-        if e['status'] == history.STATUS_HOF:
+        if e['status'] == history.STATUS_HOF and hof_match(e, f):
             items.append((-e['hof_season'], i, e))
     items.sort(key=lambda t: (t[0], t[1]))
     return [(i, e) for _s, i, e in items[:LIST_MAX]]
 
 
-def hof_rows(hist):
-    """Status 3 entries by (HoF season descending, index ascending):
+def hof_rows(hist, f=0):
+    """Status 3 entries matching filter f by (HoF season descending, index ascending):
     NAME, IND, YRS, H/W, HR/SO(PSO), AVG/ERA, WAR."""
     out = []
-    for _i, e in hof_order(hist):
+    for _i, e in hof_order(hist, f):
         t = e['totals']
         if e['pitcher']:
             s1, s2, s3 = fmt_count(t[13]), fmt_count(t[23]), fmt_era100(era100_of(t))
@@ -1114,13 +1140,29 @@ def hof_rows(hist):
     return out
 
 
-def career_order(hist, cat_index):
+def hof_body(hist, f):
+    """(cols, rows) of the HALL OF FAME of filter f: the filtered rows; a filter (f != 0)
+    with no member while history exists shows one message row (COLS_SINGLE). cat 0 with
+    no member keeps the empty table; no history gives no rows (rows() shows the
+    NO DYNASTY row)."""
+    if hist.seasons_recorded == 0:
+        return COLS_HOF, []
+    rows = hof_rows(hist, f)
+    if not rows and f != 0:
+        return COLS_SINGLE, [('NO HALL OF FAMERS AT ' + hof_label(f),)]
+    return COLS_HOF, rows
+
+
+def career_order(hist, cat_index, active=False):
     """[(value, entry index, entry)] of the career qualifiers of CATS[cat_index] in leader order
-    (value descending, the ERA ascending; then entry index ascending), at most LIST_MAX."""
+    (value descending, the ERA ascending; then entry index ascending), at most LIST_MAX.
+    active=True keeps only STATUS_ACTIVE entries (C54, filtered before the cut)."""
     cat = CATS[cat_index]
     cands = []
     for i in range(n_entries(hist)):
         e = hist.read_entry(i)
+        if active and e['status'] != history.STATUS_ACTIVE:
+            continue
         if cat_qualifies(e, cat):
             cands.append((cat_value(e, cat), i, e))
     if cat[1] == 'era':
@@ -1130,12 +1172,12 @@ def career_order(hist, cat_index):
     return cands[:LIST_MAX]
 
 
-def career_leader_cells(hist, cat_index):
+def career_leader_cells(hist, cat_index, active=False):
     """Every career leader row (rank counted from the top of the list): rank, NAME, status
-    mark, YRS, value."""
+    mark, YRS, value. active=True ranks within the filtered order (C54)."""
     cat = CATS[cat_index]
     out = []
-    for rank, (val, _i, e) in enumerate(career_order(hist, cat_index)):
+    for rank, (val, _i, e) in enumerate(career_order(hist, cat_index, active)):
         status = e['status']
         if status == history.STATUS_RETIRED:
             mark = 'R'
@@ -1656,7 +1698,9 @@ def playoff_rows(hist, box, teams, season, stems=None, mask=0):
     (`AL DIVISION SERIES` and the like), then per game the three rows series_rows makes
     for a WS game, then the summary row series_rows makes over the series' first game's
     two teams with the WINS threshold 3 for the division series and 4 for the LCS. Managed
-    team ids have '*' prepended to their TEAM cell; game and title header rows never."""
+    team ids have '*' prepended to their TEAM cell; game and title header rows never.
+    After the series rows, when post_leaders gives a row, the POSTSEASON LEADERS block
+    (C30): the title row ('POSTSEASON LEADERS', '', '', '', '') then the leader rows."""
     if season > history.SEASON_COUNT:
         return [('NO PLAYOFF ROUNDS RECORDED',)]
     names = dict(teams)
@@ -1704,6 +1748,77 @@ def playoff_rows(hist, box, teams, season, stems=None, mask=0):
             out.append((starred(lead), '', '', '',
                         ('WINS %d-%d' if a >= (3 if rnd == 1 else 4)
                          else 'LEADS %d-%d') % (a, b2)))
+    leaders = post_leaders(hist, box, season)
+    if leaders:
+        out.append(('POSTSEASON LEADERS', '', '', '', ''))
+        out.extend(leaders)
+    return out
+
+
+# POSTSEASON LEADERS (C30): the per-entry postseason sums of a season's player rows,
+# POST_LEADER_MAX distinct entries at most (file order), appended under the series rows.
+POST_LEADER_MAX = 256
+POST_LEADER_CATS = [
+    ('H', lambda t: t[0], '%d H', False),
+    ('HR', lambda t: t[1], '%d HR', False),
+    ('RBI', lambda t: t[2], '%d RBI', False),
+    ('SB', lambda t: t[3], '%d SB', False),
+    ('SO', lambda t: t[4], '%d SO', False),
+    ('IP', lambda t: t[6], '%d.%d IP', False),
+    ('ERA', None, '%d.%02d ERA', True),
+]
+
+
+def post_leaders(hist, box, season):
+    """POSTSEASON LEADERS rows of season (C30): every BOXSCORE.DAT player row of the
+    season (flags & 4 == 0, any g) in file order with idx < n_entries(hist) and
+    idx != NO_AWARD tallies, the first POST_LEADER_MAX distinct entries only (later new
+    entries are ignored; rows of already tallied entries keep counting). Per entry: the
+    batting H HR RBI SB, pitching SO OUTS and ER sums. Categories H HR RBI SB SO IP (a
+    sum descending, above 0), then ERA (ER * 2700 // OUTS ascending, only entries with
+    at least 27 outs); ties by entry index ascending, at most 3 rows a category:
+    (entry_name(hist, idx, 17), '', '', '', value text). An empty category gives no row."""
+    hist_n = n_entries(hist)
+    seen = {}                                     # idx -> [H, HR, RBI, SB, SO, ER, OUTS]
+    n_seen = 0
+    for rec in box:
+        rec_season, _g, flags, idx, _b, _i, s = rec
+        if (rec_season != season or (flags & 4) != 0 or idx >= hist_n
+                or idx == history.NO_AWARD):
+            continue
+        t = seen.get(idx)
+        if t is None:
+            if n_seen == POST_LEADER_MAX:
+                continue
+            n_seen += 1
+            t = seen[idx] = [0] * 7
+        if flags & 2:
+            t[4] += s[6]
+            t[6] += 3 * (s[0] // 10) + s[0] % 10
+            t[5] += s[3]
+        else:
+            t[0] += s[2]
+            t[1] += s[4]
+            t[2] += s[3]
+            t[3] += s[7]
+    out = []
+    for cat, key, fmt, asc in POST_LEADER_CATS:
+        items = []
+        for idx, t in seen.items():
+            if cat == 'ERA':
+                if t[6] >= 27:
+                    items.append((t[5] * 2700 // t[6], idx))
+            elif key(t) > 0:
+                items.append((key(t), idx))
+        items.sort(key=lambda p: (p[0] if asc else -p[0], p[1]))
+        for val, idx in items[:3]:
+            if cat == 'IP':
+                text = fmt % (val // 3, val % 3)
+            elif cat == 'ERA':
+                text = fmt % (val // 100, val % 100)
+            else:
+                text = fmt % val
+            out.append((entry_name(hist, idx, 17), '', '', '', text))
     return out
 
 
@@ -1713,8 +1828,8 @@ def playoffs_body(state, data):
     hist = data['hist']
     if hist.seasons_recorded == 0:
         return COLS_SINGLE, []
-    rows = playoff_rows(hist, data['box'], data['teams'],
-                        hist.seasons_recorded - state[2],
+    season = hist.seasons_recorded - state[2]
+    rows = playoff_rows(hist, data['box'], data['teams'], season,
                         data.get('team_stems'), data['mask'])
     if len(rows) == 1 and len(rows[0]) == 1:
         return COLS_SINGLE, rows
@@ -2100,7 +2215,12 @@ def leaders_body(state, data):
     hist = data['hist']
     mode, idx = s[2] >> 5, s[2] & 31
     if mode == MODE_CAREER:
-        return COLS_LEADERS, career_leader_cells(hist, idx)
+        # C54: the session-only active-only filter of data['lead_active']
+        active = data.get('lead_active', False)
+        cells = career_leader_cells(hist, idx, active)
+        if active and not cells:
+            return COLS_SINGLE, [('NO ACTIVE QUALIFIERS.',)]
+        return COLS_LEADERS, cells
     if mode == MODE_POST:
         items = post_order(data['box'], POST_CATS[idx])
         if not items:
@@ -2134,11 +2254,11 @@ def row_entry(s, data):
         return None
     row = unpack(s)[3]
     if s[0] == SCREEN_HOF:
-        order = hof_order(hist)
+        order = hof_order(hist, s[2])
         return order[row][0] if row < len(order) else None
     if s[0] == SCREEN_LEADERS:
         if s[2] >> 5 == MODE_CAREER:
-            cands = career_order(hist, s[2] & 31)
+            cands = career_order(hist, s[2] & 31, data.get('lead_active', False))
             return cands[row][1] if row < len(cands) else None
         if s[2] >> 5 == MODE_POST:
             items = post_order(data['box'], POST_CATS[s[2] & 31])
@@ -2417,7 +2537,7 @@ def total_rows(state, data):
     if screen == SCREEN_HISTORY:
         n = history_rows(hist) if hist.seasons_recorded else []
     elif screen == SCREEN_HOF:
-        n = hof_rows(hist) if hist.seasons_recorded else []
+        n = hof_body(hist, s[2])[1] if hist.seasons_recorded else []
     elif screen == SCREEN_LEADERS:
         n = leaders_body(s, data)[1]
     elif screen == SCREEN_MILESTONES:
@@ -2495,6 +2615,9 @@ def rows(state, data):
     if screen == SCREEN_OFFSEASON:
         body = offseason_body(state, data)[1]
         return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
+    if screen == SCREEN_HOF:
+        body = hof_body(hist, cat)[1]
+        return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
     if screen == SCREEN_AWARDS:
         body = awards_body(state, data)[1]
         return body[page * ROWS_PER_PAGE:(page + 1) * ROWS_PER_PAGE]
@@ -2522,8 +2645,6 @@ def rows(state, data):
     if screen == SCREEN_HISTORY:
         all_rows = history_rows(hist, data.get('league_dir'), data.get('team_stems'),
                                 data['mask'])
-    elif screen == SCREEN_HOF:
-        all_rows = hof_rows(hist)
     elif screen == SCREEN_MILESTONES:
         if cat != 1:
             all_rows = milestone_rows(hist, data['ms'])
@@ -2783,6 +2904,13 @@ def step(state, key, data):
         if page > 0:
             page -= 1
         return (screen, page, cat), 0
+    if screen == SCREEN_HOF and key == KEY_TAB:
+        # C53: TAB cycles the position filter; page and cursor reset
+        return (SCREEN_HOF, 0, (cat + 1) % len(HOF_FILTERS)), 0
+    if screen == SCREEN_LEADERS and key in KEY_ACTIVE and cat >> 5 == MODE_CAREER:
+        # C54: the active-only toggle (session only, not in the state); page and row reset
+        data['lead_active'] = not data.get('lead_active', False)
+        return pack(SCREEN_LEADERS, 0, cat, 0, s[4]), 0
     if screen == SCREEN_LEADERS and key in (KEY_LEFT, KEY_RIGHT):
         d = -1 if key == KEY_LEFT else 1
         mode, idx = cat >> 5, cat & 31
@@ -2994,8 +3122,8 @@ COLS_AWHIST = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
 FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
            SCREEN_TEAMHIST: 'LEFT RIGHT TEAM   PGUP PGDN   ESC',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
-           SCREEN_HOF: 'PGUP PGDN   ESC MENU',
-           SCREEN_LEADERS: 'LEFT RIGHT STAT  TAB MODE  ENTER CARD',
+           SCREEN_HOF: 'TAB POSITION   PGUP PGDN   ESC MENU',
+           SCREEN_LEADERS: 'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD',
            SCREEN_CARD: 'LEFT RIGHT  PGUP PGDN  H HONORS  ESC',
            SCREEN_MILESTONES: 'LEFT RIGHT WATCH   PGUP PGDN   ESC MENU',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU',
@@ -3049,12 +3177,13 @@ def screen_title(state, data):
     if screen == SCREEN_HISTORY:
         return 'SEASON HISTORY'
     if screen == SCREEN_HOF:
-        return 'HALL OF FAME'
+        return 'HALL OF FAME' if cat == 0 else 'HALL OF FAME: ' + hof_label(cat)
     if screen == SCREEN_LEADERS:
         mode = cat >> 5
         label = leader_cats(mode)[cat & 31][0]
+        flag = data.get('lead_active', False)
         if mode == MODE_CAREER:
-            return 'CAREER LEADERS: ' + label
+            return ('ACTIVE LEADERS: ' if flag else 'CAREER LEADERS: ') + label
         if mode == MODE_SEASON:
             return 'SEASON LEADERS: ' + label
         if mode == MODE_POST:
@@ -3130,6 +3259,8 @@ def body_cols(state, data):
     hist = data['hist']
     if state[0] == SCREEN_ABOUT or hist is None or hist.seasons_recorded == 0:
         return COLS_SINGLE
+    if state[0] == SCREEN_HOF:
+        return hof_body(data['hist'], unpack(state)[2])[0]
     if state[0] == SCREEN_OFFSEASON:
         return offseason_body(state, data)[0]
     if state[0] == SCREEN_AWARDS:
@@ -3155,7 +3286,7 @@ def body_cols(state, data):
     if state[0] == SCREEN_FIND:
         return COLS_SINGLE if not data.get('find', '') else COLS_FIND
     return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
-            SCREEN_HOF: COLS_HOF, SCREEN_MILESTONES: COLS_MILESTONES,
+            SCREEN_MILESTONES: COLS_MILESTONES,
             SCREEN_REVIEW: COLS_SINGLE,
             SCREEN_CARD: COLS_HONORS if unpack(state)[3] == 1 else COLS_SINGLE}[state[0]]
 

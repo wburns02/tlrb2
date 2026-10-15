@@ -4,7 +4,8 @@ start year. Synthetic HISTORY.DAT, SEASLINE.DAT, MILESTON.DAT, MAJ, fonts and po
 are built in tmp_path; nothing needs /mnt/nvme.
 Run:  python3 -m pytest -q tools/m4/test_dynview_c13.py
 """
-import os, shutil, struct, subprocess, sys
+import os, shutil, struct, subprocess, sys, tempfile
+from pathlib import Path
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
@@ -339,7 +340,7 @@ def test_season_leaders_rows_team_column_and_columns(tmp_path):
         ('#4', 'DELTA, A', '1993', 'BOS', '10')]
     assert dynview.body_cols(hr, data) == dynview.COLS_SEASON_LEADERS
     assert dynview.screen_title(hr, data) == 'SEASON LEADERS: HR'
-    assert dynview.footer_text(hr, data) == 'LEFT RIGHT STAT  TAB MODE  ENTER CARD'
+    assert dynview.footer_text(hr, data) == 'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD'  # C54
     era = (LEAD, 0, SEASON + sidx('ERA'))
     rows = dynview.rows(era, data)
     assert rows[0] == ('#1', 'FOXTROT, A', '1994', '?', '1.33')      # team 9: no abbreviation
@@ -1455,6 +1456,158 @@ def test_awhist_open_from_awards_and_esc_back(tmp_path):
     assert dynview.unpack(press(ah, ESC, data2)) == dynview.unpack(sa)
 
 
+# ---------------------------------------------------------------- C53 HOF position filters
+def hof53_league(tmp_path):
+    """Five HoF entries (PITCHA P, CATCHR C, SSMAN SS, LFMAN LF and CFMAN CF) among
+    actives; start 1990 so the IND years read 1990 season + n - 1."""
+    players = [
+        player('PITCHA', first='A', status=3, hof=2, pitcher=1, pos1=0,
+               totals=tot(W=300, OUTS=3704, ER=900, PSO=2995), war10=500),
+        player('CATCHR', first='C', status=3, hof=3, pitcher=0, pos1=1,
+               totals=tot(H=2000, AB=6000, HR=150), war10=400),
+        player('SSMAN', first='S', status=3, hof=3, pitcher=0, pos1=5,
+               totals=tot(H=2500, AB=8000, HR=80), war10=450),
+        player('LFMAN', first='L', status=3, hof=3, pitcher=0, pos1=6,
+               totals=tot(H=2300, AB=7800, HR=300), war10=430),
+        player('CFMAN', first='C', status=3, hof=2, pitcher=0, pos1=7,
+               totals=tot(H=2100, AB=7400, HR=250), war10=410),
+        player('DHIGN', first='D', status=1, pitcher=0, pos1=9, totals=tot(H=30, AB=100)),
+        player('ACT', first='X', totals=tot(H=100, AB=300)),
+    ]
+    ldir = tmp_path / 'hof53'
+    write_league(ldir, players, seasons=4, start=1990,
+                 lines=[line(1, 3, totals=tot(G=40, AB=100, H=30))])
+    return load(ldir)
+
+
+def test_hof53_filters_and_titles():
+    data = hof53_league(Path(tempfile.mkdtemp()))
+    for f in range(9):
+        s = (HOF, 0, f)
+        assert dynview.screen_title(s, data) == \
+            ('HALL OF FAME' if f == 0 else 'HALL OF FAME: ' + dynview.HOF_FILTERS[f][0])
+        assert dynview.footer_text(s, data) == 'TAB POSITION   PGUP PGDN   ESC MENU'
+    # every hof_order / hof_rows caller sees the state's cat: row_entry filters too
+    def lastof(e):
+        return dynview.one_field(e['name'][0:12])
+    names = {f: [lastof(e) for _i, e in dynview.hof_order(data['hist'], f)]
+             for f in range(9)}
+    assert names[0] == ['CATCHR', 'SSMAN', 'LFMAN', 'PITCHA', 'CFMAN']
+    assert names[0] == [r[0].split(',')[0] for r in dynview.hof_rows(data['hist'], 0)]
+    assert names[1] == ['PITCHA']
+    assert names[2] == ['CATCHR']
+    assert names[6] == ['SSMAN']
+    assert names[7] == ['LFMAN', 'CFMAN']           # OF covers LF and CF
+    for f in (3, 4, 5, 8):
+        assert names[f] == []
+    # IND keeps (season desc, index asc): season 3 members by index, then season 2
+    assert dynview.rows((HOF, 0, 0), data)[0][1] == '1992'
+    assert dynview.rows((HOF, 0, 7), data) == \
+        [('LFMAN, L', '1992', '3', '2300', '300', '.294', '43.0'),
+         ('CFMAN, C', '1991', '3', '2100', '250', '.283', '41.0')]
+
+
+def test_hof53_tab_state_and_enter_esc():
+    data = hof53_league(Path(tempfile.mkdtemp()))
+    s = press((HOF, 1, 0, 3), TAB, data)
+    assert s == (HOF, 0, 1)                          # page and cursor reset, f 1
+    for f in range(2, 9):
+        s = press(s, TAB, data)
+    assert s == (HOF, 0, 8)
+    assert press(s, TAB, data) == (HOF, 0, 0)        # the wrap
+    # ENTER on the SS list opens SSMAN (the only one), ESC comes back to the same state
+    s, _ex = dynview.step((HOF, 0, 6), ENTER, data)
+    assert s == (CARD, 0, 2)
+    assert press(s, ESC, data) == (HOF, 0, 6)
+    # an empty filter: ENTER does nothing, the cursor names no entry
+    assert press((HOF, 0, 8), ENTER, data) == (HOF, 0, 8)
+    assert dynview.row_entry((HOF, 0, 8, 0), data) is None
+
+
+def test_hof53_empty_message_and_full_table():
+    data = hof53_league(Path(tempfile.mkdtemp()))
+    # the DH filter has no member while history exists: one COLS_SINGLE message row
+    assert dynview.rows((HOF, 0, 8), data) == [('NO HALL OF FAMERS AT DH',)]
+    assert dynview.body_cols((HOF, 0, 8), data) == dynview.COLS_SINGLE
+    assert dynview.total_rows((HOF, 0, 8), data) == 1
+    # cat 0 keeps the table (COLS_HOF) even when the ALL list has members
+    assert dynview.body_cols((HOF, 0, 0), data) == dynview.COLS_HOF
+    # a league with no HoF member at all: cat 0 stays the empty table
+    ldir = Path(tempfile.mkdtemp()) / 'nohof'
+    write_league(ldir, [player('ACT', totals=tot(H=1, AB=4))], seasons=2)
+    data2 = load(ldir)
+    assert dynview.rows((HOF, 0, 0), data2) == []
+    assert dynview.body_cols((HOF, 0, 0), data2) == dynview.COLS_HOF
+    assert dynview.rows((HOF, 0, 2), data2) == [('NO HALL OF FAMERS AT C',)]
+# ---------------------------------------------------------------- C54 LEADERS active-only
+def test_c54_active_filter_and_frames_model(tmp_path):
+    """A on CAREER flips the flag, resets page and row and re-ranks; the title, the footers
+    and the empty-active row; A on the other LEADERS modes is a no-op (C54)."""
+    ldir = tmp_path / 'c54'
+    players = [player('ALPHA', totals=tot(H=3000, AB=9000)),
+               player('BRAVO', totals=tot(H=2000, AB=2999)),    # AVG: AB under the line
+               player('CHARLIE', totals=tot(H=2000, AB=3000)),
+               player('DELTA', status=2, totals=tot(H=2000, AB=3000)),
+               player('ECHO', status=3, totals=tot(H=2000, AB=3000)),
+               player('FOXTROT', status=2, totals=tot(H=100))]
+    write_league(ldir, players, seasons=3)
+    data = load(ldir)
+    assert data['lead_active'] is False
+    s = press((LEAD, 1, cidx('H'), 21), ord('A'), data)          # A: flip, page and row reset
+    assert s == (LEAD, 0, cidx('H')) and data['lead_active'] is True
+    assert [i for _v, i, _e in dynview.career_order(data['hist'], cidx('H'), True)] == \
+        [0, 1, 2]                    # DELTA and ECHO are out: H 2000 tie by entry index
+    rows = dynview.rows(s, data)
+    assert rows == [('#1', 'ALPHA, A', ' ', '3', '3000'),
+                    ('#2', 'BRAVO, A', ' ', '3', '2000'),
+                    ('#3', 'CHARLIE, A', ' ', '3', '2000')]
+    assert [r[0] for r in rows] == ['#1', '#2', '#3']            # ranks recount
+    assert dynview.screen_title(s, data) == 'ACTIVE LEADERS: H'
+    assert dynview.footer_text(s, data) == \
+        'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD'
+    assert dynview.career_leader_cells(data['hist'], cidx('H'), True) == rows
+    s = press(s, ord('a'), data)                                 # a back off, same reset
+    assert s == (LEAD, 0, cidx('H')) and data['lead_active'] is False
+    assert dynview.screen_title(s, data) == 'CAREER LEADERS: H'
+    # other modes: no-op with the flag untouched
+    for before in ((LEAD, 1, SEASON + sidx('H'), 9), (LEAD, 1, BY_YEAR + sidx('H'), 9, 2),
+                   (LEAD, 1, 3 * 32, 9)):
+        assert press(before, 65, data) == before
+        assert press(before, 97, data) == before
+    assert data['lead_active'] is False
+    # TAB round trip and the filter again (the state tuple never holds the flag)
+    s = press((LEAD, 0, cidx('SV')), ord('A'), data)
+    assert data['lead_active'] is True
+    for _n in range(4):
+        s = press(s, TAB, data)                                  # SEASON, BY YEAR, POST, CAREER:
+    assert s == (LEAD, 0, cidx('H'))    # SV falls back to the first category (no SEASON SV)
+    assert data['lead_active'] is True
+    assert dynview.screen_title((LEAD, 0, cidx('H')), data) == 'ACTIVE LEADERS: H'
+    # the cursor entry opens the filtered order's entry card, ESC back
+    entry = dynview.row_entry((LEAD, 0, cidx('H')), data)
+    assert entry == 0
+    card = press((LEAD, 0, cidx('H')), ENTER, data)
+    assert card == (CARD, 0, 0) and data['lead_active'] is True
+    assert press(card, ESC, data) == (LEAD, 0, cidx('H'))
+
+
+def test_c54_no_active_qualifiers(tmp_path):
+    """All entries non-active: one message row with COLS_SINGLE; left unfiltered the list
+    shows the retired marks."""
+    ldir = tmp_path / 'c54none'
+    players = [player('ALPHA', status=2, totals=tot(H=3000, AB=9000)),
+               player('BRAVO', status=3, totals=tot(H=2000, AB=3000))]
+    write_league(ldir, players, seasons=3)
+    data = load(ldir)
+    data['lead_active'] = True
+    assert dynview.leaders_body((LEAD, 0, 0), data) == \
+        (dynview.COLS_SINGLE, [('NO ACTIVE QUALIFIERS.',)])
+    assert dynview.total_rows((LEAD, 0, 0), data) == 1
+    assert dynview.career_leader_cells(data['hist'], 0)[0][2] == 'R'
+    # categories other than H: WAR has no qualifier, but the filter empties it too
+    assert dynview.leaders_body((LEAD, 0, cidx('WAR')), data) == \
+        (dynview.COLS_SINGLE, [('NO ACTIVE QUALIFIERS.',)])
+
 # ---------------------------------------------------------------- the C58 DOS rig
 BAT_LADDER = ['if errorlevel 3 goto e3', 'if errorlevel 2 goto e2',
               'if errorlevel 1 goto e1', 'echo 0 > RC.TXT', 'goto end',
@@ -1510,7 +1663,10 @@ def _c58_dos_league(tmp_path):
     ldir = tmp_path / 'c58lg'
     ms = [(3, 0, 64, 0), (3, 3, 65, 1000), (3, 0xffff, 66, 30), (3, 4, 67, 987),
           (3, 6, 68, 999), (2, 0, 64, 1)]
-    write_league(ldir, player_set(), seasons=3, start=1990,
+    players = player_set()
+    for i, hof in ((0, 2), (1, 3), (2, 3)):      # three Hall of Famers for the HOF cases
+        players[i].update(status=3, hof=hof)
+    write_league(ldir, players, seasons=3, start=1990,
                  lines=season_lines_fixture(), ms=ms)
     return ldir
 
@@ -1548,8 +1704,8 @@ def test_c58_card_browse_parity(tmp_path):
         ('honors_left_right', [K_AWARDS, ENTER, ord('H'), LEFT]),
         ('award_right_last', [K_AWARDS, ENTER, PGDN, PGDN, DOWN, DOWN, DOWN, RIGHT]),
     )
-    for tag, keys in cases:
-        out = 'OUT_%s.RAW' % tag
+    for n, (tag, keys) in enumerate(cases):
+        out = 'C58_%d.RAW' % n
         args = 'DYNVIEW.EXE /RAW:%s /KEYS:%s LEAGUE FONTS' % (out, toks(keys))
         rc = run_dos(d, [args])
         assert rc == 0, '%s: dos rc %d' % (tag, rc)
@@ -1568,4 +1724,4 @@ def test_c58_card_browse_parity(tmp_path):
     s = (dynview.SCREEN_MENU, 0, 0)
     for k in keys:
         s, _ex = dynview.step(s, k, data)
-    assert s in ((dynview.SCREEN_HOF, 0, 0, 1), (dynview.SCREEN_HOF, 0, 0))
+    assert s == (dynview.SCREEN_HOF, 0, 0, 2)      # row 1's card, RIGHT to row 2, ESC there
