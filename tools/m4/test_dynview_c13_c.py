@@ -745,3 +745,46 @@ def test_watch_parity_frames(tmp_path):
     check(empty, tmp_path, 'c27_watch_empty', [K4, RIGHT])
     check(empty, tmp_path, 'c27_ms0_empty', [K4])
     check(ldir, tmp_path, 'c27_watch_pgdn', [K4, RIGHT, PGDN])
+
+
+# ---------------------------------------------------------------- C39 POSTSEASON LEADERS
+def post_leader_league(tmp_path, name):
+    """The post_league box plus player rows for entries 1 and 5 and a flags 4 header:
+    entry 0 (HITTER, retired) H 2 over 2 games, entry 1 (HOTEL, active) H 2 over 1 game
+    and IP 2.0 over another, entry 5 (ACE) nothing but a header (no rows)."""
+    ldir = post_league(tmp_path, name)
+    write_box(ldir, [
+        box_rec(3, 0, 4, 0 * 256 + 16, (5, 3, 9, 7, 1, 0, 0, 0), b=1, i=1),
+        box_rec(3, 0, 0, 0, (4, 1, 2, 1, 0, 0, 1, 0)),
+        box_rec(3, 1, 0, 0, (3, 0, 1, 0, 1, 0, 0, 0)),
+        box_rec(3, 0, 0, 1, (1, 0, 2, 0, 0, 0, 1, 0)),
+        box_rec(3, 0, 2, 1, (20, 5, 2, 2, 1, 1, 3, 12)),
+    ])
+    return ldir
+
+
+@needs_fonts
+def test_post_leaders_parity(tmp_path):
+    """POSTSEASON H page 0 (mark, G, value), the empty message, POST IP (7.0), the frame
+    after TAB from BY YEAR, the card opened from POST row 1, and ESC back to the list"""
+    ldir = post_leader_league(tmp_path, 'postlead')
+    by = [K3, TAB, TAB]
+    post_h = check(ldir, tmp_path, 'c39_post_h', [K3, TAB, TAB, TAB])
+    assert py_run(ldir, tmp_path, [K3, TAB, TAB, TAB])[0] == \
+        (LEAD, 0, 3 * dynview.MODE_SHIFT + dynview.POST_CATS.index(
+            ('H', 'count', 2)))
+    # the empty H table of a league with no box: one message row
+    empty = league(tmp_path, name='postnone')
+    check(empty, tmp_path, 'c39_post_empty', [K3, TAB, TAB, TAB])
+    check(ldir, tmp_path, 'c39_post_ip', [K3, TAB, TAB, TAB, RIGHT, RIGHT, RIGHT, RIGHT,
+                                          RIGHT])
+    assert check(ldir, tmp_path, 'c39_tab_from_by_year', by + [TAB]) == post_h
+    card = check(ldir, tmp_path, 'c39_post_card', [K3, TAB, TAB, TAB, DOWN, ENTER])
+    assert py_run(ldir, tmp_path, [K3, TAB, TAB, TAB, DOWN, ENTER])[0] == (CARD, 0, 1)
+    assert check(ldir, tmp_path, 'c39_post_esc', [K3, TAB, TAB, TAB, DOWN, ENTER, ESC]) == \
+        check(ldir, tmp_path, 'c39_post_h_row1', [K3, TAB, TAB, TAB, DOWN])
+    assert card != post_h
+    s, data = py_run(ldir, tmp_path, [K3, TAB, TAB, TAB])
+    assert dynview.screen_title(s, data) == 'POSTSEASON LEADERS: H'
+    assert dynview.footer_text(s, data) == dynview.FOOTERS[LEAD]
+    assert dynview.leaders_body(s, data)[0] == dynview.COLS_POST_LEADERS
