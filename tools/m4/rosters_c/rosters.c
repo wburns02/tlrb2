@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #define STATLINE_REPAIR
+#define SL_NO_SALARY      /* ROSTERS never prices a record */
 #include "../statline.h"
 
 /* stable team ids and the playoff format (C12.3, C12.5, C12.6). The helpers this file does not call would

@@ -467,6 +467,8 @@ static void sl_pitcher(uint8_t *r)
 }
 
 /* ---------------- ratings.py: the game salary (C21) ---------------- */
+/* a program that never prices a record defines SL_NO_SALARY first (gcc -Werror flags unused statics) */
+#ifndef SL_NO_SALARY
 
 /* ratings.era100: (u16(103) * 900000 + era100base >> 1) // era100base, capped 9999;
  * the +0xe9 / +0x1d3 bumps reproduce the game's ERA rounding to hundredths */
@@ -594,6 +596,7 @@ static long sl_salary(const uint8_t *r)
 {
     return (r[31] & 15) == 0 ? sl_salary_pitcher(r) : sl_salary_batter(r);
 }
+#endif /* SL_NO_SALARY */
 
 /* statline.fill: overwrite every season stat byte of a 143 B record in place with the
  * line its rating nibbles imply. Pitcher iff pos code (byte 31 low nibble) is 0. */
