@@ -20,6 +20,7 @@ import dynview
 import rookies
 import statline
 import ratings as rt
+import rosters
 
 FILES = '/mnt/nvme/tlrb2/files'
 HAVE_FONTS = os.path.exists(os.path.join(FILES, 'MAIN.FNT'))
@@ -1135,7 +1136,7 @@ def test_every_key_on_every_screen(tmp_path):
         for k in ALL_KEYS:
             st2, ex = cr.step(s, k, ctx)
             assert isinstance(ex, bool)
-            assert st2['screen'] in range(5)
+            assert st2['screen'] in range(6)
 
 
 # ---------------------------------------------------------------- render
@@ -1611,3 +1612,244 @@ def test_team_enter_reads_stable_id_row(tmp_path):
     st, _ = walk(ctx_for(lg), [ENTER])
     assert (st['screen'], st['team']) == (cr.S_SLOT, 0)
     assert st['image'] == cr.read_v20(lg, 'DET')
+
+
+# ---------------------------------------------------------------- C69: D releases a player to the pool
+def rel_league(d, pools=None, mut=None):
+    """League with BOS slot 0 = Adams (P), slot 1 = Bloh (P); the header,
+    otherwise all-0xff slot lists, holds slot 0 in ROT (+111) and slot 1 in
+    the reserves (+222), so releasing slot 0 has a same-type reserve. pools =
+    {name: bytes} POOL files written as-is; mut(d) rewrites BOS.V20 last."""
+    import tempfile
+    base = make_league(d, recs={
+        0: {0: named_rec('Adams', 'Joe', 30, 0), 1: named_rec('Bloh', 'R', 26, 0)},
+        2: {}, 15: {}, 16: {}, 17: {}})
+    img = bytearray(open(os.path.join(base, 'BOS.V20'), 'rb').read())
+    img[111:237] = b'\xff' * 126
+    img[111] = 0                       # ROT holds slot 0
+    img[222] = 1                       # reserves hold slot 1
+    open(os.path.join(base, 'BOS.V20'), 'wb').write(bytes(img))
+    for name, b in (pools or {}).items():
+        open(os.path.join(base, name), 'wb').write(b)
+    if mut:
+        mut(base)
+    return base
+
+
+def add_b1(base):
+    """Named batter Baker (1B) in slot 16, held by the bench (+194) and the
+    reserves list (after the pitcher, +223)."""
+    img = bytearray(open(os.path.join(base, 'BOS.V20'), 'rb').read())
+    img[295 + 143 * 16:295 + 143 * 17] = bytearray(named_rec('Baker', 'Al', 25, 2))
+    img[194] = 16
+    img[223] = 16
+    open(os.path.join(base, 'BOS.V20'), 'wb').write(bytes(img))
+
+
+def pool_img(name=b'FULL', n_pit=0, n_bat=0, size=295 + 80 * 143):
+    b = bytearray(size)
+    b[0:14] = name.ljust(14, b'\0')[:14]
+    for s in range(n_pit):
+        b[295 + 143 * s] = 80
+    for s in range(16, 16 + n_bat):
+        b[295 + 143 * s] = 80
+    return bytes(b)
+
+
+def rel_walk(ctx, keys, st=None):
+    return walk(ctx, keys, st)
+
+
+def test_c69_d_open_and_keys(tmp_path):
+    """D on an occupied slot opens S_RELEASE with the cursor's slot; d works
+    too; D on an empty slot is a no-op; N and ESC return to S_SLOT on the
+    slot; other keys are no-ops."""
+    lg = rel_league(str(tmp_path / 'L'), mut=add_b1)
+    ctx = ctx_for(lg)
+    st, _ = walk(ctx, slot_keys(0) + [68])
+    assert (st['screen'], st['slot'], st['cursor']) == (cr.S_RELEASE, 0, 0)
+    # the row text of the highlighted slot is unchanged: rows equal S_SLOT's
+    assert cr._list_view(st, ctx)[:3] == cr._list_view(dict(st, screen=cr.S_SLOT), ctx)[:3]
+    assert cr._list_view(st, ctx)[3] == cr.FOOT_RELEASE
+    st2, _ = walk(ctx, [ord('x')], st)
+    assert st2 == st
+    st3, _ = walk(ctx, [ord('N')], st)
+    assert (st3['screen'], st3['cursor'], st3['msg']) == (cr.S_SLOT, 0, 0)
+    st4, _ = walk(ctx, slot_keys(0) + [100, ESC])
+    assert (st4['screen'], st4['cursor']) == (cr.S_SLOT, 0)
+    before = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
+    st5 = to_slot(ctx, 0)
+    walk(ctx, [DOWN, DOWN], st5)                 # slot 2 empty
+    st6, _ = walk(ctx, [DOWN, DOWN], to_slot(ctx, 0))
+    st7, _ = walk(ctx, [68], st6)
+    assert st7 == st6
+    assert open(os.path.join(lg, 'BOS.V20'), 'rb').read() == before
+
+
+def test_c69_release_bench_batter_pool1(tmp_path):
+    """Release of a bench batter with POOL1 missing: POOL1 created from
+    pool_blank, the pair at slot 16 (record 16 and 56), byte 141 = 0 in both
+    halves, the team slot vacated, and the header equal to vacate + repair
+    (its leftover bench / reserve bytes holding 16 are 0xff)."""
+    lg = rel_league(str(tmp_path / 'L'), mut=add_b1)
+    ctx = ctx_for(lg)
+    pre = bytearray(open(os.path.join(lg, 'BOS.V20'), 'rb').read())
+    st, _ = walk(ctx, slot_keys(16) + [ord('D'), ord('Y')])
+    assert (st['screen'], st['cursor'], st['msg']) == (cr.S_SLOT, 16,
+                                                       'RELEASED TO POOL1')
+    pool = open(os.path.join(lg, 'POOL1.V20'), 'rb').read()
+    # the pool: a blank built from the team image with the released pair at
+    # slot 16 and pool years 0 in both halves
+    want = bytearray(rosters.pool_blank(pre))
+    rosters.write_pair(want, 16, rosters.copy_pair(pre, 16))
+    rosters.write_pool_years(want, 16, 0)
+    assert pool == bytes(want)
+    assert pool[295 + 141] == 0 and pool[295 + 143 * 56 + 141] == 0
+    # the team: the header = vacate + repair with leftovers 0xff; the slot's
+    # two records zeroed; the rest of the image untouched
+    team = bytearray(open(os.path.join(lg, 'BOS.V20'), 'rb').read())
+    ref = bytearray(pre)
+    rosters.vacate(ref, 16)
+    rosters.repair(ref, {16})
+    for o in range(194, 237):
+        if ref[o] == 16:
+            ref[o] = 0xff
+    assert team[:237] == bytes(ref[:237])
+    assert team[295 + 143 * 16] == 0 and team[295 + 143 * 56] == 0
+    assert team[237:295] == pre[237:295]
+    assert team[295:295 + 143 * 16] == pre[295:295 + 143 * 16]
+    assert team[295 + 143 * 17:] == pre[295 + 143 * 17:]
+
+
+def test_c69_release_lineup_starter_reserve_fills(tmp_path):
+    """A lineup starter (SLOT list holds him at a lineup byte with a DEF
+    position) is released; a same-type reserve REPLACES him in the lineup
+    places (repair) and the header equals vacate + repair."""
+    def mut(base):
+        # starter Cole (CF, slot 17) in both no-DH/DH away/home leadoffs;
+        # reserve Dusty (CF-capable, slot 18) in the reserves list
+        img = bytearray(open(os.path.join(base, 'BOS.V20'), 'rb').read())
+        for o in (122, 131, 140, 149):
+            img[o] = 17                       # r1 of each lineup
+            img[o + 158 - 122] = 7            # DEF position 7 (CF) at +36..
+        img[295 + 143 * 17:295 + 143 * 18] = bytearray(
+            named_rec('Cole', 'Dan', 27, 7))
+        img[295 + 143 * 18:295 + 143 * 19] = bytearray(
+            named_rec('Dusty', 'Ray', 24, 7))
+        img[224] = 18                         # reserves hold 17? no: 18
+        img[222] = 1                          # the pitcher reserve from rel_league
+        img[223] = 17                         # the starter is a reserve too
+        img[225] = 0xff
+        open(os.path.join(base, 'BOS.V20'), 'wb').write(bytes(img))
+    lg = rel_league(str(tmp_path / 'L'), mut=mut)
+    ctx = ctx_for(lg)
+    pre = bytearray(open(os.path.join(lg, 'BOS.V20'), 'rb').read())
+    st, _ = walk(ctx, slot_keys(17) + [ord('D'), ord('Y')])
+    assert (st['screen'], st['msg']) == (cr.S_SLOT, 'RELEASED TO POOL1')
+    pool = bytearray(open(os.path.join(lg, 'POOL1.V20'), 'rb').read())
+    want = bytearray(rosters.pool_blank(pre))
+    rosters.write_pair(want, 16, rosters.copy_pair(pre, 17))
+    rosters.write_pool_years(want, 16, 0)
+    assert bytes(pool) == bytes(want)
+    team = bytearray(open(os.path.join(lg, 'BOS.V20'), 'rb').read())
+    ref = bytearray(pre)
+    rosters.vacate(ref, 17)
+    rosters.repair(ref, {17})
+    for o in range(194, 237):
+        if ref[o] == 17:
+            ref[o] = 0xff
+    assert team[:237] == bytes(ref[:237])
+    # a same-type reserve took every lineup place: no lineup byte holds 17
+    assert 17 not in team[122:158]
+    # the pair is gone from the team
+    assert team[295 + 143 * 17] == 0 and team[295 + 143 * 57] == 0
+
+
+def test_c69_pool1_full_uses_pool2(tmp_path):
+    """POOL1 full of batters: a released batter lands in POOL2, POOL1's bytes
+    unchanged, and the message names POOL2."""
+    lg = rel_league(str(tmp_path / 'L'),
+                    pools={'POOL1.V20': pool_img(n_bat=24)}, mut=add_b1)
+    ctx = ctx_for(lg)
+    pre = bytearray(open(os.path.join(lg, 'BOS.V20'), 'rb').read())
+    st, _ = walk(ctx, slot_keys(16) + [ord('D'), ord('Y')])
+    assert st['msg'] == 'RELEASED TO POOL2'
+    pool2 = bytearray(open(os.path.join(lg, 'POOL2.V20'), 'rb').read())
+    pool1 = bytearray(open(os.path.join(lg, 'POOL1.V20'), 'rb').read())
+    # POOL2 was missing: a blank built from the team image, the released pair
+    # at its lowest free batter slot (16), pool years 0
+    want = bytearray(rosters.pool_blank(pre))
+    rosters.write_pair(want, 16, rosters.copy_pair(pre, 16))
+    rosters.write_pool_years(want, 16, 0)
+    assert bytes(pool2) == bytes(want)
+    # POOL1 (a full image with its 24 batter slots occupied) is unchanged
+    assert bytes(pool1) == pool_img(n_bat=24)
+
+
+def test_c69_all_pools_full_pool_full_no_writes(tmp_path):
+    """All four pools hold 16 pitchers: a released pitcher labels POOL FULL,
+    stays on S_RELEASE (Y repeats it), N backs out, and both files are
+    unchanged."""
+    lg = rel_league(str(tmp_path / 'L'),
+                    pools={'POOL%d.V20' % i: pool_img(n_pit=16)
+                           for i in (1, 2, 3, 4)})
+    ctx = ctx_for(lg)
+    pre = bytearray(open(os.path.join(lg, 'BOS.V20'), 'rb').read())
+    pool_bytes = {i: open(os.path.join(lg, 'POOL%d.V20' % i), 'rb').read()
+                  for i in (1, 2, 3, 4)}
+    st, _ = walk(ctx, slot_keys(0) + [ord('D'), ord('Y'), ord('Y'), ord('N')])
+    assert (st['screen'], st['cursor']) == (cr.S_SLOT, 0)
+    assert open(os.path.join(lg, 'BOS.V20'), 'rb').read() == bytes(pre)
+    for i in (1, 2, 3, 4):
+        assert open(os.path.join(lg, 'POOL%d.V20' % i), 'rb').read() == pool_bytes[i]
+    # Y again on a fresh release shows POOL FULL and stays on S_RELEASE
+    st3, _ = walk(ctx, [ord('D')], st)
+    st4, _ = walk(ctx, [ord('Y')], st3)
+    assert st4['msg'] == 'POOL FULL' and st4['screen'] == cr.S_RELEASE
+
+
+def test_c69_no_reserve_refused(tmp_path):
+    """A starter (staff) with no same-type reserve anywhere: NO RESERVE, no
+    file changes, and the state stays on S_RELEASE."""
+    def mut(base):
+        img = bytearray(open(os.path.join(base, 'BOS.V20'), 'rb').read())
+        img[222] = 0xff                  # drop the pitcher reserve
+        open(os.path.join(base, 'BOS.V20'), 'wb').write(bytes(img))
+    lg = rel_league(str(tmp_path / 'L'), mut=mut)
+    ctx = ctx_for(lg)
+    before_bos = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
+    st, _ = walk(ctx, slot_keys(0) + [ord('D'), ord('Y')])
+    assert (st['screen'], st['msg']) == (cr.S_RELEASE, 'NO RESERVE')
+    assert open(os.path.join(lg, 'BOS.V20'), 'rb').read() == before_bos
+    assert not os.path.exists(os.path.join(lg, 'POOL1.V20'))
+    # the next key clears the message
+    st2, _ = walk(ctx, [78], st)
+    assert st2['msg'] == 0 and st2['screen'] == cr.S_SLOT
+
+
+def test_c69_wrong_size_pool_skipped_and_unchanged(tmp_path):
+    """A 100-byte POOL1 is not a candidate and is left byte-identical; the
+    release lands in POOL2."""
+    lg = rel_league(str(tmp_path / 'L'),
+                    pools={'POOL1.V20': bytes(100)}, mut=add_b1)
+    ctx = ctx_for(lg)
+    pre = bytearray(open(os.path.join(lg, 'BOS.V20'), 'rb').read())
+    st, _ = walk(ctx, slot_keys(16) + [ord('D'), ord('Y')])
+    assert st['msg'] == 'RELEASED TO POOL2'
+    assert open(os.path.join(lg, 'POOL1.V20'), 'rb').read() == bytes(100)
+    pool2 = bytearray(open(os.path.join(lg, 'POOL2.V20'), 'rb').read())
+    want = bytearray(rosters.pool_blank(pre))
+    rosters.write_pair(want, 16, rosters.copy_pair(pre, 16))
+    rosters.write_pool_years(want, 16, 0)
+    assert bytes(pool2) == bytes(want)
+
+
+def test_c69_msg_replaces_footer_and_clears(tmp_path):
+    """On S_SLOT the released message replaces the footer text; any next key
+    clears it first."""
+    lg = rel_league(str(tmp_path / 'L'), mut=add_b1)
+    ctx = ctx_for(lg, fonts=fonts()) if HAVE_FONTS else ctx_for(lg)
+    st, _ = walk(ctx, slot_keys(0) + [ord('D'), ord('Y')])
+    assert st['msg'] == 'RELEASED TO POOL1'
+    st2, _ = walk(ctx, [RIGHT], st)      # any key clears the message first
+    assert (st2['msg'], st2['screen']) == (0, cr.S_SLOT)

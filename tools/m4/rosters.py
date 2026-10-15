@@ -552,7 +552,7 @@ def repair(image, changed):
         return best
 
     for kind, pos, addr, slot in entries:
-        if slot == 0xff:
+        if slot == 0xff or slot >= 40:       # C69 gate: a corrupt header byte is left as is
             continue
         if slot not in changed and is_on(image, slot):
             continue
