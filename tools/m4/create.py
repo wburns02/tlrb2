@@ -542,8 +542,8 @@ def _random_name(st, ctx):
     record (slots 0..39, roster halves only) of any league team: last and
     first both equal the pick exactly (after the cut at the first 0 byte).
     The selected team is checked in st['image'], every other team from its
-    V20 file through read_v20 (missing or unusable file = no records, no
-    collision). Up to 8 picks in sequence; when all 8 collide the 8th is
+    V20 file through read_v20 (zero padded, so a missing or short file has no
+    records past its end). Up to 8 picks in sequence; when all 8 collide the 8th is
     kept anyway. st['seed'] keeps the seed after the last draw used."""
     seed = st['seed']
     for pick in range(8):
@@ -564,16 +564,7 @@ def _name_collides(st, ctx, last, first):
         if i == st['team']:                  # st['team'] is the list index, not the id
             image = st['image']
         else:
-            u2 = HEADER_LEN + ROSTER_SLOTS * RECORD_LEN
-            path = v20_path(ctx['league_dir'], stem.encode('latin-1'))
-            data = b''
-            if path is not None:
-                try:
-                    with open(path, 'rb') as fh:
-                        data = fh.read()
-                except OSError:
-                    data = b''
-            image = data.ljust(u2, b'\0')
+            image = read_v20(ctx['league_dir'], stem)    # zero padded; missing = all zero
         for r in range(ROSTER_SLOTS):
             rec = record(image, r)
             if not rec[0]:
