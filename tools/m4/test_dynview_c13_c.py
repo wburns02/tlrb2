@@ -1315,3 +1315,59 @@ def test_c56_history_cursor_standings_parity(tmp_path):
         (dynview.SCREEN_HISTORY, 0, 0, 1)
     check(ldir, tmp_path, 'c56_esc_menu', [K1, DOWN, ENTER, ESC, ESC])
     check(nohist, tmp_path, 'c56_nohistory', [K1])
+
+
+# ---------------------------------------------------------------- C57 STANDINGS row cursor
+def standings_league(tmp_path, name='c57'):
+    """A three-season league with a four-team MAJ (stems BOS CLE DET ATL, each with a
+    V20, so data['teams'] lists them by stable id) and season 1's w_l games."""
+    ldir = league(tmp_path, seasons=3, start=1990, name=name,
+                  teams={0: [(0, 'BOS'), (2, 'CLE'), (3, 'DET')],
+                         1: [(0, 'ATL')]})
+    for stem, nm in (('ABOS', 'BOSTON'), ('ACLE', 'CLEVELAND'), ('ADET', 'DETROIT'),
+                     ('NATL', 'ATLANTA')):
+        (ldir / (stem + '.V20')).write_bytes(nm.encode().ljust(14, b'\0') + bytes(66))
+    wl = {0: (10, 5), 2: (8, 2), 3: (6, 4), 16: (7, 9)}
+    d = bytearray((ldir / 'HISTORY.DAT').read_bytes())
+    d[4], d[5] = 1, 0
+    o = 32
+    d[o : o + 2] = (1).to_bytes(2, 'little')     # the season number of entry 1
+    d[o + 2] = 0xff                              # champion unknown
+    for t in range(32):
+        w, l = wl.get(t, (0, 0))
+        d[o + 24 + 2 * t] = w
+        d[o + 25 + 2 * t] = l
+    (ldir / 'HISTORY.DAT').write_bytes(bytes(d))
+    return ldir
+
+
+@needs_fonts
+def test_c57_standings_cursor_teamhist_parity(tmp_path):
+    """The STANDINGS frames with the new footer and the cursor on a team row, TEAM
+    HISTORY opened by ENTER and ESC back to the identical frame (the cursor still on
+    the row), the no-op ENTER on a header row, and T from the cursor state; every
+    frame matches Python."""
+    ldir = standings_league(tmp_path)
+    hist = [K1, DOWN, ENTER, ord('0')]     # HISTORY row 1 (season 1), ENTER, hub key 0
+    # the plain standings page 0 (one season recorded: cat 0 is its newest) and the
+    # cursor on the team row 1 (the header is 0)
+    check(ldir, tmp_path, 'c57_standings_footer', hist)
+    check(ldir, tmp_path, 'c57_standings_cursor', hist + [DOWN])
+    # ENTER on the team row opens the TEAM HISTORY of that team (row 1: CLEVELAND, id 2)
+    assert py_run(ldir, tmp_path, hist + [DOWN, ENTER])[0] == \
+        (dynview.SCREEN_TEAMHIST, 0, 2)
+    check(ldir, tmp_path, 'c57_enter_teamhist', hist + [DOWN, ENTER])
+    # ESC returns to the standings frame with the cursor still on the row
+    assert py_run(ldir, tmp_path, hist + [DOWN, ENTER, ESC])[0] == \
+        (dynview.SCREEN_STANDINGS, 0, 0, 1)
+    check(ldir, tmp_path, 'c57_teamhist_esc', hist + [DOWN, ENTER, ESC])
+    # ENTER on the header row (0) leaves the frame unchanged
+    check(ldir, tmp_path, 'c57_enter_header', hist + [ENTER])
+    # T from the cursor state keeps the row: ESC comes back to the same cursor frame
+    assert py_run(ldir, tmp_path, hist + [DOWN, ord('T'), ESC])[0] == \
+        (dynview.SCREEN_STANDINGS, 0, 0, 1)
+    check(ldir, tmp_path, 'c57_t_esc', hist + [DOWN, ord('T'), ESC])
+    # team id 0 (BOSTON, row 2) opens too: 0 is a real id, not a sentinel
+    assert py_run(ldir, tmp_path, hist + [DOWN, DOWN, ENTER])[0] == \
+        (dynview.SCREEN_TEAMHIST, 0, 0)
+    check(ldir, tmp_path, 'c57_enter_tid0', hist + [DOWN, DOWN, ENTER])

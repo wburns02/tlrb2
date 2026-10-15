@@ -250,7 +250,7 @@ def test_teamhist_left_right_screens_and_title_click():
     """SCREEN_TEAMHIST sits in LEFT_RIGHT_SCREENS, so a title-band click is LEFT/RIGHT;
     its footer carries no MENU tail."""
     assert dynview.SCREEN_TEAMHIST in dynview.LEFT_RIGHT_SCREENS
-    assert dynview.FOOTERS[SS] == 'T TEAM  LEFT RIGHT SEASON  PGUP PGDN  ESC'
+    assert dynview.FOOTERS[SS] == 'ENTER TEAM  LEFT RIGHT SEASON  PGUP PGDN ESC'
     assert dynview.FOOTERS[dynview.SCREEN_TEAMHIST] == 'LEFT RIGHT TEAM   PGUP PGDN   ESC'
 
 
@@ -283,3 +283,24 @@ def test_teamhist_render_frames(tmp_path):
     assert len(fb) == 64000
     assert dynview.footer_text(s, data) == T_FOOTER
     assert dynview.screen_title(s, data) == 'BOSTON  1 TITLES  1 PENNANTS'
+
+
+# ---------------------------------------------------------------- C57 standings row cursor
+def test_standings_teams_align(tmp_path):
+    """standings_teams aligns with standings_rows on the message and standings seasons
+    (None on the header and message rows, the ids in standings order otherwise)."""
+    ldir = make_standings(tmp_path, seasons=STAND_SEASONS)
+    data = dynview.load_data(str(ldir))
+    rows = dynview.standings_rows(data['hist'], data['teams'], 1)
+    tids = dynview.standings_teams(data['hist'], data['teams'], 1)
+    assert len(rows) == len(tids)
+    for r, tid in zip(rows, tids):
+        if r[0] and r[1:] != ('', '', '', '', ''):
+            assert isinstance(tid, int)
+            assert r[0].lstrip('*') == dict(data['teams']).get(tid,
+                                                               'TEAM %d' % tid)
+        else:
+            assert tid is None
+    assert dynview.standings_rows(data['hist'], data['teams'], 3) == \
+        [('NO STANDINGS RECORDED',)]
+    assert dynview.standings_teams(data['hist'], data['teams'], 3) == [None]

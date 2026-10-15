@@ -1536,15 +1536,21 @@ def gb_text(d):
     return '-' + s if d < 0 else s
 
 
-def standings_block(se, names, head, ids, stems=None, mask=0):
+def standings_block(se, names, head, ids, stems=None, mask=0, out=None, team_ids=None):
     """header row head, then the teams ids (all with games) by (PCT desc, W desc, id asc):
     TEAM, W, L, PCT, GB from the block's first row, and the mark (WS champion, P a pennant
-    winner). A managed team id (bit set of mask, C18) has '*' prepended to its TEAM cell."""
+    winner). A managed team id (bit set of mask, C18) has '*' prepended to its TEAM cell.
+    With out (standings_rows' shared walk, C57) the rows are appended to it and each row's
+    team id (None on the header) to team_ids; without, the block's rows come back."""
     wl = se['w_l']
     pct = {t: wl[t][0] * 1000 // (wl[t][0] + wl[t][1]) for t in ids}
     ids = sorted(ids, key=lambda t: (-pct[t], -wl[t][0], t))
     lw, ll = wl[ids[0]]
-    out = [(head, '', '', '', '', '')]
+    if out is not None:
+        out.append((head, '', '', '', '', ''))
+        team_ids.append(None)
+    else:
+        out = [(head, '', '', '', '', '')]
     for t in ids:
         w, l = wl[t]
         if t == se['champion']:
@@ -1558,6 +1564,8 @@ def standings_block(se, names, head, ids, stems=None, mask=0):
             name = '*' + name
         out.append((name, '%d' % w, '%d' % l, fmt_avg(pct[t]),
                     gb_text((lw - w) + (l - ll)), mark))
+        if team_ids is not None:
+            team_ids.append(t)
     return out
 
 
@@ -1568,13 +1576,21 @@ def standings_rows(hist, teams, season, stems=None, mask=0):
     `AL WEST` and so on; with one division, one block under the league's long name; none
     otherwise. A header that would fall on a page's last row gets a blank row before it.
     Managed team ids have '*' prepended to their TEAM cell (C18). Past the history table,
-    or with no games in either league, one message row."""
+    or with no games in either league, one message row. Standings_teams returns the team
+    id of each row of these rows, None on a header, blank and message row."""
+    return standings_walk(hist, teams, season, stems, mask)[0]
+
+
+def standings_walk(hist, teams, season, stems=None, mask=0):
+    """(rows, team_ids) of season: rows exactly standings_rows' rows and, one per row,
+    the stable team id the row shows (None on the header, blank and message rows). The
+    shared walk (C57), so the two lists can never drift."""
     if season > history.SEASON_COUNT:
-        return [('NO STANDINGS RECORDED',)]
+        return [('NO STANDINGS RECORDED',)], [None]
     se = hist.read_season_entry(season)
     names = dict(teams)
     played = {t for t, (w, l) in enumerate(se['w_l']) if w + l > 0}
-    out = []
+    out, team_ids = [], []
     for short, long_name, base in STAND_LEAGUES:
         by_div = {}
         for t in range(base, base + 16):
@@ -1590,8 +1606,18 @@ def standings_rows(hist, teams, season, stems=None, mask=0):
         for head, ids in blocks:
             if len(out) % ROWS_PER_PAGE == ROWS_PER_PAGE - 1:
                 out.append(('', '', '', '', '', ''))     # no header alone on a page's last row
-            out += standings_block(se, names, head, ids, stems, mask)
-    return out or [('NO STANDINGS RECORDED',)]
+                team_ids.append(None)
+            standings_block(se, names, head, ids, stems, mask, out, team_ids)
+    if not out:
+        return [('NO STANDINGS RECORDED',)], [None]
+    return out, team_ids
+
+
+def standings_teams(hist, teams, season, stems=None, mask=0):
+    """A list the same length as standings_rows' rows for the same arguments: item r the
+    stable team id of a team row (in standings order), None on a header, blank and
+    message row. The same walk (C57), so the two can never drift."""
+    return standings_walk(hist, teams, season, stems, mask)[1]
 
 
 def standings_body(state, data):
@@ -2110,10 +2136,11 @@ def unpack(state):
 
 def cursor_screen(s):
     """True on the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode),
-    SEASON AWARDS, AWARD HISTORY (C28), SEASON HISTORY (C56), the offseason RETIREMENTS
-    phase and MILESTONES WATCH (C27, cat 1; the milestones mode 0 has none)."""
+    SEASON AWARDS, AWARD HISTORY (C28), SEASON HISTORY (C56), SEASON STANDINGS (C57),
+    the offseason RETIREMENTS phase and MILESTONES WATCH (C27, cat 1; the milestones
+    mode 0 has none)."""
     if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_AWHIST,
-                SCREEN_HISTORY):
+                SCREEN_HISTORY, SCREEN_STANDINGS):
         return True
     if s[0] == SCREEN_MILESTONES and s[2] == 1:
         return True
@@ -2262,9 +2289,11 @@ def leaders_body(state, data):
 
 def row_entry(s, data):
     """The player entry named by the cursor row of s (C13.4), or None: a message row, an award
-    with no player, an empty list, or no history."""
+    with no player, an empty list, or no history. SEASON STANDINGS has no player card (C57)."""
     hist = data['hist']
     if hist.seasons_recorded == 0:
+        return None
+    if s[0] == SCREEN_STANDINGS:
         return None
     row = unpack(s)[3]
     if s[0] == SCREEN_HOF:
@@ -2826,6 +2855,20 @@ def step(state, key, data):
                     data['st_back'] = pack(s[0], s[1], s[2], s[3], s[4])
                     return pack(SCREEN_STANDINGS, 0, c), 0
             return state, 0
+        if s[0] == SCREEN_STANDINGS:
+            # C57: the cursor row's team opens TEAM HISTORY (page 0); the st_back level
+            # is untouched and th_back keeps the standings state with the cursor row. A
+            # header, blank or message row (team id None) and no history do nothing.
+            hist = data['hist']
+            if hist.seasons_recorded:
+                tids = standings_teams(hist, data['teams'],
+                                       hist.seasons_recorded - cat,
+                                       data.get('team_stems'), data['mask'])
+                tid = tids[s[3]] if s[3] < len(tids) else None
+                if tid is not None:
+                    data['th_back'] = pack(s[0], s[1], s[2], s[3])
+                    return (SCREEN_TEAMHIST, 0, tid), 0
+            return state, 0
         entry = row_entry(s, data)
         if entry is not None:
             return open_card(s, entry, data)
@@ -2966,11 +3009,11 @@ def step(state, key, data):
     if screen == SCREEN_STANDINGS and key in (84, 116):
         # T opens the TEAM HISTORY of the lowest managed team id, else the first of
         # data['teams']; nothing happens with no teams (C29). ESC comes back to the
-        # standings state kept in data['th_back'].
+        # standings state kept in data['th_back'], the cursor row included (C57).
         if data['teams']:
             managed = [t for t, _disp in data['teams'] if (data['mask'] >> t) & 1]
             tid = min(managed) if managed else data['teams'][0][0]
-            data['th_back'] = pack(screen, page, cat)
+            data['th_back'] = pack(screen, page, cat, s[3])
             return (SCREEN_TEAMHIST, 0, tid), 0
         return state, 0
     if screen == SCREEN_TEAMHIST and key in (KEY_LEFT, KEY_RIGHT):
@@ -3150,7 +3193,7 @@ FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
            SCREEN_ABOUT: 'PGUP PGDN   ESC MENU',
            SCREEN_AWARDS: 'H HISTORY  LEFT RIGHT SEASON  PGUP PGDN  ESC',
            SCREEN_AWHIST: 'ENTER CARD  LEFT RIGHT AWARD  PGUP PGDN  ESC',
-           SCREEN_STANDINGS: 'T TEAM  LEFT RIGHT SEASON  PGUP PGDN  ESC',
+           SCREEN_STANDINGS: 'ENTER TEAM  LEFT RIGHT SEASON  PGUP PGDN ESC',
            SCREEN_SERIES: '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
            SCREEN_BOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC SERIES',
            SCREEN_PLAYOFFS: 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',

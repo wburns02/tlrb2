@@ -2039,7 +2039,7 @@ def test_leader_kinds_outside_ranges_ignored(tmp_path):
 
 # ---------------------------------------------------------------- standings
 SS = dynview.SCREEN_STANDINGS
-STAND_FOOTER = 'T TEAM  LEFT RIGHT SEASON  PGUP PGDN  ESC'
+STAND_FOOTER = 'ENTER TEAM  LEFT RIGHT SEASON  PGUP PGDN ESC'
 # MAJ team names by league-global id: AL id 5 has no stem (its row reads 'TEAM 5');
 # ids 14 and 15 are not teams in the MAJ
 AL_NAMES = {0: 'BOSTON', 1: 'DETROIT', 2: 'CLEVELAND', 3: 'NEW YORK', 4: 'CHICAGO',
@@ -2250,14 +2250,15 @@ def test_standings_season1_rows_exact(tmp_path):
         assert len(row) == len(dynview.COLS_STANDINGS), row
         for cell, (_h, _x, w, _a) in zip(row, dynview.COLS_STANDINGS):
             assert len(cell) <= w, cell
-    # the PGDN page of season 1 and the paging bounds
+    # the PGDN page of season 1 and the paging bounds (C57: PGUP/PGDN are cursor
+    # steps, the cursor goes to the new page's first row)
     s = (SS, 0, 2)
     for page in (1, 2):
         s = press(s, dynview.KEY_PGDN, data)
-        assert s == (SS, page, 2)
-    assert press(s, dynview.KEY_PGDN, data) == (SS, 2, 2)     # last page stays
+        assert s == (SS, page, 2, page * dynview.ROWS_PER_PAGE)
+    assert press(s, dynview.KEY_PGDN, data) == (SS, 2, 2, 24)  # last page stays
     assert dynview.rows(s, data)[0] == STAND_1_ROWS[24]
-    assert press(s, dynview.KEY_PGUP, data) == (SS, 1, 2)
+    assert press(s, dynview.KEY_PGUP, data) == (SS, 1, 2, 12)
     assert dynview.rows((SS, 1, 2), data)[0] == STAND_1_ROWS[12]
 
 
@@ -2414,6 +2415,104 @@ def test_standings_about_rows_and_columns_fit():
     # every column ends inside the 42 character row
     assert all(x + w * dynview.CHAR_W <= 10 + 42 * dynview.CHAR_W
                for _h, x, w, _a in dynview.COLS_STANDINGS)
+
+
+# ---------------------------------------------------------------- C57 standings row cursor
+def test_standings_teams_aligns_with_rows(tmp_path):
+    """standings_teams matches standings_rows row for row: None exactly on the header,
+    blank and message rows, the stable id in standings order on every team row, for a
+    one-division and a multi-division season."""
+    ldir = make_standings(tmp_path, seasons=STAND_SEASONS[:2] + [CLASSIC_SEASON])
+    data = dynview.load_data(str(ldir))
+    hist, teams = data['hist'], data['teams']
+    # season 2 (cat 1): one AL block under the long name, ids in standings order
+    rows = dynview.standings_rows(hist, teams, 2)
+    tids = dynview.standings_teams(hist, teams, 2)
+    assert len(tids) == len(rows) == 5
+    assert tids[0] is None                          # the AMERICAN LEAGUE header
+    assert [t for t in tids if t is not None] == [2, 0, 1, 3]   # .600, then the .500 by id
+    assert rows[1][0] == 'CLEVELAND' and tids[1] == 2
+    # season 1 (cat 2): four division blocks, blank before the NL EAST header
+    rows = dynview.standings_rows(hist, teams, 1)
+    tids = dynview.standings_teams(hist, teams, 1)
+    assert len(tids) == len(rows)
+    for i, r in enumerate(rows):
+        if not r[0] or r[1:] == ('', '', '', '', ''):
+            assert tids[i] is None, (i, r)
+        else:
+            assert isinstance(tids[i], int) and 0 <= tids[i] < 32, (i, r)
+            assert r[0].lstrip('*') == dict(teams).get(tids[i], 'TEAM %d' % tids[i])
+    # the classic season (cat 0): id 0 is the WS champion of the AL EAST block
+    rows = dynview.standings_rows(hist, teams, 3)
+    tids = dynview.standings_teams(hist, teams, 3)
+    assert rows[9][0] == 'BOSTON' and tids[9] == 0
+    assert len(tids) == len(rows) == 31
+    # a season past the table and a season with no games: the message row only
+    assert dynview.standings_rows(hist, teams, 99) == [('NO STANDINGS RECORDED',)]
+    assert dynview.standings_teams(hist, teams, 99) == [None]
+    assert dynview.standings_teams(hist, teams, 4) == [None]   # season 4 has no games
+
+
+def test_standings_cursor_keys_and_footer(tmp_path):
+    """STANDINGS is a cursor screen: UP/DOWN/PGUP/PGDN move the cursor with the page
+    following, and the footer reads the C57 text."""
+    ldir = make_standings(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.cursor_screen((SS, 0, 0)) is True
+    s = press((SS, 0, 2), dynview.KEY_DOWN, data)
+    assert s == (SS, 0, 2, 1)
+    assert press(s, dynview.KEY_PGDN, data) == (SS, 1, 2, 12)
+    assert press((SS, 1, 2, 12), dynview.KEY_PGUP, data) == (SS, 0, 2)
+    assert dynview.footer_text((SS, 0, 0), data) == STAND_FOOTER
+
+
+def test_standings_enter_opens_teamhist_and_esc_back(tmp_path):
+    """ENTER on a team row opens (17, 0, tid) of the state's season with th_back =
+    pack(10, page, cat, row); ESC returns that state with the cursor; a header or blank
+    row and the message season do nothing; st_back survives it all."""
+    ldir = make_standings(tmp_path)
+    data = dynview.load_data(str(ldir))
+    hs = dynview.SCREEN_HISTORY
+    press((hs, 0, 0, 1), ENTER, data)               # arm st_back (thrown away)
+    # row 1 of season 1 (cat 2) is MILWAUKEE (8) (the AL WEST leader)
+    s, _ex = dynview.step((SS, 2, 2, 1), ENTER, data)
+    assert s == (dynview.SCREEN_TEAMHIST, 0, 8)
+    assert data['th_back'] == (SS, 2, 2, 1)
+    assert 'st_back' in data
+    back, _ex = dynview.step(s, ESC, data)
+    assert back == (SS, 2, 2, 1)                    # ESC keeps the exact state, row too
+    assert 'st_back' in data
+    # a later ESC uses st_back (untouched by ENTER and the TEAM HISTORY ESC)
+    assert dynview.step(back, ESC, data)[0] == (hs, 0, 0, 1)
+    # a header row (0) is a no-op; the message season (cat 0) has no team rows
+    assert dynview.step((SS, 0, 2, 0), ENTER, data) == ((SS, 0, 2, 0), 0)
+    assert dynview.step((SS, 0, 0, 0), ENTER, data) == ((SS, 0, 0, 0), 0)
+
+
+def test_standings_t_keeps_row_and_state(tmp_path):
+    """T opens the lowest managed team's (else the first team's) TEAM HISTORY and keeps
+    the full standings state with the cursor row in th_back; ESC returns it exactly;
+    st_back untouched."""
+    ldir = make_standings(tmp_path)
+    data = dynview.load_data(str(ldir))
+    hs = dynview.SCREEN_HISTORY
+    press((hs, 0, 0, 2), ENTER, data)
+    s, _ex = dynview.step((SS, 1, 2, 5), 84, data)
+    assert s == (dynview.SCREEN_TEAMHIST, 0, 0)    # the TEAM HISTORY of BOSTON (id 0)
+    assert data['th_back'] == (SS, 1, 2, 5)
+    assert 'st_back' in data
+    assert dynview.step(s, ESC, data)[0] == (SS, 1, 2, 5)
+    assert dynview.step((SS, 1, 2, 5), 116, data)[0][2] == 0  # lower case t too
+
+
+def test_standings_cursor_render_title_rows(tmp_path):
+    """The cursor state renders like any list: rows() pages by the cursor's page and
+    the title of a cat state with a row keeps the year."""
+    ldir = make_standings(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.screen_title((SS, 1, 2, 13), data) == '1993 STANDINGS'
+    assert dynview.rows((SS, 1, 2, 13), data)[0] == STAND_1_ROWS[12]
+    assert dynview.total_rows((SS, 1, 2, 13), data) == 30
 
 
 # ---------------------------------------------------------------- world series

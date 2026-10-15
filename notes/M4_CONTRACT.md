@@ -1986,3 +1986,55 @@ opened from FIND still returns card_back with the query kept.
   after DOWN). Two expectations updated: the C50 test that pinned ESC-from-a-typed-FIND
   to MENU now pins the prompt row, and a C50 test that pinned the MENU footer on a
   non-empty query pins the CLEAR footer.
+
+## C57. DYNVIEW STANDINGS row to TEAM HISTORY (added 2026-10-15)
+
+SEASON STANDINGS (SCREEN_STANDINGS = 10, state (10, page, cat, row); cat = seasons back
+from the newest) joins the cursor screens (C13.4 rules) and ENTER on a team row opens
+that team's TEAM HISTORY. Reads only; writes nothing.
+
+- standings_teams(hist, teams, season, stems=None, mask=0) -> [tid, ...], one item per
+  standings_rows row for the same arguments: item r is the stable team id of a team row
+  (in standings_block order), None on a header row, a page-last blank row and the
+  message row. It is produced by the same walk as standings_rows
+  (standings_walk(hist, teams, season, stems, mask) -> (rows, team_ids), the helper
+  standings_block appends to both when given out/team_ids), so the two lists can never
+  drift; standings_rows keeps its exact output.
+- SCREEN_STANDINGS is in cursor_screen (Python and the C port) and row_entry returns
+  None for it: UP/DOWN/PGUP/PGDN move the row cursor exactly as on every cursor screen
+  (cursor_move, cursor_state, pack(screen, row // ROWS_PER_PAGE, cat, row)), with the
+  same highlight (C_TITLE_RED with white text; no highlight on a COLS_SINGLE message
+  row, C15.8).
+- ESC on TEAM HISTORY returns data['th_back'] exactly as stored, the row now included:
+  T on STANDINGS keeps pack(10, page, cat, row) (C29's state with the cursor row) and
+  ESC on a STANDINGS ENTER keeps pack(10, page, cat, row) of the row it was on. LEFT,
+  RIGHT (the season steps) and st_back (C56) are untouched by ENTER, T and that ESC; a
+  LEFT/RIGHT on STANDINGS still resets page and row and th_back is not updated until
+  the next T or ENTER.
+- ENTER on STANDINGS (handled before the generic cursor ENTER path): with history,
+  tid = standings_teams(hist, data['teams'], hist.seasons_recorded - cat,
+  data.get('team_stems'), data['mask'])[row]; when tid is not None,
+  data['th_back'] = pack(10, page, cat, row) and the new state is (17, 0, tid).
+  A header row, a blank row, the message row (NO STANDINGS RECORDED, cat past the
+  recorded seasons) and row >= the row count leave the state unchanged, as does
+  seasons_recorded == 0.
+- FOOTERS[SCREEN_STANDINGS] = 'ENTER TEAM  LEFT RIGHT SEASON  PGUP PGDN ESC'
+  (Python and the C port); the T label is gone.
+- C port: build_standings keeps a per-row team id table g_stnd_tid[STAND_MAX] (uint8,
+  STAND_NONE 0xff on non-team rows; no new static array over 2 KB and no new far
+  segment, so the DOS far-data budget is untouched), cursor_screen gains
+  SCREEN_STANDINGS, the ENTER branch reads the row's id from the same table, and
+  th_back carries the absolute row in State.row (mk_state then row = s.row). C89
+  elsewhere. DYNVIEW.EXE is untouched; the host binary rebuilds with the gcc command
+  in tools/m4/dynview_c/build_dynview.py (-Werror clean).
+- Tests: test_dynview.py (standings_teams aligns with standings_rows for one-division
+  and multi-division seasons, the cursor keys and footer, ENTER opens (17, 0, tid) with
+  th_back = pack(10, page, cat, row), ESC returns it, header/message no-ops, T keeps
+  row and st_back), test_c29_teamhist.py (alignment on the message and standings
+  seasons, the footer pin), test_dynview_c13_c.py (framebuffer parity: the new footer,
+  the cursor on a team row, TEAM HISTORY from ENTER, ESC back to the identical frame,
+  ENTER on a header row unchanged, T then ESC the same frame). Three expectations
+  updated where they pinned the old behaviour: the STAND_FOOTER constant of
+  test_dynview.py and the FOOTERS[SS] pin of test_c29_teamhist.py (old T footer text),
+  and the PGUP/PGDN paging bounds of test_standings_season1_rows_exact (STANDINGS pages
+  by cursor_state now).

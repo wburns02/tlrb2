@@ -503,8 +503,12 @@ static PostItem FARDATA g_post_top[POST_MAX];
 /* portrait pixels of the PLAYER CARD (48 x 56) */
 static uint8_t FARDATA g_portrait[PORTRAIT_W * PORTRAIT_H];
 
-/* SEASON STANDINGS: the rows of the season (STAND_MAX at most) */
+/* SEASON STANDINGS: the rows of the season (STAND_MAX at most) and, per row, the team
+ * id it shows (C57): 0xff on a header, blank and message row, else the stable id the
+ * cursor's ENTER opens (dynview.standings_teams). The 32 B id table is no far segment. */
+#define STAND_NONE 0xff
 static Row FARDATA g_stnd[STAND_MAX];
+static uint8_t g_stnd_tid[STAND_MAX];
 
 /* MILESTONES WATCH (C27): the watch items in sorted order (WATCH_MAX at most) */
 static WatchItem FARDATA g_watch[WATCH_MAX];
@@ -558,8 +562,8 @@ typedef struct {
     int ncells;
 } ThRow;
 static ThRow FARDATA g_th[TEAMHIST_MAX];
-/* the roster state kept for ESC (data['th_back']): the SEASON STANDINGS state the
- * screen was opened from; th_live marks it set */
+/* the kept SEASON STANDINGS state (data['th_back']) now carries the absolute row in
+ * State.row too (C57); th_live marks it set */
 static State g_th_back;
 static int g_th_live;
 /* C56: the state kept for ESC (data['st_back']): the SEASON HISTORY state (cursor kept)
@@ -3363,21 +3367,52 @@ static void gb_text(int d, char *dst)
     sprintf(dst, "%s%d%s", d < 0 ? "-" : "", a / 2, a % 2 ? ".5" : ".0");
 }
 
-/* the one message row of SEASON STANDINGS */
-static int stand_message(void)
+/* the cells of a non-team row into g_stnd[n] (a header, a page-last blank, the message
+ * row): ncells 6 blank cells, or the one message cell; the team id is STAND_NONE */
+static int stand_plain_row(int n, const char *msg)
 {
-    strcpy(g_stnd[0].cells[0], "NO STANDINGS RECORDED");
-    g_stnd[0].ncells = 1;
-    return 1;
+    Row *row = &g_stnd[n];
+    int i;
+    if (msg) {
+        strcpy(row->cells[0], msg);
+        row->ncells = 1;
+    } else {
+        for (i = 0; i < 6; i++)
+            row->cells[i][0] = 0;
+        row->ncells = 6;
+    }
+    g_stnd_tid[n] = STAND_NONE;
+    return n + 1;
 }
 
-/* one block of g_stnd from row n: a blank row when the header would be a page's last
- * row, the header row head, then the m teams ids (all played) in stand_before order with
- * GB from the first; returns the next row index */
+/* the cells of a team row into g_stnd[n], with its stable id in g_stnd_tid[n]; gb is the
+ * row's doubled games behind (from the block's first row), held by the caller */
+static int stand_team_row(const SeasonEntry *se, int n, int t, int gb)
+{
+    Row *row = &g_stnd[n];
+    int w = se->wl[t][0], l = se->wl[t][1];
+    long pct = (long)w * 1000 / (w + l);
+    stand_name(t, row->cells[0]);
+    sprintf(row->cells[1], "%d", w);
+    sprintf(row->cells[2], "%d", l);
+    fmt_avg((int32_t)pct, row->cells[3]);
+    gb_text(gb, row->cells[4]);
+    if (t == se->champion)
+        strcpy(row->cells[5], "WS");
+    else if (t == se->al_pennant || t == se->nl_pennant)
+        strcpy(row->cells[5], "P");
+    else
+        row->cells[5][0] = 0;
+    row->ncells = 6;
+    g_stnd_tid[n] = (uint8_t)t;
+    return n + 1;
+}
+
+/* the ids of one block sorted and the block's rows appended to g_stnd from row n (a blank
+ * first when the header would fall on a page's last row): returns the next row index */
 static int stand_block(const SeasonEntry *se, int n, const char *head, int *ids, int m)
 {
-    Row *row;
-    int i, j, t, w, l, lw, ll;
+    int i, j, t, gb;
     /* insertion sort: stand_before is a total order, so the result is exact */
     for (i = 1; i < m; i++) {
         t = ids[i];
@@ -3385,39 +3420,21 @@ static int stand_block(const SeasonEntry *se, int n, const char *head, int *ids,
             ids[j] = ids[j - 1];
         ids[j] = t;
     }
-    lw = se->wl[ids[0]][0];
-    ll = se->wl[ids[0]][1];
-    if (n % ROWS_PER_PAGE == ROWS_PER_PAGE - 1) {
-        /* no header alone on a page's last row: a blank row first */
-        row = &g_stnd[n++];
-        for (i = 0; i < 6; i++)
+    if (n % ROWS_PER_PAGE == ROWS_PER_PAGE - 1)
+        n = stand_plain_row(n, NULL);     /* no header alone on a page's last row */
+    {
+        Row *row = &g_stnd[n];
+        strcpy(row->cells[0], head);
+        for (i = 1; i < 6; i++)
             row->cells[i][0] = 0;
         row->ncells = 6;
+        g_stnd_tid[n] = STAND_NONE;
+        n++;
     }
-    row = &g_stnd[n++];
-    strcpy(row->cells[0], head);
-    for (i = 1; i < 6; i++)
-        row->cells[i][0] = 0;
-    row->ncells = 6;
     for (i = 0; i < m; i++) {
-        long pct;
         t = ids[i];
-        w = se->wl[t][0];
-        l = se->wl[t][1];
-        pct = (long)w * 1000 / (w + l);
-        row = &g_stnd[n++];
-        stand_name(t, row->cells[0]);
-        sprintf(row->cells[1], "%d", w);
-        sprintf(row->cells[2], "%d", l);
-        fmt_avg((int32_t)pct, row->cells[3]);
-        gb_text((lw - w) + (l - ll), row->cells[4]);
-        if (t == se->champion)
-            strcpy(row->cells[5], "WS");
-        else if (t == se->al_pennant || t == se->nl_pennant)
-            strcpy(row->cells[5], "P");
-        else
-            row->cells[5][0] = 0;
-        row->ncells = 6;
+        gb = (se->wl[ids[0]][0] - se->wl[t][0]) + (se->wl[t][1] - se->wl[ids[0]][1]);
+        n = stand_team_row(se, n, t, gb);
     }
     return n;
 }
@@ -3440,9 +3457,10 @@ static int build_standings(long season)
 {
     SeasonEntry se;
     char head[24];
-    int lg, t, q, dv, shown, n = 0, cnt[3], ids[3][16];
+    int lg, t, q, dv, shown, n, cnt[3], ids[3][16];
     if (season > SEASON_COUNT)
-        return stand_message();
+        return stand_plain_row(0, "NO STANDINGS RECORDED");
+    n = 0;
     memset(&se, 0, sizeof se);
     read_season(&se, (int)season);
     for (lg = 0; lg < 2; lg++) {
@@ -3471,7 +3489,7 @@ static int build_standings(long season)
         }
     }
     if (n == 0)
-        return stand_message();
+        return stand_plain_row(0, "NO STANDINGS RECORDED");
     return n;
 }
 
@@ -4817,7 +4835,7 @@ static int cursor_screen(State st)
 {
     if (st.screen == SCREEN_HOF || st.screen == SCREEN_LEADERS
         || st.screen == SCREEN_AWARDS || st.screen == SCREEN_AWHIST
-        || st.screen == SCREEN_HISTORY)
+        || st.screen == SCREEN_HISTORY || st.screen == SCREEN_STANDINGS)
         return 1;
     if (st.screen == SCREEN_MILESTONES && st.cat == 1)
         return 1;
@@ -4942,6 +4960,7 @@ static int season_screen(int screen)
 static State step(State in, int32_t key)
 {
     State s = in;
+    int tid = 0;
     if (key == KEY_ESC) {
         if (s.screen == SCREEN_BOX) {
             /* the box score goes back to its season's WORLD SERIES, not the hub */
@@ -4967,10 +4986,14 @@ static State step(State in, int32_t key)
             return g_awh_back;
         }
 
-        /* TEAM HISTORY goes back to the SEASON STANDINGS state it was opened from (C29);
-         * it was never opened: the default (STANDINGS, 0, 0) like Python's data.get */
-        if (s.screen == SCREEN_TEAMHIST)
-            return g_th_live ? g_th_back : mk_state(SCREEN_STANDINGS, 0, 0);
+        /* TEAM HISTORY goes back to the SEASON STANDINGS state it was opened from (C29),
+         * cursor row included (C57); it was never opened: the default (STANDINGS, 0, 0)
+         * like Python's data.get */
+        if (s.screen == SCREEN_TEAMHIST) {
+            if (!g_th_live)
+                return mk_state(SCREEN_STANDINGS, 0, 0);
+            return g_th_back;
+        }
         /* C59: a typed query clears first, the state resets to the prompt row */
         if (s.screen == SCREEN_FIND && g_find_q[0]) {
             g_find_q[0] = 0;
@@ -5155,7 +5178,8 @@ static State step(State in, int32_t key)
         return s;
     }
     /* the row cursor (C13.4): UP / DOWN / PGUP / PGDN move it; ENTER opens the card of
-     * its row, except on SEASON HISTORY, where it opens the season's STANDINGS (C56) */
+     * its row, except on SEASON HISTORY, where it opens the season's STANDINGS (C56),
+     * and on SEASON STANDINGS, where it opens the row team's TEAM HISTORY (C57) */
     if (cursor_screen(s) && (key == KEY_UP || key == KEY_DOWN || key == KEY_PGUP
                              || key == KEY_PGDN))
         return cursor_move(s, key);
@@ -5173,6 +5197,22 @@ static State step(State in, int32_t key)
                 }
             }
             return s;
+        }
+        if (s.screen == SCREEN_STANDINGS) {
+            /* C57: the team of the cursor row tid (-1: a header, a blank row, the message
+             * row or past the rows; the ids run 0..31). No history leaves no rows, and
+             * g_st_back is untouched here. */
+            tid = -1;
+            if (g_hdr_seasons) {
+                int n = build_standings((long)g_hdr_seasons - s.cat);
+                if (s.row < n && g_stnd_tid[s.row] != STAND_NONE)
+                    tid = g_stnd_tid[s.row];
+            }
+            if (tid < 0)
+                return s;
+            g_th_back = s;
+            g_th_live = 1;
+            return mk_state(SCREEN_TEAMHIST, 0, tid);
         }
         {
             int32_t entry = row_entry(s);
@@ -5400,7 +5440,8 @@ static State step(State in, int32_t key)
     /* C29 TEAM HISTORY keys */
     if (s.screen == SCREEN_STANDINGS && (key == 84 || key == 116)) {
         /* T opens the TEAM HISTORY of the lowest managed team id, else the first of
-         * g_teams (nothing happens with no teams). The standings state is kept for ESC. */
+         * g_teams (nothing happens with no teams). The standings state is kept for ESC,
+         * the cursor row included (C57). */
         int first = -1, i;
         if (g_nteams == 0)
             return s;
@@ -5409,6 +5450,7 @@ static State step(State in, int32_t key)
                 && (first < 0 || g_tlg[i] < g_tlg[first]))
                 first = i;
         g_th_back = mk_state(SCREEN_STANDINGS, s.page, s.cat);
+        g_th_back.row = s.row;
         g_th_live = 1;
         return mk_state(SCREEN_TEAMHIST, 0, g_tlg[first >= 0 ? first : 0]);
     }
@@ -6179,7 +6221,7 @@ static const char *footer_of(State st)
     if (st.screen == SCREEN_AWHIST)
         return "ENTER CARD  LEFT RIGHT AWARD  PGUP PGDN  ESC";
     if (st.screen == SCREEN_STANDINGS)
-        return "T TEAM  LEFT RIGHT SEASON  PGUP PGDN  ESC";
+        return "ENTER TEAM  LEFT RIGHT SEASON  PGUP PGDN ESC";
     if (st.screen == SCREEN_TEAMHIST)
         return "LEFT RIGHT TEAM   PGUP PGDN   ESC";
     if (st.screen == SCREEN_SERIES)
