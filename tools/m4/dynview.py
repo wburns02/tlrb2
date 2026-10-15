@@ -2733,8 +2733,8 @@ def step(state, key, data):
         # data['teams']; nothing happens with no teams (C29). ESC comes back to the
         # standings state kept in data['th_back'].
         if data['teams']:
-            tid = next((t for t, _disp in data['teams'] if (data['mask'] >> t) & 1),
-                       data['teams'][0][0])
+            managed = [t for t, _disp in data['teams'] if (data['mask'] >> t) & 1]
+            tid = min(managed) if managed else data['teams'][0][0]
             data['th_back'] = pack(screen, page, cat)
             return (SCREEN_TEAMHIST, 0, tid), 0
         return state, 0
@@ -2814,7 +2814,7 @@ def ordinal_label(rank):
     return '%dTH' % rank
 
 
-def team_history_rows(hist, box, teams, t):
+def team_history_rows(hist, box, t):
     """TEAM HISTORY rows of team id t: newest season first over seasons
     min(hist.seasons_recorded, SEASON_COUNT) down to 1, one row per season where t has
     W + L > 0: YEAR, W, L, PCT (W * 1000 // (W + L)), FINISH (the 1-based rank among the
@@ -2867,7 +2867,7 @@ def teamhist_title(state, data):
     rows with RESULT CHAMPION, pennants = CHAMPION or PENNANT rows. The message row
     (no season with games) counts neither."""
     s = unpack(state)
-    rows = team_history_rows(data['hist'], data['box'], data['teams'], s[2])
+    rows = team_history_rows(data['hist'], data['box'], s[2])
     rows = [r for r in rows if len(r) == 6]
     titles = sum(1 for r in rows if r[5] == 'CHAMPION')
     pennants = sum(1 for r in rows if r[5] in ('CHAMPION', 'PENNANT'))
@@ -2877,7 +2877,7 @@ def teamhist_title(state, data):
 
 def teamhist_body(state, data):
     """(cols, rows) of TEAM HISTORY. A lone message row uses COLS_SINGLE."""
-    rows = team_history_rows(data['hist'], data['box'], data['teams'], unpack(state)[2])
+    rows = team_history_rows(data['hist'], data['box'], unpack(state)[2])
     if len(rows) == 1 and len(rows[0]) == 1:
         return COLS_SINGLE, rows
     return COLS_TEAMHIST, rows
@@ -2909,11 +2909,7 @@ FOOTERS = {SCREEN_MENU: '0-9 W SELECT   ESC EXIT',
            SCREEN_ABOUT: 'PGUP PGDN   ESC MENU',
            SCREEN_AWARDS: 'H HISTORY  LEFT RIGHT SEASON  PGUP PGDN  ESC',
            SCREEN_AWHIST: 'ENTER CARD  LEFT RIGHT AWARD  PGUP PGDN  ESC',
-           SCREEN_STANDINGS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU',
-
-           SCREEN_AWARDS: 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU',
            SCREEN_STANDINGS: 'T TEAM  LEFT RIGHT SEASON  PGUP PGDN  ESC',
-           SCREEN_TEAMHIST: 'LEFT RIGHT TEAM   PGUP PGDN   ESC',
            SCREEN_SERIES: '1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',
            SCREEN_BOX: 'LEFT RIGHT GAME   PGUP PGDN   ESC SERIES',
            SCREEN_PLAYOFFS: 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC',

@@ -83,7 +83,6 @@
 #define SCREEN_PLAYOFFS 14
 #define SCREEN_PBOX 15
 #define SCREEN_AWHIST 16
-
 #define SCREEN_TEAMHIST 17
 /* LEADERS modes (C13.3, C39): the state cat is mode * MODE_SHIFT + category index */
 #define MODE_CAREER 0
@@ -511,7 +510,14 @@ static long g_pl_season;
 static int g_pl_n;
 
 /* C29 TEAM HISTORY: the rows of the team on the screen (TEAMHIST_MAX at most) */
-static Row FARDATA g_th[TEAMHIST_MAX];
+/* a TEAM HISTORY row: six short cells (the longest the 19-char message), not a full Row,
+ * to stay inside the DOS far data budget */
+#define TH_CW 20
+typedef struct {
+    char cells[6][TH_CW];
+    int ncells;
+} ThRow;
+static ThRow FARDATA g_th[TEAMHIST_MAX];
 /* the roster state kept for ESC (data['th_back']): the SEASON STANDINGS state the
  * screen was opened from; th_live marks it set */
 static State g_th_back;
@@ -3585,7 +3591,7 @@ static int build_teamhist(long season_hi, int t)
     lo = season_hi < SEASON_COUNT ? (int)season_hi : SEASON_COUNT;
     for (season = lo; season >= 1; season--) {
         int result;
-        Row *row;
+        ThRow *row;
         memset(&se, 0, sizeof se);
         read_season(&se, season);
         if (se.wl[t][0] + se.wl[t][1] == 0)
@@ -3683,8 +3689,12 @@ static int teamhist_body(State st, int page, const ColDef **cols)
     if (n == 1 && g_th[0].ncells == 1)
         *cols = COLS_SINGLE;
     if (page >= 0) {
-        for (k = 0, r = page * ROWS_PER_PAGE; r < n && k < ROWS_PER_PAGE; r++, k++)
-            g_rows[k] = g_th[r];
+        for (k = 0, r = page * ROWS_PER_PAGE; r < n && k < ROWS_PER_PAGE; r++, k++) {
+            int c;
+            for (c = 0; c < g_th[r].ncells; c++)
+                strcpy(g_rows[k].cells[c], g_th[r].cells[c]);
+            g_rows[k].ncells = g_th[r].ncells;
+        }
     }
     return n;
 }
@@ -4908,8 +4918,9 @@ static State step(State in, int32_t key)
         int first = -1, i;
         if (g_nteams == 0)
             return s;
-        for (i = 0; i < g_nteams && first < 0; i++)
-            if (g_tlg[i] < 32 && ((g_mask >> g_tlg[i]) & 1u) != 0)
+        for (i = 0; i < g_nteams; i++)
+            if (g_tlg[i] < 32 && ((g_mask >> g_tlg[i]) & 1u) != 0
+                && (first < 0 || g_tlg[i] < g_tlg[first]))
                 first = i;
         g_th_back = mk_state(SCREEN_STANDINGS, s.page, s.cat);
         g_th_live = 1;
@@ -5662,9 +5673,6 @@ static const char *footer_of(State st)
         return "H HISTORY  LEFT RIGHT SEASON  PGUP PGDN  ESC";
     if (st.screen == SCREEN_AWHIST)
         return "ENTER CARD  LEFT RIGHT AWARD  PGUP PGDN  ESC";
-    if (st.screen == SCREEN_STANDINGS)
-
-        return "LEFT RIGHT SEASON   PGUP PGDN   ESC MENU";
     if (st.screen == SCREEN_STANDINGS)
         return "T TEAM  LEFT RIGHT SEASON  PGUP PGDN  ESC";
     if (st.screen == SCREEN_TEAMHIST)

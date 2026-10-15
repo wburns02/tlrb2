@@ -2160,7 +2160,7 @@ def test_teamhist_page1_and_right_parity(tmp_path):
     n = dynview.total_rows(s, data)
     assert n > dynview.ROWS_PER_PAGE
     assert dynview.rows((dynview.SCREEN_TEAMHIST, 1, 0), data)[0] == \
-        dynview.team_history_rows(data['hist'], data['box'], data['teams'], 0)[12]
+        dynview.team_history_rows(data['hist'], data['box'], 0)[12]
     check_parity(ldir, tmp_path, 'c29_long_p0', keys=[48, 84])
     check_parity(ldir, tmp_path, 'c29_long_p1', keys=[48, 84, PGDN])
     check_parity(ldir, tmp_path, 'c29_long_right', keys=[48, 84, RIGHT])
@@ -2215,7 +2215,7 @@ def test_teamhist_walk_and_esc_parity(tmp_path):
     s3, _ex = dynview.step(s, dynview.KEY_RIGHT, data)
     assert s3 == (dynview.SCREEN_TEAMHIST, 0, 0)
     # the RESULT cells of CLEVELAND (2): 1995 LCS, 1994 PENNANT, 1993 ''
-    rows = dynview.team_history_rows(data['hist'], data['box'], data['teams'], 2)
+    rows = dynview.team_history_rows(data['hist'], data['box'], 2)
     assert [r[5] for r in rows] == ['LCS', 'PENNANT', '']
     # the py sequence 48 84 ESC ESC: back to standings then the hub
     check_parity(ldir, tmp_path, 'c29_walk_right', keys=[48, 84, RIGHT])

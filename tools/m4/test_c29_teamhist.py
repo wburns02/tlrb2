@@ -104,18 +104,18 @@ def test_teamhist_rows_champion_pennant_lcs_ds_absent(tmp_path):
     hist, box = data['hist'], data['box']
     # BOSTON (0): 1995 LCS (the rnd 2 AL LCS header 0/1) but CLEVELAND's 1.000 is the
     # East's first; no 1994 games; 1993 champion (10-4 first of the East)
-    assert dynview.team_history_rows(hist, box, data['teams'], 0) == \
+    assert dynview.team_history_rows(hist, box, 0) == \
         [('1995', '5', '5', '.500', '2ND', 'LCS'),
          ('1993', '10', '4', '.714', '1ST', 'CHAMPION')]
     # CLEVELAND (2): 1995 DS (the rnd 1 header 0/2), 1994 pennant (WS loss),
     # 1993 plain (4-10 under the .714)
-    assert dynview.team_history_rows(hist, box, data['teams'], 2) == \
+    assert dynview.team_history_rows(hist, box, 2) == \
         [('1995', '9', '0', '1.000', '1ST', 'DS'),
          ('1994', '6', '4', '.600', '1ST', 'PENNANT'),
          ('1993', '4', '10', '.285', '3RD', '')]
     # DETROIT (1): no 1994 or 1995 games; 1995 sits in the LCS header 0/1 but DETROIT
     # played only 1993 (plain row)
-    assert dynview.team_history_rows(hist, box, data['teams'], 1) == \
+    assert dynview.team_history_rows(hist, box, 1) == \
         [('1993', '8', '6', '.571', '2ND', '')]
 
 
@@ -130,23 +130,23 @@ def test_teamhist_rows_finish_rank_ties(tmp_path):
     hist = data['hist']
     # East (0..7) .625 all three: W 20 puts DETROIT first, the id breaks BOSTON and
     # CLEVELAND; the WEST MILWAUKEE (8) and the NL CINCINNATI (30-0) never count
-    assert dynview.team_history_rows(hist, [], [], 1)[0][4] == '1ST'
-    assert dynview.team_history_rows(hist, [], [], 0)[0][4] == '2ND'
-    assert dynview.team_history_rows(hist, [], [], 2)[0][4] == '3RD'
+    assert dynview.team_history_rows(hist, [], 1)[0][4] == '1ST'
+    assert dynview.team_history_rows(hist, [], 0)[0][4] == '2ND'
+    assert dynview.team_history_rows(hist, [], 2)[0][4] == '3RD'
     # W desc beats PCT-inside-division: not reachable here (same PCT) but the 8 team is
     # above them all in the league and still does not join the rank
     wl2 = {0: (9, 7), 1: (10, 6), 2: (9, 7), 3: (8, 8), 4: (7, 9)}
     ldir = hist_league(tmp_path, seasons=[(wl2, 0xff, 0xff, 0xff)], sub='b')
     hist = load(ldir)['hist']
     # PCT desc first: DETROIT .625 1ST, the .562 pair by id, then .500 and .437
-    assert dynview.team_history_rows(hist, [], [], 3)[0][4] == '4TH'
+    assert dynview.team_history_rows(hist, [], 3)[0][4] == '4TH'
 
 
 def test_teamhist_rows_no_rows_message(tmp_path):
     """A team with no games in any season: one message row; the body returns COLS_SINGLE"""
     ldir = make_standings(tmp_path)
     data = load(ldir)
-    assert dynview.team_history_rows(data['hist'], [], [], 15) == \
+    assert dynview.team_history_rows(data['hist'], [], 15) == \
         [('NO SEASONS RECORDED',)]
     cols, rows = dynview.teamhist_body((STH, 0, 15), data)
     assert cols == dynview.COLS_SINGLE and rows == [('NO SEASONS RECORDED',)]
@@ -163,10 +163,10 @@ def test_teamhist_rows_three_divisions_rank(tmp_path):
     div_map(ldir, 1, {k: (1 if k % 8 < 4 else 2) for k in range(8)})
     hist = load(ldir)['hist']
     # all .667: the rank inside the division follows the id, 4 teams a division
-    assert dynview.team_history_rows(hist, [], [], 4)[0][4] == '1ST'
-    assert dynview.team_history_rows(hist, [], [], 7)[0][4] == '4TH'
+    assert dynview.team_history_rows(hist, [], 4)[0][4] == '1ST'
+    assert dynview.team_history_rows(hist, [], 7)[0][4] == '4TH'
     # a W tie with a lower id in the same division: the id wins ('2ND' for id 5)
-    assert dynview.team_history_rows(hist, [], [], 5)[0][4] == '2ND'
+    assert dynview.team_history_rows(hist, [], 5)[0][4] == '2ND'
 
 
 def test_teamhist_title_counts(tmp_path):
@@ -241,7 +241,7 @@ def test_teamhist_no_teams_t_nothing(tmp_path):
     assert data['teams'] == []
     assert dynview.step((SS, 0, 0), 84, data) == ((SS, 0, 0), 0)
     assert dynview.step((SS, 0, 0), 116, data) == ((SS, 0, 0), 0)
-    rows = dynview.team_history_rows(data['hist'], [], [], 15)   # TEAM 15 has no games
+    rows = dynview.team_history_rows(data['hist'], [], 15)   # TEAM 15 has no games
     assert rows == [('NO SEASONS RECORDED',)]
 
 
