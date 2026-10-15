@@ -59,7 +59,8 @@ FRAMES = [('hub', (), 'hub'), ('history', (K1,), 'hub'), ('hof', (K2,), 'hub'),
           ('leaders_by_year', (K3, TAB, TAB), 'hub'), ('milestones', (K4,), 'hub'),
           ('awards', (K9,), 'hub'), ('settings', (K7,), 'hub'),
           ('settings_start', (K7, DOWN, DOWN), 'hub'), ('title', (), 'title'),
-          ('title_leaders', (K3,), 'title'), ('review', (), 'review')]
+          ('title_leaders', (K3,), 'title'), ('review', (), 'review'),
+          ('title_welcome', (), 'title'), ('title_welcome_down', (DOWN,), 'title')]
 
 
 def fonts_ready():
@@ -293,6 +294,49 @@ def test_start_year_clamps_at_2100_and_1871(tmp_path):
         ldir = league(tmp_path, start=start, name=name)
         _, hist = run_pair(ldir, tmp_path, name, keys)
         assert hist_year(hist) == year, name
+
+
+# ---------------------------------------------------------------- C67 hub MENU row cursor
+@needs_fonts
+def test_c67_hub_cursor_parity(tmp_path):
+    """C67 frame parity: the plain hub's cursor (DOWN x3, DOWN DOWN END, HOME, END, the
+    one-page PGUP and PGDN jumps, ENTER opening row 0's SEASON HISTORY) and C or c doing
+    nothing (the plain hub's byte-identical frame)."""
+    ldir = league(tmp_path, name='c67hub', teams=TEAMS)
+    for tag, keys in [('plain', ()), ('down', (DOWN,)), ('down_down_end', (DOWN, DOWN, END)),
+                      ('end', (END,)), ('home', (HOME,)), ('end_end_stays', (END, END)),
+                      ('pgup_pgdn', (PGUP, PGDN)), ('enter_row0', (ENTER,)),
+                      ('down_enter', (DOWN, ENTER)), ('c_noop', (67,)),
+                      ('c_lower_noop', (99,))] :
+        check(ldir, tmp_path, 'c67_hub_' + tag, keys)
+
+
+@needs_fonts
+def test_c67_title_cursor_parity(tmp_path):
+    """C67 frame parity on the /TITLE menu: the cursor after DOWN DOWN and the SEASON
+    HISTORY that ENTER on row 0 opens (title mode's first row's record key), plus the
+    /TITLE welcome mode's DOWN frame (no cursor, the welcome text) and C's exit flag."""
+    ldir = league(tmp_path, name='c67title', teams=TEAMS)
+    check(ldir, tmp_path, 'c67_title_dd', (DOWN, DOWN), mode='title')
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    check(empty, tmp_path, 'c67_title_welcome_down', (DOWN,), mode='title')
+    # brain: the welcome mode keeps F (FIND PLAYER) and its END does nothing
+    check(empty, tmp_path, 'c67_title_welcome_f', (70,), mode='title')
+    check(empty, tmp_path, 'c67_title_welcome_end', (END,), mode='title')
+
+
+
+@needs_fonts
+def test_find_with_no_history_parity(tmp_path):
+    """brain (found in C67): FIND PLAYER with no HISTORY.DAT shows its prompt, and a typed
+    letter its no-match row, in both ports (the C port showed NO DYNASTY HISTORY YET and
+    Python raised on the letter)"""
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    check(empty, tmp_path, 'find_nohist', (70,))
+    check(empty, tmp_path, 'find_nohist_a', (70, 65))
+    check(empty, tmp_path, 'find_nohist_a_bksp', (70, 65, 8))
 
 
 # ---------------------------------------------------------------- C13.3 LEADERS modes
@@ -1128,7 +1172,7 @@ def test_c50_menu_footer_and_open(tmp_path):
     carries the F key; ESC goes back to the prompt row (C59), empty query kept cleared."""
     ldir = league(tmp_path, players=player_set(), seasons=3, name='mf')
     hub = run_pair(ldir, tmp_path, 'c50_hub', [])[0]
-    assert dynview.FOOTERS[dynview.SCREEN_MENU] == '0-9 W P F SELECT   ESC EXIT'
+    assert dynview.FOOTERS[dynview.SCREEN_MENU] == 'ENTER 0-9 W P F SELECT   ESC EXIT'
     oF = run_pair(ldir, tmp_path, 'c50_open_F', [KF])[0]
     of = run_pair(ldir, tmp_path, 'c50_open_f', [Kf])[0]
     assert oF == of
@@ -1641,12 +1685,12 @@ def test_c63_home_end_parity(tmp_path):
     assert py_run(sldir, tmp_path, keys + [END, HOME])[0] == (st[0], 0, st[2])
     assert check(sldir, tmp_path, 'c63_st_home_plain', keys + [END, HOME]) == \
         check(sldir, tmp_path, 'c63_st_plain', keys)
-    # HOME and END do nothing on the MENU (not a cursor screen): the plain hub frame
+    # HOME and END move the hub cursor (C67): HOME stays the plain frame (row 0), END
+    # highlights the last row
     hub = league(tmp_path, name='c63menu')
-    assert check(hub, tmp_path, 'c63_menu_home', [HOME]) == \
-        check(hub, tmp_path, 'c63_menu_plain', ())
-    assert check(hub, tmp_path, 'c63_menu_end', [END]) == \
-        check(hub, tmp_path, 'c63_menu_plain', ())
+    plain = check(hub, tmp_path, 'c63_menu_plain', ())
+    assert check(hub, tmp_path, 'c63_menu_home', [HOME]) == plain
+    assert check(hub, tmp_path, 'c63_menu_end', [END]) != plain
 
 # ---------------------------------------------------------------- C64 WORLD SERIES row cursor
 SERIES_LEAGUE_MS = [(3, 5 * 256 + 3, 192, 5 * 256 + 3),          # game 1: BOS at ATL, 5-3

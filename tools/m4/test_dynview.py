@@ -560,16 +560,18 @@ def test_title_mode(tmp_path):
     assert dynview.footer_text(T, data) == 'ENTER PLAY BALL'
     assert dynview.screen_title(T, data) == 'DYNASTY MODE: 1993'
     assert dynview.body_cols(T, data) == dynview.COLS_SINGLE
+    # the welcome keys: C (and by the same rule c) also go on to the game; C67 keeps ESC
+    assert dynview.step(T, 67, data) == (T, 1)
     assert dynview.step(T, dynview.KEY_ENTER, data) == (T, 1)
     assert dynview.step(T, dynview.KEY_ESC, data)[1] == 1
-    # the plain menu ignores ENTER
+    # the plain hub (an empty league here, cat clear, row 0) opens SEASON HISTORY (C67)
     assert dynview.step((dynview.SCREEN_MENU, 0, 0), dynview.KEY_ENTER, data) == \
-        ((dynview.SCREEN_MENU, 0, 0), 0)
+        ((dynview.SCREEN_HISTORY, 0, 0), 0)
     assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data) == [(t,) for t in dynview.MENU_ROWS]
     hdir, _ = make_data(tmp_path)
     data = dynview.load_data(str(hdir))
     assert dynview.rows(T, data)[0] == ('1  SEASON HISTORY',)
-    assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
+    assert dynview.footer_text(T, data) == 'ENTER 0-9 W SELECT   C PLAY BALL'
     assert dynview.screen_title(T, data) == 'DYNASTY MODE: 1996'
     s, ex = dynview.step(T, ord('2'), data)
     assert s == (dynview.SCREEN_HOF, 0, 0) and ex == 0
@@ -580,6 +582,118 @@ def test_title_mode(tmp_path):
         main_ft, _bold = dynview.load_fonts(FILES)
         for t in dynview.TITLE_ROWS + [dynview.TITLE_FOOTER]:
             assert all(0 <= ord(c) - 32 < len(main_ft) for c in t), t
+
+
+def test_c67_hub_menu_cursor(tmp_path):
+    """C67: the plain hub is a cursor screen over MENU_ROWS. UP and DOWN move it
+    clamped to 0..11, HOME and END and the two pages jump, and ENTER on row r does
+    exactly what the row's key does today (row 3 '4' MILESTONES, row 11 'P',
+    row 9 '0' SEASON STANDINGS and its C56 st_back clearing)."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    H = dynview.SCREEN_MENU
+    st3 = dynview.pack(H, 0, 0, 3)
+    st11 = dynview.pack(H, 0, 0, 11)
+    # UP at row 0 and DOWN at row 11 stay (clamped, no wrap)
+    assert dynview.step((H, 0, 0), dynview.KEY_UP, data) == ((H, 0, 0), 0)
+    assert dynview.step(st11, dynview.KEY_DOWN, data) == (st11, 0)
+    # END, then the pages from row 0 (one page, so PGUP and PGDN are HOME and END)
+    assert dynview.step((H, 0, 0), dynview.KEY_END, data) == (st11, 0)
+    assert dynview.step((H, 0, 0), dynview.KEY_HOME, data) == ((H, 0, 0), 0)
+    assert dynview.step((H, 0, 0), dynview.KEY_PGUP, data) == ((H, 0, 0), 0)
+    assert dynview.step((H, 0, 0), dynview.KEY_PGDN, data) == (st11, 0)
+    # DOWN x3 then ENTER opens row 3's screen, exactly what key '4' does
+    s = (H, 0, 0)
+    for _k in range(3):
+        s, _ex = dynview.step(s, dynview.KEY_DOWN, data)
+    assert s == st3
+    assert dynview.step(s, dynview.KEY_ENTER, data) == \
+        dynview.step(st3, ord('4'), data)
+    assert dynview.step(s, dynview.KEY_ENTER, data) == ((dynview.SCREEN_MILESTONES, 0, 0), 0)
+    # END then ENTER is the 12th row's key, P (PLAYOFFS)
+    assert dynview.step(st11, dynview.KEY_ENTER, data) == \
+        dynview.step(st11, ord('P'), data)
+    assert dynview.step(st11, dynview.KEY_ENTER, data) == ((dynview.SCREEN_PLAYOFFS, 0, 0), 0)
+    # row 9's ENTER is key '0': SEASON STANDINGS with the st_back state cleared
+    data['st_back'] = (dynview.SCREEN_HISTORY, 0, 0)
+    st9 = dynview.pack(H, 0, 0, 9)
+    assert dynview.step(st9, dynview.KEY_ENTER, data) == ((dynview.SCREEN_STANDINGS, 0, 0), 0)
+    assert 'st_back' not in data
+    # the ESC return keeps the plain hub (row 0)
+    assert dynview.step((dynview.SCREEN_MILESTONES, 0, 0), dynview.KEY_ESC, data) == \
+        ((H, 0, 0), 0)
+    # the cursor row draws the highlight on the hub frame (row 3 red; both need fonts)
+    if os.path.exists(os.path.join(FILES, 'MAIN.FNT')):
+        data = dynview.load_data(str(ldir), FILES)
+        hub3 = dynview.render(st3, data)
+        hub0 = dynview.render((H, 0, 0), data)
+        assert hub3 != hub0
+        y = 35 + 3 * dynview.ROW_H
+        x = 8
+        assert hub3[y * 320 + x] == dynview.C_TITLE_RED
+        assert hub0[y * 320 + x] == dynview.C_ROW_TAN
+
+
+def test_c67_title_menu_enter_and_c(tmp_path):
+    """C67 on the /TITLE menu with a recorded season: UP, DOWN, HOME, END and the pages
+    move the cursor, ENTER opens the cursor row (row 0 SEASON HISTORY, flag 0, and the
+    state equals the row-key step on the same state), C and c exit with flag 1, ESC
+    still exits. Welcome mode is unchanged: no cursor, ENTER, ESC and C exit, DOWN
+    does nothing, the frame is the TITLE_ROWS frame."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    H = dynview.SCREEN_MENU
+    T = (H, 0, dynview.TITLE_FLAG)
+    # row 0: ENTER opens SEASON HISTORY with flag 0, exactly the key step
+    assert dynview.step(T, dynview.KEY_ENTER, data) == dynview.step(T, ord('1'), data)
+    assert dynview.step(T, dynview.KEY_ENTER, data) == ((dynview.SCREEN_HISTORY, 0, 0), 0)
+    # the cursor moves and the page follows the row; the record keys still work
+    s, _ex = dynview.step(T, dynview.KEY_DOWN, data)
+    assert s == dynview.pack(H, 0, dynview.TITLE_FLAG, 1)
+    assert dynview.step(dynview.pack(H, 0, dynview.TITLE_FLAG, 11), dynview.KEY_END,
+                        data)[0] == dynview.pack(H, 0, dynview.TITLE_FLAG, 11)
+    # C and c exit with flag 1 (the state kept with its cursor), ESC too
+    for k in (67, 99):
+        assert dynview.step(s, k, data) == (s, 1)
+    assert dynview.step(s, dynview.KEY_ESC, data)[1] == 1
+    assert dynview.step(T, dynview.KEY_ESC, data)[1] == 1
+    # the hub and /TITLE footers say ENTER(SELECT) and C(PLAY BALL)
+    assert dynview.footer_text((H, 0, 0), data) == 'ENTER 0-9 W P F SELECT   ESC EXIT'
+    assert dynview.FOOTERS[dynview.SCREEN_MENU] == 'ENTER 0-9 W P F SELECT   ESC EXIT'
+    assert dynview.footer_text(T, data) == 'ENTER 0-9 W SELECT   C PLAY BALL'
+    assert dynview.TITLE_FOOTER == 'ENTER 0-9 W SELECT   C PLAY BALL'
+    assert dynview.TITLE_FOOTER_NEW == 'ENTER PLAY BALL'
+    # welcome mode: no cursor, no highlight, every move key does nothing
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    wdata = dynview.load_data(str(empty))
+    WT = (H, 0, dynview.TITLE_FLAG)
+    assert dynview.rows(WT, wdata) == [(t,) for t in dynview.TITLE_ROWS]
+    assert dynview.rows(WT, wdata) != [(t,) for t in dynview.MENU_ROWS]
+    for k in (dynview.KEY_UP, dynview.KEY_DOWN, dynview.KEY_HOME, dynview.KEY_END,
+              dynview.KEY_PGUP, dynview.KEY_PGDN):
+        assert dynview.step(WT, k, wdata) == (WT, 0)
+    # ENTER exits with flag 1 keeping the state; ESC (checked above) goes back to MENU
+    # with flag 1 after having exited too; a record key keeps working
+    assert dynview.step(WT, dynview.KEY_ENTER, wdata) == (WT, 1)
+    assert dynview.step(WT, dynview.KEY_ESC, wdata)[1] == 1
+    assert dynview.step(WT, 67, wdata) == (WT, 1)
+    assert dynview.step(WT, 99, wdata) == (WT, 1)
+    assert dynview.step(WT, ord('7'), wdata) == ((dynview.SCREEN_SETTINGS, 0, 0), 0)
+    # the welcome frame is byte-identical to a TITLE_ROWS frame with no cursor; each
+    # row band holds one color, yellow-red only where a cursor row would be (none)
+    if os.path.exists(os.path.join(FILES, 'MAIN.FNT')):
+        wdata = dynview.load_data(str(empty), FILES)
+        fb_wt = dynview.render(WT, wdata)
+        assert fb_wt == dynview.render((H, 0, dynview.TITLE_FLAG), wdata)
+        for r in range(len(dynview.TITLE_ROWS)):
+            band = fb_wt[(35 + r * dynview.ROW_H) * 320 + 8]
+            assert all(fb_wt[(35 + r * dynview.ROW_H + d) * 320 + 8] == band
+                       for d in range(dynview.ROW_H - 1))
+    # the plain hub (cat >> 4 clear): C and c do nothing, ESC exits with flag 1
+    for k in (67, 99):
+        assert dynview.step((H, 0, 0), k, data) == ((H, 0, 0), 0)
+    assert dynview.step((H, 0, 0), dynview.KEY_ESC, data) == ((H, 0, 0), 1)
 
 
 # ---------------------------------------------------------------- previews
@@ -936,7 +1050,7 @@ def test_offseason_titles_footers_and_menu(tmp_path):
                 'ENTER NEXT   PGUP PGDN   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5))) == 'ENTER CONTINUE   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5, 0))) == 'ENTER MENU   ESC MENU'
-    assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '0-9 W P F SELECT   ESC EXIT'
+    assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == 'ENTER 0-9 W P F SELECT   ESC EXIT'
     assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == \
         'ENTER STANDINGS   PGUP PGDN   ESC MENU'
     assert dynview.footer_text((dynview.SCREEN_REVIEW, 0, 0)) == 'ENTER MENU   ESC MENU'
@@ -1297,7 +1411,7 @@ def test_hub_rows_with_and_without_history(tmp_path):
     empty.mkdir()
     data = dynview.load_data(str(empty))
     assert dynview.rows(HUB, data) == [(t,) for t in dynview.MENU_ROWS]
-    assert dynview.footer_text(HUB, data) == '0-9 W P F SELECT   ESC EXIT'
+    assert dynview.footer_text(HUB, data) == 'ENTER 0-9 W P F SELECT   ESC EXIT'
     # screens 1..6, SEASON AWARDS and SEASON STANDINGS with no history keep the one
     # NO DYNASTY row
     for scr in list(range(1, 7)) + [dynview.SCREEN_AWARDS, dynview.SCREEN_STANDINGS]:
@@ -1620,10 +1734,13 @@ def test_settings_cursor_row_highlight(tmp_path):
     assert dynview.C_WHITE in band and dynview.C_BLACK not in band
     band1 = [fb[y * 320 + x] for y in range(y1 + 2, y1 + 9) for x in range(10, 300)]
     assert dynview.C_BLACK in band1 and dynview.C_WHITE not in band1
-    # ABOUT and the hub have no highlighted row
-    for state in ((ABOUT, 0, 0), HUB):
-        fb = dynview.render(state, data)
-        assert fb[(35 + 1) * 320 + 9] == dynview.C_ROW_TAN
+    # ABOUT has no highlighted row; the hub draws the cursor row (C67): row 0 red,
+    # row 1 tan (its band starts at 35 + ROW_H)
+    fb = dynview.render((ABOUT, 0, 0), data)
+    assert fb[(35 + 1) * 320 + 9] == dynview.C_ROW_TAN
+    fb_hub = dynview.render(HUB, data)
+    assert fb_hub[35 * 320 + 9] == dynview.C_TITLE_RED
+    assert fb_hub[(35 + dynview.ROW_H + 1) * 320 + 9] == dynview.C_ROW_TAN
 
 
 def test_settings_and_about_render_without_history(tmp_path):
@@ -1719,9 +1836,9 @@ def test_awards_hub_key_and_footers(tmp_path):
     assert dynview.step((SA, 0, 0), ESC, data) == (HUB, 0)
     assert dynview.screen_title((SA, 0, 0), data) == '1995 AWARDS'
     assert dynview.footer_text((SA, 0, 0), data) == AWARDS_FOOTER
-    assert dynview.footer_text(HUB, data) == '0-9 W P F SELECT   ESC EXIT'
-    assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
-    assert dynview.TITLE_FOOTER == '0-9 W SELECT   ENTER PLAY BALL'
+    assert dynview.footer_text(HUB, data) == 'ENTER 0-9 W P F SELECT   ESC EXIT'
+    assert dynview.footer_text(T, data) == 'ENTER 0-9 W SELECT   C PLAY BALL'
+    assert dynview.TITLE_FOOTER == 'ENTER 0-9 W SELECT   C PLAY BALL'
     # ENTER opens the PLAYER CARD of the highlighted award's player (C13.4); ESC goes back
     s, _ex = dynview.step((SA, 0, 0), ENTER, data)
     assert s[0] == dynview.SCREEN_CARD and dynview.step(s, ESC, data) == ((SA, 0, 0), 0)
@@ -2241,8 +2358,8 @@ def test_standings_hub_key_and_footers(tmp_path):
     assert dynview.screen_title((SS, 0, 0), data) == '1995 STANDINGS'
     assert dynview.screen_title((SS, 0, 2), data) == '1993 STANDINGS'
     assert dynview.footer_text((SS, 0, 0), data) == STAND_FOOTER
-    assert dynview.footer_text(HUB, data) == '0-9 W P F SELECT   ESC EXIT'
-    assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
+    assert dynview.footer_text(HUB, data) == 'ENTER 0-9 W P F SELECT   ESC EXIT'
+    assert dynview.footer_text(T, data) == 'ENTER 0-9 W SELECT   C PLAY BALL'
     # ENTER does nothing on SEASON STANDINGS
     assert dynview.step((SS, 0, 0), ENTER, data) == ((SS, 0, 0), 0)
 
@@ -2618,9 +2735,9 @@ def test_series_hub_key_and_footers(tmp_path):
     assert dynview.screen_title((SW, 0, 2), data) == '1993 WORLD SERIES'
     assert dynview.footer_text((SW, 0, 0), data) == SERIES_FOOTER
     assert dynview.FOOTERS[SW] == SERIES_FOOTER
-    assert dynview.footer_text(HUB, data) == '0-9 W P F SELECT   ESC EXIT'
-    assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
-    assert dynview.TITLE_FOOTER == '0-9 W SELECT   ENTER PLAY BALL'
+    assert dynview.footer_text(HUB, data) == 'ENTER 0-9 W P F SELECT   ESC EXIT'
+    assert dynview.footer_text(T, data) == 'ENTER 0-9 W SELECT   C PLAY BALL'
+    assert dynview.TITLE_FOOTER == 'ENTER 0-9 W SELECT   C PLAY BALL'
     # C64: ENTER on the first GAME row opens that game's BOX SCORE
     assert dynview.step((SW, 0, 0), ENTER, data) == ((SB, 0, 0), 0)
 
@@ -4414,7 +4531,7 @@ def test_find_open_edit_and_rows(tmp_path):
     assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
     assert dynview.screen_title(s, data) == 'FIND PLAYER: _'
     assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
-    assert dynview.FOOTERS[dynview.SCREEN_MENU] == '0-9 W P F SELECT   ESC EXIT'
+    assert dynview.FOOTERS[dynview.SCREEN_MENU] == 'ENTER 0-9 W P F SELECT   ESC EXIT'
     assert dynview.FOOTERS[dynview.SCREEN_FIND] == 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
     # typing: a fresh FIND, then letters append upper case, edits reset, BACKSPACE
     # removes, a 13th letter never lands
@@ -5101,11 +5218,11 @@ def test_c63_home_end_cursor_jumps(tmp_path):
     # the empty standings season (one message row): both keys are no-ops
     empty = (SS, 0, 0)
     assert press(press(empty, dynview.KEY_END, sdata), dynview.KEY_HOME, sdata) == empty
-    # MENU is not a cursor screen: both keys are ignored
+    # C67: the MENU is a cursor screen over its 12 rows; HOME and END jump to the ends
     assert press((dynview.SCREEN_MENU, 0, 0), dynview.KEY_HOME, sdata) == \
         (dynview.SCREEN_MENU, 0, 0)
     assert press((dynview.SCREEN_MENU, 0, 0), dynview.KEY_END, sdata) == \
-        (dynview.SCREEN_MENU, 0, 0)
+        (dynview.SCREEN_MENU, 0, 0, 11)
     # cursor_move keeps the HoF state unchanged at the ends (the empty-filter one-row list)
     assert dynview.cursor_move((HC, 0, 1, 0), (HC, 0, 1, 0), dynview.KEY_END, data) == \
         (HC, 0, 1, 0)

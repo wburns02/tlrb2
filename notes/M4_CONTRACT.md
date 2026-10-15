@@ -2204,3 +2204,40 @@ are no-ops at the ends and on empty screens (page 0). The cursor screens keep th
 behaviour (they never reach the generic pager); the hub MENU, FIND typing, SETTINGS
 and every screen that returns before the generic pager are unchanged. No footer
 changes, C89 only, no new static data. Reads only; writes nothing.
+
+## C67. DYNVIEW hub MENU row cursor (added 2026-10-15)
+Outside welcome mode the hub (SCREEN_MENU = 0) is a cursor screen over MENU_ROWS (12
+rows): the state carries the row in s[3] (default 0). Welcome mode is screen MENU,
+cat >> 4 set, and (hist is None or hist.seasons_recorded == 0); there the TITLE_ROWS
+frame stays byte-identical, no cursor and no highlight, UP, DOWN, HOME, END, PGUP and
+PGDN do nothing, ENTER and ESC exit with flag 1, C or c also exits with flag 1, and
+the row keys (0..9, W, w, P, p, F, f) keep working. Outside welcome mode the cursor
+keys move the row: UP and DOWN by one, clamped to 0..11 with no wrap, HOME to row 0,
+END to row 11, PGUP to row 0 and PGDN to row 11 (the hub has one page, so the pages
+are HOME and END); the cursor row draws the standard highlight. ENTER outside welcome
+mode on row r does exactly what pressing that row's key does today: the key is
+ord(MENU_ROWS[r][0]) ('1'..'9', '0', 'W', 'P'); the result state equals
+step(state, that key, data) on the same state, including C56's st_back clearing for
+'0' and the row cursor resetting (Python returns fresh 3-tuples). On the /TITLE menu
+outside welcome mode (cat >> 4 set, a season recorded) ESC exits with flag 1 as
+before, ENTER opens the cursor row's screen with flag 0, and C or c (67, 99) exits
+with flag 1 (PLAY BALL) from any row, the state kept. On the plain hub (cat >> 4
+clear) C and c do nothing. Every existing hub key (1..9, 0, W, w, P, p, F, f) keeps
+working from any row. Returning to the hub (ESC from any screen) gives row 0, and the
+--menu and --title entry states keep row 0. Mouse (click_to_key, C13.6) is unchanged:
+a click on a hub row band still returns that row's key with row None (row 11 in
+welcome mode maps to row 0's key, the top row, as before). Footers: FOOTERS[SCREEN_MENU]
+= 'ENTER 0-9 W P F SELECT   ESC EXIT', TITLE_FOOTER = 'ENTER 0-9 W SELECT   C PLAY
+BALL', TITLE_FOOTER_NEW unchanged ('ENTER PLAY BALL'). C port: hub_cursor() is the
+Python _hub_cursor (false only in welcome mode), cursor_screen() gains SCREEN_MENU
+through it for the cursor keys and cursor_move, the MENU step branch handles the
+record key of MENU_ITEMS[s.row], C or c exits with flag 1 only under cat >> 4, the
+welcome branch (a league with no recorded season and cat >> 4) keeps the row keys and
+exits on ENTER, ESC and C or c, all hub jumps reset s.row, and the footer strings
+follow Python's. C89 only, no new static arrays in the C port; reads only, writes
+nothing.
+
+C67 also fixed (brain, 2026-10-15): FIND PLAYER with no recorded season shows its
+prompt (and a typed query its NO PLAYER FOUND row) in COLS_SINGLE in both ports; the C
+port showed NO DYNASTY HISTORY YET and Python raised on a typed letter with no
+HISTORY.DAT.
