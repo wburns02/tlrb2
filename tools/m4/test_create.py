@@ -1136,7 +1136,7 @@ def test_every_key_on_every_screen(tmp_path):
         for k in ALL_KEYS:
             st2, ex = cr.step(s, k, ctx)
             assert isinstance(ex, bool)
-            assert st2['screen'] in range(6)
+            assert st2['screen'] in range(9)
 
 
 # ---------------------------------------------------------------- render
@@ -1853,3 +1853,672 @@ def test_c69_msg_replaces_footer_and_clears(tmp_path):
     assert st['msg'] == 'RELEASED TO POOL1'
     st2, _ = walk(ctx, [RIGHT], st)      # any key clears the message first
     assert (st2['msg'], st2['screen']) == (0, cr.S_SLOT)
+
+
+# ---------------------------------------------------------------- C76: T trades a player
+import v20 as v20mod          # noqa: E402
+
+TRADES_TXT = 'TRADES.TXT'
+T_KEY, Y_KEY, N_KEY = ord('T'), ord('Y'), ord('N')
+
+
+def _rated(last, first, age, pos1, pos2=0, **ratings):
+    """A named record: ratings by v20 field name, position byte pos1 | pos2 << 4."""
+    rec = bytearray(143)
+    rec[0:len(last)] = last.encode('ascii')
+    rec[12:12 + len(first)] = first.encode('ascii')
+    rec[20] = age
+    rec[21] = 100
+    rec[31] = pos1 | (pos2 << 4)
+    for k, v in ratings.items():
+        v20mod._set(rec, *v20mod.F[k], v)
+    return bytes(rec)
+
+
+def _bat(last, first, v, pos2=0):
+    """A 28 year old 1B (age 28: no age weight, no discount, so V = S = 3 power + 3 hit_run
+    + speed + range) whose rosters.value is exactly v."""
+    for p in range(15, -1, -1):
+        for h in range(16):
+            for s in range(16):
+                rg = v - 3 * p - 3 * h - s
+                if 0 <= rg <= 15:
+                    rec = _rated(last, first, 28, 2, pos2, power=p, hit_run=h, speed=s, range=rg)
+                    assert rosters.value(rec) == v
+                    return rec
+    raise AssertionError(v)
+
+
+def _pit(last, first, v, end):
+    """A 28 year old pitcher: V = 3 control + 3 velocity + 2 endurance = v."""
+    rem, mod = divmod(v - 2 * end, 3)
+    assert mod == 0 and rem >= 0
+    c = min(15, rem)
+    rec = _rated(last, first, 28, 0, control=c, velocity=rem - c, endurance=end)
+    assert rosters.value(rec) == v
+    return rec
+
+
+def _pair(slot, rec):
+    """roster record at slot and a distinct season twin at slot + 40."""
+    srec = bytearray(rec)
+    srec[23], srec[37], srec[38] = 99, slot, 5
+    return {slot: rec, slot + 40: bytes(srec)}
+
+
+def _team(*pairs):
+    out = {}
+    for p in pairs:
+        out.update(p)
+    return out
+
+
+def _patch_hdr(path, edits):
+    img = bytearray(open(path, 'rb').read())
+    for off, v in edits.items():
+        img[off] = v
+    open(path, 'wb').write(bytes(img))
+
+
+# team A = BOS (list index 0), team B = DET (list index 1, index 0 of the trade team list)
+def trade_league(d, a, b, a_hdr=None, b_hdr=None, others=None, **kw):
+    """others = {lg: recs} for NYA (15), CHI (16), SLN (17)."""
+    recs = {0: a, 2: b, 15: {}, 16: {}, 17: {}}
+    recs.update(others or {})
+    lg = make_league(d, recs=recs, **kw)
+    if a_hdr:
+        _patch_hdr(os.path.join(lg, 'BOS.V20'), a_hdr)
+    if b_hdr:
+        _patch_hdr(os.path.join(lg, 'DET.V20'), b_hdr)
+    return lg
+
+
+def trade_keys(give, get, a=0, b=0, tail=()):
+    """Team list ENTER (team a), slot give, T, trade team list row b, ENTER, slot get, ENTER."""
+    return ([DOWN] * a + [ENTER] + [DOWN] * give + [T_KEY] + [DOWN] * b + [ENTER]
+            + [DOWN] * get + [ENTER] + list(tail))
+
+
+def read_file(lg, name):
+    return open(os.path.join(lg, name), 'rb').read()
+
+
+def expected_trade(a_img, give, b_img, get):
+    """The two team images after the accepted trade (the C76 rule, on the pre-images)."""
+    a, b = bytearray(a_img), bytearray(b_img)
+    px, py = rosters.copy_pair(a, give), rosters.copy_pair(b, get)
+    rosters.vacate(a, give)
+    rosters.vacate(b, get)
+    rosters.write_pair(a, give, py)
+    rosters.write_pair(b, get, px)
+    rosters.repair(a, {give})
+    rosters.repair(b, {get})
+    return bytes(a), bytes(b)
+
+
+def snapshot(lg):
+    return {n: read_file(lg, n) for n in sorted(os.listdir(lg))}
+
+
+# standard fixture: A batters 16 (V40), 17 (V40), 18 (V30); A pitchers 0 (V40)
+# B batters 16 (V70), 17 (V66), 18 (V62) the top 3, 19 (V40), 20 (V45), 21 (V30), all 1B
+A_BATTERS = _team(_pair(16, _bat('Axe', 'Al', 40)), _pair(17, _bat('Bell', 'Bo', 40)),
+                  _pair(18, _bat('Cobb', 'Cy', 30)), _pair(0, _pit('Dunn', 'Di', 40, 2)))
+B_BATTERS = _team(_pair(16, _bat('Egan', 'Ed', 70)), _pair(17, _bat('Fox', 'Fay', 66)),
+                  _pair(18, _bat('Gil', 'Gus', 62)), _pair(19, _bat('Hart', 'Hal', 40)),
+                  _pair(20, _bat('Ivy', 'Ian', 45)), _pair(21, _bat('Jay', 'Jo', 30)))
+
+
+OTHER_TEAMS = {15: _team(_pair(16, _bat('Nya', 'Ned', 40))),
+               16: _team(_pair(16, _bat('Chi', 'Cal', 40))),
+               17: _team(_pair(16, _bat('Sln', 'Sid', 40)))}
+
+
+def std_league(d, **kw):
+    return trade_league(d, A_BATTERS, B_BATTERS, others=OTHER_TEAMS, **kw)
+
+
+def test_c76_t_opens_trade_team_list(tmp_path):
+    """T and t on an occupied slot set st['give'] and open S_TRADE_TEAM with the cursor on row
+    0; the slot list's own slot / form are untouched."""
+    ctx = ctx_for(std_league(str(tmp_path / 'L')))
+    for key in (T_KEY, ord('t')):
+        st, _ = walk(ctx, slot_keys(17) + [key])
+        assert (st['screen'], st['give'], st['cursor']) == (cr.S_TRADE_TEAM, 17, 0)
+    base, _ = walk(ctx, slot_keys(17))
+    assert base['screen'] == cr.S_SLOT
+
+
+def test_c76_t_on_empty_slot_is_noop(tmp_path):
+    ctx = ctx_for(std_league(str(tmp_path / 'L')))
+    st0, _ = walk(ctx, slot_keys(1))                       # slot 1 is empty
+    assert not cr.record(st0['image'], 1)[0]
+    st, _ = walk(ctx, [T_KEY], st0)
+    assert st == dict(st0, msg=0)
+    st, _ = walk(ctx, [ord('t')], st0)
+    assert st == dict(st0, msg=0)
+
+
+def test_c76_trade_team_list_excludes_a(tmp_path):
+    """The list is every team but A, in list order; the cursor moves like S_TEAM's."""
+    ctx = ctx_for(std_league(str(tmp_path / 'L')))
+    st, _ = walk(ctx, slot_keys(16) + [T_KEY])
+    title, cols, rows, foot, hl = cr._list_view(st, ctx)
+    assert cols == cr.COLS_TEAM and hl and foot == cr.FOOT_TRADE_TEAM
+    assert [r[0] for r in rows] == ['DETROIT', 'YANKEES', 'CUBS', 'SLN']
+    assert [r[1] for r in rows] == ['AMERICAN', 'AMERICAN', 'NATIONAL', 'NATIONAL']
+    for keys, want in (([DOWN], 1), ([DOWN] * 9, 3), ([DOWN, UP, UP], 0), ([PGDN], 3),
+                       ([PGDN, PGUP], 0), ([ord('x')], 0)):
+        assert walk(ctx, keys, st)[0]['cursor'] == want
+    # A = NYA (list index 2): the list is BOS, DET, CHI, SLN
+    st, _ = walk(ctx, [DOWN, DOWN] + slot_keys(16) + [T_KEY])
+    assert st['screen'] == cr.S_TRADE_TEAM and st['team'] == 2
+    assert [r[0] for r in cr._list_view(st, ctx)[2]] == ['BOSTON', 'DETROIT', 'CUBS', 'SLN']
+
+
+def test_c76_trade_team_enter_loads_b(tmp_path):
+    lg = std_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    st, _ = walk(ctx, slot_keys(16) + [T_KEY, ENTER])
+    assert (st['screen'], st['cursor'], st['bteam']) == (cr.S_TRADE_PICK, 0, 1)
+    assert st['bimage'] == cr.read_v20(lg, 'DET')
+    for row, idx in ((1, 2), (2, 3), (3, 4)):
+        st, _ = walk(ctx, slot_keys(16) + [T_KEY] + [DOWN] * row + [ENTER])
+        assert st['bteam'] == idx and st['bimage'] == cr.read_v20(lg, ctx['teams'][idx][1])
+    # A = CHI (index 3): the list is BOS, DET, NYA, SLN, so row 2 is NYA (2) and row 3 SLN (4)
+    for row, idx in ((2, 2), (3, 4)):
+        st, _ = walk(ctx, [DOWN] * 3 + slot_keys(16) + [T_KEY] + [DOWN] * row + [ENTER])
+        assert st['team'] == 3 and st['bteam'] == idx
+
+
+def test_c76_trade_team_esc_returns_to_slot_on_give(tmp_path):
+    ctx = ctx_for(std_league(str(tmp_path / 'L')))
+    st, _ = walk(ctx, slot_keys(17) + [T_KEY, DOWN, DOWN, ESC])
+    assert (st['screen'], st['cursor'], st['give']) == (cr.S_SLOT, 17, 17)
+    assert st['image'] == walk(ctx, slot_keys(17))[0]['image']
+
+
+def test_c76_no_other_team(tmp_path):
+    """A league of one team: the trade team list says NO TEAMS FOUND and ENTER does nothing."""
+    lg = make_league(str(tmp_path / 'L'), spec={0: (b'BOS', b'BOSTON')}, recs={0: A_BATTERS})
+    ctx = ctx_for(lg)
+    st, _ = walk(ctx, slot_keys(16) + [T_KEY])
+    title, cols, rows, foot, hl = cr._list_view(st, ctx)
+    assert rows == [('NO TEAMS FOUND', '')] and not hl
+    st2, _ = walk(ctx, [ENTER, DOWN, PGDN], st)
+    assert st2['screen'] == cr.S_TRADE_TEAM and st2['cursor'] == 0
+    st3, _ = walk(ctx, [ESC], st2)
+    assert (st3['screen'], st3['cursor']) == (cr.S_SLOT, 16)
+
+
+def test_c76_trade_pick_rows_are_b_slots_read_only(tmp_path):
+    """B's 40 slots as S_SLOT draws them; keys other than the list keys, ENTER and ESC do
+    nothing, ENTER on an empty slot does nothing."""
+    lg = std_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    st, _ = walk(ctx, slot_keys(16) + [T_KEY, ENTER])
+    title, cols, rows, foot, hl = cr._list_view(st, ctx)
+    ref = cr._list_view(dict(st, screen=cr.S_SLOT, image=st['bimage'], team=1), ctx)
+    assert (title, cols, rows, hl) == ref[:3] + (ref[4],) and title == 'PICK A SLOT: DETROIT'
+    assert foot == cr.FOOT_TRADE_PICK and len(rows) == 40
+    assert rows[16][1] == 'Egan, Ed' and rows[1] == ('P2', '(EMPTY)', '', '', '')
+    before = snapshot(lg)
+    for key in (T_KEY, ord('t'), ord('D'), ord('C'), ord('x'), ord('Y'), 0x1234):
+        assert walk(ctx, [key], st)[0] == dict(st, msg=0)
+    # an empty slot: ENTER does nothing
+    st2, _ = walk(ctx, [DOWN], st)
+    assert not cr.record(st2['bimage'], 1)[0]
+    st3, _ = walk(ctx, [ENTER], st2)
+    assert (st3['screen'], st3['cursor']) == (cr.S_TRADE_PICK, 1)
+    assert snapshot(lg) == before
+    # list keys
+    assert walk(ctx, [PGDN], st)[0]['cursor'] == 12
+    assert walk(ctx, [PGDN] * 9, st)[0]['cursor'] == 39
+    assert walk(ctx, [DOWN, UP, UP], st)[0]['cursor'] == 0
+
+
+def test_c76_trade_pick_enter_and_esc(tmp_path):
+    ctx = ctx_for(std_league(str(tmp_path / 'L')))
+    st, _ = walk(ctx, slot_keys(16) + [T_KEY, ENTER] + [DOWN] * 19 + [ENTER])
+    assert (st['screen'], st['get'], st['give']) == (cr.S_TRADE_OFFER, 19, 16)
+    # ESC returns to the team list with the cursor on B's row (A = BOS: B row = bteam - 1)
+    for row in range(4):
+        st, _ = walk(ctx, slot_keys(16) + [T_KEY] + [DOWN] * row + [ENTER, DOWN, ESC])
+        assert (st['screen'], st['cursor'], st['bteam']) == (cr.S_TRADE_TEAM, row, row + 1)
+    # A = SLN (index 4): every team is below A, so B's row = bteam
+    st, _ = walk(ctx, [DOWN] * 4 + slot_keys(16) + [T_KEY, DOWN, DOWN, ENTER, ESC])
+    assert (st['screen'], st['cursor'], st['bteam']) == (cr.S_TRADE_TEAM, 2, 2)
+
+
+def test_c76_offer_screen_and_keys(tmp_path):
+    ctx = ctx_for(std_league(str(tmp_path / 'L')))
+    st, _ = walk(ctx, trade_keys(17, 19))
+    title, cols, rows, foot, hl = cr._list_view(st, ctx)
+    assert cols == cr.COLS_ONE and not hl and foot == 'Y PROPOSE   N ESC BACK'
+    assert rows == [('GIVE Bo Bell',), ('GET  Hal Hart',)]
+    assert foot == cr.FOOT_TRADE_OFFER
+    for key in (N_KEY, ord('n'), ESC):
+        st2, _ = walk(ctx, [key], st)
+        assert (st2['screen'], st2['cursor'], st2['get']) == (cr.S_TRADE_PICK, 19, 19)
+        assert st2['give'] == 17 and st2['image'] == st['image']
+    for key in (ord('x'), ENTER, UP, DOWN, T_KEY, ord('D'), 0x1234):
+        assert walk(ctx, [key], st)[0] == dict(st, msg=0)
+    # back on the pick list, ENTER on another slot re-opens the offer
+    st3, _ = walk(ctx, [N_KEY, DOWN, ENTER], st)
+    assert (st3['screen'], st3['get']) == (cr.S_TRADE_OFFER, 20)
+    assert cr._list_view(st3, ctx)[2][1] == ('GET  Ian Ivy',)
+
+
+def test_c76_accept_batter_for_batter_exact_bytes(tmp_path):
+    """A's slot 17 (Bell) for B's slot 19 (Hart), equal V: both V20 files equal the C76 rule
+    (copy_pair / vacate / write_pair / repair), the TRADES.TXT line is exact and the state is
+    on S_SLOT with TRADE ACCEPTED."""
+    hdr_a = {122: 17, 158: 2, 222: 18}              # lineup spot holds 17, 1B; reserve 18
+    hdr_b = {194: 19, 222: 21}                      # bench holds 19; reserve 21
+    lg = std_league(str(tmp_path / 'L'), a_hdr=hdr_a, b_hdr=hdr_b)
+    ctx = ctx_for(lg)
+    a0, b0 = read_file(lg, 'BOS.V20'), read_file(lg, 'DET.V20')
+    st, _ = walk(ctx, trade_keys(17, 19, tail=[Y_KEY]))
+    ea, eb = expected_trade(a0, 17, b0, 19)
+    a1, b1 = read_file(lg, 'BOS.V20'), read_file(lg, 'DET.V20')
+    assert (a1, b1) == (ea, eb)
+    assert (st['screen'], st['cursor'], st['msg']) == (cr.S_SLOT, 17, 'TRADE ACCEPTED')
+    assert st['image'] == a1
+    assert read_file(lg, TRADES_TXT) == b'TRADE 1 BOS Bo Bell DET Hal Hart\r\n'
+    # what moved: A's slot 17 holds Hart (both halves), B's slot 19 holds Bell
+    ro = lambda img, s: img[295 + 143 * s:295 + 143 * (s + 1)]       # noqa: E731
+    assert ro(a1, 17) == ro(b0, 19) and ro(a1, 57) == ro(b0, 59)
+    assert ro(b1, 19) == ro(a0, 17) and ro(b1, 59) == ro(a0, 57)
+    assert ro(a1, 17)[0:20].rstrip(b'\0') .startswith(b'Hart')
+    # the repair: A's lineup spot now holds the reserve 18, the reserve list holds 17;
+    # B's bench holds 21 and its reserves 19
+    assert a1[122] == 18 and a1[222] == 17
+    assert b1[194] == 21 and b1[222] == 19
+    # nothing else changed in either image beyond the slot pair and the header lists
+    for pre, post, s in ((a0, a1, 17), (b0, b1, 19)):
+        keep = [i for i in range(len(pre)) if not (295 + 143 * s <= i < 295 + 143 * (s + 1)
+                or 295 + 143 * (s + 40) <= i < 295 + 143 * (s + 41) or 111 <= i < 237)]
+        assert all(pre[i] == post[i] for i in keep)
+
+
+def test_c76_repair_leaves_unfillable_header_bytes(tmp_path):
+    """No reserve to replace the slot: repair leaves the lineup / bench bytes pointing at the
+    slot (now the other team's player), the trade is not refused, and the files equal the
+    rule's."""
+    lg = std_league(str(tmp_path / 'L'), a_hdr={122: 17, 158: 2, 194: 17},
+                    b_hdr={194: 19})
+    ctx = ctx_for(lg)
+    a0, b0 = read_file(lg, 'BOS.V20'), read_file(lg, 'DET.V20')
+    st, _ = walk(ctx, trade_keys(17, 19, tail=[Y_KEY]))
+    ea, eb = expected_trade(a0, 17, b0, 19)
+    assert st['msg'] == 'TRADE ACCEPTED'
+    assert (read_file(lg, 'BOS.V20'), read_file(lg, 'DET.V20')) == (ea, eb)
+    assert ea[122] == 17 and ea[194] == 17 and eb[194] == 19
+
+
+def test_c76_accept_pitcher_for_pitcher_moves_pairs(tmp_path):
+    a = _team(_pair(0, _pit('Dunn', 'Di', 40, 2)))
+    b = _team(_pair(0, _pit('Fry', 'Fo', 92, 10)), _pair(1, _pit('Gum', 'Gi', 86, 10)),
+              _pair(2, _pit('Hob', 'Hu', 80, 10)), _pair(5, _pit('Ing', 'Io', 40, 2)))
+    lg = trade_league(str(tmp_path / 'L'), a, b)
+    ctx = ctx_for(lg)
+    a0, b0 = read_file(lg, 'BOS.V20'), read_file(lg, 'DET.V20')
+    st, _ = walk(ctx, trade_keys(0, 5, tail=[ord('y')]))
+    assert st['msg'] == 'TRADE ACCEPTED' and st['cursor'] == 0
+    assert (read_file(lg, 'BOS.V20'), read_file(lg, 'DET.V20')) == expected_trade(a0, 0, b0, 5)
+    assert read_file(lg, TRADES_TXT) == b'TRADE 1 BOS Di Dunn DET Io Ing\r\n'
+
+
+def test_c76_declined_same_type(tmp_path):
+    """A pitcher for a batter, and a batter for a pitcher: SAME TYPE ONLY, wins even over
+    UNTOUCHABLE; nothing written, the state stays on S_TRADE_OFFER."""
+    b = dict(B_BATTERS)
+    b.update(_pair(0, _pit('Fry', 'Fo', 92, 10)))
+    lg = trade_league(str(tmp_path / 'L'), A_BATTERS, b)
+    ctx = ctx_for(lg)
+    before = snapshot(lg)
+    for give, get in ((0, 16), (0, 19), (16, 0), (17, 0)):      # B 16 and B pitcher 0 are top 3
+        st, _ = walk(ctx, trade_keys(give, get, tail=[Y_KEY]))
+        assert (st['screen'], st['msg']) == (cr.S_TRADE_OFFER, 'DECLINED: SAME TYPE ONLY')
+        assert snapshot(lg) == before
+        assert st['image'] == cr.read_v20(lg, 'BOS')
+    assert not os.path.exists(os.path.join(lg, TRADES_TXT))
+
+
+def test_c76_declined_untouchable_top3_ties_to_lower_slot(tmp_path):
+    """Y among B's 3 best batters by V: UNTOUCHABLE even for a far better X. With equal V ties
+    go to the lower slot: of four 50s, slots 16..18 are untouchable and 19 is not."""
+    a = _team(_pair(16, _bat('Axe', 'Al', 90)), _pair(17, _bat('Bell', 'Bo', 50)))
+    b = _team(*[_pair(16 + i, _bat('B%d' % i, 'X', 50)) for i in range(4)])
+    lg = trade_league(str(tmp_path / 'L'), a, b)
+    ctx = ctx_for(lg)
+    before = snapshot(lg)
+    for get in (0, 1, 2):
+        st, _ = walk(ctx, trade_keys(16, 16 + get, tail=[Y_KEY]))
+        assert st['msg'] == 'DECLINED: UNTOUCHABLE' and st['screen'] == cr.S_TRADE_OFFER
+        assert snapshot(lg) == before
+    assert cr.trade_top3(cr.read_v20(lg, 'DET'), False) == {16, 17, 18}
+    st, _ = walk(ctx, trade_keys(16, 19, tail=[Y_KEY]))
+    assert st['msg'] == 'TRADE ACCEPTED'
+
+
+def test_c76_top3_counts_only_named_slots_of_the_type():
+    """trade_top3 ranks by V then slot, over named slots of the type only."""
+    img = bytearray(IMAGE)
+    for slot, v in ((16, 10), (18, 30), (20, 30), (22, 20), (25, 5)):
+        img[295 + 143 * slot:295 + 143 * (slot + 1)] = _bat('N%d' % slot, 'A', v)
+    img[295:295 + 143] = _pit('Pit', 'A', 92, 10)
+    assert cr.trade_top3(bytes(img), False) == {18, 20, 22}
+    assert cr.trade_top3(bytes(img), True) == {0}
+
+
+def test_c76_declined_not_enough_value_band_edge(tmp_path):
+    """eff * 100 < V(Y) * 95 declines: V(Y) 40 takes X at 38 (3800 is not < 3800) and refuses 37."""
+    a = _team(_pair(16, _bat('Ok', 'A', 38)), _pair(17, _bat('Low', 'B', 37)))
+    lg = trade_league(str(tmp_path / 'L'), a, B_BATTERS)
+    ctx = ctx_for(lg)
+    before = snapshot(lg)
+    st, _ = walk(ctx, trade_keys(17, 19, tail=[Y_KEY]))
+    assert (st['screen'], st['msg']) == (cr.S_TRADE_OFFER, 'DECLINED: NOT ENOUGH VALUE')
+    assert snapshot(lg) == before and not os.path.exists(os.path.join(lg, TRADES_TXT))
+    st, _ = walk(ctx, trade_keys(16, 19, tail=[Y_KEY]))
+    assert (st['screen'], st['msg']) == (cr.S_SLOT, 'TRADE ACCEPTED')
+
+
+def test_c76_decline_message_clears_on_next_key(tmp_path):
+    a = _team(_pair(17, _bat('Low', 'B', 37)))
+    ctx = ctx_for(trade_league(str(tmp_path / 'L'), a, B_BATTERS))
+    st, _ = walk(ctx, trade_keys(17, 19, tail=[Y_KEY]))
+    assert st['msg'] == 'DECLINED: NOT ENOUGH VALUE'
+    for key in (ord('x'), Y_KEY):
+        st2, _ = walk(ctx, [key], st)
+        assert st2['msg'] == ('DECLINED: NOT ENOUGH VALUE' if key == Y_KEY else 0)
+    st3, _ = walk(ctx, [N_KEY], st)
+    assert (st3['screen'], st3['msg']) == (cr.S_TRADE_PICK, 0)
+
+
+def test_c76_need_bonus_accepts_what_value_alone_declines(tmp_path):
+    """B's batters are all 1B, so B's thinnest position is 1 (C: nobody). X plays C as a
+    second position: V(X) 36 + (36 * 32 >> 8 = 4) = 40 passes for V(Y) 40; the same X without
+    the C second position (V 36 alone) is declined."""
+    a = _team(_pair(16, _bat('Need', 'A', 36, pos2=1)), _pair(17, _bat('Plain', 'B', 36)),
+              _pair(18, _bat('Elbow', 'C', 36, pos2=3)))
+    lg = trade_league(str(tmp_path / 'L'), a, B_BATTERS)
+    ctx = ctx_for(lg)
+    assert cr.trade_need(cr.read_v20(lg, 'DET')) == 1
+    st, _ = walk(ctx, trade_keys(17, 19, tail=[Y_KEY]))
+    assert st['msg'] == 'DECLINED: NOT ENOUGH VALUE'
+    st, _ = walk(ctx, trade_keys(18, 19, tail=[Y_KEY]))
+    assert st['msg'] == 'DECLINED: NOT ENOUGH VALUE'            # second pos 3B: not the need
+    a1 = read_file(lg, 'BOS.V20')
+    st, _ = walk(ctx, trade_keys(16, 19, tail=[Y_KEY]))
+    assert st['msg'] == 'TRADE ACCEPTED'
+    assert read_file(lg, 'BOS.V20') != a1
+
+
+def test_c76_need_ties_to_lower_position(tmp_path):
+    """One B batter covers C: counts are C 1, 1B n, every other position 0, so the need is the
+    lowest of those, 3B (q 3); a group second position that covers 3B (IF, code 11) counts
+    as playing it, an OF one does not."""
+    b = dict(B_BATTERS)
+    b.update(_pair(22, _bat('Cat', 'Cy', 20, pos2=1)))
+    a = _team(_pair(16, _bat('Three', 'A', 36, pos2=3)), _pair(17, _bat('Four', 'B', 36, pos2=4)),
+              _pair(18, _bat('Inf', 'C', 36, pos2=11)), _pair(19, _bat('Out', 'D', 36, pos2=10)))
+    for give, ok in ((16, True), (17, False), (18, True), (19, False)):
+        lg = trade_league(str(tmp_path / ('L%d' % give)), a, b)       # a trade changes DET
+        ctx = ctx_for(lg)
+        assert cr.trade_need(cr.read_v20(lg, 'DET')) == 3
+        st, _ = walk(ctx, trade_keys(give, 19, tail=[Y_KEY]))
+        assert (st['msg'] == 'TRADE ACCEPTED') == ok, give
+
+
+def test_c76_need_ignores_pitchers_and_empty_slots():
+    img = bytearray(IMAGE)
+    # nobody named: every count 0, need 1
+    assert cr.trade_need(bytes(img)) == 1
+    # a named pitcher whose position byte says C does not count (slots 16..39 only)
+    img[295 + 143 * 3:295 + 143 * 4] = _rated('P', 'A', 28, 1)
+    assert cr.trade_need(bytes(img)) == 1
+    # catchers in two slots, nothing else: C count 2, 2B..RF 0, need 2
+    for slot in (16, 17):
+        img[295 + 143 * slot:295 + 143 * (slot + 1)] = _rated('C%d' % slot, 'A', 28, 1)
+    assert cr.trade_need(bytes(img)) == 2
+
+
+def pitcher_trade_league(d, n_sp, x_end, x_v=35):
+    """A: pitcher 0 (V x_v, endurance x_end). B: 3 SP pitchers (V 92 / 86 / 80), Y at slot 3
+    (V 40, endurance 2), an RP at 4 and n_sp - 3 more SP at slots 5.. (V 30, endurance 6);
+    B has n_sp SP in all."""
+    a = _team(_pair(0, _pit('Xan', 'Xi', x_v, x_end)))
+    b = _team(_pair(0, _pit('Fry', 'Fo', 92, 10)), _pair(1, _pit('Gum', 'Gi', 86, 10)),
+              _pair(2, _pit('Hob', 'Hu', 80, 10)), _pair(3, _pit('Why', 'Yo', 40, 2)),
+              _pair(4, _pit('Rel', 'Ri', 30, 0)),
+              *[_pair(5 + i, _pit('Sp%d' % i, 'S', 30, 6)) for i in range(n_sp - 3)])
+    return trade_league(d, a, b)
+
+
+def test_c76_pitcher_sp_bonus(tmp_path):
+    """An SP offered to a team with fewer than 5 named SP gets the bonus (35 + 4 = 39 passes
+    for V(Y) 40); with 5 named SP, or an RP offered, V 35 alone is declined."""
+    acc, no = 'TRADE ACCEPTED', 'DECLINED: NOT ENOUGH VALUE'
+    # (named SP in B, X endurance, V(X)): endurance 5 is an RP (the V values keep V - 2 end
+    # divisible by 3), endurance 6 the smallest SP
+    for n_sp, x_end, v, want in ((3, 7, 35, acc), (4, 7, 35, acc), (5, 7, 35, no),
+                                 (6, 7, 35, no), (3, 1, 35, no), (4, 5, 37, no),
+                                 (4, 6, 36, acc)):
+        lg = pitcher_trade_league(str(tmp_path / ('L%d_%d' % (n_sp, x_end))), n_sp, x_end, v)
+        ctx = ctx_for(lg)
+        st, _ = walk(ctx, trade_keys(0, 3, tail=[Y_KEY]))
+        assert st['msg'] == want, (n_sp, x_end)
+
+
+def test_c76_pitcher_untouchable_uses_pitcher_top3(tmp_path):
+    lg = pitcher_trade_league(str(tmp_path / 'L'), 4, 7)
+    ctx = ctx_for(lg)
+    for get in (0, 1, 2):
+        st, _ = walk(ctx, trade_keys(0, get, tail=[Y_KEY]))
+        assert st['msg'] == 'DECLINED: UNTOUCHABLE'
+
+
+def test_c76_value_helper_guards_bad_grade():
+    """A development grade byte past 5 reads as 0 instead of raising; 0..5 is rosters.value."""
+    rec = bytearray(_bat('Young', 'A', 40))
+    rec[20] = 21
+    for g in range(6):
+        rec[142] = g
+        assert cr._value(bytes(rec)) == rosters.value(bytes(rec))
+    base = rosters.value(bytes(rec[:142]) + b'\0')
+    for g in (6, 7, 200, 255):
+        rec[142] = g
+        with pytest.raises(IndexError):
+            rosters.value(bytes(rec))
+        assert cr._value(bytes(rec)) == base
+    rec[20] = 30
+    rec[142] = 200
+    assert cr._value(bytes(rec)) == rosters.value(bytes(rec))
+
+
+def test_c76_season_from_history(tmp_path):
+    lg = std_league(str(tmp_path / 'L'))
+    h = bytearray(32)
+    h[4], h[5] = 44, 1                       # 300 seasons recorded
+    open(os.path.join(lg, 'HISTORY.DAT'), 'wb').write(bytes(h))
+    ctx = ctx_for(lg)
+    walk(ctx, trade_keys(17, 19, tail=[Y_KEY]))
+    assert read_file(lg, TRADES_TXT) == b'TRADE 301 BOS Bo Bell DET Hal Hart\r\n'
+    assert cr.trade_season(lg) == 301
+
+
+def test_c76_season_without_or_with_bad_history(tmp_path):
+    lg = std_league(str(tmp_path / 'L'))
+    assert cr.trade_season(lg) == 1                                   # missing
+    open(os.path.join(lg, 'HISTORY.DAT'), 'wb').write(b'')
+    assert cr.trade_season(lg) == 1                                   # empty
+    open(os.path.join(lg, 'HISTORY.DAT'), 'wb').write(bytes([1, 2, 3]))
+    assert cr.trade_season(lg) == 1                                   # shorter than the header
+    open(os.path.join(lg, 'HISTORY.DAT'), 'wb').write(bytes([0, 0, 0, 0, 7, 0]))
+    assert cr.trade_season(lg) == 8                                   # six bytes are enough
+    os.remove(os.path.join(lg, 'HISTORY.DAT'))
+    os.mkdir(os.path.join(lg, 'HISTORY.DAT'))
+    assert cr.trade_season(lg) == 1                                   # unreadable
+    lg2 = std_league(str(tmp_path / 'M'))
+    walk(ctx_for(lg2), trade_keys(17, 19, tail=[Y_KEY]))
+    assert read_file(lg2, TRADES_TXT).startswith(b'TRADE 1 BOS ')
+
+
+def test_c76_trades_txt_appended_not_rewritten(tmp_path):
+    """An existing TRADES.TXT keeps its bytes (even without a final newline) and gets the new
+    CRLF line; a second trade appends again, in order."""
+    lg = std_league(str(tmp_path / 'L'))
+    old = b'TRADE 3 AAA Old One BBB Old Two\r\nTRADE 3 CCC x DDD y'
+    open(os.path.join(lg, TRADES_TXT), 'wb').write(old)
+    h = bytearray(32)
+    h[4] = 3
+    open(os.path.join(lg, 'HISTORY.DAT'), 'wb').write(bytes(h))
+    ctx = ctx_for(lg)
+    st, _ = walk(ctx, trade_keys(17, 19, tail=[Y_KEY]))
+    first = b'TRADE 4 BOS Bo Bell DET Hal Hart\r\n'
+    assert read_file(lg, TRADES_TXT) == old + first
+    # second trade from the new state (cursor on slot 17): A's slot 18 for B's slot 21
+    st, _ = walk(ctx, [DOWN, T_KEY, ENTER] + [DOWN] * 21 + [ENTER, Y_KEY], st)
+    assert st['msg'] == 'TRADE ACCEPTED'
+    assert read_file(lg, TRADES_TXT) == old + first + b'TRADE 4 BOS Cy Cobb DET Jo Jay\r\n'
+
+
+def test_c76_second_trade_appends_a_line(tmp_path):
+    """A's slot 16 (Axe, V40) for B's slot 19 (V40) and then, from the updated state, A's slot
+    18 (Cobb V30) for B's slot 21 (Jay V30): two lines in order, three file writes each."""
+    lg = std_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    st, _ = walk(ctx, trade_keys(16, 19, tail=[Y_KEY]))
+    assert st['msg'] == 'TRADE ACCEPTED' and st['cursor'] == 16
+    keys = [DOWN, DOWN, T_KEY, ENTER] + [DOWN] * 21 + [ENTER, Y_KEY]
+    st, _ = walk(ctx, keys, st)
+    assert st['msg'] == 'TRADE ACCEPTED'
+    assert read_file(lg, TRADES_TXT) == (b'TRADE 1 BOS Al Axe DET Hal Hart\r\n'
+                                         b'TRADE 1 BOS Cy Cobb DET Jo Jay\r\n')
+    # the slot pairs follow the players: A slot 16 holds Hart, A slot 18 holds Jay
+    a = read_file(lg, 'BOS.V20')
+    assert cr.record(a, 16)[0:4] == b'Hart' and cr.record(a, 18)[0:3] == b'Jay'
+    b = read_file(lg, 'DET.V20')
+    assert cr.record(b, 19)[0:3] == b'Axe' and cr.record(b, 21)[0:4] == b'Cobb'
+
+
+def test_c76_state_after_accept(tmp_path):
+    lg = std_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    st, _ = walk(ctx, trade_keys(17, 19, tail=[Y_KEY]))
+    assert st['image'] == read_file(lg, 'BOS.V20')
+    assert cr._list_view(st, ctx)[2][17][1] == 'Hart, Hal'
+    # the next key clears the message and the slot list works as before
+    st2, _ = walk(ctx, [DOWN], st)
+    assert (st2['msg'], st2['screen'], st2['cursor']) == (0, cr.S_SLOT, 18)
+
+
+def test_c76_write_errors_say_trade_failed(tmp_path):
+    """TRADES.TXT unusable (a directory): both V20 files are written, msg TRADE FAILED."""
+    lg = std_league(str(tmp_path / 'L'))
+    os.mkdir(os.path.join(lg, TRADES_TXT))
+    a0, b0 = read_file(lg, 'BOS.V20'), read_file(lg, 'DET.V20')
+    st, _ = walk(ctx_for(lg), trade_keys(17, 19, tail=[Y_KEY]))
+    assert (st['screen'], st['cursor'], st['msg']) == (cr.S_SLOT, 17, 'TRADE FAILED')
+    assert (read_file(lg, 'BOS.V20'), read_file(lg, 'DET.V20')) == expected_trade(a0, 17, b0, 19)
+    assert st['image'] == read_file(lg, 'BOS.V20')
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason='root ignores file modes')
+@pytest.mark.parametrize('locked', ['BOS.V20', 'DET.V20'])
+def test_c76_v20_write_error_skips_trades_txt(tmp_path, locked):
+    """A read-only V20: TRADE FAILED, the other team's file is still written (best effort, no
+    rollback) and no TRADES.TXT line is added."""
+    lg = std_league(str(tmp_path / 'L'))
+    a0, b0 = read_file(lg, 'BOS.V20'), read_file(lg, 'DET.V20')
+    ctx = ctx_for(lg)
+    os.chmod(os.path.join(lg, locked), 0o444)
+    try:
+        st, _ = walk(ctx, trade_keys(17, 19, tail=[Y_KEY]))
+    finally:
+        os.chmod(os.path.join(lg, locked), 0o644)
+    ea, eb = expected_trade(a0, 17, b0, 19)
+    assert st['msg'] == 'TRADE FAILED' and st['screen'] == cr.S_SLOT
+    assert read_file(lg, 'BOS.V20') == (a0 if locked == 'BOS.V20' else ea)
+    assert read_file(lg, 'DET.V20') == (b0 if locked == 'DET.V20' else eb)
+    assert not os.path.exists(os.path.join(lg, TRADES_TXT))
+
+
+def test_c76_trade_with_each_other_team(tmp_path):
+    """Any other team can be B: A = BOS trades with CHI (list row 2) and the CHI file changes."""
+    chi = _team(_pair(16, _bat('Cub', 'Cy', 70)), _pair(17, _bat('Bear', 'Bo', 66)),
+                _pair(18, _bat('Lion', 'Li', 62)), _pair(19, _bat('Wolf', 'Wi', 40)))
+    lg = make_league(str(tmp_path / 'L'), recs={0: A_BATTERS, 2: {}, 15: {}, 16: chi, 17: {}})
+    ctx = ctx_for(lg)
+    a0, c0 = read_file(lg, 'BOS.V20'), read_file(lg, 'CHI.V20')
+    st, _ = walk(ctx, trade_keys(17, 19, b=2, tail=[Y_KEY]))
+    assert st['msg'] == 'TRADE ACCEPTED'
+    assert (read_file(lg, 'BOS.V20'), read_file(lg, 'CHI.V20')) == expected_trade(a0, 17, c0, 19)
+    assert read_file(lg, TRADES_TXT) == b'TRADE 1 BOS Bo Bell CHI Wi Wolf\r\n'
+    assert read_file(lg, 'DET.V20') == cr.read_v20(lg, 'DET')
+
+
+def test_c76_pname_strip_matches_rosters_pname():
+    """trade lines use rosters.pname: an empty first name gives the last name alone."""
+    rec = _rated('Solo', '', 28, 2)
+    assert rosters.pname(rec) == 'Solo'
+
+
+def test_c76_every_key_on_every_screen(tmp_path):
+    """The all-keys walk of test_every_key_on_every_screen with the three trade screens
+    added: every state stays on a known screen (0..8)."""
+    lg = std_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg, make_anms(str(tmp_path / 'A')))
+    starts = [cr.start_state(), to_slot(ctx, 0), walk(ctx, slot_keys(17) + [T_KEY])[0],
+              walk(ctx, slot_keys(17) + [T_KEY, ENTER])[0], walk(ctx, trade_keys(17, 19))[0],
+              walk(ctx, trade_keys(17, 19, tail=[Y_KEY]))[0],
+              walk(ctx, trade_keys(16, 19, tail=[Y_KEY]))[0]]
+    seen = set()
+    for s in starts:
+        seen.add(s['screen'])
+        for k in ALL_KEYS:
+            st2, ex = cr.step(s, k, ctx)
+            assert isinstance(ex, bool)
+            assert st2['screen'] in range(9)
+            seen.add(st2['screen'])
+    assert {cr.S_TRADE_TEAM, cr.S_TRADE_PICK, cr.S_TRADE_OFFER} <= seen
+
+
+def test_c76_screen_numbers_and_texts():
+    assert (cr.S_TRADE_TEAM, cr.S_TRADE_PICK, cr.S_TRADE_OFFER) == (6, 7, 8)
+    assert cr.FOOT_TRADE_OFFER == 'Y PROPOSE   N ESC BACK'
+    assert cr.MSG_TRADE == ('DECLINED: SAME TYPE ONLY', 'DECLINED: UNTOUCHABLE',
+                            'DECLINED: NOT ENOUGH VALUE', 'TRADE ACCEPTED', 'TRADE FAILED')
+    for f in (cr.FOOT_TRADE_TEAM, cr.FOOT_TRADE_PICK, cr.FOOT_TRADE_OFFER):
+        assert len(f) <= 44
+
+
+def _c76_fonts(d):
+    os.makedirs(d, exist_ok=True)
+    for leaf, rows in (('MAIN.FNT', 7), ('BOLD.FNT', 8)):
+        buf = bytearray(struct.pack('<H', 95))
+        for g in range(95):
+            buf += bytes((rows, 7, 7)) + bytes(((g * 29 + r * 13) % 127) << 1 for r in range(rows))
+        open(os.path.join(d, leaf), 'wb').write(bytes(buf))
+    return d
+
+
+def test_c76_render_trade_screens_and_message_footer(tmp_path):
+    """Every trade screen renders; on the offer screen a decline message and on the slot list
+    TRADE ACCEPTED replace the footer text (the footer row's pixels change, nothing above)."""
+    lg = std_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg, fonts=dynview.load_fonts(_c76_fonts(str(tmp_path / 'F'))))
+    states = [walk(ctx, slot_keys(17) + [T_KEY])[0], walk(ctx, slot_keys(17) + [T_KEY, ENTER])[0],
+              walk(ctx, trade_keys(17, 19))[0]]
+    frames = [bytes(cr.render(s, ctx)) for s in states]
+    assert len(set(frames)) == 3 and all(len(f) == 64000 for f in frames)
+    offer = states[2]
+    quiet = bytes(cr.render(offer, ctx))
+    loud = bytes(cr.render(dict(offer, msg='DECLINED: UNTOUCHABLE'), ctx))
+    assert quiet != loud and quiet[:185 * 320] == loud[:185 * 320]
+    acc, _ = walk(ctx, trade_keys(17, 19, tail=[Y_KEY]))
+    plain = bytes(cr.render(dict(acc, msg=0), ctx))
+    msg = bytes(cr.render(acc, ctx))
+    assert plain != msg and plain[:185 * 320] == msg[:185 * 320]
