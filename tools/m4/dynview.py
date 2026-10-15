@@ -1680,11 +1680,7 @@ def series_rows(hist, ms, teams, season, stems=None, mask=0):
             name = '*' + name
         return name
 
-    games = []
-    for g in range(SERIES_GAMES):
-        game = first_record(ms, season, SERIES_GAME_KIND + g)
-        if game is not None:
-            games.append((g, game, first_record(ms, season, SERIES_HE_KIND + g)))
+    games = series_played(ms, season)
     if not games:
         return [('NO WORLD SERIES RECORDED',)]
     out = []
@@ -1715,17 +1711,28 @@ def series_rows(hist, ms, teams, season, stems=None, mask=0):
     return out
 
 
+def series_played(ms, season):
+    """[(g, game, he)] of the season's WORLD SERIES games, g ascending: the kind 192 + g
+    record and the kind 200 + g record (None without one). The one walk series_rows and
+    series_games share (C64)."""
+    games = []
+    for g in range(SERIES_GAMES):
+        game = first_record(ms, season, SERIES_GAME_KIND + g)
+        if game is not None:
+            games.append((g, game, first_record(ms, season, SERIES_HE_KIND + g)))
+    return games
+
+
 def series_games(hist, ms, season):
     """The game number of each series_rows row of season (C64): 0-based g on the header,
     visitor and home rows of game g, None on the summary row and the message row. The
     same walk as series_rows, so the two can never drift."""
     if season > history.SEASON_COUNT:
         return [None]
-    games = [g for g in range(SERIES_GAMES)
-             if first_record(ms, season, SERIES_GAME_KIND + g) is not None]
+    games = series_played(ms, season)
     if not games:
         return [None]
-    return [g for g in games for _ in range(3)] + [None]
+    return [g for g, _game, _he in games for _ in range(3)] + [None]
 
 
 def series_body(state, data):
