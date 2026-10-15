@@ -615,6 +615,13 @@ class TestInstallLeague:
             dynasty_gate.install_league(str(lg), str(src))
         assert (lg / 'CLASSIC.MAJ').read_bytes() == b'old'
 
+    def test_accepts_expansion_v20_named_by_the_maj(self, tmp_path):
+        lg, src = self._dirs(tmp_path)
+        (src / 'CLASSIC.MAJ').write_bytes(b'xx clasnle8\0 yy')
+        (src / 'CLASNLE8.V20').write_bytes(b'mil')
+        assert 'CLASNLE8.V20' in dynasty_gate.install_league(str(lg), str(src))
+        assert (lg / 'CLASNLE8.V20').read_bytes() == b'mil'
+
     def test_refuses_empty_src(self, tmp_path):
         import pytest
         lg, src = self._dirs(tmp_path)
