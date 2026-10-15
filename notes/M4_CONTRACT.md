@@ -1415,3 +1415,29 @@ the same framebuffers.
   whole-file buffer); the sums are 32-bit integers; the sums are cached per entry and
   recomputed only when the entry changes. Host builds with the gcc command in
   tools/m4/dynview_c/build_dynview.py (-Werror clean); DYNVIEW.EXE is untouched.
+
+## C36. Lahman prior careers (added 2026-10-14)
+
+tools/lahman/build_season.py writes HISTORY.DAT into the built league dir (seed_history, after
+build_league, before rosters.refresh_allstars). Header: version 1, seasons_recorded 0, start_year
+= the built YEAR (bytes 18..19, C13.1), everything else as History(None) gives. One entry per
+placed player (team_list(YEAR) order, then record index ascending) who has at least one Lahman
+batting or pitching row with yearID < YEAR; a second player with the same (name, birth) identity
+is skipped. Entry fields:
+
+- name = the placed V20 record's bytes 0..19 as written; birth = 1001 - the record's age; age =
+  the record's age; status 1 (STATUS_ACTIVE); first_season 1; last_season 0; pos1 = the record's
+  pos1 & 15; pitcher = 1 iff pos1 == 0.
+- seasons_played = the number of distinct yearID < YEAR over that player's batting and pitching
+  rows.
+- totals (all yearID < YEAR, NULL counts as 0): batting G AB H 2B 3B HR R RBI BB SO SB CS; E =
+  the fielding E sums; pitching W L SV GS CG SHO, OUTS = IPouts, ER, PH = H, PBB = BB, PSO = SO,
+  PHR = HR.
+- awards = the awardsplayers counts with yearID < YEAR of 'Most Valuable Player', 'Cy Young
+  Award', 'Rookie of the Year', 'Gold Glove', 'Silver Slugger', in that order, each capped at 255.
+- WAR10 0, top7 [-32768] * 7, JAWS10 0, hof_season 0.
+
+This amends C2: "careers count dynasty seasons only" still holds for WAR10, top7 and JAWS10,
+but a Lahman league's career totals, seasons_played and award counts start from the real career
+before YEAR. The identity matches C2's (name bytes 0..19, birth = 1000 + season_no - age) at
+season_no 1, so the dynasty continues the seeded entry instead of appending a new zero one.

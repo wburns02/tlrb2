@@ -15,6 +15,7 @@ if _TOOLS not in sys.path:
 import build_season                                              # noqa: E402
 import ratings                                                   # noqa: E402
 import v20                                                       # noqa: E402
+from m4 import history                                           # noqa: E402
 
 DB = '/mnt/nvme/tlrb2/lahman/lahmansbaseballdb.sqlite'
 TEMPLATE = '/mnt/nvme/tlrb2/hist/template/CLASSIC'
@@ -50,7 +51,7 @@ def named_batters(t):
 
 
 def test_files_and_alignment(league):
-    assert sorted(os.listdir(TEMPLATE)) == sorted(os.listdir(league))
+    assert sorted(os.listdir(TEMPLATE) + ['HISTORY.DAT']) == sorted(os.listdir(league))
     for stem, _ in BUILT:
         with open(os.path.join(TEMPLATE, stem.upper() + '.V20'), 'rb') as f:
             s = f.read()
@@ -306,6 +307,246 @@ def test_allstars_from_built_rosters(league):
         assert not stale, (name, stale[:3])
 
 
+def _hist_and_found(league):
+    """HISTORY.DAT and {(identity): (record bytes, pos1)} of the placed records,
+    identity = (name bytes 0..19, birth = 1001 - age)."""
+    with open(os.path.join(str(league), 'HISTORY.DAT'), 'rb') as f:
+        h = history.History(f.read())
+    found = {}
+    for stem, _ in BUILT:
+        t = v20.Team.load(team_path(league, stem))
+        for i in range(40):
+            r = t.players[i].raw
+            if not r[0]:
+                continue
+            found.setdefault((bytes(r[0:20]), 1001 - r[0x14]),
+                             (bytes(r), r[31] & 15))
+    return h, found
+
+
+def _match_pid(c, name20):
+    """The Lahman playerID with a YEAR row whose folded nameLast[:11]/nameFirst[:7]
+    match the V20 record's name bytes 0..19, or None when not decisive."""
+    last = build_season.fold(bytes(name20[0:12]).split(b'\x00')[0].decode('latin-1')).upper()
+    first = build_season.fold(bytes(name20[12:20]).split(b'\x00')[0].decode('latin-1')).upper()
+    if not last:
+        return None
+    cands = c.execute('select playerID, nameLast, nameFirst from people'
+                      ' where playerID in (select playerID from batting where yearID=?'
+                      ' union select playerID from pitching where yearID=?)',
+                      (YEAR, YEAR)).fetchall()
+    pids = {r[0] for r in cands
+            if build_season.fold(r[1] or '')[:11].upper() == last
+            and build_season.fold(r[2] or '')[:7].upper() == first}
+    return pids.pop() if len(pids) == 1 else None
+
+
+def _career_years(c, pid):
+    """Distinct pre-1985 yearIDs over the player's batting and pitching rows."""
+    return {y for (y,) in c.execute(
+        'select yearID from batting where playerID=? and yearID<?'
+        ' union select yearID from pitching where playerID=? and yearID<?',
+        (pid, YEAR, pid, YEAR))}
+
+
+def _db_totals(c, pid):
+    """The pre-1985 totals in history.TOTALS order, NULL as 0 (C36 rule 3)."""
+    t = [0] * 25
+    for tab, cols, base in (
+            ('batting', ('G', 'AB', 'H', '2B', '3B', 'HR', 'R', 'RBI', 'BB', 'SO',
+                         'SB', 'CS'), 0),
+            ('fielding', ('E',), 12),
+            ('pitching', ('W', 'L', 'SV', 'GS', 'CG', 'SHO', 'IPouts', 'ER',
+                          'H', 'BB', 'SO', 'HR'), 13)):
+        sel = ', '.join('coalesce("%s", 0)' % x for x in cols)
+        for row in c.execute('select %s from %s where playerID=? and yearID<?' % (sel, tab),
+                             (pid, YEAR)):
+            for j, v in enumerate(row):
+                t[base + j] += v
+    return t
+
+
+def _db_awards(c, pid):
+    """Pre-1985 award counts (MVP, CY, ROY, GG, SS), each capped at 255."""
+    out = [0] * 5
+    for aid, n in c.execute('select awardID, count(*) from awardsplayers'
+                            ' where playerID=? and yearID<? group by awardID',
+                            (pid, YEAR)):
+        if aid in AWARD_NAMES:
+            out[AWARD_NAMES.index(aid)] += n
+    return [min(255, v) for v in out]
+
+
+AWARD_NAMES = ['Most Valuable Player', 'Cy Young Award', 'Rookie of the Year',
+               'Gold Glove', 'Silver Slugger']
+
+
+def test_history_header_and_identities(league):
+    with open(os.path.join(str(league), 'HISTORY.DAT'), 'rb') as f:
+        h = history.History(f.read())
+    assert h.version == 1
+    assert h.start_year == YEAR
+    assert h.seasons_recorded == 0
+    entries = [h.read_entry(i) for i in h.entries()]
+    idents = [(e['name'], e['birth']) for e in entries]
+    assert len(idents) == len(set(idents))              # a duplicated identity is skipped
+    placed = set(_hist_and_found(league)[1])
+    assert set(idents) <= placed                        # every entry is a placed record
+    for e in entries:
+        assert e['age'] == 1001 - e['birth']            # birth = 1001 - record age
+        assert e['status'] == history.STATUS_ACTIVE
+        assert e['first_season'] == 1 and e['last_season'] == 0
+        if e['pitcher'] == 1:
+            assert e['pos1'] == 0
+        assert e['WAR10'] == 0 and e['JAWS10'] == 0 and e['hof_season'] == 0
+        assert e['top7'] == [history.EMPTY_TOP] * 7
+
+
+def test_history_count_totals_awards(league):
+    """Exactly the placed players with a pre-1985 row have entries; every entry matched
+    to the DB has seasons_played, totals and award counts equal to the DB sums."""
+    h, found = _hist_and_found(league)
+    c = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    want = set()
+    for ident in found:
+        pid = _match_pid(c, ident[0])
+        if pid and _career_years(c, pid):
+            want.add(ident)
+    got = [(h.read_entry(i)['name'], h.read_entry(i)['birth']) for i in h.entries()]
+    assert len(got) == len(set(got))
+    assert set(got) <= set(found)
+    # a name shared by two YEAR players (two Mike Browns) is not decisive: compare the rest
+    decisive = {i for i in got if _match_pid(c, i[0]) is not None}
+    assert len(decisive) > 0.9 * len(got)
+    assert decisive == want, (len(want), sorted(want - decisive)[:3],
+                              sorted(decisive - want)[:3])
+    for i in h.entries():
+        e = h.read_entry(i)
+        pid = _match_pid(c, e['name'])
+        if pid is None:
+            continue
+        assert e['seasons_played'] == len(_career_years(c, pid)), (pid, e['name'])
+        assert e['totals'] == _db_totals(c, pid), (pid, e['name'])
+        assert e['awards'] == _db_awards(c, pid), (pid, e['name'])
+    c.close()
+
+
+def test_history_pete_rose(league):
+    """Spot check from the DB at test time: the placed 1985 CIN Pete Rose entry."""
+    c = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    h_sum, _n = c.execute('select sum(H), count(*) from batting'
+                          ' where playerID=? and yearID<?', ('rosepe01', YEAR)).fetchone()
+    years = {y for (y,) in c.execute(
+        'select yearID from batting where playerID=? and yearID<?'
+        ' union select yearID from pitching where playerID=? and yearID<?',
+        ('rosepe01', YEAR, 'rosepe01', YEAR))}
+    c.close()
+    # rosepe01 must be placed (1985 CIN, a real pre-1985 career)
+    conn = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    hist, found = _hist_and_found(league)
+    ident = next(i for i in found if _match_pid(conn, i[0]) == 'rosepe01')
+    conn.close()
+    e = next(hist.read_entry(i) for i in hist.entries()
+             if (hist.read_entry(i)['name'], hist.read_entry(i)['birth']) == ident)
+    assert e['pitcher'] == 0
+    assert e['totals'][2] == h_sum                     # H = DB sum of batting H
+    assert e['seasons_played'] == len(years)           # distinct pre-1985 years
+
+
+def test_history_pitcher(league):
+    """Spot check from the DB at test time: the placed pitcher with the most pre-1985 W."""
+    c = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    rows = c.execute('select playerID, sum(W), sum(IPouts), sum(SO) from pitching'
+                     ' where yearID<? group by playerID order by sum(W) desc',
+                     (YEAR,)).fetchall()
+    c.close()
+    hist, _found = _hist_and_found(league)
+    cc = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    by_pid = {}
+    for i in hist.entries():
+        e = hist.read_entry(i)
+        pid = _match_pid(cc, e['name'])
+        if pid is not None:
+            by_pid[pid] = i
+    c.close()
+    for pid, w, outs, so in rows:
+        if pid in by_pid:
+            e = hist.read_entry(by_pid[pid])
+            assert e['pitcher'] == 1
+            assert e['totals'][13] == w                # W
+            assert e['totals'][19] == outs             # OUTS = IPouts
+            assert e['totals'][23] == so               # PSO = SO
+            return
+    pytest.fail('no pre-1985 pitching leader placed in 1985')
+
+
+def test_history_mvp_award(league):
+    """Spot check from the DB at test time: a placed player with a pre-1985 MVP, his MVP
+    count equals the DB count."""
+    c = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    rows = c.execute('select playerID, count(*) from awardsplayers where yearID<?'
+                     ' and awardID=? group by playerID', (YEAR, 'Most Valuable Player')
+                     ).fetchall()
+    hist, _found = _hist_and_found(league)
+    cc = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    by_pid = {}
+    for i in hist.entries():
+        pid = _match_pid(cc, hist.read_entry(i)['name'])
+        if pid is not None:
+            by_pid[pid] = i
+    c.close()
+    for pid, n in rows:
+        if pid in by_pid:
+            e = hist.read_entry(by_pid[pid])
+            assert e['awards'][0] == n
+            return
+    pytest.fail('no pre-1985 MVP winner placed in 1985')
+
+
+def test_history_rookie_no_entry(league):
+    """A placed rookie with no pre-YEAR row has no entry."""
+    c = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    hist, found = _hist_and_found(league)
+    got = {(hist.read_entry(i)['name'], hist.read_entry(i)['birth'])
+           for i in hist.entries()}
+    checked = 0
+    for ident in found:
+        pid = _match_pid(c, ident[0])
+        if pid and not _career_years(c, pid):
+            checked += 1
+            assert ident not in got, ident
+    c.close()
+    assert checked, 'no placed rookie found'
+
+
+@pytest.fixture(scope='module')
+def league_nohist(tmp_path_factory):
+    """A 1985 build with seed_history replaced by a no-op."""
+    out = tmp_path_factory.mktemp('league') / 'hist1985_nohist'
+    orig = build_season.seed_history
+    build_season.seed_history = lambda *a, **k: None
+    try:
+        rc = build_season.main(['build_season.py', str(YEAR), str(out)])
+        assert rc == 0, out
+        return out
+    finally:
+        build_season.seed_history = orig
+
+
+def test_v20_maj_unchanged_without_seed(league, league_nohist):
+    """Every non-HISTORY file of a normal build equals the seeded-out build: V20, MAJ,
+    the template files kept as-is, byte for byte."""
+    assert sorted(os.listdir(league)) == sorted(os.listdir(league_nohist) + ['HISTORY.DAT'])
+    for f in sorted(os.listdir(league)):
+        if f.upper() == 'HISTORY.DAT':
+            continue
+        with open(os.path.join(str(league), f), 'rb') as fa:
+            a = fa.read()
+        with open(os.path.join(str(league_nohist), f), 'rb') as fb:
+            b = fb.read()
+        assert a == b, f
+
+
 def test_team_lists():
     old = build_season.team_list(1985)
     assert len(old) == 26
@@ -426,7 +667,7 @@ def test_1993_files_and_teamids(league93):
         assert (stem.upper() + '.V20') in names, stem
     assert names.count('ALLSTAR1.V20') == 1 and names.count('ALLSTAR2.V20') == 1
     assert names.count('CLASSIC.MAJ') == 1
-    assert len(names) == len(os.listdir(TEMPLATE)) + 2          # 28 V20 + ALLSTAR1/2 + MAJ
+    assert len(names) == len(os.listdir(TEMPLATE)) + 3          # 28 V20 + ALLSTAR1/2 + MAJ + HISTORY.DAT
     assert len(build_season.team_list(1993)) == 28
     import m4.teamids as teamids
     teams = teamids.maj_teams(open(os.path.join(str(league93), 'CLASSIC.MAJ'), 'rb').read())
