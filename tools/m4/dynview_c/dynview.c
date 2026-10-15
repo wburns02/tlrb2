@@ -83,13 +83,20 @@
 #define SCREEN_PLAYOFFS 14
 #define SCREEN_PBOX 15
 #define SCREEN_AWHIST 16
-/* LEADERS modes (C13.3): the state cat is mode * MODE_SHIFT + category index */
+/* LEADERS modes (C13.3, C39): the state cat is mode * MODE_SHIFT + category index */
 #define MODE_CAREER 0
 #define MODE_SEASON 1
 #define MODE_BYYEAR 2
+#define MODE_POST 3
 #define MODE_SHIFT 32
 #define N_CAREER_CATS 18
 #define N_SEASON_CATS 17
+#define N_POST_CATS 7
+/* POSTSEASON leaders (C39): the top POST_MAX over BOXSCORE.DAT player rows of
+ * entries below POST_ENTRY_MAX */
+#define POST_MAX 50
+#define POST_ENTRY_MAX 4096
+#define NO_POST_TEXT "NO POSTSEASON GAMES RECORDED YET."
 /* SEASON and BY YEAR leaders keep the top SEASON_MAX lines */
 #define SEASON_MAX 50
 #define NO_LINES_TEXT "NO SEASON LINES RECORDED YET."
@@ -432,6 +439,29 @@ static int g_post_games, g_post_pairs;
 static uint32_t FARDATA g_post_tot[NUM_TOT];
 static uint32_t FARDATA g_post_pair[POST_PAIR_MAX];   /* (season << 8) | g, each once */
 
+/* C39 POSTSEASON LEADERS: the totals of every entry below POST_ENTRY_MAX with at
+ * least one player row, in ONE pass over BOXSCORE.DAT, cached like the other scans
+ * (g_post_cache; POST_CACHE_NONE is none yet). g_post_acc holds one PostAcc per
+ * entry: g the distinct games (the value of the G category), the six nonzero stat
+ * sums of the POST_CATS value indexes, and the last counted (season, g) key (the
+ * records of a game are contiguous, so a differing key is a first record). The top
+ * POST_MAX in post order (value descending, entry ascending) live in g_post_top. */
+#define POST_CACHE_NONE (-2)
+static int32_t g_post_cache = POST_CACHE_NONE;
+typedef struct {
+    uint32_t val;                     /* the scanned category's sum (G: unused) */
+    uint16_t g, last_season;          /* games; the last counted key's season */
+    uint8_t last_g, has_last;         /* the last counted key's box g byte */
+} PostAcc;                            /* 12 B x POST_ENTRY_MAX fits one far segment */
+static PostAcc FARDATA g_post_acc[POST_ENTRY_MAX];
+static int g_post_n;                  /* entries now in g_post_top */
+/* one top item: value descending, entry ascending (C39) */
+typedef struct {
+    uint32_t val;
+    uint16_t entry, games;
+} PostItem;
+static PostItem FARDATA g_post_top[POST_MAX];
+
 /* portrait pixels of the PLAYER CARD (48 x 56) */
 static uint8_t FARDATA g_portrait[PORTRAIT_W * PORTRAIT_H];
 
@@ -611,6 +641,12 @@ static const CatDef SEASON_CATS[N_SEASON_CATS] = {
     { "WAR", CK_WAR, 0 }, { "W", CK_COUNT, 13 }, { "ERA", CK_ERA, 0 },
     { "SO", CK_COUNT, 23 }, { "SV", CK_COUNT, 15 }, { "IP", CK_IP, 19 },
     { "CG", CK_COUNT, 17 }, { "SHO", CK_COUNT, 18 } };
+/* POSTSEASON categories (C39, dynview.POST_CATS), over the BOXSCORE.DAT player rows
+ * (C26 sums): the value index is the TOTALS index, 0 = G = the distinct game count */
+static const CatDef POST_CATS[N_POST_CATS] = {
+    { "G", CK_COUNT, 0 }, { "H", CK_COUNT, 2 }, { "HR", CK_COUNT, 5 },
+    { "RBI", CK_COUNT, 7 }, { "SB", CK_COUNT, 10 }, { "SO", CK_COUNT, 23 },
+    { "IP", CK_IP, 19 } };
 /* the position names of the PLAYER CARD (dynview.POS_NAMES) and the bats code (byte 29 bits 2..1) */
 static const char *POS_NAMES[16] = {
     "P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH", "OF", "IF",
@@ -638,6 +674,8 @@ static void box_set(Row *row, const char *c0, const char *c1, const char *c2,
                     const char *c3, const char *c4, const char *c5, const char *c6);
 static void box_rec_row(Row *row, const BoxRec *r, int pitch);
 static int leaders_body(State st, int page, const ColDef **cols);
+static int post_scan(const CatDef *c);
+static int build_post_rows(const CatDef *c, int page);
 /* ---- helpers ---- */
 
 /* signed division truncating toward zero == C99 / (x86 idiv) */
@@ -2484,6 +2522,101 @@ static int post_totals(int32_t entry)
     return g_post_games;
 }
 
+/* insert one entry into the top POST_MAX in post order (C39): value descending,
+ * then entry ascending */
+static void post_top_add(uint32_t val, uint16_t entry, uint32_t games)
+{
+    int i;
+    if (g_post_n == POST_MAX && (val < g_post_top[POST_MAX - 1].val
+                                 || (val == g_post_top[POST_MAX - 1].val
+                                     && entry > g_post_top[POST_MAX - 1].entry)))
+        return;
+    i = g_post_n < POST_MAX ? g_post_n : POST_MAX - 1;
+    while (i > 0 && (val > g_post_top[i - 1].val
+                     || (val == g_post_top[i - 1].val
+                         && entry < g_post_top[i - 1].entry))) {
+        g_post_top[i] = g_post_top[i - 1];
+        i--;
+    }
+    g_post_top[i].val = val;
+    g_post_top[i].entry = entry;
+    g_post_top[i].games = (uint16_t)(games > 0xffffu ? 0xffffu : games);
+    if (g_post_n < POST_MAX)
+        g_post_n++;
+}
+
+/* POSTSEASON LEADERS of cat (C39, dynview.post_order): ONE pass over BOXSCORE.DAT
+ * into the per-entry accumulators (games through the entry's last counted (season, g)
+ * key, the records of one game being contiguous), then the top POST_MAX into
+ * g_post_top. The scan is cached like the other scans; DYNVIEW writes no
+ * BOXSCORE.DAT, so there is nothing else to invalidate. */
+static int post_scan(const CatDef *c)
+{
+    char path[600];
+    FILE *f;
+    uint8_t rb[16];
+    int vi = c->idx, k;
+    if (g_post_cache == vi)
+        return g_post_n;
+    memset(g_post_acc, 0, sizeof g_post_acc);
+    g_post_n = 0;
+    path_join(path, g_lgdir, "BOXSCORE.DAT");
+    f = fopen(path, "rb");
+    if (f) {
+        while (fread(rb, 1, sizeof rb, f) == sizeof rb) {
+            uint16_t season = (uint16_t)(rb[0] | ((uint16_t)rb[1] << 8));
+            uint16_t idx = (uint16_t)(rb[4] | ((uint16_t)rb[5] << 8));
+            uint8_t flags = rb[3];
+            PostAcc *a;
+            const uint8_t *st;
+            if (idx >= POST_ENTRY_MAX || flags == 4)
+                continue;
+            a = &g_post_acc[idx];
+            /* a player row whose key differs from the entry's last counted one is the
+             * first record of another game (the records of a game are contiguous) */
+            if (!a->has_last || a->last_season != season || a->last_g != rb[2]) {
+                a->has_last = 1;
+                a->last_season = season;
+                a->last_g = rb[2];
+                a->g++;
+            }
+            st = rb + 8;
+            if (flags & 2) {
+                if (vi == 19)
+                    a->val += 3u * ((uint32_t)st[0] / 10u) + (uint32_t)(st[0] % 10);
+                else if (vi == 23)
+                    a->val += st[6];
+            } else if (vi == 2) {
+                a->val += st[2];
+            } else if (vi == 7) {
+                a->val += st[3];
+            } else if (vi == 5) {
+                a->val += st[4];
+            } else if (vi == 10) {
+                a->val += st[7];
+            }
+        }
+        fclose(f);
+    }
+    g_post_cache = vi;
+    /* the category's value index (TOTALS order): 0 G = the game count, 2 H, 5 HR,
+     * 7 RBI, 10 SB, 19 OUTS (IP), 23 PSO (SO); the other POST_CATS never reach here */
+    for (k = 0; k < POST_ENTRY_MAX; k++) {
+        PostAcc *a = &g_post_acc[k];
+        uint32_t val;
+        if (!a->has_last)
+            continue;
+        switch (vi) {
+        case 0: val = a->g; break;
+        case 2: case 5: case 7: case 10: case 19: case 23: val = a->val; break;
+        default: continue;                  /* not a POST_CATS index: no value */
+        }
+        if (val > 0)
+            post_top_add(val, (uint16_t)k, a->g);
+    }
+    return g_post_n;
+}
+
 /* the file WANT (upper case) of dir: DOS names are case-blind, the host finds it in any case;
  * NULL when there is none (dynview.find_upper) */
 static FILE *open_upper(const char *dir, const char *want)
@@ -3546,8 +3679,7 @@ static int build_hof_rows(int page)
 
 /* leaders row: rank (restarted per page), NAME, status mark, YRS, value */
 static int build_lead_rows(int cat, int page)
-{
-    const CatDef *c = &CAREER_CATS[cat];
+{    const CatDef *c = &CAREER_CATS[cat];
     int n = 0, k, r0 = page * ROWS_PER_PAGE, r;
     for (r = r0; r < g_leadl.n && r < (page + 1) * ROWS_PER_PAGE; r++, n++) {
         Entry e;
@@ -3562,6 +3694,35 @@ static int build_lead_rows(int cat, int page)
         g_rows[n].cells[2][1] = 0;
         sprintf(g_rows[n].cells[3], "%u", (unsigned)e.seasons_played);
         cat_format(c, cat_value(&e, c), val);
+        strcpy(g_rows[n].cells[4], val);
+    }
+    for (k = n; k < MAX_ROWS; k++)
+        g_rows[k].ncells = 0;
+    return n;
+}
+
+/* POSTSEASON LEADERS row of page from g_post_top (C39): rank, NAME, status mark, G
+ * (the entry's distinct postseason games), value */
+static int build_post_rows(const CatDef *c, int page)
+{
+    int n = 0, k, r0 = page * ROWS_PER_PAGE, r;
+    for (r = r0; r < g_post_n && r < (page + 1) * ROWS_PER_PAGE; r++, n++) {
+        Entry e;
+        char nm[NAME_CAP_MAX], val[24];
+        const PostItem *it = &g_post_top[r];
+        memset(&e, 0, sizeof e);
+        /* a BOXSCORE.DAT index past HISTORY.DAT's entries: name '?', no mark */
+        if (it->entry < g_entry_count)
+            read_entry(&e, it->entry);
+        g_rows[n].ncells = 5;
+        sprintf(g_rows[n].cells[0], "#%u", (unsigned)r + 1u);
+        name_display(e.name, 16, nm);
+        strcpy(g_rows[n].cells[1], nm[0] ? nm : "?");
+        g_rows[n].cells[2][0] = e.status == STATUS_RETIRED ? 'R'
+                              : (e.status == STATUS_HOF ? 'H' : ' ');
+        g_rows[n].cells[2][1] = 0;
+        sprintf(g_rows[n].cells[3], "%u", (unsigned)it->games);
+        cat_format(c, it->val, val);
         strcpy(g_rows[n].cells[4], val);
     }
     for (k = n; k < MAX_ROWS; k++)
@@ -4044,15 +4205,24 @@ static State mk_state(int screen, int page, int32_t cat)
     return s;
 }
 
-/* the category list of a LEADERS mode (dynview.leader_cats): CAREER, or SEASON for both season modes */
+/* the category list of a LEADERS mode (dynview.leader_cats): CAREER = CATS, SEASON and
+ * BY YEAR = SEASON_CATS, POST = POST_CATS */
 static const CatDef *leader_cats(int mode)
 {
-    return mode == MODE_CAREER ? CAREER_CATS : SEASON_CATS;
+    if (mode == MODE_CAREER)
+        return CAREER_CATS;
+    if (mode == MODE_POST)
+        return POST_CATS;
+    return SEASON_CATS;
 }
 
 static int leader_ncats(int mode)
 {
-    return mode == MODE_CAREER ? N_CAREER_CATS : N_SEASON_CATS;
+    if (mode == MODE_CAREER)
+        return N_CAREER_CATS;
+    if (mode == MODE_POST)
+        return N_POST_CATS;
+    return N_SEASON_CATS;
 }
 
 /* the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode), SEASON AWARDS,
@@ -4120,6 +4290,10 @@ static int32_t row_entry(State st)
         if (mode == MODE_CAREER) {
             leaders_scan(&g_leadl, idx);
             return row < (int32_t)g_leadl.n ? (int32_t)g_leadl.idx[row] : -1;
+        }
+        if (mode == MODE_POST) {
+            int n = post_scan(&POST_CATS[idx]);
+            return row < n ? (int32_t)g_post_top[row].entry : -1;
         }
         season_scan(&SEASON_CATS[idx], mode == MODE_BYYEAR,
                     mode == MODE_BYYEAR ? leaders_year(st) : 0, &seen);
@@ -4483,10 +4657,11 @@ static State step(State in, int32_t key)
         int n = leader_ncats(mode);
         return mk_state(SCREEN_LEADERS, 0, mode * MODE_SHIFT + (idx + d + n) % n);
     }
-    /* TAB cycles the LEADERS mode CAREER -> SEASON -> BY YEAR; the category stays when the new
-     * mode has it (by label), else the first one. Entering BY YEAR picks the default season */
+    /* TAB cycles the LEADERS mode CAREER -> SEASON -> BY YEAR -> POSTSEASON; the category
+     * stays when the new mode has it (by label), else the first one. Entering BY YEAR picks
+     * the default season */
     if (s.screen == SCREEN_LEADERS && key == KEY_TAB) {
-        int mode = (int)(s.cat >> 5), idx = (int)(s.cat & 31), nmode = (mode + 1) % 3;
+        int mode = (int)(s.cat >> 5), idx = (int)(s.cat & 31), nmode = (mode + 1) % 4;
         const char *label = leader_cats(mode)[idx].label;
         int j, nidx = 0;
         State r;
@@ -4613,6 +4788,11 @@ static const ColDef COLS_SEASON_LEADERS[] = {
     { "#", CX(0), 4, 0 }, { "NAME", CX(4), 16, 0 }, { "YEAR", CX(20), 5, 1 },
     { "TEAM", CX(25), 4, 1 }, { "VALUE", CX(29), 12, 1 } };
 
+/* POSTSEASON LEADERS (C39), the career table's shape with G for YRS */
+static const ColDef COLS_POST_LEADERS[] = {
+    { "#", CX(0), 5, 0 }, { "NAME", CX(5), 16, 0 }, { " ", CX(22), 1, 0 },
+    { "G", CX(23), 5, 1 }, { "VALUE", CX(28), 14, 1 } };
+
 /* PLAYER CARD season tables (C13.5): batters and pitchers */
 static const ColDef COLS_CARD_BAT[] = {
     { "YEAR", CX(0), 4, 0 }, { "TM", CX(4), 4, 1 }, { "G", CX(8), 4, 1 },
@@ -4660,6 +4840,8 @@ static int n_cols(const ColDef *cols)
         return NCOLS(COLS_BOX);
     if (cols == COLS_SEASON_LEADERS)
         return NCOLS(COLS_SEASON_LEADERS);
+    if (cols == COLS_POST_LEADERS)
+        return NCOLS(COLS_POST_LEADERS);
     if (cols == COLS_CARD_BAT)
         return NCOLS(COLS_CARD_BAT);
     if (cols == COLS_CARD_PIT)
@@ -4712,9 +4894,10 @@ static const ColDef *body_cols(State st)
     }
 }
 
-/* LEADERS (C13.3, dynview.leaders_body): the row count of st's mode and category; the rows of page
- * into g_rows (page < 0 counts only) and their columns into *cols. A season mode with no line of
- * the season (SEASON: no line at all) is one NO_LINES_TEXT row */
+/* LEADERS (C13.3, C39, dynview.leaders_body): the row count of st's mode and category; the rows
+ * of page into g_rows (page < 0 counts only) and their columns into *cols. A season mode with
+ * no line of the season (SEASON: no line at all) is one NO_LINES_TEXT row; POST with no item
+ * (value > 0) one NO_POST_TEXT row */
 static int leaders_body(State st, int page, const ColDef **cols)
 {
     int mode = (int)(st.cat >> 5), idx = (int)(st.cat & 31), seen = 0, n;
@@ -4726,6 +4909,18 @@ static int leaders_body(State st, int page, const ColDef **cols)
         if (page >= 0)
             build_lead_rows(idx, page);
         return (int)g_leadl.n;
+    }
+    if (mode == MODE_POST) {
+        c = &POST_CATS[idx];
+        n = post_scan(c);
+        if (n == 0) {
+            *cols = COLS_SINGLE;
+            return msg_row(page, NO_POST_TEXT);
+        }
+        *cols = COLS_POST_LEADERS;
+        if (page >= 0)
+            build_post_rows(c, page);
+        return n;
     }
     c = &SEASON_CATS[idx];
     n = season_scan(c, by_year, by_year ? leaders_year(st) : 0, &seen);
@@ -5105,6 +5300,9 @@ static void screen_title(State st, char *dst)
             strcat(dst, label);
         } else if (mode == MODE_SEASON) {
             strcpy(dst, "SEASON LEADERS: ");
+            strcat(dst, label);
+        } else if (mode == MODE_POST) {
+            strcpy(dst, "POSTSEASON LEADERS: ");
             strcat(dst, label);
         } else
             sprintf(dst, "%ld LEADERS: %s", (long)year_of(leaders_year(st)), label);

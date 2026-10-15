@@ -69,12 +69,14 @@ def _league_teams(d, L):
     return out
 
 
-def _divisions(teams_L, target, L):
-    """Three division lists (East, West, Central; Central empty with 2 divisions) of league L's team tuples."""
-    known = KNOWN[target][L]
-    if {_abbr(t[2]) for t in teams_L} == {a for div in known for a in div}:
+def _divisions(teams_L, target, L, known=None):
+    """Three division lists (East, West, Central; Central empty with 2 divisions) of league L's team tuples.
+    known, when given, replaces KNOWN[target] (known[L] per league, same set-equality check: a set that does
+    not match the league's abbreviations falls back to the generic rule)."""
+    table = KNOWN[target][L] if known is None else known[L]
+    if {_abbr(t[2]) for t in teams_L} == {a for div in table for a in div}:
         by = {_abbr(t[2]): t for t in teams_L}
-        out = [[by[a] for a in div] for div in known]
+        out = [[by[a] for a in div] for div in table]
     else:
         n = len(teams_L)
         if target == 3:
@@ -89,8 +91,9 @@ def _divisions(teams_L, target, L):
     return out + [[]] * (3 - len(out))
 
 
-def realign(d, target):
-    """-> (new_bytes, None), or (None, reason) when refused; d itself is never changed."""
+def realign(d, target, known=None):
+    """-> (new_bytes, None), or (None, reason) when refused; d itself is never changed. known, when given,
+    is a {league: division lists} table replacing KNOWN[target] (Python only; the C port takes none)."""
     assert target in (2, 3), target
     d = teamids.raw(d)
     if len(d) < MAJ_SIZE:
@@ -118,7 +121,7 @@ def realign(d, target):
             new[s + O_NAMES + 16 * slot:s + O_NAMES + 16 * slot + 16] = bytes(16)
             new[s + O_ABBR + 3 * slot:s + O_ABBR + 3 * slot + 3] = bytes(3)
             new[s + O_STEM + 8 * slot:s + O_STEM + 8 * slot + 8] = bytes(8)
-        for dv, lst in enumerate(_divisions(leagues[L], target, L)):
+        for dv, lst in enumerate(_divisions(leagues[L], target, L, known)):
             for i, (_slot, name, abbr, stem) in enumerate(lst):
                 slot = dv * 8 + i
                 new[s + O_NAMES + 16 * slot:s + O_NAMES + 16 * slot + 16] = name

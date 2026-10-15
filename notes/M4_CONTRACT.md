@@ -1534,6 +1534,105 @@ but a Lahman league's career totals, seasons_played and award counts start from 
 before YEAR. The identity matches C2's (name bytes 0..19, birth = 1000 + season_no - age) at
 season_no 1, so the dynasty continues the seeded entry instead of appending a new zero one.
 
+## C44. CREATE copy a player (added 2026-10-15)
+
+On the CREATE slot list (S_SLOT), key C (67 or 99) on a slot whose roster record
+byte 0 is nonzero opens the edit screen for that slot with the record's player
+copied into the form (create.copy_form, the C port's copy_form); st['slot'] =
+the cursor, cursor 0, exactly like ENTER. On an empty slot (byte 0 == 0) C does
+nothing: the state is unchanged. ENTER is unchanged (default_form). C on the
+team screen does nothing.
+
+copy_form(image, slot, ctx) decodes the record:
+
+- last: bytes 0..11 up to the first NUL, latin-1, characters not in NAME_CHARS
+  (letters plus space . ' -) dropped, then cut to LAST_MAX = 11; first: bytes
+  12..19 the same with FIRST_MAX = 7. The record's case is kept (only typed
+  names are upper-cased).
+- A pitcher slot (slot < 16): pos 0, pos2 = POS2_OF[0]. A batter: pos = the
+  pos1 nibble of byte 31 when 1..9 else 1; pos2 = the hi nibble when 1..15 else
+  POS2_OF[pos].
+- hands: the index in HANDS of (bats, throws) decoded from byte 29: bats nibble
+  (bits 2..1; the code 3 counts as R) and throws bit 3 (1 R, 0 L).
+- age: byte 20 clamped to 18..45.
+- r: each nibble of the slot kind's rating order (PITCHER_/BATTER_RATING_ORDER,
+  form order), 0 -> 1, above RATING_CAP = 12 -> 12.
+- face: the u16 at bytes 27..28 when it is in the FACE list (face < n, or
+  400 <= face < 400 + face_walk_len(n, c) - n), else default_form's face for
+  the slot (30 when n > 30, else 0).
+
+Saving after a copy goes through the normal save path (S_CONFIRM on an occupied
+slot, then C10 build_record), so the saved record is rebuilt from the form and
+the stat line is the implied one, not the player's history.
+
+Footer: FOOT_SLOT becomes 'UP DOWN  ENTER NEW  C COPY  ESC TEAMS'; every other
+footer is unchanged.
+
+C port: create.c gains copy_form with the same rules and the C branch in its
+step_slot; the host binary is rebuilt with gcc after the parity gate. The
+parity tests cover the new FOOT_SLOT frame, C on a pitcher, lowercase c on a
+batter, C on an empty slot, ENTER unchanged, C on the team screen, and C then
+a save with identical V20 bytes.
+
+## C38. Lahman 1994-1997, three divisions (added 2026-10-15)
+
+tools/lahman/build_season.py accepts 1977..1997 (YEAR_MAX 1997; 1998+ still exit 2). team_list is
+unchanged through 1996 (1993's 28 teams carry over); from 1997 the AL slot 8 team is Lahman 'ANA'.
+
+- 1994+ (realign_lahman, after seed_history and the All-Star rebuild): the league dir gains TEAMID.DAT
+  written from the pre-realignment MAJ by the C12.3 no-file rule, so every team's stable id is its
+  2-division engine id (AL slot, NL slot + 16); the ids survive the realignment unchanged.
+- The MAJ is written already realigned to 3 divisions (C12.5 layout) with the real Lahman alignment:
+  divID 'E'/'W'/'C' of the year's teams table, teams in team_list order inside each division, passed
+  to realign.realign as a Python-only known table. The known lists hold the MAJ's NUL-stripped
+  abbreviations; a franchise whose Lahman teamID changed in the 3-division era maps by
+  ML4->MIL, KCA->KC, SLN->SL, LAN->LA, SDN->SD, SFN->SF, and CAL->ANA in 1997. A teams-table row
+  without a divID is an error (exit 2). 0x20a = 0xf3, 0x20d = 3, counts 5/4/5 per league.
+- HISTORY.DAT byte 0 = 1 for 1994+ (rolled, next season not started): DYNASTY does not roll the 0xf3
+  MAJ; the player starts the season with START NEW SEASON > GENERATED (C12.6), and DYNASTY clears
+  byte 0 itself. 1993 and earlier keep byte 0 = 0 and no TEAMID.DAT.
+- 1997 also renames the clasalw1 team: V20 header name ANAHEIM / abbr ANA and the MAJ AL slot 8 name
+  (16 B NUL padded) and abbr; the roster is built from Lahman 'ANA' rows.
+- 1977..1993 output is byte-identical to the pre-C38 build (V20s, MAJ, HISTORY.DAT, no TEAMID.DAT).
+- realign.realign (Python only; the C port realign.h is unchanged and stays byte-identical to the
+  default path) gains an optional `known` argument: a {league: division lists} table replacing
+  KNOWN[target] with the same set-equality check (a set that does not match the league's
+  abbreviations falls back to the generic rule). known=None behaves exactly as today.
+
+## C39. LEADERS postseason mode (added 2026-10-15)
+
+LEADERS (SCREEN_LEADERS) gains mode 3, POSTSEASON: the career leaders summed from the
+BOXSCORE.DAT player rows (the C23b/C26 layout, rows with idx == entry and flags != 4).
+Reads only; writes nothing. Python tools/m4/dynview.py is the reference; the C port
+dynview_c/dynview.c renders the same framebuffers and walks the same states.
+
+- POST_CATS = [('G', 'count', 0), ('H', 'count', 2), ('HR', 'count', 5), ('RBI', 'count', 7),
+  ('SB', 'count', 10), ('SO', 'count', 23), ('IP', 'ip', 19)]; leader_cats(MODE_POST)
+  returns POST_CATS (CAREER keeps CATS, SEASON and BY YEAR keep SEASON_CATS).
+- post_leader_totals(box) -> {entry: (games, t)}: for every entry with at least one player
+  row (flags != 4), exactly post_totals(box, entry) (same distinct (season, g) G and the
+  same sums). Built in one pass over box; entries >= POST_ENTRY_MAX (4096) are ignored.
+- post_order(box, cat) -> [(value, entry, games)]: value = t[cat[2]] (index 0 is G = games),
+  only value > 0, sorted value descending then entry ascending, the first POST_MAX (50).
+- Rows: rank '#k', NAME (entry_name 16), mark 'R' retired / 'H' HoF / ' ' otherwise (the
+  career_leader_cells rule), G (the entry's distinct postseason games), value formatted
+  with cat_format. COLS_POST_LEADERS = [('#', _cx(0), 5, 'L'), ('NAME', _cx(5), 16, 'L'),
+  (' ', _cx(22), 1, 'L'), ('G', _cx(23), 5, 'R'), ('VALUE', _cx(28), 14, 'R')]. No item:
+  one COLS_SINGLE row 'NO POSTSEASON GAMES RECORDED YET.'. Title 'POSTSEASON LEADERS: '
+  + label; the footer is CAREER's (FOOTERS[SCREEN_LEADERS]).
+- TAB cycles CAREER -> SEASON -> BY YEAR -> POSTSEASON -> CAREER ((mode + 1) % 4), the
+  same label carry-over rule (else index 0); BY YEAR still gets default_year(data).
+  LEFT/RIGHT wrap within POST_CATS. row_entry in MODE_POST returns post_order(...)[row]'s
+  entry, None past the end or on the message row; ENTER opens the card, ESC returns to the
+  same state (the existing open_card path). Every other screen, mode and frame unchanged.
+- C port: POST_CATS, COLS_POST_LEADERS and MODE_POST mirror Python; the accumulate is ONE
+  pass over BOXSCORE.DAT into FARDATA arrays indexed by entry (POST_ENTRY_MAX 4096), games
+  counted by the entry's last (season, g) key (the records of a game are contiguous), the
+  seven values in TOTALS index order; the scan is cached like the other scans (nothing in
+  DYNVIEW writes BOXSCORE.DAT); the top POST_MAX is kept like season_scan with the same
+  ordering and tie break. The host binary is rebuilt with gcc after the parity gate
+  (-Werror clean); DYNVIEW.EXE is untouched.
+
 ## C28. AWARD HISTORY (added 2026-10-15)
 
 Screen 16 AWARD HISTORY, state (16, page, a, row) with a = the award code
