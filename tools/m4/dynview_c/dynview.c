@@ -1201,6 +1201,63 @@ static void draft_pos(const uint8_t *s, int n, const uint8_t *name, int nname, c
     }
 }
 
+/* C70 field positions q = 1..8 a record can play (rosters.can_play): pos1 or pos2
+ * (record byte 0x1f low / high nibble) is q, or a group code covers q */
+static const uint16_t GROUP_COVER[16] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    (uint16_t)((1u << 6) | (1u << 7) | (1u << 8)),            /* 10: OF 6-8 */
+    (uint16_t)((1u << 2) | (1u << 3) | (1u << 4) | (1u << 5)), /* 11: IF 2-5 */
+    (uint16_t)((1u << 2) | (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 7)
+              | (1u << 8)),                                  /* 12: O/I 2-8 */
+    (uint16_t)((1u << 1) | (1u << 6) | (1u << 7) | (1u << 8)), /* 13: C/O 1, 6-8 */
+    (uint16_t)((1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5)), /* 14: C/I 1-5 */
+    (uint16_t)((1u << 1) | (1u << 4)) };                      /* 15: C/3 1, 4 */
+
+static int can_play(int pos1, int pos2, int q)
+{
+    int p;
+    if (q < 1 || q > 8)
+        return 0;
+    for (p = pos1; 1; p = pos2) {
+        if (p == q)
+            return 1;
+        if (p >= 10 && p < 16 && (GROUP_COVER[p] & (1u << q)))
+            return 1;
+        if (p == pos2)
+            break;
+    }
+    return 0;
+}
+
+/* C70 NEED column of a draft pick on team token s (n bytes): the thinnest field
+ * position of the team as pos_name over the on (record byte 0 non-zero) batter slots
+ * 16..39 (pitchers do not count, a NEED is about the lineup) through the same
+ * posraw_of bytes as draft_pos; "" when the file is missing or shorter than V20_SCAN. */
+static void draft_need(const uint8_t *s, int n, char *dst)
+{
+    uint8_t *raw;
+    int q, slot, best, bestn;
+    dst[0] = 0;
+    posraw_of(s, n, &raw);
+    if (!raw)
+        return;
+    best = 1;
+    bestn = -1;
+    for (q = 1; q <= 8; q++) {
+        int cnt = 0;
+        for (slot = 16; slot < 40; slot++) {
+            const uint8_t *rec = raw + (long)V20_HDR + (long)V20_REC * slot;
+            if (rec[0] != 0 && can_play(rec[0x1f] & 15, rec[0x1f] >> 4, q))
+                cnt++;
+        }
+        if (bestn < 0 || cnt < bestn) {
+            best = q;
+            bestn = cnt;
+        }
+    }
+    strcpy(dst, pos_name(best));
+}
+
 /* C17 managed mark of a team token (n bytes): 1 when its ASCII upper case equals a
  * mapped stem (g_tstem, built with g_tdisp/g_tlg by load_teams) and the bit of that
  * stem's stable id is set in g_mask. A token with no stem match is not managed. */
@@ -2201,7 +2258,8 @@ static void roster_pass(int phase, int page)
                     draft_pos(buf + toff[1], tlen[1], (const uint8_t *)nm, nname,
                               r->cells[2]);
                     put_cell(r->cells[3], nm, nname);
-                    r->ncells = 4;
+                    draft_need(buf + toff[1], tlen[1], r->cells[4]);
+                    r->ncells = 5;
                 }
             } else {
                 uint32_t ord = g_rc.fa++;
@@ -5714,7 +5772,7 @@ static const ColDef COLS_SETTINGS[] = {
 
 static const ColDef COLS_DRAFT[] = {
     { "#", CX(0), 4, 0 }, { "TEAM", CX(4), 13, 0 }, { "POS", CX(18), 3, 0 },
-    { "PLAYER", CX(22), 20, 0 } };
+    { "PLAYER", CX(22), 15, 0 }, { "NEED", CX(38), 4, 0 } };
 
 static const ColDef COLS_MOVE[] = {
     { "TEAM", CX(0), 13, 0 }, { "PLAYER", CX(14), 15, 0 }, { "FROM", CX(30), 12, 0 } };

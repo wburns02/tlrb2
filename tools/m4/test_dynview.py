@@ -997,9 +997,9 @@ def test_offseason_phase_rows(tmp_path):
                        ('TIE, ONE', '33', '9', '5.0', ''),
                        ('NEGWAR, Q', '38', '3', '-0.5', '')]
     assert dynview.body_cols((SO, 0, oc(1)), data) == dynview.COLS_RETIRE
-    assert body(2) == [('#1', 'SEATTLE', '', 'Bobby Holmes'),
-                       ('#2', 'CLASNLE4', '', 'Bobby Holmes'),
-                       ('#3', 'CLASALE1', '', 'Lou Green')]
+    assert body(2) == [('#1', 'SEATTLE', '', 'Bobby Holmes', ''),
+                       ('#2', 'CLASNLE4', '', 'Bobby Holmes', ''),
+                       ('#3', 'CLASALE1', '', 'Lou Green', '')]
     assert dynview.body_cols((SO, 0, oc(2)), data) == dynview.COLS_DRAFT
     assert body(3) == [('CLASALE1', 'Duke Snider', 'NEW YORK N'),
                        ('NEW YORK N', 'TONY BERNAZARD', 'CLASALE1'),
@@ -1213,8 +1213,8 @@ def test_draft_pos_from_team_file(tmp_path):
     write_team_v20_full(ldir, 'CLASALW2', {3: ('Bobby Holms', 0), 5: ('Pat Smol', 4)})
     data = dynview.load_data(str(ldir))
     rows = dynview.offseason_body((SO, 0, oc(2)), data)[1]
-    assert rows == [('#1', 'SEATTLE', 'P', 'Bobby Green'),
-                    ('#2', 'CLASALW2', '3B', 'Pat Smol')]
+    assert rows == [('#1', 'SEATTLE', 'P', 'Bobby Green', 'C'),
+                    ('#2', 'CLASALW2', '3B', 'Pat Smol', 'C')]
 
 
 def test_draft_pos_rules(tmp_path):
@@ -1244,10 +1244,10 @@ def test_draft_pos_rules(tmp_path):
     (ldir / 'SHORTONE.V20').write_bytes(bytes(20))
     data = dynview.load_data(str(ldir))
     rows = dynview.offseason_body((SO, 0, oc(2)), data)[1]
-    assert rows == [('#1', 'SEATTLE', '', 'Lou Green'),        # off slot with the name
-                    ('#2', 'BOSTON', 'LF', 'Lou Green'),       # lower of the two slots
-                    ('#3', 'NEW YORK N', '1B', 'Sam Twice'),
-                    ('#4', 'SHORTONE', '', 'Short One')]       # short file: ''
+    assert rows == [('#1', 'SEATTLE', '', 'Lou Green', 'C'),       # off slot with the name
+                    ('#2', 'BOSTON', 'LF', 'Lou Green', 'C'),      # lower of the two slots
+                    ('#3', 'NEW YORK N', '1B', 'Sam Twice', 'C'),
+                    ('#4', 'SHORTONE', '', 'Short One', '')]       # short file: ''
     # a missing team file: POS ''
     (tmp_path / 'nofile').mkdir()
     ldir = make_offseason(tmp_path / 'nofile',
@@ -1255,7 +1255,119 @@ def test_draft_pos_rules(tmp_path):
                                   b'SIGN CLASALW7 Bobby Green CLASALE1\r\n')
     rows = dynview.offseason_body((SO, 0, oc(2)),
                                   dynview.load_data(str(ldir)))[1]
-    assert rows == [('#1', 'SEATTLE', '', 'Bobby Green')]
+    assert rows == [('#1', 'SEATTLE', '', 'Bobby Green', '')]
+
+
+def test_draft_need_rules(tmp_path):
+    """C70: NEED is the thinnest position over the on batter slots 16..39 by
+    rosters.can_play, ties to the lowest q; pitchers do not count; a missing or short
+    file gives ''."""
+    import v20
+    rec40 = v20.HDR + v20.REC * 40
+    # every position twice except SS (q5) once: the SS also holds pos2 C
+    ldir = make_offseason(tmp_path, rosters=b'DRAFT CLASALE1 Lou Green\r\n'
+                                         b'SIGN CLASALW7 Lou Green CLASALE1\r\n')
+    recs = {16: ('C A', 1), 17: ('C B', 1), 18: ('1B A', 2), 19: ('1B B', 2),
+            20: ('2B A', 3), 21: ('2B B', 3), 22: ('3B A', 4), 23: ('3B B', 4),
+            24: ('SSGUY', 5), 25: ('LF A', 6), 26: ('LF B', 6),
+            27: ('CF A', 7), 28: ('CF B', 7), 29: ('RF A', 8), 30: ('RF B', 8),
+            31: ('Lou Green', 6)}
+    write_team_v20_full(ldir, 'CLASALW7', recs, name='SEATTLE')
+    d = bytearray((ldir / 'CLASALW7.V20').read_bytes())
+    off = v20.HDR + v20.REC * 24 + v20.F['pos2'][0]
+    d[off] |= 1                              # 'SS,C': C is covered three times
+    (ldir / 'CLASALW7.V20').write_bytes(bytes(d))
+    rows = dynview.offseason_body((SO, 0, oc(2)),
+                                  dynview.load_data(str(ldir)))[1]
+    assert rows == [('#1', 'SEATTLE', 'LF', 'Lou Green', 'SS')]
+    # slots 0..15 never count: batters below 16 leave every q at 0 (tie: lowest q)
+    (tmp_path / 'low').mkdir()
+    ldir2 = make_offseason(tmp_path / 'low')
+    write_team_v20_full(ldir2, 'CLASALW7', {0: ('A One', 1), 1: ('B Two', 2)}, name='X')
+    assert dynview.draft_need(str(ldir2), 'CLASALW7') == 'C'
+    # an off slot (first byte 0) does not count
+    (tmp_path / 'noff').mkdir()
+    ldir3 = make_offseason(tmp_path / 'noff')
+    write_team_v20_full(ldir3, 'CLASALW7', {16: ('A One', 1)}, name='X')
+    d = bytearray((ldir3 / 'CLASALW7.V20').read_bytes())
+    d[v20.HDR + v20.REC * 16] = 0
+    (ldir3 / 'CLASALW7.V20').write_bytes(bytes(d))
+    assert dynview.draft_need(str(ldir3), 'CLASALW7') == 'C'
+    # pitchers (pos1 = 0) never count: a team of only pitchers is thin everywhere
+    (tmp_path / 'pit').mkdir()
+    ldir4 = make_offseason(tmp_path / 'pit')
+    write_team_v20_full(ldir4, 'CLASALW7', {16: ('A One', 0), 17: ('B Two', 0)},
+                        name='X')
+    assert dynview.draft_need(str(ldir4), 'CLASALW7') == 'C'
+    # missing file, a short file (rec40 - 1 bytes), and a just-long-enough file
+    (tmp_path / 'miss').mkdir()
+    ldir5 = make_offseason(tmp_path / 'miss')
+    assert dynview.draft_need(str(ldir5), 'CLASALW7') == ''
+    (ldir5 / 'CLASALW7.V20').write_bytes(bytes(rec40 - 1))
+    assert dynview.draft_need(str(ldir5), 'CLASALW7') == ''
+    (ldir5 / 'CLASALW7.V20').write_bytes(bytes(rec40))
+    assert dynview.draft_need(str(ldir5), 'CLASALW7') == 'C'
+
+
+def test_draft_need_ties_and_groups(tmp_path):
+    """C70: a tie goes to the lowest q (2B over 3B); the group codes cover positions:
+    an O/I player (12) counts for 2..8, a C/O one (13) for 1 and 6..8."""
+    ldir = make_offseason(tmp_path)
+    # 2B and 3B tie (one each), everything else at least two: NEED is 2B (q3 < q4)
+    write_team_v20_full(ldir, 'CLASALW7', {16: ('C A', 1), 17: ('C B', 1),
+                                           18: ('1B A', 2), 19: ('1B B', 2),
+                                           20: ('2B A', 3), 21: ('3B A', 4),
+                                           22: ('SS A', 5), 23: ('SS B', 5),
+                                           24: ('LF A', 6), 25: ('LF B', 6),
+                                           26: ('CF A', 7), 27: ('CF B', 7),
+                                           28: ('RF A', 8), 29: ('RF B', 8)},
+                        name='X')
+    assert dynview.draft_need(str(ldir), 'CLASALW7') == '2B'
+    # an O/I player is the only cover of 2..8 (one each): the tie gives 1B
+    write_team_v20_full(ldir, 'CLASALW2', {16: ('C A', 1), 17: ('C B', 1),
+                                           18: ('OI A', 12)},
+                        name='X')
+    assert dynview.draft_need(str(ldir), 'CLASALW2') == '1B'
+    # a C/O player covers LF: LF is thin at one while RF and CF sit at two
+    write_team_v20_full(ldir, 'CLASNLE3', {16: ('C A', 1), 17: ('C B', 1),
+                                           18: ('1B A', 2), 19: ('1B B', 2),
+                                           20: ('2B A', 3), 21: ('2B B', 3),
+                                           22: ('3B A', 4), 23: ('3B B', 4),
+                                           24: ('SS A', 5), 25: ('SS B', 5),
+                                           26: ('CF A', 7), 27: ('RF A', 8),
+                                           28: ('RF B', 8), 29: ('CO A', 13)},
+                        name='X')
+    assert dynview.draft_need(str(ldir), 'CLASNLE3') == 'LF'
+
+
+def test_draft_need_cache_shared_with_draft_pos(tmp_path):
+    """C70: draft_need reads the team file through draft_pos's cache (one read per team
+    token per build; the missing-team entry None is shared too)."""
+    opened = []
+    import builtins
+    real_open = builtins.open
+    def counting_open(file, mode='r', *a, **k):
+        if str(file).upper().endswith('.V20'):
+            opened.append(str(file))
+        return real_open(file, mode, *a, **k)
+    ldir = make_offseason(tmp_path, rosters=b'DRAFT CLASALE1 Lou Green\r\n'
+                                         b'SIGN CLASALW7 Lou Green CLASALE1\r\n')
+    write_team_v20_full(ldir, 'CLASALW7', {16: ('SS A', 6), 21: ('C A', 1),
+                                           32: ('Lou Green', 7)}, name='SEATTLE')
+    cache = {}
+    builtins.open = counting_open
+    try:
+        assert dynview.draft_need(str(ldir), 'CLASALW7', cache) == '1B'
+        assert dynview.draft_pos(str(ldir), 'CLASALW7', 'Lou Green', cache) == 'CF'
+        assert dynview.draft_need(str(ldir), 'CLASALW7', cache) == '1B'
+        assert len([f for f in opened if 'CLASALW7' in f]) == 1
+        # make_offseason's CLASALW2.V20 is 80 B (too short): one open, then the None entry
+        assert dynview.draft_need(str(ldir), 'CLASALW2', cache) == ''
+        assert len([f for f in opened if 'CLASALW2' in f]) == 1
+        assert dynview.draft_need(str(ldir), 'CLASALW2', cache) == ''
+        assert len([f for f in opened if 'CLASALW2' in f]) == 1
+    finally:
+        builtins.open = real_open
 
 
 def draft_managed_test_league(tmp_path, rosters, mask):
@@ -1296,9 +1408,9 @@ def test_managed_marks_draft_trades_fa(tmp_path):
                                                ('SEATTLE', 'YOU MANAGE'),
                                                ('NEW YORK N', 'AI MANAGES')]
     assert dynview.offseason_body((SO, 0, oc(2)), data)[1] == [
-        ('#1', '*SEATTLE', '', 'Bobby Holmes'),
-        ('#2', 'BOSTON', '', 'Bobby Holmes'),
-        ('#3', 'NEW YORK N', '', 'Lou Green')]
+        ('#1', '*SEATTLE', '', 'Bobby Holmes', ''),
+        ('#2', 'BOSTON', '', 'Bobby Holmes', ''),
+        ('#3', 'NEW YORK N', '', 'Lou Green', '')]
     assert dynview.offseason_body((SO, 0, oc(3)), data)[1] == [
         ('*SEATTLE', 'Duke Snider', 'NEW YORK N'),
         ('NEW YORK N', 'TONY BERNAZARD', 'SEATTLE'),
@@ -1323,7 +1435,7 @@ def test_managed_by_stem_not_display(tmp_path):
     data = dynview.load_data(str(ldir))
     assert data['team_stems'] == {'CLASALW2': 0, 'CLASALW7': 7, 'CLASNLW4': 20}
     assert dynview.offseason_body((SO, 0, oc(2)), data)[1] == [
-        ('#1', '*SEATTLE', '', 'Bobby Holmes'), ('#2', 'SEATTLE', '', 'Bobby Holmes')]
+        ('#1', '*SEATTLE', '', 'Bobby Holmes', ''), ('#2', 'SEATTLE', '', 'Bobby Holmes', '')]
 
 
 def test_managed_mask_zero_and_no_id(tmp_path):
@@ -1332,8 +1444,8 @@ def test_managed_mask_zero_and_no_id(tmp_path):
     ldir = draft_managed_test_league(tmp_path, DRAFT17, 0)
     data = dynview.load_data(str(ldir))
     assert dynview.offseason_body((SO, 0, oc(2)), data)[1] == [
-        ('#1', 'SEATTLE', '', 'Bobby Holmes'), ('#2', 'BOSTON', '', 'Bobby Holmes'),
-        ('#3', 'NEW YORK N', '', 'Lou Green')]
+        ('#1', 'SEATTLE', '', 'Bobby Holmes', ''), ('#2', 'BOSTON', '', 'Bobby Holmes', ''),
+        ('#3', 'NEW YORK N', '', 'Lou Green', '')]
     # all bits set: every team with an id is managed
     (tmp_path / 'all').mkdir()
     data = dynview.load_data(draft_managed_test_league(
@@ -1348,7 +1460,7 @@ def test_managed_mask_zero_and_no_id(tmp_path):
                            b'SIGN NOSUCHTEAM A Guy CLASALE1\r\n', 0xffffffff)
     rows = dynview.offseason_body((SO, 0, oc(2)),
                                   dynview.load_data(str(ldir)))[1]
-    assert rows == [('#1', 'NOSUCHTEAM', '', 'A Guy')]
+    assert rows == [('#1', 'NOSUCHTEAM', '', 'A Guy', '')]
 
 
 def test_draft_columns_changed_others_untouched(tmp_path):
@@ -1357,8 +1469,9 @@ def test_draft_columns_changed_others_untouched(tmp_path):
     assert dynview.COLS_MOVE == [('TEAM', dynview._cx(0), 13, 'L'),
                                  ('PLAYER', dynview._cx(14), 15, 'L'),
                                  ('FROM', dynview._cx(30), 12, 'L')]
-    assert [h for h, _x, _w, _a in dynview.COLS_DRAFT] == ['#', 'TEAM', 'POS', 'PLAYER']
-    assert dynview.COLS_DRAFT[-1][1] + 20 * dynview.CHAR_W <= dynview._cx(42)
+    assert [h for h, _x, _w, _a in dynview.COLS_DRAFT] == ['#', 'TEAM', 'POS', 'PLAYER',
+                                                           'NEED']
+    assert dynview.COLS_DRAFT[-1][1] + 4 * dynview.CHAR_W <= dynview._cx(42)
     ldir = draft_managed_test_league(
         tmp_path, b'TRADE CLASALW7 Duke Snider CLASNLW4 TONY BERNAZARD\r\n',
         0xffffffff)

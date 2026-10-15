@@ -2260,3 +2260,27 @@ C67 also fixed (brain, 2026-10-15): FIND PLAYER with no recorded season shows it
 prompt (and a typed query its NO PLAYER FOUND row) in COLS_SINGLE in both ports; the C
 port showed NO DYNASTY HISTORY YET and Python raised on a typed letter with no
 HISTORY.DAT.
+
+## C70. ROOKIE DRAFT NEED column (added 2026-10-15)
+The offseason ROOKIE DRAFT screen gains a NEED column, the drafting team's thinnest
+position. COLS_DRAFT becomes [('#', _cx(0), 4, 'L'), ('TEAM', _cx(4), 13, 'L'),
+('POS', _cx(18), 3, 'L'), ('PLAYER', _cx(22), 15, 'L'), ('NEED', _cx(38), 4, 'L')]
+(C: { "NEED", CX(38), 4, 0 } with PLAYER cut to 15; revised by the brain 2026-10-15: the spec's
+2-wide NEED column cut its header to "NE", so PLAYER gave up 2 characters).
+
+New dynview.draft_need(league_dir, stem, cache=None) -> str shares draft_pos's cache
+(same raw bytes, same missing/short rule: '' when the file is missing or shorter than
+HDR + REC * 40, one read per team token per build; the None entry for a missing file is
+shared too). For q = 1..8 it counts the batter slots s in 16..39 of the team's V20
+whose roster record is on (byte 0 != 0) and rosters.can_play(rec, q) holds (pos1 or
+pos2, record byte 0x1f low / high nibble, equals q, or a group code covers q:
+GROUP_COVER = {10: (6, 7, 8), 11: (2, 3, 4, 5), 12: (2..8), 13: (1, 6, 7, 8), 14:
+(1..5), 15: (1, 4)}); pitchers (pos1 0) never count, a pick's NEED is about the lineup.
+NEED is dynview.pos_name(q) of the smallest count, ties to the lowest q; every pick of
+a team shows the same NEED (the team file as it is now, after the draft). Each draft
+row becomes ('#k', team cell, POS, name, NEED); rows of the other phases are unchanged.
+
+C port: the same rule over the posraw_of bytes in a new draft_need called next to
+draft_pos in the OFF_DRAFT row pass (cell 4, ncells 5), with a static can_play over a
+16-entry const GROUP_COVER bit table. No new array over 64 bytes, COLS_MOVE, the
+managed '*' cell and the LIST_MAX cap are unchanged, reads only, C89 only.
