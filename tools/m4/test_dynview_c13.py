@@ -1006,7 +1006,7 @@ def test_hub_rows_and_key_p(tmp_path):
     for key in (80, 112):
         assert press(HUB, key, data) == (dynview.SCREEN_PLAYOFFS, 0, 0)
     assert dynview.click_to_key(HUB, data, 100, 35 + 11 * 11 + 3) == (80, None)
-    assert dynview.footer_text(HUB, data) == '0-9 W SELECT   ESC EXIT'
+    assert dynview.footer_text(HUB, data) == '0-9 W P F SELECT   ESC EXIT'
     assert dynview.TITLE_FOOTER == '0-9 W SELECT   ENTER PLAY BALL'
     assert dynview.FOOTERS[dynview.SCREEN_PLAYOFFS] == \
         'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'

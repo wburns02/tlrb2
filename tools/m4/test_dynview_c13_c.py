@@ -949,3 +949,165 @@ def test_card_honors_paging_nine(tmp_path):
     assert check(ldir, tmp_path, 'c40_nine_back', open_m + [ord('H'), PGDN, PGUP]) == p0
     s, data = py_run(ldir, tmp_path, open_m + [ord('H'), PGDN])
     assert [r[0] for r in dynview.rows(s, data)] == ['1998', '1999', '2000', '2001']
+
+
+# ---------------------------------------------------------------- C50 FIND PLAYER host parity
+# The FIND PLAYER frames (fb bytes): the empty-query prompt, a filtered frame with the
+# cursor on row 1, the no-match frame, the MENU frame with the new footer, and a card
+# opened from FIND then ESC back.
+KF, Kf = ord('F'), ord('f')
+
+
+# ---------------------------------------------------------------- the fixture league
+def find_players():
+    """Entries with last names that collide under the prefix sorts, plus one unused
+    entry (status 0) and one lower-case stored last name."""
+    return [
+        player('SMITH', first='JOHN', status=2, played=12, pos1=3),
+        player('smith', first='AARON', status=1, played=5, pos1=0),    # lower case file
+        player('SMYTHE', first='ZEKE', status=3, hof=2, played=18, pos1=6),
+        player('JONES', first='SAM', status=1, played=4, pos1=5),
+        player('UNUSED', first='NO', status=0, played=0, pos1=9),      # never listed
+        player('BROWN', first='X', status=1, played=1, pos1=3),
+        player('NOBODY', first='Q', status=1, played=2, pos1=7),
+    ]
+
+
+# ---------------------------------------------------------------- C50 FIND PLAYER frames
+@needs_fonts
+def test_c50_menu_footer_and_open(tmp_path):
+    """F and f on the hub open the empty FIND (prompt row, COLS_SINGLE); the hub footer
+    carries the F key; ESC goes back to the hub with the query kept cleared."""
+    ldir = league(tmp_path, players=player_set(), seasons=3, name='mf')
+    hub = run_pair(ldir, tmp_path, 'c50_hub', [])[0]
+    assert dynview.FOOTERS[dynview.SCREEN_MENU] == '0-9 W P F SELECT   ESC EXIT'
+    oF = run_pair(ldir, tmp_path, 'c50_open_F', [KF])[0]
+    of = run_pair(ldir, tmp_path, 'c50_open_f', [Kf])[0]
+    assert oF == of
+    s, data = py_run(ldir, tmp_path, [KF])
+    assert s == (dynview.SCREEN_FIND, 0, 0)
+    assert data['find'] == ''
+    assert dynview.rows(s, data) == [('TYPE THE START OF A LAST NAME.',)]
+    assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
+    assert dynview.screen_title(s, data) == 'FIND PLAYER: _'
+    assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
+    # ESC back to a plain hub, then typing letters does nothing there
+    assert run_pair(ldir, tmp_path, 'c50_find_esc', [KF, ESC])[0] == hub
+
+
+@needs_fonts
+def test_c50_empty_prompt_and_no_match_frames(tmp_path):
+    """the same league, F then a letter that matches nothing: the NO PLAYER FOUND row
+    with COLS_SINGLE; the title carries the query and the cursor."""
+    ldir = league(tmp_path, **{
+        'players': find_players(), 'seasons': 3, 'name': 'nm'})
+    empty = run_pair(ldir, tmp_path, 'c50_prompt', [KF])[0]
+    nomatch = run_pair(ldir, tmp_path, 'c50_nomatch', [KF, ord('Z')])[0]
+    assert empty != nomatch
+    s, data = py_run(ldir, tmp_path, [KF, ord('Z')])
+    assert s == (dynview.SCREEN_FIND, 0, 0)
+    assert data['find'] == 'Z'
+    assert dynview.rows(s, data) == [('NO PLAYER FOUND.',)]
+    # the FIND headers stay on the no-match frame (a lone message row of a screen
+    # with its own columns); the cursor row is highlighted
+    assert dynview.body_cols(s, data) == dynview.COLS_FIND
+    assert dynview.screen_title(s, data) == 'FIND PLAYER: Z_'
+
+
+def _find_cells(hist, q):
+    """the find_rows cells without their entries (C50)"""
+    return [c for _i, c in dynview.find_rows(hist, q)]
+
+
+@needs_fonts
+def test_c50_filtered_frame_cursor_and_sort(tmp_path):
+    """'SM' lists the SM* entries sorted (last upper, first upper, index), lower-case
+    last names match, the unused entry (status 0) never shows; DOWN moves the cursor to
+    row 1 and the frame matches Python."""
+    ldir = league(tmp_path, **{'players': find_players(), 'seasons': 3, 'name': 'filt'})
+    keys = [KF, ord('S'), ord('M')]
+    frame = run_pair(ldir, tmp_path, 'c50_filter_sm', keys)[0]
+    s, data = py_run(ldir, tmp_path, keys)
+    assert s == (dynview.SCREEN_FIND, 0, 0)
+    assert data['find'] == 'SM'
+    assert _find_cells(data['hist'], 'SM') == [
+        ('smith, AARON', 'P', '5', 'ACTIVE'),
+        ('SMITH, JOHN', '2B', '12', 'RETIRED'),
+        ('SMYTHE, ZEKE', 'LF', '18', 'HALL OF FAME')]
+    assert dynview.rows(s, data) == _find_cells(data['hist'], 'SM')
+    assert dynview.body_cols(s, data) == dynview.COLS_FIND
+    assert dynview.screen_title(s, data) == 'FIND PLAYER: SM_'
+    # index tiebreak: entry 1 (AARON, lower case in the file) sorts before entry 0
+    assert dynview.row_entry(s, data) == 1
+    down1 = run_pair(ldir, tmp_path, 'c50_filter_sm_down', keys + [DOWN])[0]
+    assert py_run(ldir, tmp_path, keys + [DOWN])[0] == (dynview.SCREEN_FIND, 0, 0, 1)
+    assert down1 != frame
+
+
+@needs_fonts
+def test_c50_edit_rules_frame_parity(tmp_path):
+    """BACKSPACE removes the last letter, an edit resets the page and the row, the
+    FIND_MAX 12 cap holds (the 13th letter does not land), and a letter typed after
+    BACKSPACE rebuilds the frame of typing the letters in one go."""
+    ldir = league(tmp_path, **{'players': find_players(), 'seasons': 3, 'name': 'edit'})
+    keys = [KF, ord('S'), ord('M'), DOWN]
+    run_pair(ldir, tmp_path, 'c50_edit_down', keys)
+    assert py_run(ldir, tmp_path, keys)[0] == (dynview.SCREEN_FIND, 0, 0, 1)
+    back = [KF, ord('S'), ord('M'), DOWN, 8]
+    run_pair(ldir, tmp_path, 'c50_edit_bksp_resets', back)
+    assert py_run(ldir, tmp_path, back)[0] == (dynview.SCREEN_FIND, 0, 0)
+    cap = [KF] + [ord(c) for c in 'ABCDEFGHIJKL'] + [ord('M'), ord('X')]
+    run_pair(ldir, tmp_path, 'c50_edit_cap', cap)
+    s, data = py_run(ldir, tmp_path, cap)
+    assert data['find'] == 'ABCDEFGHIJKL'
+    assert dynview.screen_title(s, data) == 'FIND PLAYER: ABCDEFGHIJKL_'
+    # a 13th letter never lands: editing to the cap then more keeps 12 chars; BACKSPACE
+    # then a letter rebuilds the same frame as typing the two letters in one go
+    again = [KF] + [ord(c) for c in 'ABCDEFGHIJKL'] + [ord('M'), 8, ord('L')]
+    cap12 = [KF] + [ord(c) for c in 'ABCDEFGHIJKL']
+    assert run_pair(ldir, tmp_path, 'c50_edit13', again)[0] == \
+        run_pair(ldir, tmp_path, 'c50_edit11', cap12)[0]
+
+
+@needs_fonts
+def test_c50_enter_card_and_esc_back(tmp_path):
+    """ENTER on row 1 opens that entry's card (open_card stores the FIND state); ESC
+    returns to the exact FIND state with the query kept; C types a letter."""
+    ldir = league(tmp_path, **{'players': find_players(), 'seasons': 3, 'name': 'card',
+                               'lines': None})
+    keys = [KF, ord('S'), ord('M'), DOWN, ENTER]
+    card = run_pair(ldir, tmp_path, 'c50_card', keys)[0]
+    s, data = py_run(ldir, tmp_path, keys)
+    assert s == (dynview.SCREEN_CARD, 0, 0)      # row 1 (SMITH, JOHN ahead of AARON), entry 0
+    assert data['card_back'] == (dynview.SCREEN_FIND, 0, 0, 1)
+    assert card != run_pair(ldir, tmp_path, 'c50_card_list', [KF, ord('S'), ord('M')])[0]
+    back = keys + [ESC]
+    assert run_pair(ldir, tmp_path, 'c50_card_esc', back)[0] == \
+        run_pair(ldir, tmp_path, 'c50_card_list_again', [KF, ord('S'), ord('M'), DOWN])[0]
+    s2, data2 = py_run(ldir, tmp_path, back)
+    assert s2 == (dynview.SCREEN_FIND, 0, 0, 1)
+    assert data2['find'] == 'SM'
+    # C on FIND types a letter (no card), unlike the season RETIREMENTS walk
+    c = run_pair(ldir, tmp_path, 'c50_c_types',
+                 [KF, ord('C'), ord('H'), ord('A'), ord('R'), ord('L')])[0]
+    s3, data3 = py_run(ldir, tmp_path, [KF, ord('C'), ord('H'), ord('A'), ord('R'),
+                                        ord('L')])
+    assert s3 == (dynview.SCREEN_FIND, 0, 0)
+    assert data3['find'] == 'CHARL'
+    assert dynview.screen_title(s3, data3) == 'FIND PLAYER: CHARL_'
+    assert c != run_pair(ldir, tmp_path, 'c50_c_types_open', [KF])[0]
+
+
+@needs_fonts
+def test_c50_paging_other_keys_do_nothing(tmp_path):
+    """PGUP at the top stays (frame equals the plain list), PGDN past the end stays,
+    a digit and TAB never type, ENTER on the empty prompt does nothing."""
+    ldir = league(tmp_path, **{'players': find_players(), 'seasons': 3, 'name': 'keys'})
+    base = run_pair(ldir, tmp_path, 'c50_keys_base', [KF, ord('J')])[0]
+    assert run_pair(ldir, tmp_path, 'c50_keys_pgup', [KF, ord('J'), PGUP])[0] == base
+    assert run_pair(ldir, tmp_path, 'c50_keys_pgdn', [KF, ord('J'), PGDN])[0] == base
+    assert run_pair(ldir, tmp_path, 'c50_keys_digit', [KF, ord('J'), ord('5')])[0] == base
+    s, data = py_run(ldir, tmp_path, [KF, ord('J'), ord('5')])
+    assert data['find'] == 'J'                 # a digit is never typed
+    assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
+    assert py_run(ldir, tmp_path, [KF, ord('J'), PGUP])[0] == (dynview.SCREEN_FIND, 0, 0)
