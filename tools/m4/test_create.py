@@ -149,6 +149,205 @@ def typed(s):
     return [ord(c) for c in s]
 
 
+# ---------------------------------------------------------------- C44: C copies a player
+def slot_keys(n):
+    """Team screen ENTER plus n DOWNs: the slot list with the cursor on slot n."""
+    return [ENTER] + [DOWN] * n
+
+
+def rec_from(img, slot):
+    return cr.record(img, slot)
+
+
+def test_copy_key_open_occupied_pitcher(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st, _ = walk(ctx, slot_keys(0) + [67])         # C on slot 0: Adams, Joe
+    assert (st['screen'], st['cursor'], st['slot']) == (cr.S_EDIT, 0, 0)
+    f = st['form']
+    assert (f['last'], f['first']) == ('Adams', 'Joe')
+    assert (f['pos'], f['pos2'], f['hands']) == (0, rookies.POS2_OF[0], 1)   # byte 29 = 0: L bats, L throws
+    assert f['age'] == 30 and f['face'] == 0
+    rec = TEAM_RECS[0][0]
+    want = []
+    for _key, off, shift in rookies.PITCHER_RATING_ORDER:
+        nib = rec[off] >> shift & 15
+        want.append(1 if nib == 0 else (12 if nib > 12 else nib))
+    assert f['r'] == want
+
+
+def test_copy_key_open_batter(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st, _ = walk(ctx, slot_keys(16) + [99])        # lowercase c on slot 16: Baker
+    assert (st['screen'], st['cursor'], st['slot']) == (cr.S_EDIT, 0, 16)
+    f = st['form']
+    assert (f['last'], f['first'], f['pos'], f['pos2']) == ('Baker', 'Al', 5,
+                                                            rookies.POS2_OF[5])
+    assert f['age'] == 25 and f['face'] == 0
+
+
+def test_copy_key_on_empty_slot_noop(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st0 = to_slot(ctx, 0)
+    st, _ = walk(ctx, [DOWN], st0)                 # slot 1 empty
+    st_after_down = st
+    st, _ = walk(ctx, [67], st_after_down)
+    assert st == st_after_down
+    st, _ = walk(ctx, [99], st_after_down)
+    assert st == st_after_down
+
+
+def test_copy_key_enter_unchanged(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st, _ = walk(ctx, slot_keys(0) + [ENTER])
+    assert st['screen'] == cr.S_EDIT
+    assert (st['form']['last'], st['form']['first']) == ('', '')
+    assert st['form']['r'][:2] == [6, 6]           # default_form, not the record
+
+
+def test_copy_name_filter_and_cut(tmp_path):
+    """A record whose name bytes hold a char outside NAME_CHARS: that char is
+    dropped and the rest copied, cut to LAST_MAX."""
+    rec = bytearray(143)
+    rec[0:12] = b'O\'BR!ENX#1Z'
+    rec[12:18] = b'M@ARY'                              # '@' refused, cut at FIRST_MAX
+    img = make_v20(b'X', {16: bytes(rec)})
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    ctx['teams'] = ctx['teams'][:1]
+    st = cr.start_state()
+    st['image'] = img
+    st['screen'], st['cursor'] = cr.S_SLOT, 16
+    st, _ = cr.step(st, 67, ctx)
+    assert (st['form']['last'], st['form']['first']) == ("O'BRENXZ", 'MARY')
+    assert st['image'] == img                          # nothing written yet
+
+
+def test_copy_rating_nibbles_clamped(tmp_path):
+    """A nibble of 0 reads as 1 and a nibble over 12 as 12; the pos2 hi nibble
+    0 and the sports hi nibble 15 read back per the pos2 rules."""
+    rec = bytearray(143)
+    rec[0] = 65                                        # C only fires on byte 0 != 0
+    rec[31] = 0xF9                                     # pos1 9 (RF), pos2 hi 15 (C3)
+    rec[74] = 0x0F                                     # power 15 -> 12, bunt 0 -> 1
+    rec[75] = 0xC8                                     # hit_run lo 8, exp nibbles
+    rec[29] = 0x24                                     # speed hi 2; bats S, throws L
+    rec[27] = 5                                        # face 5 (in list)
+    img = make_v20(b'X', {16: bytes(rec)})
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = cr.start_state()
+    st['image'] = img
+    st['screen'], st['cursor'] = cr.S_SLOT, 16
+    st, _ = cr.step(st, 67, ctx)
+    f = st['form']
+    assert (f['r'][0], f['r'][1]) == (12, 1)
+    assert f['r'][2] == 8
+    assert (f['pos'], f['pos2']) == (9, 15)
+    # the record's speed hi nibble is read as speed, not taken from the form
+    want_speed = rec[29] >> 4 & 15
+    assert want_speed == 2
+    assert f['r'][3] == want_speed
+    assert (f['hands'], f['face']) == (5, 5)
+
+
+def test_copy_pitcher_endurance_cap(tmp_path):
+    """A pitcher's endurance nibble over 10 reads as 10 (PIT_ENDURANCE_CAP); control and
+    velocity cap at 12."""
+    rec = bytearray(143)
+    rec[0] = 65
+    rec[134] = 0xFF                                    # control 15, velocity 15
+    rec[135] = 0xF0                                    # endurance 15
+    img = make_v20(b'X', {2: bytes(rec)})
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = cr.start_state()
+    st['image'] = img
+    st['screen'], st['cursor'] = cr.S_SLOT, 2
+    st, _ = cr.step(st, 67, ctx)
+    assert st['form']['r'][:3] == [12, 12, cr.PIT_ENDURANCE_CAP]
+
+
+def test_copy_age_clamped(tmp_path):
+    rec = bytearray(143)
+    rec[0] = 65                                        # C only fires on byte 0 != 0
+    rec[20] = 9                                        # under AGE_MIN
+    img = make_v20(b'X', {17: bytes(rec)})
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = cr.start_state()
+    st['image'] = img
+    st['screen'], st['cursor'] = cr.S_SLOT, 17
+    st, _ = cr.step(st, 67, ctx)
+    assert st['form']['age'] == cr.AGE_MIN
+    rec2 = bytearray(rec)
+    rec2[20] = 90
+    img2 = make_v20(b'X', {17: bytes(rec2)})
+    st2 = cr.start_state()
+    st2['image'] = img2
+    st2['screen'], st2['cursor'] = cr.S_SLOT, 17
+    st2, _ = cr.step(st2, 67, ctx2 := ctx)
+    assert st2['form']['age'] == cr.AGE_MAX
+
+
+def test_copy_face_out_of_list_default(tmp_path):
+    """A face id past the list (40 with 40 faces and no customs) falls back to
+    default_form's face for the slot's kind."""
+    anms = make_anms(str(tmp_path / 'A'), n=40)
+    ctx = ctx_for(make_league(str(tmp_path / 'L')), anms)
+    assert cr.face_walk_len(40, 40) == 40              # no customs: list is 0..39
+    rec = bytearray(143)
+    rec[0] = 65
+    rec[27] = 40                                       # u16 40: one past the list
+    img = make_v20(b'X', {16: bytes(rec)})
+    st = cr.start_state()
+    st['image'] = img
+    st['screen'], st['cursor'] = cr.S_SLOT, 16
+    st, _ = cr.step(st, 67, ctx)
+    assert st['form']['face'] == 30                    # default_form's face (n > 30)
+    # a face inside the list is kept
+    rec[27] = 7
+    img2 = make_v20(b'X', {16: bytes(rec)})
+    st2 = cr.start_state()
+    st2['image'] = img2
+    st2['screen'], st2['cursor'] = cr.S_SLOT, 16
+    st2, _ = cr.step(st2, 67, ctx)
+    assert st2['form']['face'] == 7
+
+
+def test_copy_save_writes_copied_record(tmp_path):
+    """SAVE after C rebuilds the record from the form (C10 build_record): the
+    name and every rating nibble equal the copied ones, and the season half is
+    the implied stat line."""
+    lg = make_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    st, _ = walk(ctx, slot_keys(16) + [67])            # copy Baker
+    st, _ = walk(ctx, [DOWN] * 13 + [ENTER], st)
+    assert st['screen'] == cr.S_CONFIRM
+    st, _ = walk(ctx, [ENTER], st)
+    assert st['screen'] == cr.S_DONE
+    rec = open(os.path.join(lg, 'BOS.V20'), 'rb').read()[295 + 143 * 16:
+                                                         295 + 143 * 17]
+    f = st['form']
+    assert (rec[0:5], rec[12:14]) == (b'Baker', b'Al')
+    order = rookies.BATTER_RATING_ORDER
+    got = [rec[off] >> shift & 15 for _key, off, shift in order]
+    assert got == f['r']
+    want = cr.build_record(f, False, cr.year_byte(cr.read_v20(lg, 'BOS')),
+                           ctx['faces'][1])
+    assert rec == want
+    srec = open(os.path.join(lg, 'BOS.V20'), 'rb').read()[295 + 143 * 56:
+                                                          295 + 143 * 57]
+    assert srec == cr.season_half(want)
+    assert struct.unpack('<H', rec[27:29])[0] == f['face']
+
+
+def test_copy_then_edit_but_not_saved(tmp_path):
+    """The copy itself never touches the team file; editing without SAVE leaves
+    the V20 alone."""
+    lg = make_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    before = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
+    st, _ = walk(ctx, slot_keys(0) + [67, UP, LEFT, ESC])
+    assert (st['screen'], st['cursor']) == (cr.S_SLOT, 0)
+    assert open(os.path.join(lg, 'BOS.V20'), 'rb').read() == before
+
+
 # ---------------------------------------------------------------- teams
 def test_teams_order_and_names(tmp_path):
     lg = make_league(str(tmp_path / 'L'))
@@ -244,7 +443,7 @@ def test_slot_rows(tmp_path):
     assert rows[16] == ('B1', 'Baker, Al', 'SS', '25', '')
     assert len(cols) == 5 and cols[4][0] == 'ROLE'
 
-    assert footer == 'UP DOWN   ENTER PICK   ESC TEAMS'
+    assert footer == 'UP DOWN  ENTER NEW  C COPY  ESC TEAMS'
 
 
 def test_slot_keys(tmp_path):
@@ -1168,13 +1367,13 @@ def test_autofill_seed_survives_create_another(tmp_path):
 
 def test_foot_field_text_c37():
     """C37: the rating-field footer gained 'N NAME' (and lost a LEFT gap); the other
-    footers are unchanged."""
+    footers are unchanged (C44: FOOT_SLOT gained C COPY)."""
     assert cr.FOOT_FIELD == 'UP DOWN LEFT RIGHT  A AUTO  N NAME  ESC'
     assert len(cr.FOOT_FIELD) == 39
     assert cr.FOOT_NAME == 'TYPE NAME   UP DOWN   ESC SLOTS'
     assert cr.FOOT_SAVE == 'ENTER SAVE   UP DOWN   ESC SLOTS'
     assert cr.FOOT_TEAM == 'UP DOWN   ENTER PICK   ESC EXIT'
-    assert cr.FOOT_SLOT == 'UP DOWN   ENTER PICK   ESC TEAMS'
+    assert cr.FOOT_SLOT == 'UP DOWN  ENTER NEW  C COPY  ESC TEAMS'
     assert cr.FOOT_CONFIRM == 'ENTER REPLACE   ESC BACK'
     assert cr.FOOT_DONE == 'ENTER CREATE ANOTHER   ESC EXIT'
 
