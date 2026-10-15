@@ -4,6 +4,7 @@
 Synthetic league in tmp_path: LEAGUE.MAJ, team V20 files, PORTRAIT.ANM and FACEGRP.DAT.
 Render tests need the stock fonts in /mnt/nvme/tlrb2/files (skipped when MAIN.FNT is
 missing)."""
+import copy
 import os
 import struct
 import sys
@@ -1071,8 +1072,203 @@ def test_budget_off_save_identical(tmp_path):
     want = cr.build_record(form, False, cr.year_byte(cr.read_v20(lg, 'BOS')), grp)
     assert rec == want
 
+# ---------------------------------------------------------------- C34: A auto-fill
+A_KEY, A_ALT = 65, 97                              # key A on the edit screen
 
-# ---------------------------------------------------------------- teams: stable ids (C12.3)
+
+def _no_seed_r(st):
+    """Snapshot of a state with the seed and the ratings values removed."""
+    import copy
+    out = copy.deepcopy(st)
+    out.pop('seed')
+    out['form'].pop('r')
+    return out
+
+
+def _no_seed_r_names(st):
+    """Snapshot of a state with the seed, the ratings and the typed names removed."""
+    out = _no_seed_r(st)
+    out['form'].pop('last')
+    out['form'].pop('first')
+    return out
+
+
+def test_autofill_batter_each_mode(tmp_path):
+    """A on a batter rating field fills to the mode's budget (REGULAR when OFF), every
+    rating lands in 1..12, the seed carries the draw, and nothing else changes."""
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    for b, target, seed, r in ((0, 45, 429995104, [8, 5, 6, 10, 6, 10]),
+                               (1, 36, 1686638315, [8, 4, 4, 9, 4, 7]),
+                               (2, 45, 429995104, [8, 5, 6, 10, 6, 10]),
+                               (3, 54, 1675280054, [9, 6, 10, 12, 6, 11])):
+        st = to_edit(ctx, 0, 17)
+        st, _ = walk(ctx, [DOWN] * 6 + [66] * b, st)   # POWER row, mode b
+        before = _no_seed_r(st)
+        st2, _ = walk(ctx, [A_ALT], st)
+        assert st2['form']['r'] == r and st2['seed'] == seed, b
+        assert all(1 <= v <= 12 for v in r), b
+        assert st2['budget'] == b
+        assert _no_seed_r(st2) == before, b            # cursor, msg, budget, names as before
+
+
+def test_autofill_twice_different(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 17)
+    st, _ = walk(ctx, [DOWN] * 6 + [A_ALT], st)        # OFF: REGULAR target 45
+    assert (st['seed'], st['form']['r']) == (429995104, [8, 5, 6, 10, 6, 10])
+    st, _ = walk(ctx, [A_KEY], st)                     # the next A draws another spread
+    assert (st['seed'], st['form']['r']) == (1495896251, [9, 8, 7, 6, 9, 6])
+
+
+def test_autofill_pitcher_star_caps_and_keeps_r3(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 0)                            # P1 pitcher
+    st, _ = walk(ctx, [DOWN] * 5 + [66] * 3 + [A_KEY], st)   # CONTROL row, STAR
+    assert (st['seed'], st['form']['r']) == (1303003706, [12, 7, 9])
+    assert sum(st['form']['r']) == 28 and st['form']['r'][2] <= 10
+    # a pitcher-slot form with 6 ratings: r[3..5] untouched
+    st = dict(cr.start_state(), screen=cr.S_EDIT, slot=1, budget=3,
+              form=cr.blank_form())
+    st2, _ = walk(ctx, [DOWN] * 5 + [A_ALT], st)
+    assert st2['form']['r'] == [12, 7, 9, 6, 6, 6] and st2['seed'] == 1303003706
+
+
+def test_autofill_a_types_in_name_fields(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 16)
+    st, _ = walk(ctx, [A_KEY], st)
+    assert (st['form']['last'], st['seed'], st['budget']) == ('A', 1, 0)
+    st, _ = walk(ctx, [DOWN, A_ALT, UP], st)
+    assert (st['form']['first'], st['form']['last'], st['seed']) == ('A', 'A', 1)
+
+
+def test_autofill_save_under_regula_no_msg2(tmp_path):
+    """A under REGULAR: spent == cap 45, so SAVE saves (no msg 2)."""
+    lg = make_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    before = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
+    st = to_edit(ctx, 0, 17)
+    st, _ = walk(ctx, typed('Oak') + [DOWN] * 6 + [66, 66, A_ALT] + [DOWN] * 7
+                 + [ENTER], st)
+    assert (st['screen'], st['msg']) == (cr.S_DONE, 0)
+    assert open(os.path.join(lg, 'BOS.V20'), 'rb').read() != before
+
+
+def test_autofill_seed_survives_create_another(tmp_path):
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 17)
+    st, _ = walk(ctx, typed('Oak') + [DOWN] * 6 + [A_ALT] + [DOWN] * 7 + [ENTER], st)
+    assert st['seed'] == 429995104
+    st, _ = walk(ctx, [ENTER], st)                     # CREATE ANOTHER
+    st, _ = walk(ctx, [ENTER, ENTER], st)              # back into an edit screen
+    assert (st['screen'], st['seed']) == (cr.S_EDIT, 429995104)
+    st, _ = walk(ctx, [DOWN] * 5 + [A_KEY], st)        # the next A draws from it
+    assert (st['seed'], st['form']['r']) == (127474245, [9, 6, 9])
+
+
+def test_foot_field_text_c37():
+    """C37: the rating-field footer gained 'N NAME' (and lost a LEFT gap); the other
+    footers are unchanged."""
+    assert cr.FOOT_FIELD == 'UP DOWN LEFT RIGHT  A AUTO  N NAME  ESC'
+    assert len(cr.FOOT_FIELD) == 39
+    assert cr.FOOT_NAME == 'TYPE NAME   UP DOWN   ESC SLOTS'
+    assert cr.FOOT_SAVE == 'ENTER SAVE   UP DOWN   ESC SLOTS'
+    assert cr.FOOT_TEAM == 'UP DOWN   ENTER PICK   ESC EXIT'
+    assert cr.FOOT_SLOT == 'UP DOWN   ENTER PICK   ESC TEAMS'
+    assert cr.FOOT_CONFIRM == 'ENTER REPLACE   ESC BACK'
+    assert cr.FOOT_DONE == 'ENTER CREATE ANOTHER   ESC EXIT'
+
+
+# ---------------------------------------------------------------- C37: N random name
+N_KEY, N_ALT = 78, 110                             # key N on the edit screen
+
+
+def _lcg(seed):
+    return (seed * 1103515245 + 12345) % 2 ** 31
+
+
+def test_random_name_batter_picks_from_pools(tmp_path):
+    """N on a batter rating field picks last then first from the rookie pools with
+    the session LCG (expected picks computed from the seed before the press), the
+    seed advances twice, and nothing else changes."""
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    for nk in (N_KEY, N_ALT):
+        st = to_edit(ctx, 0, 17)
+        st, _ = walk(ctx, [DOWN] * 6, st)             # POWER row
+        seed = st['seed']
+        seed1 = _lcg(seed)
+        want_last = rookies.LAST_NAMES[(seed1 >> 16) % len(rookies.LAST_NAMES)]
+        seed2 = _lcg(seed1)
+        want_first = rookies.FIRST_NAMES[(seed2 >> 16) % len(rookies.FIRST_NAMES)]
+        st2, _ = walk(ctx, [nk], st)
+        assert st2['form']['last'] == want_last, nk
+        assert st2['form']['first'] == want_first, nk
+        assert st2['seed'] == seed2, nk              # the seed advanced twice
+        assert len(want_last) <= cr.LAST_MAX and len(want_first) <= cr.FIRST_MAX
+        assert _no_seed_r_names(st2) == _no_seed_r_names(st), nk \
+            # cursor, msg, budget, ratings as before
+
+
+def test_random_name_second_n_gives_next_pick(tmp_path):
+    """A second N gives the next pool entry the LCG picks from the kept seed."""
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 17)
+    st, _ = walk(ctx, [DOWN] * 6 + [N_KEY], st)
+    seed1, last1, first1 = st['seed'], st['form']['last'], st['form']['first']
+    seed2 = _lcg(seed1)                            # the second N's last-name draw
+    st, _ = walk(ctx, [N_ALT], st)
+    seed3 = _lcg(seed2)                            # its first-name draw, then kept
+    want_last = rookies.LAST_NAMES[(seed2 >> 16) % len(rookies.LAST_NAMES)]
+    want_first = rookies.FIRST_NAMES[(seed3 >> 16) % len(rookies.FIRST_NAMES)]
+    assert (st['seed'], st['form']['last'], st['form']['first']) == (seed3, want_last,
+                                                                     want_first)
+    assert (st['form']['last'], st['form']['first']) != (last1, first1)
+
+
+def test_random_name_n_types_on_name_fields(tmp_path):
+    """N on 'last' (and on 'first') types the letter N and leaves the seed alone."""
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 16)
+    st, _ = walk(ctx, [N_KEY], st)
+    assert (st['form']['last'], st['seed']) == ('N', 1)
+    st, _ = walk(ctx, [110, DOWN, N_ALT], st)
+    assert (st['form']['last'], st['form']['first'], st['seed']) == ('NN', 'N', 1)
+
+
+def test_random_name_then_save_writes_picked_name(tmp_path):
+    """After N, SAVE writes the picked name into the V20 record (bytes 0..11 last,
+    12..19 first) and the ratings stay the form defaults N never touched."""
+    lg = make_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    st = to_edit(ctx, 0, 17)                          # empty batter B2, slot 17
+    st, _ = walk(ctx, [DOWN] * 6 + [N_KEY] + [DOWN] * 7 + [ENTER], st)
+    assert st['screen'] == cr.S_DONE
+    rec = cr.record(st['image'], 17)
+    want = st['form']['last'].encode('ascii')
+    wantf = st['form']['first'].encode('ascii')
+    assert rec[0:12] == want.ljust(12, b'\0')
+    assert rec[12:20] == wantf.ljust(8, b'\0')
+    assert (rec[74], rec[75] & 0xF, rec[29] >> 4, rec[94]) == (0x66, 6, 6, 0x66)
+
+
+def test_random_name_leaves_ratings_cursor_budget(tmp_path):
+    """N on every non-name row of both forms leaves ratings, cursor and budget
+    untouched (N is only the name pick)."""
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    for slot, rows in ((17, 14), (0, 10)):
+        st = to_edit(ctx, 0, slot)
+        st, _ = walk(ctx, [DOWN] * 2, st)
+        for row in range(2, rows):
+            assert st['cursor'] == row
+            before = _no_seed_r_names(st)
+            st2, _ = walk(ctx, [N_KEY], st)
+            assert _no_seed_r_names(st2) == before, (slot, row)
+            if row + 1 < rows:
+                st, _ = walk(ctx, [DOWN], st)
+                assert st['cursor'] == row + 1
+
+
+
 def write_table(d, entries):
     """TEAMID.DAT of d: entries = {k: stem} (k 0..31), every other entry NUL."""
     tab = bytearray(256)

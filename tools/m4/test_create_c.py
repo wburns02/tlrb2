@@ -8,6 +8,7 @@ team V20 byte for byte. DOS tests skip when CREATE.EXE or dosbox-x is missing; f
 tests skip when /mnt/nvme/tlrb2/files/MAIN.FNT is missing."""
 import os
 import random
+import re
 import shutil
 import struct
 import subprocess
@@ -22,6 +23,7 @@ import pytest
 
 import create as cr
 import dynview
+import rookies
 from m4.test_create import (make_league, make_anms, make_v20, named_rec, typed, need_fonts,
                             frame_px, FILES, HAVE_FONTS, ENTER, ESC, UP, DOWN, LEFT, RIGHT,
                             PGUP, PGDN, BACK)
@@ -532,6 +534,90 @@ def test_parity_budget_c31(tmp_path):
              + [RIGHT] * 6 + [DOWN] * 7 + [ENTER, 98, ENTER, ENTER, DOWN, ENTER, ENTER])
     st, _ = parity(tmp_path, again)
     assert (st['screen'], st['budget']) == (cr.S_EDIT, 2)
+
+
+# ---------------------------------------------------------------- parity: C34 A auto-fill
+# Synthetic fonts, so the parity runs without the game fonts (glyph shapes do not
+# matter, both sides draw the same ones).
+def test_parity_autofill_c34(tmp_path):
+    """C34: key A on the edit screen auto-fills from the session seed; the framebuffer
+    and the saved V20 bytes match on a batter (each mode, once and twice) and a
+    pitcher under STAR, and A typed into the first name stays a letter."""
+    fonts = synth_fonts(os.path.join(str(tmp_path), 'c34fonts'))
+    batter = [ENTER] + [DOWN] * 16 + [ENTER] + [DOWN] * 6
+    parity(tmp_path, batter + [97], fonts=fonts)                     # OFF: REGULAR target
+    parity(tmp_path, batter + [66] + [65], fonts=fonts)              # ROOKIE
+    parity(tmp_path, batter + [66, 66] + [97], fonts=fonts)          # REGULAR
+    parity(tmp_path, batter + [66] * 3 + [65], fonts=fonts)          # STAR
+    parity(tmp_path, batter + [66, 66, 66] + [65, 65], fonts=fonts)  # twice under STAR
+    parity(tmp_path, [ENTER, ENTER] + [DOWN] * 5 + [66] * 3 + [65],
+           fonts=fonts)                                              # P1, STAR
+    parity(tmp_path, [ENTER] + [DOWN] * 16 + [ENTER] + [65] + [DOWN, 97, UP],
+           fonts=fonts)                                              # A types on names
+    parity(tmp_path, batter + [65, ESC, DOWN, ENTER, 65],
+           fonts=fonts)                                              # seed across screens
+
+
+# ---------------------------------------------------------------- parity: C37 N random name
+# Synthetic fonts, so the parity runs without the game fonts (glyph shapes do not
+# matter, both sides draw the same ones).
+createForm = [ENTER] + [DOWN] * 16 + [ENTER]          # named batter B1 (slot 16)
+
+def test_parity_random_name_c37(tmp_path):
+    """C37: key N on the edit screen picks a name from the rookie pools with the session
+    seed; the framebuffer and the saved V20 bytes match. Five N presses so different
+    pool entries are drawn, then a save; N on the last name types 'N'; N then A then a
+    save; and the new FOOT_FIELD frame."""
+    fonts = synth_fonts(os.path.join(str(tmp_path), 'c37fonts'))
+    parity(tmp_path, [ENTER, ENTER] + [78, 78, 78, 78, 78], fonts=fonts)     # P1, five N
+    parity(tmp_path, createForm + [DOWN] * 6 + [110] * 5, fonts=fonts)       # B1, five N
+    # N (78) typed into the last name, N (110) into the first: letters, not a pick
+    parity(tmp_path, [ENTER] + [DOWN] * 16 + [ENTER] + [78, 78] + [DOWN, 110], fonts=fonts)
+    # N once, then A, then save (the picked name with the autofilled ratings)
+    st, _ = parity(tmp_path, createForm + [DOWN] * 6 + [78, 65] + [DOWN] * 7
+                   + [ENTER, ENTER], fonts=fonts)
+    assert st['screen'] == cr.S_DONE
+    assert st['form']['last'] in rookies.LAST_NAMES
+    assert st['form']['first'] in rookies.FIRST_NAMES
+    # a save of the five-N name (empty batter B2, no confirm)
+    parity(tmp_path, [ENTER] + [DOWN] * 17 + [ENTER] + [78] * 5 + [DOWN] * 7 + [ENTER],
+           fonts=fonts)
+    # the FOOT_FIELD frame itself (cursor on a rating row, footer text differs from C34)
+    parity(tmp_path, createForm + [DOWN] * 6, fonts=fonts)
+
+
+def test_parity_foot_field_text_c37():
+    """C37: the two FOOT_FIELD texts match, and the C source text matches the Python."""
+    assert cr.FOOT_FIELD == 'UP DOWN LEFT RIGHT  A AUTO  N NAME  ESC'
+    src = open(os.path.join(HERE_C, 'create.c')).read()
+    assert ('static const char *FOOT_FIELD = "%s";' % cr.FOOT_FIELD) in src
+
+
+def test_name_tables_match_python_lists():
+    """C37: the C name tables are the rookies.py lists in identical order: read both
+    pools from rookies.py, extract the C table initializers from the create.c text and
+    compare entry by entry."""
+    src = open(os.path.join(HERE_C, 'create.c')).read()
+
+    def c_table(name):
+        i = src.index('C37_%s[' % name)
+        a = src.index('{', i)
+        depth = 0
+        for j in range(a, len(src)):
+            if src[j] == '{':
+                depth += 1
+            elif src[j] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+        assert depth == 0, name
+        body = src[a + 1:j]
+        return re.findall(r'"((?:[^"\\]|\\.)*)"', body)
+
+    lasts = c_table('LAST_NAMES')
+    firsts = c_table('FIRST_NAMES')
+    assert lasts == rookies.LAST_NAMES, 'C37_LAST_NAMES differs from rookies.LAST_NAMES'
+    assert firsts == rookies.FIRST_NAMES, 'C37_FIRST_NAMES differs from rookies.FIRST_NAMES'
 
 
 # ---------------------------------------------------------------- 3 divisions: team list (C12.3)
