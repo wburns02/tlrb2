@@ -91,6 +91,10 @@ FOOT_NAME = 'TYPE NAME   UP DOWN   ESC SLOTS'
 FOOT_SAVE = 'ENTER SAVE   UP DOWN   ESC SLOTS'
 FOOT_FIELD = 'UP DOWN   LEFT RIGHT CHANGE   ESC SLOTS'
 MSG_NAME = 'TYPE A LAST NAME FIRST'
+BUDGET_BAT = (0, 36, 45, 54)              # C31: points per budget mode, batters
+BUDGET_PIT = (0, 18, 24, 28)              # pitchers
+BUDGET_NAMES = ('OFF', 'ROOKIE', 'REGULAR', 'STAR')
+MSG_BUDGET = 'OVER THE POINT BUDGET, PRESS B'
 
 
 # ---------------------------------------------------------------- league data
@@ -354,7 +358,7 @@ def default_form(image, slot, n_faces):
 
 def start_state():
     return {'screen': S_TEAM, 'cursor': 0, 'team': 0, 'slot': 0, 'form': blank_form(),
-            'msg': 0, 'image': bytes(IMAGE_LEN)}
+            'msg': 0, 'budget': 0, 'image': bytes(IMAGE_LEN)}
 
 
 def _copy(st):
@@ -445,6 +449,16 @@ def _step_slot(st, key, ctx):
     return st, False
 
 
+def _budget_spent(st):
+    """Points spent: the sum of the form's ratings (C31)."""
+    return sum(st['form']['r'][:3] if st['slot'] < PITCHER_SLOTS
+               else st['form']['r'])
+
+
+def _budget_cap(st):
+    return (BUDGET_PIT if st['slot'] < PITCHER_SLOTS else BUDGET_BAT)[st['budget']]
+
+
 def _step_edit(st, key, ctx):
     fields = _edit_fields(st['slot'] < PITCHER_SLOTS)
     fld = fields[st['cursor']][0]
@@ -453,10 +467,14 @@ def _step_edit(st, key, ctx):
         st['screen'], st['cursor'] = S_SLOT, st['slot']
     elif key in (KEY_UP, KEY_DOWN):
         st['cursor'] = _list_key(st['cursor'], key, len(fields))
+    elif key in (66, 98) and fld not in ('last', 'first'):
+        st['budget'] = (st['budget'] + 1) % 4              # C31: cycle the point budget
     elif key == KEY_ENTER:
         if fld == 'save':
             if form['last'] == '':
                 st['msg'] = 1
+            elif st['budget'] and _budget_spent(st) > _budget_cap(st):
+                st['msg'] = 2                              # C31: over the point budget
             elif record(st['image'], st['slot'])[0]:
                 st['screen'], st['cursor'] = S_CONFIRM, 0
             else:
@@ -631,6 +649,8 @@ def _draw_edit(fb, st, ctx, main_ft, bold_ft):
             fb[base:base + w] = px[y * w:(y + 1) * w]
     if st['msg'] == 1:
         draw_text(fb, main_ft, 10, 175, MSG_NAME, C_DRED)      # C21: 14 rows end at 173
+    elif st['msg'] == 2:
+        draw_text(fb, main_ft, 10, 175, MSG_BUDGET, C_DRED)    # C31: over the budget
     fld = fields[st['cursor']][0]
     foot = FOOT_NAME if fld in ('last', 'first') else (FOOT_SAVE if fld == 'save'
                                                        else FOOT_FIELD)
@@ -640,6 +660,14 @@ def _draw_edit(fb, st, ctx, main_ft, bold_ft):
                        year_byte(st['image']), ctx['faces'][1])
     draw_text(fb, main_ft, 228, 110, 'SALARY', C_BLACK)
     draw_text(fb, main_ft, 228, 120, '%d' % ratings.salary(rec), C_BLACK)
+    # C31: the point budget block
+    spent, cap = _budget_spent(st), _budget_cap(st)
+    off = st['budget'] == 0
+    draw_text(fb, main_ft, 228, 135, 'BUDGET', C_BLACK)
+    draw_text(fb, main_ft, 228, 145, BUDGET_NAMES[st['budget']] if off
+              else '%d/%d' % (spent, cap), C_BLACK if (off or spent <= cap) else C_DRED)
+    if not off:
+        draw_text(fb, main_ft, 228, 155, BUDGET_NAMES[st['budget']], C_BLACK)
 
 
 def render(st, ctx):
