@@ -145,6 +145,9 @@
 #define KEY_EQUALS 61
 #define KEY_CARD_CAP 67
 #define KEY_CARD_LOW 99
+/* C54 LEADERS active-only toggle (CAREER mode) */
+#define KEY_ACTIVE_CAP 65
+#define KEY_ACTIVE_LOW 97
 /* START YEAR (C13.1): u16 LE at HISTORY bytes 18..19; 0 or outside START_MIN..START_MAX counts as
  * START_DEFAULT */
 #define HDR_START 18
@@ -260,6 +263,11 @@ typedef struct {
 #define STATUS_RETIRED 2
 #define STATUS_HOF 3
 #define NO_AWARD 0xffff
+
+/* HALL OF FAME position filters (C53): the cat of the screen is one of them and TAB
+ * cycles it; F_P is any pitcher, the OF filter covers LF CF and RF */
+#define N_HOF_FILTERS 9
+#define HOF_F_P 1                                  /* the filter index of P */
 
 #define CHAR_W 7
 #define SLEN 64             /* cell / line text cap */
@@ -442,6 +450,8 @@ static int g_sn;
 static CardLine FARDATA g_card[CARD_MAX];
 static int g_ncard;
 static State g_card_back;       /* the list state the PLAYER CARD was opened from (C13.5) */
+/* C54: the LEADERS CAREER active-only filter, a session value like the card back state */
+static int g_lead_active;
 /* C28: the SEASON AWARDS state AWARD HISTORY was opened from, and whether one was */
 static State g_awh_back;
 static int g_awh_have;
@@ -523,6 +533,17 @@ typedef struct {
     uint8_t s[8];
 } PlHdr;
 static PlHdr FARDATA g_pl[PLAYOFF_HDR_MAX];
+/* C30 POSTSEASON LEADERS: the per-entry season sums of build_playoffs's tally, one slot
+ * a distinct entry, streamed from BOXSCORE.DAT (post_leader_tally; g_pldr tidied with
+ * the headers' g_pl_season cache). {H, HR, RBI, SB, SO, ER, OUTS} u16 sums, 8 slots a
+ * 16 B line (one far segment) x POST_LEADER_MAX entries */
+#define POST_LEADER_MAX 256
+typedef struct {
+    uint16_t idx;
+    uint16_t s[7];              /* H, HR, RBI, SB, SO, ER, OUTS */
+} PlDr;
+static PlDr FARDATA g_pldr[POST_LEADER_MAX];
+static int g_pldr_n;
 /* PLAYOFF BOX: the non-header records of the round game on the screen */
 static BoxRec FARDATA g_pbox[BOX_MAX_RECS];
 static long g_pl_season;
@@ -2293,20 +2314,78 @@ static void cat_format(const CatDef *c, uint32_t v, char *dst)
 
 /* ---------------- top-K list scans ---------------- */
 
-/* HoF: status 3 by (hof_season desc, index asc) */
-static void hof_scan(List *b)
+/* the filter label texts (C53): 'HALL OF FAME: ' + label when the cat is not ALL */
+static const char *const HOF_FILTER_LABELS[N_HOF_FILTERS] = {
+    "ALL", "P", "C", "1B", "2B", "3B", "SS", "OF", "DH" };
+
+/* one-byte hof_match table (C53): bit set = the entry of pitcher p (0 / 1) and pos1
+ * pos (0..15) shows under filter f */
+static uint8_t HOF_MATCH[N_HOF_FILTERS][2][16];
+
+/* fill HOF_MATCH from the Python rules: ALL everything, P any pitcher, else a batter
+ * whose pos1 is one of the filter's positions (a pitcher never matches a position) */
+static void hof_match_init(void)
+{
+    static const uint8_t poss[N_HOF_FILTERS][4] = {
+        { 255, 255, 255, 255 },       /* ALL: everything (fill below) */
+        { 255, 255, 255, 255 },       /* P: any pitcher */
+        { 1, 255, 255, 255 },         /* C */
+        { 2, 255, 255, 255 },         /* 1B */
+        { 3, 255, 255, 255 },         /* 2B */
+        { 4, 255, 255, 255 },         /* 3B */
+        { 5, 255, 255, 255 },         /* SS */
+        { 6, 7, 8, 255 },             /* OF */
+        { 9, 255, 255, 255 }          /* DH */
+    };
+    int f, p, pos, k;
+    uint8_t hit;
+    for (f = 0; f < N_HOF_FILTERS; f++) {
+        for (p = 0; p < 2; p++) {
+            for (pos = 0; pos < 16; pos++) {
+                hit = 0;
+                if (f == 0)
+                    hit = 1;
+                else if (f == HOF_F_P)
+                    hit = (uint8_t)p;
+                else if (!p) {
+                    for (k = 0; k < 4 && !hit; k++)
+                        if (poss[f][k] != 255 && poss[f][k] == (uint8_t)pos)
+                            hit = 1;
+                }
+                HOF_MATCH[f][p][pos] = hit;
+            }
+        }
+    }
+}
+
+/* hof_match (C53): f 0 always 1, f 1 any pitcher, else a batter at one of the filter
+ * positions (the prebuilt HOF_MATCH table; pos1 over 15 never matches) */
+static int hof_match(int f, const Entry *e)
+{
+    int p = e->pitcher != 0;
+    if (f == 0)
+        return 1;
+    if (f == HOF_F_P)
+        return p;
+    return e->pos1 < 16 ? HOF_MATCH[f][p][e->pos1] : 0;
+}
+
+/* HoF: status 3 by (hof_season desc, index asc), the filter applied before the
+ * LIST_MAX cut (C53) */
+static void hof_scan(List *b, int f)
 {
     uint32_t i;
     Entry e;
     b->n = 0;
     for (i = 0; i < n_entries(); i++) {
         read_entry(&e, i);
-        if (e.status == STATUS_HOF)
+        if (e.status == STATUS_HOF && hof_match(f, &e))
             list_add_desc(b, (int32_t)e.hof_season, i);
     }
 }
 
-/* career leaders: value desc (ERA asc), index asc */
+/* career leaders: value desc (ERA asc), index asc; g_lead_active keeps only STATUS_ACTIVE
+ * entries (C54, filtered before the LIST_MAX cut) */
 static void leaders_scan(List *b, int cat)
 {
     uint32_t i;
@@ -2315,6 +2394,8 @@ static void leaders_scan(List *b, int cat)
     b->n = 0;
     for (i = 0; i < n_entries(); i++) {
         read_entry(&e, i);
+        if (g_lead_active && e.status != STATUS_ACTIVE)
+            continue;
         if (cat_qualifies(&e, c)) {
             if (c->kind == CK_ERA)
                 list_add_asc(b, (int32_t)cat_value(&e, c), i);
@@ -3564,6 +3645,142 @@ static int playoff_message(void)
     return 1;
 }
 
+/* C30: the PLDR slot of idx, or NULL past POST_LEADER_MAX distinct entries; entries
+ * already in the tally keep counting (dynview's seen/n_seen rule) */
+static PlDr *pldr_slot(uint16_t idx, uint16_t nent)
+{
+    int i;
+    if (idx == NO_AWARD || idx >= nent)
+        return NULL;
+    for (i = 0; i < g_pldr_n; i++)
+        if (g_pldr[i].idx == idx)
+            return &g_pldr[i];
+    if (g_pldr_n == POST_LEADER_MAX)
+        return NULL;
+    g_pldr[g_pldr_n].idx = idx;
+    memset(g_pldr[g_pldr_n].s, 0, sizeof g_pldr[0].s);
+    return &g_pldr[g_pldr_n++];
+}
+
+/* C30: one BOXSCORE.DAT pass of season into g_pldr, the way playoff_headers streams
+ * the file (no whole-file buffer); player rows only (flags & 4 == 0), any g. Batting
+ * rows sum H s[2], HR s[4], RBI s[3], SB s[7]; pitching rows SO s[6], ER s[3] and
+ * outs = 3 * (IP10 / 10) + IP10 % 10. Returns the distinct entry count. */
+static int post_leader_tally(long season)
+{
+    char path[600];
+    FILE *f;
+    uint8_t rb[16];
+    g_pldr_n = 0;
+    path_join(path, g_lgdir, "BOXSCORE.DAT");
+    f = fopen(path, "rb");
+    if (!f)
+        return 0;
+    while (fread(rb, 1, sizeof rb, f) == sizeof rb) {
+        uint16_t season_r = (uint16_t)(rb[0] | ((uint16_t)rb[1] << 8));
+        uint16_t idx = (uint16_t)(rb[4] | ((uint16_t)rb[5] << 8));
+        PlDr *d;
+        const uint8_t *st;
+        if (season_r != season || (rb[3] & 4) != 0)
+            continue;
+        d = pldr_slot(idx, n_entries());
+        if (!d)
+            continue;
+        st = rb + 8;
+        if (rb[3] & 2) {
+            d->s[4] = (uint16_t)(d->s[4] + st[6]);
+            d->s[6] = (uint16_t)(d->s[6] + 3u * ((unsigned)st[0] / 10u)
+                                 + (unsigned)st[0] % 10u);
+            d->s[5] = (uint16_t)(d->s[5] + st[3]);
+        } else {
+            d->s[0] = (uint16_t)(d->s[0] + st[2]);
+            d->s[1] = (uint16_t)(d->s[1] + st[4]);
+            d->s[2] = (uint16_t)(d->s[2] + st[3]);
+            d->s[3] = (uint16_t)(d->s[3] + st[7]);
+        }
+    }
+    fclose(f);
+    return g_pldr_n;
+}
+
+/* ser_put / ser_team into the PLAYOFFS row buffer g_pser (g_ser is the WS rows') */
+static void ser_pser_put(int k, const char *c0, const char *c1, const char *c2,
+                         const char *c3, const char *c4);
+
+/* C30: the leader rows of the tally into g_pser from row n (at most 3 a category,
+ * ties by entry index ascending): (name 17, '', '', '', value text). The categories
+ * run H HR RBI SB SO IP (sum descending, above 0) and ERA (ER * 2700 / OUTS ascending,
+ * only entries with at least 27 outs). keys[][1] is the tally slot. Returns the count. */
+static int pldr_asc(const void *a, const void *b)
+{
+    const uint32_t *p = a, *q = b;
+    if (p[0] != q[0])
+        return p[0] < q[0] ? -1 : 1;                    /* ERA: value ascending */
+    if (g_pldr[p[1]].idx != g_pldr[q[1]].idx)
+        return g_pldr[p[1]].idx < g_pldr[q[1]].idx ? -1 : 1;
+    return 0;
+}
+
+static int post_leader_rows(int n)
+{
+    uint32_t FARDATA keys[POST_LEADER_MAX][2];
+    static const char *const fmts[] = { "%d H", "%d HR", "%d RBI", "%d SB", "%d SO" };
+    int cat, k, i;
+    for (cat = 0; cat < 7; cat++) {
+        int nk = 0;
+        for (k = 0; k < g_pldr_n; k++) {
+            const PlDr *d = &g_pldr[k];
+            uint32_t val;
+            if (cat == 5) {                             /* IP: OUTS */
+                if (d->s[6] == 0)
+                    continue;
+                val = d->s[6];
+            } else if (cat == 6) {                      /* ERA */
+                if (d->s[6] < 27)
+                    continue;
+                val = (uint32_t)d->s[5] * 2700u / d->s[6];
+            } else {
+                if (d->s[cat] == 0)
+                    continue;
+                val = d->s[cat];
+            }
+            keys[nk][0] = val;
+            keys[nk][1] = (uint32_t)k;
+            nk++;
+        }
+        if (cat == 6)
+            qsort(keys, nk, sizeof keys[0], pldr_asc);
+        else
+            for (i = 1; i < nk; i++) {                  /* descending val, entry asc */
+                uint32_t v = keys[i][0], sl = keys[i][1];
+                uint16_t e = g_pldr[sl].idx;
+                for (k = i - 1; k >= 0
+                     && (keys[k][0] < v
+                         || (keys[k][0] == v && g_pldr[keys[k][1]].idx > e)); k--) {
+                    keys[k + 1][0] = keys[k][0];
+                    keys[k + 1][1] = keys[k][1];
+                }
+                keys[k + 1][0] = v;
+                keys[k + 1][1] = sl;
+            }
+        for (i = 0; i < 3 && i < nk && n < PLAYOFF_ROWS_MAX; i++) {
+            char nm[NAME_CAP_MAX], txt[SLEN];
+            const PlDr *d = &g_pldr[keys[i][1]];
+            entry_name(d->idx, 17, nm);
+            if (cat == 5)
+                sprintf(txt, "%u.%u IP", (unsigned)(d->s[6] / 3),
+                        (unsigned)(d->s[6] % 3));
+            else if (cat == 6)
+                sprintf(txt, "%u.%02u ERA", (unsigned)(keys[i][0] / 100u),
+                        (unsigned)(keys[i][0] % 100u));   /* the 32-bit key */
+            else
+                sprintf(txt, fmts[cat], (unsigned)d->s[cat]);
+            ser_pser_put(n++, nm, "", "", "", txt);
+        }
+    }
+    return n;
+}
+
 /* ser_put / ser_team into the PLAYOFFS row buffer g_pser (g_ser is the WS rows') */
 static void ser_pser_put(int k, const char *c0, const char *c1, const char *c2,
                          const char *c3, const char *c4)
@@ -3601,6 +3818,7 @@ static int build_playoffs(long season)
     count = playoff_headers(season);
     if (count == 0)
         return playoff_message();
+    post_leader_tally(season);
     while (k < count) {
         uint8_t b = g_pl[k].b;
         int rnd = b & 3, L = (b >> 2) & 1;
@@ -3640,6 +3858,13 @@ static int build_playoffs(long season)
                     a, b2);
             ser_pser_put(n++, tmp, "", "", "", aux);
         }
+    }
+    if (g_pldr_n > 0 && n + 1 < PLAYOFF_ROWS_MAX) {  /* C30: the POSTSEASON LEADERS block */
+        int m;
+        ser_pser_put(n, "POSTSEASON LEADERS", "", "", "", "");
+        m = post_leader_rows(n + 1);
+        if (m > n + 1)                      /* the title only over a leader row */
+            n = m;
     }
     return n;
 }
@@ -3943,13 +4168,14 @@ static int build_hist_rows(int page)
     return n;
 }
 
-/* HOF row: NAME, IND, YRS, H/W, HR/SO(PSO), AVG/ERA, WAR */
+/* HOF row of page from the g_hofl scan (dynview.hof_rows; the filter was already
+ * applied by hof_scan): NAME, IND, YRS, H/W, HR/SO(PSO), AVG/ERA, WAR */
 static int build_hof_rows(int page)
 {
     int n = 0, k, r0 = page * ROWS_PER_PAGE, r;
+    Entry e;
+    char nm[NAME_CAP_MAX];
     for (r = r0; r < g_hofl.n && r < (page + 1) * ROWS_PER_PAGE; r++, n++) {
-        Entry e;
-        char nm[NAME_CAP_MAX];
         read_entry(&e, g_hofl.idx[r]);
         g_rows[n].ncells = 7;
         name_display(e.name, 12, nm);
@@ -4387,6 +4613,15 @@ static int msg_row(int page, const char *text)
     return 1;
 }
 
+/* the NO HALL OF FAMERS message text (C53) of filter f: the label appended */
+static const char *hof_msg(int f)
+{
+    static char msg[48];
+    strcpy(msg, "NO HALL OF FAMERS AT ");
+    strcat(msg, HOF_FILTER_LABELS[f]);
+    return msg;
+}
+
 /* a row count capped at LIST_MAX */
 static uint32_t capped(uint32_t n)
 {
@@ -4417,7 +4652,7 @@ static int total_rows(State st)
     case SCREEN_HOF:
         if (!g_hdr_seasons)
             return 0;
-        hof_scan(&g_hofl);
+        hof_scan(&g_hofl, (int)st.cat);
         return g_hofl.n;
     case SCREEN_LEADERS:
         return leaders_body(st, -1, &cols);
@@ -4503,7 +4738,9 @@ static int refresh_rows(State st, const ColDef **cols)
         hist_scan(&g_histl);
         return build_hist_rows(st.page);
     case SCREEN_HOF:
-        hof_scan(&g_hofl);
+        hof_scan(&g_hofl, (int)st.cat);
+        if (g_hofl.n == 0 && st.cat != 0)
+            return msg_row(st.page, hof_msg(st.cat));
         return build_hof_rows(st.page);
     case SCREEN_MILESTONES:
         if (st.cat != 1) {
@@ -4633,7 +4870,7 @@ static int32_t row_entry(State st)
     if (g_hdr_seasons == 0)
         return -1;
     if (st.screen == SCREEN_HOF) {
-        hof_scan(&g_hofl);
+        hof_scan(&g_hofl, (int)st.cat);
         return row < (int32_t)g_hofl.n ? (int32_t)g_hofl.idx[row] : -1;
     }
     if (st.screen == SCREEN_LEADERS) {
@@ -5091,6 +5328,20 @@ static State step(State in, int32_t key)
             s.page--;
         return s;
     }
+    /* C53: TAB on HALL OF FAME cycles the position filter; page and cursor reset.
+     * Every other screen's TAB does nothing. */
+    if (s.screen == SCREEN_HOF && key == KEY_TAB)
+        return mk_state(SCREEN_HOF, 0, (s.cat + 1) % N_HOF_FILTERS);
+
+    /* C54: A or a in CAREER mode flips the session-only active-only filter; page and row
+     * reset, the category and the BY YEAR season stay. Other modes are untouched. */
+    if (s.screen == SCREEN_LEADERS && (key == KEY_ACTIVE_CAP || key == KEY_ACTIVE_LOW)
+        && (s.cat >> 5) == MODE_CAREER) {
+        g_lead_active = !g_lead_active;
+        s.page = 0;
+        s.row = 0;
+        return s;
+    }
     if (s.screen == SCREEN_LEADERS && (key == KEY_LEFT || key == KEY_RIGHT)) {
         /* the category of the mode cycles; BY YEAR keeps its season (C13.3) */
         int d = (key == KEY_LEFT) ? -1 : 1;
@@ -5348,7 +5599,9 @@ static const ColDef *body_cols(State st)
     case SCREEN_HISTORY:
         return COLS_HISTORY;
     case SCREEN_HOF:
-        return COLS_HOF;
+        /* C53: the filtered-empty message row uses COLS_SINGLE */
+        hof_scan(&g_hofl, (int)st.cat);
+        return g_hofl.n == 0 && st.cat != 0 ? COLS_SINGLE : COLS_HOF;
     case SCREEN_LEADERS:
         return COLS_LEADERS;
     case SCREEN_FIND:
@@ -5395,6 +5648,10 @@ static int leaders_body(State st, int page, const ColDef **cols)
     const CatDef *c;
     if (mode == MODE_CAREER) {
         leaders_scan(&g_leadl, idx);
+        if (g_lead_active && g_leadl.n == 0) {
+            *cols = COLS_SINGLE;
+            return msg_row(page, "NO ACTIVE QUALIFIERS.");
+        }
         *cols = COLS_LEADERS;
         if (page >= 0)
             build_lead_rows(idx, page);
@@ -5890,8 +6147,8 @@ static const char *footer_of(State st)
     static const char *footers[6] = {
         "0-9 W P F SELECT   ESC EXIT",
         "ENTER STANDINGS   PGUP PGDN   ESC MENU",
-        "PGUP PGDN   ESC MENU",
-        "LEFT RIGHT STAT  TAB MODE  ENTER CARD",
+        "TAB POSITION   PGUP PGDN   ESC MENU",
+        "LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD",
         "LEFT RIGHT WATCH   PGUP PGDN   ESC MENU",
         "ENTER MENU   ESC MENU" };
     if (st.screen == SCREEN_FIND)
@@ -5941,13 +6198,20 @@ static void screen_title(State st, char *dst)
         strcpy(dst, "DYNASTY");
     else if (st.screen == SCREEN_HISTORY)
         strcpy(dst, "SEASON HISTORY");
-    else if (st.screen == SCREEN_HOF)
-        strcpy(dst, "HALL OF FAME");
+    else if (st.screen == SCREEN_HOF) {
+        /* C53: the filter label after 'HALL OF FAME: ' when the cat is not ALL */
+        if (st.cat != 0) {
+            strcpy(dst, "HALL OF FAME: ");
+            strcat(dst, HOF_FILTER_LABELS[st.cat]);
+        } else {
+            strcpy(dst, "HALL OF FAME");
+        }
+    }
     else if (st.screen == SCREEN_LEADERS) {
         int mode = (int)(st.cat >> 5);
         const char *label = leader_cats(mode)[st.cat & 31].label;
         if (mode == MODE_CAREER) {
-            strcpy(dst, "CAREER LEADERS: ");
+            strcpy(dst, g_lead_active ? "ACTIVE LEADERS: " : "CAREER LEADERS: ");
             strcat(dst, label);
         } else if (mode == MODE_SEASON) {
             strcpy(dst, "SEASON LEADERS: ");
@@ -6956,6 +7220,7 @@ int main(int argc, char **argv)
     _harderr(_hard_err_handler);
 #endif
 
+    hof_match_init();
     memset(g_hdr, 0, sizeof g_hdr);
     for (i = 1; i < argc; i++) {
         const uint8_t *v;

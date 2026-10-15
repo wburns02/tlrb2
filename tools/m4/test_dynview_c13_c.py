@@ -1112,6 +1112,160 @@ def test_c50_paging_other_keys_do_nothing(tmp_path):
     assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
     assert py_run(ldir, tmp_path, [KF, ord('J'), PGUP])[0] == (dynview.SCREEN_FIND, 0, 0)
 
+# ---------------------------------------------------------------- C53 HALL OF FAME filters
+def hof_players_c53():
+    """Five HoF entries (P C SS LF RF), one active DH battery mate and two actives:
+    no DH HoF member, so the DH filter shows the message row."""
+    return [
+        player('PITCHA', first='A', status=3, hof=2, pitcher=1, pos1=0,
+               totals=tot(W=300, OUTS=3704, ER=900, PSO=2995), war10=500),
+        player('CATCHR', first='C', status=3, hof=3, pitcher=0, pos1=1,
+               totals=tot(H=2000, AB=6000, HR=150), war10=400),
+        player('SSMAN', first='S', status=3, hof=3, pitcher=0, pos1=5,
+               totals=tot(H=2500, AB=8000, HR=80), war10=450),
+        player('LFMAN', first='L', status=3, hof=3, pitcher=0, pos1=6,
+               totals=tot(H=2300, AB=7800, HR=300), war10=430),
+        player('RFMAN', first='R', status=3, hof=2, pitcher=0, pos1=8,
+               totals=tot(H=2200, AB=7500, HR=350), war10=420),
+        player('DHMAN', first='D', status=1, hof=0, pitcher=0, pos1=9,
+               totals=tot(H=1900, AB=7000, HR=280), war10=380),
+        player('ACTIVE1', first='X', totals=tot(H=100, AB=2000)),
+        player('ACTIVE2', first='Y', pitcher=1, pos1=0, totals=tot(W=10, OUTS=500)),
+    ]
+
+
+@needs_fonts
+def test_hof_pitcher_pos1_not_in_position_filter(tmp_path):
+    """C53: a HoF pitcher whose pos1 is a batting position (SS 5) shows under ALL and P
+    only, never under the SS filter, in Python and in the C port"""
+    pl = hof_players_c53()
+    pl[0] = player('PITCHA', first='A', status=3, hof=2, pitcher=1, pos1=5,
+                   totals=tot(W=300, OUTS=3704, ER=900, PSO=2995), war10=500)
+    ldir = league(tmp_path, pl, seasons=4, start=1990, name='hof53p')
+    s, data = py_run(ldir, tmp_path, [K2] + [TAB] * 6)
+    assert dynview.screen_title(s, data) == 'HALL OF FAME: SS'
+    assert [r[0] for r in dynview.rows(s, data)] == ['SSMAN, S']
+    check(ldir, tmp_path, 'c53p_ss', [K2] + [TAB] * 6)
+    check(ldir, tmp_path, 'c53p_p', [K2, TAB])
+
+
+@needs_fonts
+def test_hof_filter_frames(tmp_path):
+    """C53: the ALL page with the new footer, P (the pitcher's row), OF with the cursor
+    on row 1, the DH message row of a league with none, TAB wrap back to ALL, and the
+    other position pages; every frame matches Python's bytes"""
+    ldir = league(tmp_path, hof_players_c53(), seasons=4, start=1990, name='hof53')
+    all0 = check(ldir, tmp_path, 'c53_all', [K2])
+    assert py_run(ldir, tmp_path, [K2])[0] == (dynview.SCREEN_HOF, 0, 0)
+    s, data = py_run(ldir, tmp_path, [K2])
+    assert dynview.footer_text(s, data) == 'TAB POSITION   PGUP PGDN   ESC MENU'
+    for f in range(1, 9):
+        check(ldir, tmp_path, 'c53_f%d' % f, [K2] + [TAB] * f)
+    assert py_run(ldir, tmp_path, [K2] + [TAB] * 9)[0] == (dynview.SCREEN_HOF, 0, 0)
+    assert check(ldir, tmp_path, 'c53_wrap', [K2] + [TAB] * 9) == all0
+    # P shows the one HoF pitcher, OF three outfielders; DH has none
+    s, data = py_run(ldir, tmp_path, [K2, TAB])
+    assert [r[0] for r in dynview.rows(s, data)] == ['PITCHA, A']
+    assert dynview.screen_title(s, data) == 'HALL OF FAME: P'
+    s, data = py_run(ldir, tmp_path, [K2] + [TAB] * 7)
+    assert [r[0] for r in dynview.rows(s, data)] == ['LFMAN, L', 'RFMAN, R']
+    s, data = py_run(ldir, tmp_path, [K2] + [TAB] * 8)
+    assert dynview.rows(s, data) == [('NO HALL OF FAMERS AT DH',)]
+    assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
+
+
+@needs_fonts
+def test_hof_filter_cursor_card_and_esc_frames(tmp_path):
+    """C53: the OF frame with the cursor on row 1, the card opened from a filtered row
+    (the cursor entry of hof_order(hist, cat)) and ESC back to the identical filter state"""
+    ldir = league(tmp_path, hof_players_c53(), seasons=4, start=1990, name='hof53c')
+    of = [K2] + [TAB] * 7
+    row1 = check(ldir, tmp_path, 'c53_of_row1', of + [DOWN])
+    assert py_run(ldir, tmp_path, of + [DOWN])[0] == (dynview.SCREEN_HOF, 0, 7, 1)
+    card = check(ldir, tmp_path, 'c53_card', of + [DOWN, ENTER])
+    assert py_run(ldir, tmp_path, of + [DOWN, ENTER])[0] == (dynview.SCREEN_CARD, 0, 4)
+    assert check(ldir, tmp_path, 'c53_esc_back', of + [DOWN, ENTER, ESC]) == row1
+    # a card from another filter's row 0 (SS) and back
+    ss = [K2] + [TAB] * 6
+    check(ldir, tmp_path, 'c53_card_ss', ss + [ENTER])
+    assert py_run(ldir, tmp_path, ss + [ENTER])[0] == (dynview.SCREEN_CARD, 0, 2)
+    assert check(ldir, tmp_path, 'c53_esc_ss', ss + [ENTER, ESC]) == \
+        check(ldir, tmp_path, 'c53_ss_plain', ss)
+
+
+@needs_fonts
+def test_hof_filter_empty_leagues_frames(tmp_path):
+    """C53: the DH message row of a one-catching league, PGDN on it (stays), and cat 0
+    of a league with no HoF members at all (today's empty table, COLS_HOF)"""
+    one = league(tmp_path, [player('ONLYC', first='C', status=3, hof=1, pos1=1,
+                                   totals=tot(H=100, AB=400))],
+                 seasons=2, start=1990, name='hofone')
+    msg = check(one, tmp_path, 'c53_empty_dh', [K2] + [TAB] * 8)
+    assert py_run(one, tmp_path, [K2] + [TAB] * 8)[0] == (dynview.SCREEN_HOF, 0, 8)
+    assert check(one, tmp_path, 'c53_empty_dh_pgdn', [K2] + [TAB] * 8 + [PGDN]) == msg
+    assert check(one, tmp_path, 'c53_empty_msg_esc', [K2] + [TAB] * 8 + [ESC]) == \
+        check(one, tmp_path, 'c53_plain_esc', [K2, ESC])
+    check(one, tmp_path, 'c53_empty_c', [K2, TAB, TAB])
+    none = league(tmp_path, [player('ACT', first='A', totals=tot(H=10, AB=40))],
+                  seasons=2, name='hofnone')
+    check(none, tmp_path, 'c53_nohof_all', [K2])
+    assert py_run(none, tmp_path, [K2])[0] == (dynview.SCREEN_HOF, 0, 0)
+
+# ---------------------------------------------------------------- C54 LEADERS active-only
+def active_league(tmp_path, name='c54'):
+    """Six career batters: three active (H 3000 / 2000 / 2000), two retired and one HoF
+    (the retired ones lead the unfiltered list), with season lines for the TAB walk"""
+    players = [player('ALPHA', totals=tot(H=3000, AB=9000)),
+               player('BRAVO', totals=tot(H=2000, AB=3000)),
+               player('CHARLIE', totals=tot(H=2000, AB=3000)),
+               player('DELTA', status=2, totals=tot(H=2500, AB=3000)),
+               player('ECHO', status=3, totals=tot(H=2400, AB=3000)),
+               player('FOXTROT', status=2, totals=tot(H=100))]
+    return league(tmp_path, players, name=name)
+
+
+@needs_fonts
+def test_c54_career_active_parity(tmp_path):
+    """The CAREER LEADERS frame with the new footer, the ACTIVE frame after A, the ACTIVE
+    frame with the cursor on row 1, the empty ACTIVE message frame, and A in SEASON mode
+    (the frame is unchanged) all match Python's bytes"""
+    ldir = active_league(tmp_path)
+    check(ldir, tmp_path, 'c54_career_new_footer', [K3])
+    act = check(ldir, tmp_path, 'c54_active', [K3, ord('A')])
+    assert check(ldir, tmp_path, 'c54_active_a_lower', [K3, ord('a')]) == act
+    check(ldir, tmp_path, 'c54_active_row1', [K3, ord('A'), DOWN])
+    empty = league(tmp_path, [player('ALPHA', status=2, totals=tot(H=3000, AB=9000))],
+                   name='c54empty')
+    check(empty, tmp_path, 'c54_active_empty', [K3, ord('A')])
+    season = check(ldir, tmp_path, 'c54_season_base', [K3, TAB])
+    assert check(ldir, tmp_path, 'c54_season_a_stays', [K3, TAB, ord('A')]) == season
+    # the unfiltered career frame ranks the retired players first again after 'a'
+    career = check(ldir, tmp_path, 'c54_career_again', [K3, ord('A'), ord('A')])
+    assert career == check(ldir, tmp_path, 'c54_career_plain', [K3])
+
+
+@needs_fonts
+def test_c54_active_flag_survives_and_card_parity(tmp_path):
+    """The flag survives the TAB round trip to SEASON and back, the PLAYER CARD opened from
+    the ACTIVE list and ESC back to it, LEFT/RIGHT, and ESC to MENU"""
+    ldir = active_league(tmp_path)
+    act = check(ldir, tmp_path, 'c54_h_after_tabs', [K3, ord('A'), TAB, TAB, TAB, TAB])
+    assert check(ldir, tmp_path, 'c54_active_plain', [K3, ord('A')]) == act
+    card = check(ldir, tmp_path, 'c54_card_from_active', [K3, ord('A'), ENTER])
+    assert py_run(ldir, tmp_path, [K3, ord('A'), ENTER])[0] == (CARD, 0, 0)
+    assert check(ldir, tmp_path, 'c54_card_esc_back', [K3, ord('A'), ENTER, ESC]) == \
+        check(ldir, tmp_path, 'c54_active_plain2', [K3, ord('A')])
+    assert card != act
+    check(ldir, tmp_path, 'c54_menu_after_card_esc', [K3, ord('A'), ENTER, ESC, ESC])
+    s, data = py_run(ldir, tmp_path, [K3, ord('A')])
+    order = [i for _v, i, _e in dynview.career_order(data['hist'], 0, True)]
+    assert order == [0, 1, 2]                # the retired entries lead the unfiltered list
+    assert dynview.row_entry(s, data) == 0
+    assert dynview.screen_title(s, data) == 'ACTIVE LEADERS: H'
+    # the filter re-ranks behind the cursor: row 1 is entry 1 (BRAVO)
+    down, data2 = py_run(ldir, tmp_path, [K3, ord('A'), DOWN])
+    assert dynview.row_entry(down, data2) == 1
+
 
 # ---------------------------------------------------------------- C56 HISTORY cursor and STANDINGS jump
 @needs_fonts
