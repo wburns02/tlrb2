@@ -141,6 +141,7 @@ typedef struct {
 /* the program state (create.py state dict; the image lives in g_image) */
 typedef struct {
     int16_t screen, cursor, team, slot, msg, budget;
+    uint32_t seed;              /* C34: session auto-fill seed, 1 at start */
     Form form;
 } State;
 
@@ -216,7 +217,7 @@ static const char *FOOT_CONFIRM = "ENTER REPLACE   ESC BACK";
 static const char *FOOT_DONE = "ENTER CREATE ANOTHER   ESC EXIT";
 static const char *FOOT_NAME = "TYPE NAME   UP DOWN   ESC SLOTS";
 static const char *FOOT_SAVE = "ENTER SAVE   UP DOWN   ESC SLOTS";
-static const char *FOOT_FIELD = "UP DOWN   LEFT RIGHT CHANGE   ESC SLOTS";
+static const char *FOOT_FIELD = "UP DOWN  LEFT RIGHT  A AUTO  ESC SLOTS";
 static const char *MSG_NAME = "TYPE A LAST NAME FIRST";
 /* C31: point budgets per mode (OFF, ROOKIE, REGULAR, STAR) and messages */
 static const uint8_t BUDGET_BAT[4] = { 0, 36, 45, 54 };
@@ -1089,6 +1090,36 @@ static int budget_cap(const State *st)
     return tab[st->budget];
 }
 
+/* C34: key A auto-fill of the ratings from the session seed (create.py _autofill).
+ * The n ratings (3 on a pitcher slot) start at 1 and gain one point per seeded LCG
+ * step until they sum to the current mode's budget (REGULAR when the mode is OFF):
+ * seed = (seed * 1103515245 + 12345) % 2^31, i = (seed >> 16) % n, and a step adds
+ * nothing when r[i] is at its cap. The final seed is kept for the next A. */
+static uint32_t autofill(State *st)
+{
+    int pitcher = st->slot < PITCHER_SLOTS;
+    int n = pitcher ? 3 : 6;
+    const uint8_t *tab = pitcher ? BUDGET_PIT : BUDGET_BAT;
+    int target = tab[st->budget ? st->budget : 2];
+    int r[6] = { 1, 1, 1, 1, 1, 1 };
+    uint32_t seed = st->seed;
+    int sum = n, i;                     /* the n ratings start at 1 each */
+    while (sum < target) {
+        int cap;
+        seed = (seed * 1103515245u + 12345u) % 0x80000000u;
+        i = (int)((seed >> 16) % (uint32_t)n);
+        cap = pitcher && i == 2 ? PIT_ENDURANCE_CAP : RATING_CAP;
+        if (r[i] < cap) {
+            r[i] += 1;
+            sum += 1;
+        }
+    }
+    st->seed = seed;
+    for (i = 0; i < n; i++)
+        st->form.r[i] = (int16_t)r[i];
+    return seed;
+}
+
 static int step_edit(State *st, int32_t key)
 {
     int pitcher = st->slot < PITCHER_SLOTS;
@@ -1105,6 +1136,10 @@ static int step_edit(State *st, int32_t key)
     }
     if ((key == 66 || key == 98) && fld != FLD_LAST && fld != FLD_FIRST) {
         st->budget = (int16_t)((st->budget + 1) % 4);   /* C31: cycle the budget mode */
+        return 0;
+    }
+    if ((key == 65 || key == 97) && fld != FLD_LAST && fld != FLD_FIRST) {
+        autofill(st);                                   /* C34: the A auto-fill */
         return 0;
     }
     if (key == KEY_ENTER) {
@@ -1830,6 +1865,7 @@ static void start_state(void)
 {
     memset(&g_state, 0, sizeof g_state);
     g_state.screen = S_TEAM;
+    g_state.seed = 1;
     blank_form(&g_state.form);
 }
 

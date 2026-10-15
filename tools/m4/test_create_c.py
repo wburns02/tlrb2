@@ -534,6 +534,28 @@ def test_parity_budget_c31(tmp_path):
     assert (st['screen'], st['budget']) == (cr.S_EDIT, 2)
 
 
+# ---------------------------------------------------------------- parity: C34 A auto-fill
+# Synthetic fonts, so the parity runs without the game fonts (glyph shapes do not
+# matter, both sides draw the same ones).
+def test_parity_autofill_c34(tmp_path):
+    """C34: key A on the edit screen auto-fills from the session seed; the framebuffer
+    and the saved V20 bytes match on a batter (each mode, once and twice) and a
+    pitcher under STAR, and A typed into the first name stays a letter."""
+    fonts = synth_fonts(os.path.join(str(tmp_path), 'c34fonts'))
+    batter = [ENTER] + [DOWN] * 16 + [ENTER] + [DOWN] * 6
+    parity(tmp_path, batter + [97], fonts=fonts)                     # OFF: REGULAR target
+    parity(tmp_path, batter + [66] + [65], fonts=fonts)              # ROOKIE
+    parity(tmp_path, batter + [66, 66] + [97], fonts=fonts)          # REGULAR
+    parity(tmp_path, batter + [66] * 3 + [65], fonts=fonts)          # STAR
+    parity(tmp_path, batter + [66, 66, 66] + [65, 65], fonts=fonts)  # twice under STAR
+    parity(tmp_path, [ENTER, ENTER] + [DOWN] * 5 + [66] * 3 + [65],
+           fonts=fonts)                                              # P1, STAR
+    parity(tmp_path, [ENTER] + [DOWN] * 16 + [ENTER] + [65] + [DOWN, 97, UP],
+           fonts=fonts)                                              # A types on names
+    parity(tmp_path, batter + [65, ESC, DOWN, ENTER, 65],
+           fonts=fonts)                                              # seed across screens
+
+
 # ---------------------------------------------------------------- 3 divisions: team list (C12.3)
 # These run without the game fonts: synthetic MAIN.FNT / BOLD.FNT of the same layout (glyph
 # shapes do not matter, both sides draw the same ones), so the host team list is always checked.
