@@ -787,7 +787,7 @@ def test_offseason_titles_footers_and_menu(tmp_path):
                 'ENTER NEXT   PGUP PGDN   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5))) == 'ENTER CONTINUE   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5, 0))) == 'ENTER MENU   ESC MENU'
-    assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '0-9 W SELECT   ESC EXIT'
+    assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '0-9 W P F SELECT   ESC EXIT'
     assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == 'PGUP PGDN   ESC MENU'
     assert dynview.footer_text((dynview.SCREEN_REVIEW, 0, 0)) == 'ENTER MENU   ESC MENU'
     # the menu's sixth row and key 6; key 7 opens DYNASTY SETTINGS, 9 SEASON AWARDS
@@ -1147,7 +1147,7 @@ def test_hub_rows_with_and_without_history(tmp_path):
     empty.mkdir()
     data = dynview.load_data(str(empty))
     assert dynview.rows(HUB, data) == [(t,) for t in dynview.MENU_ROWS]
-    assert dynview.footer_text(HUB, data) == '0-9 W SELECT   ESC EXIT'
+    assert dynview.footer_text(HUB, data) == '0-9 W P F SELECT   ESC EXIT'
     # screens 1..6, SEASON AWARDS and SEASON STANDINGS with no history keep the one
     # NO DYNASTY row
     for scr in list(range(1, 7)) + [dynview.SCREEN_AWARDS, dynview.SCREEN_STANDINGS]:
@@ -1569,7 +1569,7 @@ def test_awards_hub_key_and_footers(tmp_path):
     assert dynview.step((SA, 0, 0), ESC, data) == (HUB, 0)
     assert dynview.screen_title((SA, 0, 0), data) == '1995 AWARDS'
     assert dynview.footer_text((SA, 0, 0), data) == AWARDS_FOOTER
-    assert dynview.footer_text(HUB, data) == '0-9 W SELECT   ESC EXIT'
+    assert dynview.footer_text(HUB, data) == '0-9 W P F SELECT   ESC EXIT'
     assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
     assert dynview.TITLE_FOOTER == '0-9 W SELECT   ENTER PLAY BALL'
     # ENTER opens the PLAYER CARD of the highlighted award's player (C13.4); ESC goes back
@@ -1900,7 +1900,7 @@ def test_leader_kinds_outside_ranges_ignored(tmp_path):
 
 # ---------------------------------------------------------------- standings
 SS = dynview.SCREEN_STANDINGS
-STAND_FOOTER = 'LEFT RIGHT SEASON   PGUP PGDN   ESC MENU'
+STAND_FOOTER = 'T TEAM  LEFT RIGHT SEASON  PGUP PGDN  ESC'
 # MAJ team names by league-global id: AL id 5 has no stem (its row reads 'TEAM 5');
 # ids 14 and 15 are not teams in the MAJ
 AL_NAMES = {0: 'BOSTON', 1: 'DETROIT', 2: 'CLEVELAND', 3: 'NEW YORK', 4: 'CHICAGO',
@@ -2091,7 +2091,7 @@ def test_standings_hub_key_and_footers(tmp_path):
     assert dynview.screen_title((SS, 0, 0), data) == '1995 STANDINGS'
     assert dynview.screen_title((SS, 0, 2), data) == '1993 STANDINGS'
     assert dynview.footer_text((SS, 0, 0), data) == STAND_FOOTER
-    assert dynview.footer_text(HUB, data) == '0-9 W SELECT   ESC EXIT'
+    assert dynview.footer_text(HUB, data) == '0-9 W P F SELECT   ESC EXIT'
     assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
     # ENTER does nothing on SEASON STANDINGS
     assert dynview.step((SS, 0, 0), ENTER, data) == ((SS, 0, 0), 0)
@@ -2369,7 +2369,7 @@ def test_series_hub_key_and_footers(tmp_path):
     assert dynview.screen_title((SW, 0, 2), data) == '1993 WORLD SERIES'
     assert dynview.footer_text((SW, 0, 0), data) == SERIES_FOOTER
     assert dynview.FOOTERS[SW] == SERIES_FOOTER
-    assert dynview.footer_text(HUB, data) == '0-9 W SELECT   ESC EXIT'
+    assert dynview.footer_text(HUB, data) == '0-9 W P F SELECT   ESC EXIT'
     assert dynview.footer_text(T, data) == '0-9 W SELECT   ENTER PLAY BALL'
     assert dynview.TITLE_FOOTER == '0-9 W SELECT   ENTER PLAY BALL'
     # ENTER does nothing on WORLD SERIES
@@ -3701,6 +3701,255 @@ def test_post_tab_cycle_and_left_right(tmp_path):
     s, _ex = dynview.step(s, dynview.KEY_RIGHT, data)
     assert s == (PM, 0, POST + 1)
 
+# ---------------------------------------------------------------- C40 HONORS view
+def honors_league(tmp_path, name='honors'):
+    """ALPHA (entry 0, awards MVP 2 CY 1 ROY 0 GG 3 SS 0) with an MVP award record, a NL
+    BA leader record and a milestone in seasons 1 and 2, so season 3 has no award or
+    leader records; BAKER (entry 1) with an award record of season 3 only; HOTEL
+    (entry 2) with no records. HISTORY start 1990 so year_text(season 1) = 1990."""
+    ldir = tmp_path / name
+    ldir.mkdir()
+    d = bytearray(32 + 64 * 128 + 3 * 160)
+    d[3] = 1
+    d[4], d[5] = 3, 0
+    d[6], d[7] = 3, 0
+    d[18], d[19] = 1990 & 255, 1990 >> 8
+    write_season(d, 1, b'ALA01', b'NL01', awards=(0, 0xffff, 0xffff, 1, 0xffff, 0xffff))
+    write_season(d, 2, b'ALA02', b'NL02', awards=(0, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff))
+    write_season(d, 3, b'ALA03', b'NL03', awards=(1, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff))
+    t0 = [0] * 25
+    t0[AB], t0[H] = 9000, 3000
+    write_player(d, 0, b'ALPHA', b'A', status=1, totals=t0,
+                 awards=(2, 1, 0, 3, 0))
+    t1 = [0] * 25
+    t1[AB], t1[H] = 500, 150
+    write_player(d, 1, b'BAKER', b'B', status=1, totals=t1, awards=(0, 0, 1, 0, 0))
+    write_player(d, 2, b'HOTEL', b'H', status=1)
+    (ldir / 'HISTORY.DAT').write_bytes(bytes(d))
+    write_mileston(str(ldir / 'MILESTON.DAT'), [
+        (1, 0, 64, 1),           # ALPHA AL MVP of season 1
+        (2, 0, 128, 330),        # ALPHA AL BA LEADER .330 of season 2 (before 96+0)
+        (2, 0, 160, 333),        # ALPHA NL BA LEADER .333 of season 2 (same season)
+        (2, 0, 2, 3000),         # ALPHA 3000 HITS of season 2 (before the leaders?)
+        (3, 1, 65, 2),           # BAKER AL CY YOUNG of season 3
+    ])
+    return ldir
+
+
+def test_honors_rows_order_and_text(tmp_path):
+    """the first row holds the career counts; the items sort by (season, group, order):
+    the season's award record, then the milestone (same season, by file position), then
+    the two leader records of the same season in file order; a season without award or
+    leader records uses the fallback winners"""
+    ldir = honors_league(tmp_path)
+    data = dynview.load_data(str(ldir))
+    s = (dynview.SCREEN_CARD, 0, 0, 1)
+    assert dynview.body_cols(s, data) == dynview.COLS_HONORS
+    assert dynview.footer_text(s, data) == 'PGUP PGDN  H SEASONS  ESC BACK'
+    rows = dynview.rows(s, data)
+    # items of the same season keep file order: the season 2 records of ALPHA come as the
+    # two leader records (positions 1 and 2) and then the milestone (position 3)
+    assert rows[0] == ('', 'MVP 2  CY 1  ROY 0  GG 3  SS 0')
+    body = rows[1:]
+    assert body == [('1990', 'AL MVP'),                  # season 1 award record
+                    ('1991', 'AL BA LEADER .330 BA'),    # season 2 leader records (pos 1)
+                    ('1991', 'NL BA LEADER .333 BA'),    # ... then (pos 2)
+                    ('1991', '3000 HITS')]               # ... then the milestone (pos 3)
+    # BAKER: the fallback of season 1 (NL MVP of the table, awards=(0, FFFF, FFFF, 1, ...))
+    # and the season 3 award record; season 3 has a record so no fallback there
+    rows1 = dynview.rows((dynview.SCREEN_CARD, 0, 1, 1), data)
+    assert rows1[0] == ('', 'MVP 0  CY 0  ROY 1  GG 0  SS 0')
+    assert rows1[1:] == [('1990', 'NL MVP'), ('1992', 'AL CY YOUNG')]    # HOTEL: only the first row
+    assert dynview.rows((dynview.SCREEN_CARD, 0, 2, 1), data) == \
+        [('', 'MVP 0  CY 0  ROY 0  GG 0  SS 0')]
+
+
+def test_honors_hof_row_and_fallback_caps(tmp_path):
+    """a HOF entry gets HALL OF FAME at its hof_season in group 1: after that season's
+    records, before the next season's. Past the season table there is no fallback"""
+    ldir = honors_league(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[8224 + 22 + 0 * 160] = 3                       # ALPHA status HOF
+    d[8224 + 150 + 0 * 160] = 3                      # hof_season 3
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    rows = dynview.rows((dynview.SCREEN_CARD, 0, 0, 1), data)
+    # season 3's award record names BAKER (idx 1), so ALPHA has no season 3 item but the
+    # HOF row (group 1) still lands at hof_season 3 = 1992
+    assert rows[1:] == [('1990', 'AL MVP'), ('1991', 'AL BA LEADER .330 BA'),
+                        ('1991', 'NL BA LEADER .333 BA'), ('1991', '3000 HITS'),
+                        ('1992', 'HALL OF FAME')]
+
+
+def test_honors_paging_keys_and_esc(tmp_path):
+    """HONORS pages 9 rows: 12 award records give 13 rows over 2 pages, PGDN/PGUP page,
+    the second PGDN stays; H toggles and resets the page; ESC from HONORS returns
+    data['card_back']"""
+    ldir = honors_league(tmp_path)
+    p = ldir / 'MILESTON.DAT'
+    write_mileston(str(p), [(s, 0, 64, 1) for s in range(1, 13)])
+    data = dynview.load_data(str(ldir))
+    assert len(dynview.honors_rows(data['hist'], data['ms'], 0)) == 13
+    s0 = (dynview.SCREEN_CARD, 0, 0, 1)
+    assert [r[0] for r in dynview.rows(s0, data)] == \
+        ['', '1990', '1991', '1992', '1993', '1994', '1995', '1996', '1997']
+    s = dynview.step(s0, dynview.KEY_PGDN, data)[0]
+    assert s == (dynview.SCREEN_CARD, 1, 0, 1)
+    assert [r[0] for r in dynview.rows(s, data)] == ['1998', '1999', '2000', '2001']
+    assert dynview.step(s, dynview.KEY_PGDN, data)[0] == s        # the last page stays
+    assert dynview.step(s, dynview.KEY_PGUP, data)[0] == s0
+    assert dynview.step(s0, dynview.KEY_PGUP, data)[0] == s0
+    # H toggles the view and resets the page; ESC returns card_back from both views
+    data['card_back'] = (dynview.SCREEN_LEADERS, 0, 0, 2)
+    s2 = dynview.step((dynview.SCREEN_CARD, 2, 0), 72, data)[0]
+    assert s2 == (dynview.SCREEN_CARD, 0, 0, 1)
+    assert dynview.step(s2, 104, data)[0] == (dynview.SCREEN_CARD, 0, 0)
+    assert dynview.step(s2, dynview.KEY_ESC, data)[0] == (dynview.SCREEN_LEADERS, 0, 0, 2)
+    assert dynview.step((dynview.SCREEN_CARD, 0, 0), dynview.KEY_ESC, data)[0] == \
+        (dynview.SCREEN_LEADERS, 0, 0, 2)
+    # PGDN on HONORS does not touch the SEASONS paging bounds (its own row count)
+    assert dynview.step((dynview.SCREEN_CARD, 0, 0), dynview.KEY_PGDN, data)[0] == \
+        (dynview.SCREEN_CARD, 0, 0)
+
+
+# ---------------------------------------------------------------- C50 FIND PLAYER
+def find_players(write):
+    """HISTORY.DAT bytes d: last names that collide under the prefix sorts, one unused
+    entry (status 0), and one lower-case stored last name (write = write_player)."""
+    def add(i, last, first, status, played, pos1, pitcher=0, hof=0):
+        write(i, last.encode(), first.encode(), status=status, seasons_played=played,
+              pitcher=pitcher, hof_season=hof)
+        o = 8224 + i * 160
+        # write_player has no pos1: patch the position byte
+        return o
+    return add
+
+
+def make_find(tmp_path, writer):
+    """make_data league whose entries 0..6 are the FIND fixture (the rest stay)."""
+    ldir, mb = make_data(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    rows = [(0, b'SMITH', b'JOHN', 2, 12, 3), (1, b'smith', b'AARON', 1, 5, 0),
+            (2, b'SMYTHE', b'ZEKE', 3, 18, 6), (3, b'JONES', b'SAM', 1, 4, 5),
+            (4, b'UNUSED', b'NO', 0, 0, 9), (5, b'BROWN', b'X', 1, 1, 3),
+            (6, b'NOBODY', b'Q', 1, 2, 7)]
+    for i, last, first, status, played, pos1 in rows:
+        o = 8224 + i * 160
+        d[o:o + 20] = (last + b'\0' * 12)[:12] + (first + b'\0' * 8)[:8]
+        d[o + 22] = status
+        struct.pack_into('<H', d, o + 28, played)
+        d[o + 30] = pos1
+    p.write_bytes(bytes(d))
+    return ldir
+
+
+def test_find_open_edit_and_rows(tmp_path):
+    """C50: F/f on the hub opens FIND with data['find'] = '' and the prompt row; letters
+    append (upper case, at most FIND_MAX), BACKSPACE removes; edits reset page and row;
+    the MENU footer exact."""
+    ldir = make_find(tmp_path, write_player)
+    data = dynview.load_data(str(ldir))
+    HUB = (dynview.SCREEN_MENU, 0, 0)
+    s, _ex = dynview.step(HUB, ord('F'), data)
+    assert s == (dynview.SCREEN_FIND, 0, 0)
+    assert dynview.step(HUB, ord('f'), data)[0] == s
+    assert data['find'] == ''
+    assert dynview.rows(s, data) == [('TYPE THE START OF A LAST NAME.',)]
+    assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
+    assert dynview.screen_title(s, data) == 'FIND PLAYER: _'
+    assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
+    assert dynview.FOOTERS[dynview.SCREEN_MENU] == '0-9 W P F SELECT   ESC EXIT'
+    assert dynview.FOOTERS[dynview.SCREEN_FIND] == 'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
+    # typing: a fresh FIND, then letters append upper case, edits reset, BACKSPACE
+    # removes, a 13th letter never lands
+    s = press(s, ord('a'), data)
+    assert s == (dynview.SCREEN_FIND, 0, 0) and data['find'] == 'A'
+    s = press((dynview.SCREEN_FIND, 1, 0, 3), ord('b'), data)
+    assert s == (dynview.SCREEN_FIND, 0, 0) and data['find'] == 'AB'
+    s = press(s, 8, data)
+    assert data['find'] == 'A' and s == (dynview.SCREEN_FIND, 0, 0)
+    s, _ex = dynview.step(HUB, ord('F'), data)          # start the cap check over
+    for k in 'ABCDEFGHIJKL':
+        s = press(s, ord(k.lower()), data)
+    assert data['find'] == 'ABCDEFGHIJKL'
+    s = press(s, ord('z'), data)
+    assert data['find'] == 'ABCDEFGHIJKL' and dynview.screen_title(s, data) == \
+        'FIND PLAYER: ABCDEFGHIJKL_'
+    # digits and TAB never type
+    s = press(s, ord('5'), data)
+    assert data['find'] == 'ABCDEFGHIJKL'
+    # a non-letter key down a filtered list leaves the state alone
+    s2 = (dynview.SCREEN_FIND, 0, 0, 1)
+    assert dynview.step(s2, ord('5'), data) == (s2, 0)
+    # C is a letter here (it types, it does not open the card)
+    s3 = (dynview.SCREEN_FIND, 0, 0)
+    s4 = press(s3, ord('c'), data)
+    assert s4 == (dynview.SCREEN_FIND, 0, 0)
+    # ESC back to the hub, query unchanged
+    assert dynview.step((dynview.SCREEN_FIND, 0, 0, 2), ESC, data) == (HUB, 0)
+
+
+def _find_cells(hist, q):
+    """the find_rows cells without their entries (C50)"""
+    return [c for _i, c in dynview.find_rows(hist, q)]
+
+
+def test_find_rows_filter_sort_and_status(tmp_path):
+    """find_rows filters by the last-name prefix (lower-case names match too), sorts by
+    (last upper, first upper, index), never lists status 0, and labels the statuses;
+    a no-match query gives the NO PLAYER FOUND row keeping COLS_FIND."""
+    ldir = make_find(tmp_path, write_player)
+    data = dynview.load_data(str(ldir))
+    hist = data['hist']
+    assert _find_cells(hist, '') == []
+    assert _find_cells(hist, 'SM') == [
+        ('smith, AARON', 'P', '5', 'ACTIVE'),
+        ('SMITH, JOHN', '2B', '12', 'RETIRED'),
+        ('SMYTHE, ZEKE', 'LF', '18', 'HALL OF FAME')]
+    assert _find_cells(hist, 'J') == [('JONES, SAM', 'SS', '4', 'ACTIVE')]
+    # lower-case compare: only the letter keys build an upper-case query, the sort is on
+    # the upper-cased last name (folded here by upper())
+    assert _find_cells(hist, 'SMI') == \
+        [r for r in _find_cells(hist, 'SM') if r[0].upper().startswith('SMI')]
+    assert _find_cells(hist, 'UNUSED') == []     # status 0 never listed
+    # lower-case queries upper (the letter keys never build one, but find_rows folds)
+    # ENTER opens the row's entry (row 1 is SMITH, JOHN: entry 0), ESC back keeps the query
+    s = (dynview.SCREEN_FIND, 0, 0, 1) if False else press((dynview.SCREEN_FIND, 0, 0),
+                                                           ord('S'), data)
+    s = press(s, ord('M'), data)
+    assert data['find'] == 'SM'
+    card, _ex = dynview.step((dynview.SCREEN_FIND, 0, 0, 1), ENTER, data)
+    assert card == (dynview.SCREEN_CARD, 0, 0)
+    assert data['card_back'] == (dynview.SCREEN_FIND, 0, 0, 1)
+    assert dynview.step(card, ESC, data)[0] == (dynview.SCREEN_FIND, 0, 0, 1)
+    cursor = (dynview.SCREEN_FIND, 0, 0, 1)
+    press(cursor, ord('S'), data)                      # an edit resets the row
+    assert data['find'] == 'SMS'
+    # empty list: ENTER does nothing; no-match row with COLS_FIND
+    s5 = (dynview.SCREEN_FIND, 0, 0)
+    st1 = press(s5, ord('Z'), data)
+    assert dynview.rows(st1, data) == [('NO PLAYER FOUND.',)]
+    assert dynview.body_cols(st1, data) == dynview.COLS_FIND
+    st2 = press(st1, ENTER, data)
+    assert st2 == st1
+    # the cursor screen rule and total_rows of the message screens
+    assert dynview.cursor_screen(st1) is True
+    up = press(st1, dynview.KEY_UP, data)              # UP from row 0 stays
+    assert up == st1
+
+
+def test_c50_find_list_cap(tmp_path, monkeypatch):
+    """find_rows keeps at most FIND_LIST matches, the first ones in sort order (the DOS
+    port holds no more)"""
+    ldir = make_find(tmp_path, write_player)
+    hist = dynview.load_data(str(ldir))['hist']
+    full = dynview.find_rows(hist, 'SM')
+    assert dynview.FIND_LIST == 300 and len(full) > 1
+    monkeypatch.setattr(dynview, 'FIND_LIST', 1)
+    assert dynview.find_rows(hist, 'SM') == full[:1]
+
 
 
 # ---------------------------------------------------------------- C30 PLAYOFFS postseason leaders
@@ -3881,3 +4130,13 @@ def test_c30_league_of_4096_and_ws_rows_shape(tmp_path):
     assert got == rows
     assert LEAD_TITLE in dynview.rows((SP, 4, 0), data)
     assert dynview.rows((SP, 4, 0), data)[8:] == rows[56:]
+
+
+def test_c30_other_season_rows_ignored(tmp_path):
+    """player rows of another season never tally into the season's leaders block"""
+    pre, lead = post_leaders_rows(tmp_path, [
+        box_rec(3, 16, 0, 1, (0, 0, 5, 0, 0, 0, 0, 0)),
+        box_rec(2, 16, 0, 1, (0, 0, 9, 0, 0, 0, 0, 0)),
+        box_rec(4, 0, 0, 2, (0, 0, 9, 0, 0, 0, 0, 0)),
+    ], name='c30s')
+    assert lead == [LEAD_TITLE, ('PLAYER01, B', '', '', '', '5 H')]
