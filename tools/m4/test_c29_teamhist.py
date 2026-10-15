@@ -4,6 +4,7 @@ Model rows, the state walk and the frame parity need the synthetic fonts and the
 host binary; rendering tests skip without the fonts (DYNVIEW_FILES).
 Run:  python3 -m pytest -q tools/m4/test_c29_teamhist.py
 """
+import itertools
 import os
 import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -20,7 +21,7 @@ from test_dynview_c13_c import needs_fonts
 
 STH = dynview.SCREEN_TEAMHIST
 SS = dynview.SCREEN_STANDINGS
-T_FOOTER = 'LEFT RIGHT TEAM   PGUP PGDN   ESC'
+T_FOOTER = 'ENTER SEASON  LEFT RIGHT TEAM  PGUP PGDN ESC'
 ENTER, ESC = dynview.KEY_ENTER, dynview.KEY_ESC
 LEFT, RIGHT = dynview.KEY_LEFT, dynview.KEY_RIGHT
 PGUP, PGDN = dynview.KEY_PGUP, dynview.KEY_PGDN
@@ -234,6 +235,152 @@ def test_teamhist_open_esc_and_team_walk(tmp_path):
     assert press((STH, 2, 2), PGDN, data) == (STH, 2, 2)
 
 
+TH_ENTER, TH_DOWN = dynview.KEY_ENTER, dynview.KEY_DOWN
+
+
+_th_n = itertools.count()
+
+
+def th_league(tmp_path, seasons=None, box=TH_HEADERS, mask=None, sub=None):
+    """hist_league over a fresh subdir (each load() call needs its own league dir):
+    the (w_l, champ, al_p, nl_p) tuples given (the newest last), BOXSCORE.DAT holds
+    box (TH_HEADERS by default) and the HISTORY mask is mask."""
+    sub = sub or 'th%d' % next(_th_n)
+    return hist_league(tmp_path,
+                       seasons=seasons or [(WL_TH_1, 0, 0xff, 0xff),
+                                           (WL_TH_2, 0xff, 2, 0xff),
+                                           (WL_TH_3, 0xff, 0xff, 0xff)],
+                       box=box, mask=mask, sub=sub)
+
+
+def test_team_history_seasons_align(tmp_path):
+    """team_history_seasons is the season number of every team_history_rows row,
+    newest first, None on the message row (C60); both run the shared walk."""
+    data = load(th_league(tmp_path))
+    hist, box = data['hist'], data['box']
+    for t in range(4):
+        rows = dynview.team_history_rows(hist, box, t)
+        seasons = dynview.team_history_seasons(hist, box, t)
+        assert len(seasons) == len(rows)
+        assert seasons == sorted(seasons, reverse=True)   # newest first
+        for season, row in zip(seasons, rows):
+            if season is None:
+                assert row == ('NO SEASONS RECORDED',)
+            else:
+                assert len(row) == 6 and row[0] == dynview.year_text(hist, season)
+    # BOSTON (0): rows for 1995 then 1993; DETROIT (1): only 1993
+    assert dynview.team_history_seasons(hist, box, 0) == [3, 1]
+    assert dynview.team_history_seasons(hist, box, 1) == [1]
+    # a team with no games: the message row, season None
+    ldir = make_standings(tmp_path)
+    data = load(ldir)
+    assert dynview.team_history_seasons(data['hist'], [], 15) == [None]
+
+
+def test_teamhist_enter_opens_season_standings(tmp_path):
+    """ENTER on a TEAM HISTORY row opens that season's SEASON STANDINGS (cat =
+    seasons_recorded - season) and sets st_back to the packed TEAM HISTORY state
+    (cursor kept); ESC returns to it, ESC again returns th_back (untouched by ENTER);
+    the message row and past-the-end rows are no-ops; DOWN moves the cursor and
+    LEFT/RIGHT reset page and row (C60)."""
+    wl_1 = {0: (5, 5), 1: (10, 4), 2: (4, 10), 16: (8, 2)}
+    wl_2 = {2: (6, 4), 16: (8, 2)}
+    ldir = hist_league(tmp_path, seasons=[(wl_1, 0, 0xff, 0xff), (wl_2, 0xff, 0xff, 0xff)],
+                       mask=1 << 2)
+    data = load(ldir)
+    hist = data['hist']
+    # CLEVELAND (2): rows 1994 then 1993; ENTER on row 1 opens the 1993 standings
+    seasons = dynview.team_history_seasons(hist, data['box'], 2)
+    assert seasons == [2, 1]
+    s = (STH, 0, 2, 1)
+    s2, _ex = dynview.step(s, TH_ENTER, data)
+    assert s2 == (SS, 0, hist.seasons_recorded - 1)
+    assert data['st_back'] == s
+    # ESC back to the TEAM HISTORY row, ESC again to th_back
+    s3, _ex = dynview.step(s2, ESC, data)
+    assert s3 == s
+    assert 'st_back' not in data
+    # th_back is untouched by ENTER: it still holds the standings state of the T jump
+    data2 = load(ldir)
+    s4, _ex = dynview.step((SS, 0, 1), 84, data2)
+    assert s4 == (STH, 0, 2)
+    assert data2['th_back'] == (SS, 0, 1)
+    s5, _ex = dynview.step(s4, TH_ENTER, data2)
+    assert s5 == (SS, 0, 0)                          # the 1994 standings (the newest)
+    assert data2['st_back'] == (STH, 0, 2)
+    s6, _ex = dynview.step(s5, ESC, data2)
+    assert s6 == (STH, 0, 2)
+    s7, _ex = dynview.step(s6, ESC, data2)
+    assert s7 == (SS, 0, 1)
+    # an earlier st_back is replaced
+    data3 = load(ldir)
+    dynview.step((dynview.SCREEN_HISTORY, 0, 0, 0), TH_ENTER, data3)      # an st_back from HISTORY
+    s8, _ex = dynview.step((STH, 0, 2, 0), TH_ENTER, data3)
+    assert s8 == (SS, 0, 0)
+    assert data3['st_back'] == (STH, 0, 2)
+    # the message row (TEAM 15, no games in any season, real T fixture list): the
+    # message ENTER is a no-op and keeps st_back
+    data4 = load(ldir)
+    data4['st_back'] = (9, 9, 9)
+    r_msg = dynview.team_history_rows(hist, data4['box'], 15)
+    assert r_msg == [('NO SEASONS RECORDED',)]
+    assert dynview.step((STH, 0, 15, 0), TH_ENTER, data4) == ((STH, 0, 15, 0), 0)
+    assert data4['st_back'] == (9, 9, 9)
+    # a row past the end is a no-op
+    assert dynview.step((STH, 0, 2, 99), TH_ENTER, data4) == ((STH, 0, 2, 99), 0)
+    # DOWN moves the cursor; LEFT and RIGHT step the team with page and row reset
+    data5 = load(ldir)
+    assert press((STH, 0, 2, 0), TH_DOWN, data5) == (STH, 0, 2, 1)
+    assert press((STH, 1, 2, 2), LEFT, data5) == (STH, 0, 1)
+    assert press((STH, 1, 2, 2), RIGHT, data5) == (STH, 0, 3)
+    # the footer and the cursor screen flag
+    assert dynview.footer_text((STH, 0, 2, 1), data5) == \
+        'ENTER SEASON  LEFT RIGHT TEAM  PGUP PGDN ESC'
+    assert dynview.cursor_screen((STH, 0, 2, 1))
+    assert dynview.row_entry((STH, 0, 2, 1), data5) is None
+
+
+def test_teamhist_paging_cursor(tmp_path):
+    """PGUP / PGDN move the cursor like on every cursor screen (C60): PGDN puts it on
+    the next page's first row when the page changes, PGUP back."""
+    wl = {t: (10 + t, 5) for t in range(4)}
+    seasons = [({t: (10 + t + s, 5) for t in range(4)}, 0xff, 0xff, 0xff)
+               for s in range(15)]
+    ldir = hist_league(tmp_path, seasons=seasons)
+    data = load(ldir)
+    hist = data['hist']
+    assert len(dynview.team_history_rows(hist, data['box'], 0)) == 15
+    s = (STH, 0, 0, 0)
+    assert press(s, PGDN, data) == (STH, 1, 0, 12)
+    assert press((STH, 1, 0, 12), PGUP, data) == (STH, 0, 0)
+    # PGDN with no next page stays
+    assert press((STH, 1, 0, 12), PGDN, data) == (STH, 1, 0, 12)
+
+
+def test_teamhist_enter_after_history_roundtrip(tmp_path):
+    """The full C56 / C60 chain: HISTORY row ENTER to STANDINGS, STANDINGS row ENTER
+    to TEAM HISTORY, TEAM HISTORY row ENTER to that season's STANDINGS, then ESC ESC
+    ESC back to TEAM HISTORY and ESC to the first STANDINGS."""
+    ldir = th_league(tmp_path, sub='rt')
+    data = load(ldir)
+    n = data['hist'].seasons_recorded
+    s, _ex = dynview.step((dynview.SCREEN_HISTORY, 0, 0, 0), TH_ENTER, data)
+    assert s == (SS, 0, n - 3)                       # the 1993 standings (season 1)
+    s, _ex = dynview.step(s, dynview.KEY_DOWN, data)
+    assert s == (SS, 0, n - 3, 1)
+    s, _ex = dynview.step(s, TH_ENTER, data)
+    assert s == (STH, 0, 2)                          # the row-1 team's history (CLE)
+    s, _ex = dynview.step(s, TH_ENTER, data)
+    assert s == (SS, 0, n - 3)                       # CLEVELAND 1995's standings (season 3)
+    assert data['st_back'] == (STH, 0, 2)            # the earlier st_back is replaced
+    s, _ex = dynview.step(s, ESC, data)
+    assert s == (STH, 0, 2)                          # the TEAM HISTORY row is kept
+    s, _ex = dynview.step(s, ESC, data)
+    assert s == (SS, 0, n - 3, 1)                    # the held th_back row
+    s, _ex = dynview.step(s, ESC, data)
+    assert s == (dynview.SCREEN_MENU, 0, 0)          # st_back was replaced by the C60 ENTER
+
+
 def test_teamhist_no_teams_t_nothing(tmp_path):
     """An empty data['teams'] (no MAJ): T does nothing on SEASON STANDINGS; the rows
     and the title still read the fallback names."""
@@ -251,7 +398,8 @@ def test_teamhist_left_right_screens_and_title_click():
     its footer carries no MENU tail."""
     assert dynview.SCREEN_TEAMHIST in dynview.LEFT_RIGHT_SCREENS
     assert dynview.FOOTERS[SS] == 'ENTER TEAM  LEFT RIGHT SEASON  PGUP PGDN ESC'
-    assert dynview.FOOTERS[dynview.SCREEN_TEAMHIST] == 'LEFT RIGHT TEAM   PGUP PGDN   ESC'
+    assert dynview.FOOTERS[dynview.SCREEN_TEAMHIST] == \
+        'ENTER SEASON  LEFT RIGHT TEAM  PGUP PGDN ESC'
 
 
 def test_teamhist_title_click_walk(tmp_path):

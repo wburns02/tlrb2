@@ -2196,10 +2196,11 @@ def unpack(state):
 def cursor_screen(s):
     """True on the screens with a row cursor (C13.4): HALL OF FAME, LEADERS (every mode),
     SEASON AWARDS, AWARD HISTORY (C28), SEASON HISTORY (C56), SEASON STANDINGS (C57),
-    the offseason RETIREMENTS phase, MILESTONES (C27/C61: cat 0 the milestones list,
-    cat 1 WATCH) and the BOX SCORE and PLAYOFF BOX (C62)."""
+    TEAM HISTORY (C60), the offseason RETIREMENTS phase, MILESTONES (C27/C61: cat 0 the
+    milestones list, cat 1 WATCH) and the BOX SCORE and PLAYOFF BOX (C62)."""
     if s[0] in (SCREEN_HOF, SCREEN_LEADERS, SCREEN_AWARDS, SCREEN_AWHIST,
-                SCREEN_HISTORY, SCREEN_STANDINGS, SCREEN_BOX, SCREEN_PBOX):
+                SCREEN_HISTORY, SCREEN_STANDINGS, SCREEN_BOX, SCREEN_PBOX,
+                SCREEN_TEAMHIST):
         return True
     if s[0] == SCREEN_MILESTONES:
         return True
@@ -2349,11 +2350,12 @@ def leaders_body(state, data):
 def row_entry(s, data):
     """The player entry named by the cursor row of s (C13.4), or None: a message row, an award
     with no player, an empty list, no history, or a BOX SCORE / PLAYOFF BOX row that is not a
-    player row (C62). SEASON STANDINGS has no player card (C57)."""
+    player row (C62). SEASON STANDINGS has no player card (C57); neither has TEAM HISTORY
+    (C60, its ENTER opens the season's standings)."""
     hist = data['hist']
     if hist.seasons_recorded == 0:
         return None
-    if s[0] == SCREEN_STANDINGS:
+    if s[0] in (SCREEN_STANDINGS, SCREEN_TEAMHIST):
         return None
     row = unpack(s)[3]
     if s[0] == SCREEN_HOF:
@@ -2959,6 +2961,20 @@ def step(state, key, data):
                     data['th_back'] = pack(s[0], s[1], s[2], s[3])
                     return (SCREEN_TEAMHIST, 0, tid), 0
             return state, 0
+        if s[0] == SCREEN_TEAMHIST:
+            # C60: the cursor row's season opens SEASON STANDINGS (cat = its seasons back
+            # from the newest); the TEAM HISTORY state (cursor kept) replaces any earlier
+            # st_back. The message row, a row past the end (no history) do nothing.
+            hist = data['hist']
+            if hist.seasons_recorded:
+                rows = team_history_rows(hist, data['box'], s[2])
+                if s[3] < len(rows):
+                    season = team_history_seasons(hist, data['box'], s[2])[s[3]]
+                    if season is not None:
+                        data['st_back'] = pack(s[0], s[1], s[2], s[3])
+                        return pack(SCREEN_STANDINGS, 0,
+                                    hist.seasons_recorded - season), 0
+            return state, 0
         entry = row_entry(s, data)
         if entry is not None:
             return open_card(s, entry, data)
@@ -3190,15 +3206,11 @@ def ordinal_label(rank):
     return '%dTH' % rank
 
 
-def team_history_rows(hist, box, t):
-    """TEAM HISTORY rows of team id t: newest season first over seasons
-    min(hist.seasons_recorded, SEASON_COUNT) down to 1, one row per season where t has
-    W + L > 0: YEAR, W, L, PCT (W * 1000 // (W + L)), FINISH (the 1-based rank among the
-    teams of t's league with games in t's division of the entry, ordered as
-    standings_block orders them), RESULT (CHAMPION, PENNANT, LCS for a rnd 2 round header
-    of the season, DS for a rnd 1 one, else ''). No season with games: one message row."""
+def team_history_games(hist, box, t):
+    """The (season, w, l, pct, rank, result) tuples behind the TEAM HISTORY rows of
+    team id t, newest season first (C60: team_history_rows and team_history_seasons
+    walk this once so they can never drift)."""
     n = min(hist.seasons_recorded, history.SEASON_COUNT)
-    out = []
     for season in range(n, 0, -1):
         se = hist.read_season_entry(season)
         wl = se['w_l']
@@ -3225,9 +3237,28 @@ def team_history_rows(hist, box, t):
             result = 'DS'
         else:
             result = ''
-        out.append((year_text(hist, season), '%d' % w, '%d' % l, fmt_avg(pct[t]),
-                    ordinal_label(rank), result))
+        yield season, w, l, pct[t], rank, result
+
+
+def team_history_rows(hist, box, t):
+    """TEAM HISTORY rows of team id t: newest season first over seasons
+    min(hist.seasons_recorded, SEASON_COUNT) down to 1, one row per season where t has
+    W + L > 0: YEAR, W, L, PCT (W * 1000 // (W + L)), FINISH (the 1-based rank among the
+    teams of t's league with games in t's division of the entry, ordered as
+    standings_block orders them), RESULT (CHAMPION, PENNANT, LCS for a rnd 2 round header
+    of the season, DS for a rnd 1 one, else ''). No season with games: one message row."""
+    out = [(year_text(hist, season), '%d' % w, '%d' % l, fmt_avg(pct),
+            ordinal_label(rank), result)
+           for season, w, l, pct, rank, result in team_history_games(hist, box, t)]
     return out or [('NO SEASONS RECORDED',)]
+
+
+def team_history_seasons(hist, box, t):
+    """The season number of every TEAM HISTORY row of t, newest first (C60): item r is
+    the season of row r of team_history_rows, None on the message row."""
+    out = [season for season, _w, _l, _pct, _rank, _result
+           in team_history_games(hist, box, t)]
+    return out or [None]
 
 
 def teamhist_name(teams, t):
@@ -3257,6 +3288,8 @@ def teamhist_body(state, data):
     if len(rows) == 1 and len(rows[0]) == 1:
         return COLS_SINGLE, rows
     return COLS_TEAMHIST, rows
+
+
 # PLAYER CARD season table (C13.5): batters and pitchers; the widths run on from x 10
 COLS_CARD_BAT = [('YEAR', _cx(0), 4, 'L'), ('TM', _cx(4), 4, 'R'), ('G', _cx(8), 4, 'R'),
                  ('AB', _cx(12), 5, 'R'), ('H', _cx(17), 4, 'R'), ('HR', _cx(21), 4, 'R'),
@@ -3274,7 +3307,7 @@ COLS_AWHIST = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
                ('VALUE', _cx(22), 20, 'R')]
 
 FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
-           SCREEN_TEAMHIST: 'LEFT RIGHT TEAM   PGUP PGDN   ESC',
+           SCREEN_TEAMHIST: 'ENTER SEASON  LEFT RIGHT TEAM  PGUP PGDN ESC',
            SCREEN_HISTORY: 'ENTER STANDINGS   PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'TAB POSITION   PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD',

@@ -1542,3 +1542,58 @@ def test_c57_standings_cursor_teamhist_parity(tmp_path):
     assert py_run(ldir, tmp_path, hist + [DOWN, DOWN, ENTER])[0] == \
         (dynview.SCREEN_TEAMHIST, 0, 0)
     check(ldir, tmp_path, 'c57_enter_tid0', hist + [DOWN, DOWN, ENTER])
+
+# ---------------------------------------------------------------- C60 TEAM HISTORY row cursor
+def teamhist_league(tmp_path, name='c60'):
+    """standings_league with three played seasons: CLEVELAND (id 2) has a row for
+    each (3, 2, 1), DETROIT (id 3) none in any season (the message row), and each
+    season has a standings page."""
+    ldir = standings_league(tmp_path, name=name)
+    wl = {2: (8, 2), 16: (7, 9)}
+    d = bytearray((ldir / 'HISTORY.DAT').read_bytes())
+    d[4] = 3
+    d[32 + 24 + 2 * 3] = 0                       # DETROIT out of season 1 too
+    d[32 + 24 + 2 * 3 + 1] = 0
+    for s in (2, 3):
+        o = 32 + (s - 1) * 128
+        d[o:o + 2] = s.to_bytes(2, 'little')
+        d[o + 2] = 0xff
+        for t in range(32):
+            w, l = wl.get(t, (0, 0))
+            d[o + 24 + 2 * t] = w
+            d[o + 25 + 2 * t] = l
+    (ldir / 'HISTORY.DAT').write_bytes(bytes(d))
+    return ldir
+
+
+@needs_fonts
+def test_c60_teamhist_cursor_standings_parity(tmp_path):
+    """TEAM HISTORY with the new footer, the cursor on row 1, the STANDINGS opened
+    by ENTER and the ESC back with the row kept; the message-row TEAM HISTORY with
+    ENTER is the unchanged frame. Every frame matches Python."""
+    ldir = teamhist_league(tmp_path)
+    # HISTORY row 1 (season 1) ENTER, standings row 1 (CLEVELAND) ENTER:
+    # the TEAM HISTORY of CLEVELAND (id 2)
+    hist = [K1, DOWN, ENTER, DOWN, ENTER]
+    s0, data0 = py_run(ldir, tmp_path, hist, 'hub')
+    assert s0 == (dynview.SCREEN_TEAMHIST, 0, 2)
+    assert dynview.footer_text(s0, data0) == 'ENTER SEASON  LEFT RIGHT TEAM  PGUP PGDN ESC'
+    check(ldir, tmp_path, 'c60_teamhist_footer', hist)
+    # the cursor down to row 1 (the 1994 season)
+    check(ldir, tmp_path, 'c60_teamhist_row1', hist + [DOWN])
+    # ENTER on row 1 opens that season's STANDINGS (cat 1 of 3 seasons)
+    st, _data = py_run(ldir, tmp_path, hist + [DOWN, ENTER])
+    assert st == (dynview.SCREEN_STANDINGS, 0, 1)
+    check(ldir, tmp_path, 'c60_teamhist_enter_standings', hist + [DOWN, ENTER])
+    # ESC returns to the TEAM HISTORY frame, the cursor still on row 1
+    st, _data = py_run(ldir, tmp_path, hist + [DOWN, ENTER, ESC])
+    assert st == (dynview.SCREEN_TEAMHIST, 0, 2, 1)
+    check(ldir, tmp_path, 'c60_teamhist_esc', hist + [DOWN, ENTER, ESC])
+    # RIGHT from CLEVELAND is DETROIT (no played season): the message row; ENTER
+    # on it changes nothing
+    msg = hist + [RIGHT]
+    st, _data = py_run(ldir, tmp_path, msg)
+    assert st == (dynview.SCREEN_TEAMHIST, 0, 3)
+    assert dynview.team_history_rows(_data['hist'], _data['box'], 3) == \
+        [('NO SEASONS RECORDED',)]
+    check(ldir, tmp_path, 'c60_teamhist_message', msg + [ENTER])

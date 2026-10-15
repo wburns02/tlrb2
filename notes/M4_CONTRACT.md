@@ -2124,3 +2124,17 @@ that team's TEAM HISTORY. Reads only; writes nothing.
   test_dynview.py and the FOOTERS[SS] pin of test_c29_teamhist.py (old T footer text),
   and the PGUP/PGDN paging bounds of test_standings_season1_rows_exact (STANDINGS pages
   by cursor_state now).
+
+## C60. DYNVIEW TEAM HISTORY row to STANDINGS (added 2026-10-15)
+TEAM HISTORY (screen 17, state (17, page, tid, row)) is a cursor screen: the cursor
+walks team_history_rows, PGUP/PGDN page like every other list (LEFT/RIGHT still step
+the team with page and row reset). Dynview grows team_history_seasons(hist, box, t),
+built on the shared team_history_games walk that team_history_rows also runs: item r
+is the season number of row r, None on the message row. ENTER on a real row opens
+SEASON STANDINGS of that season, state (10, 0, seasons_recorded - season), and sets
+data['st_back'] = pack(17, page, tid, row) (replacing any earlier one); the message
+row, a row past the end and an empty league leave the state unchanged. ESC on that
+STANDINGS returns the TEAM HISTORY state with the row kept through the existing
+st_back rule (data['th_back'] is untouched); ESC on the returned TEAM HISTORY goes to
+th_back. FOOTERS[17] = 'ENTER SEASON  LEFT RIGHT TEAM  PGUP PGDN ESC'. teamhist_title
+counts titles and pennants from the shared walk. Reads only; writes nothing.
