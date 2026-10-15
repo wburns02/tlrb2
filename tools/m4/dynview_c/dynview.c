@@ -617,6 +617,12 @@ static void box_set(Row *row, const char *c0, const char *c1, const char *c2,
                     const char *c3, const char *c4, const char *c5, const char *c6);
 static void box_rec_row(Row *row, const BoxRec *r, int pitch);
 static int leaders_body(State st, int page, const ColDef **cols);
+/* C40 HONORS: the row count (total_rows), the page's rows into g_rows, and the columns
+ * (COLS_HONORS, where the other column tables are) */
+static int honors_rows_count(int32_t entry);
+static int honors_rows(int32_t entry, int page);
+#define HONOR_ROWS 9
+static const ColDef COLS_HONORS[2];
 /* ---- helpers ---- */
 
 /* signed division truncating toward zero == C99 / (x86 idiv) */
@@ -3852,6 +3858,8 @@ static int total_rows(State st)
         return (int)g_nwatch;
     }
     case SCREEN_CARD:
+        if (st.row)
+            return honors_rows_count(st.cat);
         card_collect(st.cat);
         return g_ncard;
     case SCREEN_REVIEW:
@@ -4199,10 +4207,25 @@ static State step(State in, int32_t key)
         s.page = (int16_t)(s.cat / ROWS_PER_PAGE);
         return s;
     }
-    /* PLAYER CARD: PGUP / PGDN page the season table, card_rows lines a page (C13.5,
-     * C26: 6 with a POST row, else CARD_SEASON_ROWS) */
+    /* PLAYER CARD (C40): H or h toggles the view (row 0 SEASONS 7 rows a page, C13.5 and
+     * C26; row 1 HONORS HONOR_ROWS rows a page), page reset; ESC returns card_back from
+     * both views. PGUP/PGDN page the view (the season table card_rows lines a page). */
     if (s.screen == SCREEN_CARD) {
         int per = post_totals(s.cat) > 0 ? 6 : CARD_SEASON_ROWS;
+        if (key == 'H' || key == 'h') {
+            s.row = s.row ? 0 : 1;
+            s.page = 0;
+            return s;
+        }
+        if (s.row) {
+            if (key == KEY_PGDN) {
+                if ((s.page + 1) * HONOR_ROWS < honors_rows_count(s.cat))
+                    s.page++;
+            } else if (key == KEY_PGUP && s.page > 0) {
+                s.page--;
+            }
+            return s;
+        }
         if (key == KEY_PGDN) {
             card_collect(s.cat);
             if ((s.page + 1) * per < g_ncard)
@@ -4517,6 +4540,8 @@ static int n_cols(const ColDef *cols)
         return NCOLS(COLS_CARD_BAT);
     if (cols == COLS_CARD_PIT)
         return NCOLS(COLS_CARD_PIT);
+    if (cols == COLS_HONORS)
+        return NCOLS(COLS_HONORS);
     return NCOLS(COLS_MILESTONES);
 }
 
@@ -4867,6 +4892,162 @@ static void card_name(const Entry *e, char *dst)
         dst[i] = (char)ascii_up((uint8_t)dst[i]);
 }
 
+/* ---------------- PLAYER CARD HONORS view (C40) ---------------- */
+
+/* the HONORS rows a page: the season table's 9 middle rows between the header and CAREER */
+#define HONOR_ROWS 9
+#define HONOR_FALLBACK_ORDER 100000
+#define HONOR_MAX 800    /* 800 * 74 B: one far array under 64 KB */
+
+/* HONORS columns: YEAR where the season table's first five are, HONOR on from it */
+static const ColDef COLS_HONORS[] = {
+    { "YEAR", CX(0), 5, 0 }, { "HONOR", CX(5), 37, 0 } };
+
+/* one honor item before the (season, group, order) sort: the text is the HONOR cell */
+typedef struct {
+    int32_t season;
+    int group;
+    int32_t order;
+    char text[SLEN];
+} HonorItem;
+
+static HonorItem FARDATA g_honor[HONOR_MAX];
+
+/* all the HONORS texts of entry into g_honor in display order; the count is returned
+ * (dynview.honors_items): group 0 the MILESTON.DAT records with idx == entry (award
+ * records the award label, leader records the leader label and value, milestone records
+ * the event text, other kinds skipped; order the file position) and the six
+ * AWARD_FALLBACK winners of seasons without award or leader records (order 100000 + k);
+ * group 1 the HALL OF FAME row of a status 3 entry at its hof_season. Seasons read only
+ * to the season table (SEASON_COUNT records), like the C7 fallback. The insertion sort
+ * keeps equal keys in the order the items were added (award records in file order, then
+ * the fallback items, then the HOF item). */
+static int honors_collect(int32_t entry)
+{
+    int32_t i;
+    int season, k, n = 0;
+    Entry e;
+    uint8_t seen[SEASON_COUNT];
+    HonorItem tmp;
+    memset(seen, 0, sizeof seen);
+    if (!card_valid(entry) || !read_entry(&e, (uint32_t)entry))
+        return 0;
+    for (i = 0; i < g_nms && n < HONOR_MAX; i++) {
+        const MsRec *rec = &g_ms[i];
+        int j;
+        if ((int32_t)rec->idx != entry)
+            continue;
+        if (award_kind(rec->kind) || leader_kind(rec->kind)) {
+            if (rec->season >= 1 && rec->season <= SEASON_COUNT)
+                seen[rec->season - 1] = 1;
+        } else if (rec->kind >= AWARD_KIND_MIN) {
+            continue;                           /* other kinds are skipped */
+        }
+        tmp.season = rec->season;
+        tmp.group = 0;
+        tmp.order = (int32_t)i;
+        if (leader_kind(rec->kind)) {
+            leader_label(rec->kind, tmp.text);
+            strcat(tmp.text, " ");
+            leader_value(rec->kind, rec->value, tmp.text + strlen(tmp.text));
+        } else if (award_kind(rec->kind)) {
+            award_label(rec->kind, tmp.text);
+        } else {
+            event_text(rec->kind, (int32_t)rec->value, tmp.text);
+        }
+        j = n++;
+        while (j > 0 && (g_honor[j - 1].season > tmp.season
+                         || (g_honor[j - 1].season == tmp.season && g_honor[j - 1].group > tmp.group)
+                         || (g_honor[j - 1].season == tmp.season
+                             && g_honor[j - 1].group == tmp.group
+                             && g_honor[j - 1].order > tmp.order))) {
+            g_honor[j] = g_honor[j - 1];
+            j--;
+        }
+        g_honor[j] = tmp;
+    }
+    for (season = 1; season <= (int)g_hdr_seasons && season <= SEASON_COUNT
+             && n < HONOR_MAX; season++) {
+        SeasonEntry se;
+        if (seen[season - 1])
+            continue;
+        read_season(&se, season);
+        for (k = 0; k < 6 && n < HONOR_MAX; k++) {
+            int j;
+            if (se.awards[k] != (uint16_t)entry)
+                continue;
+            tmp.season = season;
+            tmp.group = 0;
+            tmp.order = HONOR_FALLBACK_ORDER + k;
+            strcpy(tmp.text, AWARD_FALLBACK[k]);
+            j = n++;
+            while (j > 0 && (g_honor[j - 1].season > tmp.season
+                             || (g_honor[j - 1].season == tmp.season
+                                 && g_honor[j - 1].group > tmp.group)
+                             || (g_honor[j - 1].season == tmp.season
+                                 && g_honor[j - 1].group == tmp.group
+                                 && g_honor[j - 1].order > tmp.order))) {
+                g_honor[j] = g_honor[j - 1];
+                j--;
+            }
+            g_honor[j] = tmp;
+        }
+    }
+    if (e.status == STATUS_HOF && n < HONOR_MAX) {
+        int j;
+        tmp.season = e.hof_season;
+        tmp.group = 1;
+        tmp.order = 0;
+        strcpy(tmp.text, "HALL OF FAME");
+        j = n++;
+        while (j > 0 && (g_honor[j - 1].season > tmp.season
+                         || (g_honor[j - 1].season == tmp.season
+                             && g_honor[j - 1].group > tmp.group))) {
+            g_honor[j] = g_honor[j - 1];
+            j--;
+        }
+        g_honor[j] = tmp;
+    }
+    return n;
+}
+
+/* the HONORS row count of entry (dynview.total_rows on the HONORS view): the first row
+ * plus the collected texts, paged HONOR_ROWS a page */
+static int honors_rows_count(int32_t entry)
+{
+    int n = honors_collect(entry) + 1;
+    return n;
+}
+
+/* the (YEAR, HONOR) rows of the HONORS view of entry into g_rows (page first, dynview.
+ * honors_rows): the career award counts first, then the collected texts with their YEAR
+ * cells. The first row shows on an entry with no item too. Returns the page's row count. */
+static int honors_rows(int32_t entry, int page)
+{
+    Entry e;
+    int n, r, at;
+    if (page == 0) {
+        strcpy(g_rows[0].cells[0], "");
+        if (card_valid(entry) && read_entry(&e, (uint32_t)entry))
+            sprintf(g_rows[0].cells[1], "MVP %u  CY %u  ROY %u  GG %u  SS %u",
+                    (unsigned)e.awards[0], (unsigned)e.awards[1], (unsigned)e.awards[2],
+                    (unsigned)e.awards[3], (unsigned)e.awards[4]);
+        else
+            strcpy(g_rows[0].cells[1], "MVP 0  CY 0  ROY 0  GG 0  SS 0");
+        g_rows[0].ncells = 2;
+    }
+    n = honors_collect(entry);
+    for (r = 0, at = (page == 0 ? 1 : 0); r + at < HONOR_ROWS; r++) {
+        int k = page * HONOR_ROWS + r - (page ? 1 : 0);  /* the full-row index -> item */
+        if (k < 0 || k >= n)
+            break;
+        year_text(g_honor[k].season, g_rows[r + at].cells[0]);
+        strcpy(g_rows[r + at].cells[1], g_honor[k].text);
+        g_rows[r + at].ncells = 2;
+    }
+    return r + at;
+}
+
 /* footer line: the offseason's ENTER label follows its phase */
 static const char *footer_of(State st)
 {
@@ -4882,7 +5063,8 @@ static const char *footer_of(State st)
     if (st.screen == SCREEN_MILESTONES && st.cat == 1)
         return "ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC";
     if (st.screen == SCREEN_CARD)
-        return "PGUP PGDN SEASONS   ESC BACK";
+        return st.row ? "PGUP PGDN  H SEASONS  ESC BACK"
+                      : "PGUP PGDN SEASONS  H HONORS  ESC BACK";
     if (st.screen == SCREEN_MENU && (st.cat >> 4))
         return g_hdr_seasons == 0 ? "ENTER PLAY BALL" : "0-9 W SELECT   ENTER PLAY BALL";
     if (st.screen == SCREEN_SETTINGS)
@@ -5153,6 +5335,47 @@ static void draw_card_row(const ColDef *cols, char cells[][SLEN], int ncells, in
 /* the PLAYER CARD body of entry on the season page (dynview.draw_card, C13.5): the portrait of the
  * latest line's face (or a gray box with a ?), the five info rows, the season table header, the
  * page's season rows (newest first) and the CAREER row at its fixed slot */
+/* the PLAYER CARD head (C13.5, C40): the portrait of the latest line's face (or the gray
+ * box with a ?) and the five info lines, shared by the SEASONS and HONORS views */
+static void card_head(int32_t entry, int valid)
+{
+    int has_last = 0, k;
+    Entry e;
+    Line last;
+    char info[5][SLEN];
+    memset(&e, 0, sizeof e);
+    memset(&last, 0, sizeof last);
+    if (valid)
+        read_entry(&e, (uint32_t)entry);
+    if (valid) {
+        card_collect(entry);
+        has_last = g_ncard > 0 && card_line(g_card[g_ncard - 1].off, &last);
+    }
+    if (has_last && portrait_of(last.face)) {
+        for (k = 0; k < PORTRAIT_H; k++)
+            memcpy(g_fb + (long)(PORTRAIT_Y + k) * FB_W + PORTRAIT_X, g_portrait + k * PORTRAIT_W,
+                   PORTRAIT_W);
+    } else {
+        int q = glyph_of(g_main, '?')->rows;
+        rect_fb(PORTRAIT_X, PORTRAIT_Y, PORTRAIT_X + PORTRAIT_W - 1,
+                PORTRAIT_Y + PORTRAIT_H - 1, C_GRID_GRAY);
+        draw_text(g_fb, g_main,
+                  PORTRAIT_X + (PORTRAIT_W - text_width(g_main, (const uint8_t *)"?")) / 2,
+                  PORTRAIT_Y + (PORTRAIT_H - q) / 2, (const uint8_t *)"?", C_WHITE);
+    }
+    if (!valid) {
+        strcpy(info[0], "?");
+        info[1][0] = 0;
+        info[2][0] = 0;
+        strcpy(info[3], NO_RATINGS_TEXT);
+        info[4][0] = 0;
+    } else {
+        card_info(&e, has_last ? &last : NULL, info);
+    }
+    for (k = 0; k < 5; k++)
+        draw_text(g_fb, g_main, INFO_X, INFO_Y[k], (const uint8_t *)info[k], C_WHITE);
+}
+
 static void draw_card(int32_t entry, int page)
 {
     int valid = card_valid(entry), has_last = 0, pitch = 0, ncols, k, r, per;
@@ -5263,7 +5486,23 @@ static void render(State st)
     draw_text(g_fb, g_bold, tx + 1, 11, up, C_BLACK);
     draw_text(g_fb, g_bold, tx, 10, up, C_WHITE);
     if (st.screen == SCREEN_CARD) {
-        draw_card(st.cat, st.page);
+        if (st.row) {
+            /* HONORS (C40): the portrait and info lines as the SEASONS view, the two
+             * columns where the season table is (header at CARD_HDR_Y), the page's
+             * honors_rows rows from CARD_ROW_Y0 (9 rows between the header and CAREER) */
+            card_head(st.cat, card_valid(st.cat));
+            rect_fb(8, CARD_HDR_Y, 311, CARD_HDR_Y + 9, C_HEADER_GOLD);
+            draw_headers(COLS_HONORS, NCOLS(COLS_HONORS), CARD_HDR_Y + 2);
+            {
+                int nr = honors_rows(st.cat, st.page);
+                int rr;
+                for (rr = 0; rr < nr; rr++)
+                    draw_card_row(COLS_HONORS, g_rows[rr].cells, g_rows[rr].ncells,
+                                  CARD_ROW_Y0 + rr * ROW_H);
+            }
+        } else {
+            draw_card(st.cat, st.page);
+        }
         draw_text(g_fb, g_main, 10, 185, (const uint8_t *)footer_of(st), C_WHITE);
         return;
     }

@@ -597,7 +597,7 @@ def test_card_season_rows_newest_first_and_paging(tmp_path):
     assert press((CARD, 0, 0), PGUP, data) == (CARD, 0, 0)
     assert dynview.total_rows(s, data) == 9
     assert dynview.screen_title(s, data) == 'B ALPHA'
-    assert dynview.footer_text(s, data) == 'PGUP PGDN SEASONS   ESC BACK'
+    assert dynview.footer_text(s, data) == 'PGUP PGDN SEASONS  H HONORS  ESC BACK'
 
 
 def test_card_with_no_lines_and_missing_entry(tmp_path):

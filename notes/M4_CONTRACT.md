@@ -1598,3 +1598,44 @@ unchanged through 1996 (1993's 28 teams carry over); from 1997 the AL slot 8 tea
   default path) gains an optional `known` argument: a {league: division lists} table replacing
   KNOWN[target] with the same set-equality check (a set that does not match the league's
   abbreviations falls back to the generic rule). known=None behaves exactly as today.
+
+## C40. PLAYER CARD honors (added 2026-10-15)
+
+PLAYER CARD state gains a row field: the state is (13, page, entry, view), view 0 = SEASONS
+(the old card, unchanged), view 1 = HONORS (read only; nothing is written). H or h (72,
+104) toggles the view and resets the page to 0: (13, 0, entry) <-> (13, 0, entry, 1). ESC
+returns data['card_back'] from both views.
+
+honors_rows(hist, ms, entry) builds the (YEAR, HONOR) cells:
+
+- First row ('', 'MVP %d  CY %d  ROY %d  GG %d  SS %d' % tuple(e['awards'])), the career
+  counts; an entry with no item shows it alone.
+- The items sort by (season, group, order). Group 0: the MILESTON.DAT records with
+  idx == entry, in file order - award records (award_kind) show award_label(kind), leader
+  records (leader_kind) show leader_label(kind) + ' ' + leader_value(kind, value),
+  milestones (kind < AWARD_KIND_MIN) show event_text(kind, value), other kinds are
+  skipped. A record marks its season as having an award or leader record for this entry,
+  whether or not its kind is shown: for every recorded season (1 .. seasons_recorded,
+  capped at SEASON_COUNT) with no such record, each season-table award k won by the entry
+  (read_season_entry(season)['awards'][k] == entry) gives HONOR AWARD_FALLBACK[k] with
+  order 100000 + k. Group 1: an entry with status STATUS_HOF gets one HALL OF FAME item at
+  its hof_season (after that season's group 0 items).
+- YEAR = year_text(hist, season) (start year + season - 1).
+
+HONORS rows page HONOR_ROWS = 9 a page, drawn where the season table is: header YEAR
+(COLS x 10) and HONOR (x 45), widths 5 and 37, both left aligned (COLS_HONORS), header at
+CARD_HDR_Y, rows from CARD_ROW_Y0 (the 9 middle rows between the card header and CAREER).
+Page 0's first row is the counts row; a later page holds only its items. PGDN when
+(page + 1) * 9 < len(honors_rows), PGUP when page > 0; the seasons view's own paging
+(card_rows a page) is unchanged. The portrait, the five info lines and the title stay as
+on the SEASONS view.
+
+Footers: SEASONS view 'PGUP PGDN SEASONS  H HONORS  ESC BACK', HONORS view
+'PGUP PGDN  H SEASONS  ESC BACK'. rows() on the HONORS view returns the page's
+honors_rows; body_cols returns COLS_HONORS. Every other screen and frame is unchanged
+except the SEASONS card footer text.
+
+C port: dynview.c mirrors the same state (row field), toggle and paging in its step, and a
+card_head + honors render path; the host binary is rebuilt with gcc after the parity gate.
+Parity covers HONORS page 0 and page 1 of a batter, HONORS of an entry with no items, the
+HOF entry, and the SEASONS card with the new footer.

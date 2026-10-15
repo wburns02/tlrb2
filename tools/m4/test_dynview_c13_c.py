@@ -745,3 +745,58 @@ def test_watch_parity_frames(tmp_path):
     check(empty, tmp_path, 'c27_watch_empty', [K4, RIGHT])
     check(empty, tmp_path, 'c27_ms0_empty', [K4])
     check(ldir, tmp_path, 'c27_watch_pgdn', [K4, RIGHT, PGDN])
+
+
+# ---------------------------------------------------------------- C40 PLAYER CARD HONORS
+def honors_players():
+    """ALPHA with award records and HALL (HOF), then HOTEL with nothing"""
+    return [player('ALPHA', first='B', totals=tot(H=3000, AB=9000, HR=400, RBI=1500), war10=600),
+            player('HOTEL', first='H', totals=tot(), war10=0),
+            player('HALL', first='H', status=3, hof=4, totals=tot(H=1), war10=1)]
+
+
+@needs_fonts
+def test_card_honors_parity(tmp_path):
+    """HONORS page 0 (a batter: counts row, award/leader/milestone records in (season,
+    group, order) order, the fallback winners of seasons without records), page 1 after
+    PGDN and back, the no-item entry's single row, the HOF entry, and the SEASONS card
+    with the new footer; every frame matches Python's bytes"""
+    ms = [(1, 0, 64, 1), (1, 0, 2, 3000), (2, 0, 128, 330), (2, 0, 65, 2),
+          (3, 1, 64, 3), (4, 0, 64, 1)]
+    ldir = league(tmp_path, honors_players(), start=1990, seasons=5, ms=ms, name='hon')
+    open_alpha = [K3, ENTER]
+    p0 = check(ldir, tmp_path, 'c40_p0', open_alpha + [ord('H')])
+    p1 = check(ldir, tmp_path, 'c40_p1', open_alpha + [ord('H'), PGDN])
+    assert p0 != p1
+    assert check(ldir, tmp_path, 'c40_back_p0', open_alpha + [ord('H'), PGDN, PGUP]) == p0
+    assert py_run(ldir, tmp_path, open_alpha + [ord('H'), PGDN])[0] == (CARD, 1, 0, 1)
+    # PGDN stays on the last page and PGUP returns
+    assert check(ldir, tmp_path, 'c40_stays', open_alpha + [ord('H'), PGDN, PGDN]) == p1
+    # HOTEL (entry 1): no ms records name its entry and no fallback (its awards are 0):
+    # the counts row only
+    check(ldir, tmp_path, 'c40_none', [K3, DOWN, ENTER, ord('H')])
+    # HALL (entry 2): the season 4 AL MVP record names entry 2, so no season 4 fallback;
+    # HALL OF FAME (group 1) lands at hof_season 4 = 1993, after that record
+    check(ldir, tmp_path, 'c40_hof', [K3, DOWN, DOWN, ENTER, ord('H')])
+    # the SEASONS view with the new footer, and the two footers themselves
+    check(ldir, tmp_path, 'c40_seasons_footer', open_alpha)
+    s, data = py_run(ldir, tmp_path, open_alpha)
+    assert dynview.footer_text(s, data) == 'PGUP PGDN SEASONS  H HONORS  ESC BACK'
+    assert dynview.footer_text((CARD, 0, 0, 1), data) == 'PGUP PGDN  H SEASONS  ESC BACK'
+
+
+@needs_fonts
+def test_card_honors_paging_nine(tmp_path):
+    """12 award records over 12 seasons: 13 HONORS rows over 2 pages, PGDN to page 1 and
+    back; every frame matches Python's bytes"""
+    ms = [(s, 0, 64, 1) for s in range(1, 13)]
+    ldir = league(tmp_path, [player('MANY', first='A', totals=tot(H=100))], start=1990,
+                  seasons=12, ms=ms, name='honpg')
+    open_m = [K3, ENTER]
+    p0 = check(ldir, tmp_path, 'c40_nine_p0', open_m + [ord('H')])
+    p1 = check(ldir, tmp_path, 'c40_nine_p1', open_m + [ord('H'), PGDN])
+    assert p0 != p1
+    assert check(ldir, tmp_path, 'c40_nine_stays', open_m + [ord('H'), PGDN, PGDN]) == p1
+    assert check(ldir, tmp_path, 'c40_nine_back', open_m + [ord('H'), PGDN, PGUP]) == p0
+    s, data = py_run(ldir, tmp_path, open_m + [ord('H'), PGDN])
+    assert [r[0] for r in dynview.rows(s, data)] == ['1998', '1999', '2000', '2001']

@@ -56,6 +56,8 @@ KEY_UP, KEY_DOWN = 0x4800, 0x5000
 KEY_TAB = 9
 KEY_MINUS, KEY_PLUS, KEY_EQUALS = 45, 43, 61
 KEY_CARD = (67, 99)
+# PLAYER CARD view toggle key (C40)
+KEY_VIEW = (72, 104)
 CURSOR_KEYS = (KEY_UP, KEY_DOWN, KEY_PGUP, KEY_PGDN)
 YEAR_KEYS = (KEY_MINUS, KEY_PLUS, KEY_EQUALS)
 
@@ -2151,6 +2153,63 @@ def card_title(s, data):
     return card_name(hist.read_entry(s[2]))
 
 
+# ---------------------------------------------------------------- honors (C40)
+# HONORS rows a page (the season table's 9 middle rows between the header and CAREER)
+HONOR_ROWS = 9
+
+
+def honors_items(hist, ms, entry):
+    """[(season, group, order, honor text)] of an entry's honors, in display order
+    (season, group, order): group 0 the MILESTON.DAT records with idx == entry (award
+    records award_label, leader records leader_label + ' ' + leader_value, milestones
+    kind < AWARD_KIND_MIN event_text, other kinds skipped; order the file position) and
+    the AWARD_FALLBACK winners of seasons without award or leader records (order
+    100000 + k), group 1 the HALL OF FAME row at the entry's hof_season."""
+    if not 0 <= entry < n_entries(hist):
+        e = {'status': 0, 'hof_season': 0}
+    else:
+        e = hist.read_entry(entry)
+    has_rec = set()
+    items = []
+    for pos, (season, idx, kind, value) in enumerate(ms):
+        if idx != entry:
+            continue
+        if award_kind(kind):
+            has_rec.add(season)
+            items.append((season, 0, pos, award_label(kind)))
+        elif leader_kind(kind):
+            has_rec.add(season)
+            h = leader_label(kind) + ' ' + leader_value(kind, value)
+            items.append((season, 0, pos, h))
+        elif kind < AWARD_KIND_MIN:
+            items.append((season, 0, pos, event_text(kind, value)))
+    for season in range(1, min(hist.seasons_recorded, history.SEASON_COUNT) + 1):
+        if season in has_rec:
+            continue
+        aw = hist.read_season_entry(season)['awards']
+        for k, winner in enumerate(aw):
+            if winner == entry:
+                items.append((season, 0, 100000 + k, AWARD_FALLBACK[k]))
+    if e['status'] == history.STATUS_HOF:
+        items.append((e['hof_season'], 1, 0, 'HALL OF FAME'))
+    items.sort(key=lambda t: (t[0], t[1], t[2]))
+    return items
+
+
+def honors_rows(hist, ms, entry):
+    """(YEAR, HONOR) cells of the HONORS view: the career award counts first, then
+    honors_items' texts with their YEAR cells (year_text of the season). The first row
+    shows on an entry with no item too."""
+    if 0 <= entry < n_entries(hist):
+        counts = tuple(hist.read_entry(entry)['awards'])
+    else:
+        counts = (0, 0, 0, 0, 0)
+    out = [('', 'MVP %d  CY %d  ROY %d  GG %d  SS %d' % counts)]
+    for season, _g, _o, text in honors_items(hist, ms, entry):
+        out.append((year_text(hist, season), text))
+    return out
+
+
 # ---------------------------------------------------------------- state machine
 def leaders_count(hist, cat_index):
     """Number of qualifying candidates (paging bound), not the on-screen 12."""
@@ -2211,6 +2270,9 @@ def rows(state, data):
     s = unpack(state)
     screen, page, cat = s[0], s[1], s[2]
     if screen == SCREEN_CARD:
+        if s[3] == 1:
+            return honors_rows(hist, data['ms'], cat)[
+                page * HONOR_ROWS:(page + 1) * HONOR_ROWS]
         season, career, post = card_table(s, data)
         out = season + [career]
         if post is not None:
@@ -2356,8 +2418,18 @@ def step(state, key, data):
             return state, 0
         return (SCREEN_SETTINGS, cat // ROWS_PER_PAGE, cat), 0
     if screen == SCREEN_CARD:
-        # PGUP/PGDN page the season table, card_rows lines a page (C13.5, C26: 6 with a
-        # POST row, else CARD_SEASON_ROWS)
+        # s[3] is the view (C40): 0 SEASONS, 1 HONORS. H toggles the view, page reset.
+        # PGUP/PGDN page the view: the season table card_rows lines a page (C13.5, C26:
+        # 6 with a POST row, else CARD_SEASON_ROWS), HONORS HONOR_ROWS lines a page.
+        if key in KEY_VIEW:
+            return pack(SCREEN_CARD, 0, cat, 0 if s[3] else 1), 0
+        if s[3] == 1:
+            n = len(honors_rows(data['hist'], data['ms'], cat))
+            if key == KEY_PGDN and (page + 1) * HONOR_ROWS < n:
+                return (SCREEN_CARD, page + 1, cat, 1), 0
+            if key == KEY_PGUP and page > 0:
+                return (SCREEN_CARD, page - 1, cat, 1), 0
+            return state, 0
         per = card_rows(s, data)
         n = len(card_lines(s, data))
         if key == KEY_PGDN and (page + 1) * per < n:
@@ -2537,13 +2609,15 @@ COLS_CARD_PIT = [('YEAR', _cx(0), 4, 'L'), ('TM', _cx(4), 4, 'R'), ('G', _cx(8),
                  ('W', _cx(12), 3, 'R'), ('L', _cx(15), 3, 'R'), ('SV', _cx(18), 4, 'R'),
                  ('IP', _cx(22), 6, 'R'), ('SO', _cx(28), 4, 'R'), ('ERA', _cx(32), 5, 'R'),
                  ('WAR', _cx(37), 5, 'R')]
+# HONORS columns (C40): YEAR where the season table's first five are, HONOR on from it
+COLS_HONORS = [('YEAR', _cx(0), 5, 'L'), ('HONOR', _cx(5), 37, 'L')]
 OFF_COLS = [COLS_SINGLE, COLS_RETIRE, COLS_DRAFT, COLS_MOVE, COLS_MOVE, COLS_SINGLE]
 
 FOOTERS = {SCREEN_MENU: '0-9 W SELECT   ESC EXIT',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'PGUP PGDN   ESC MENU',
            SCREEN_LEADERS: 'LEFT RIGHT STAT  TAB MODE  ENTER CARD',
-           SCREEN_CARD: 'PGUP PGDN SEASONS   ESC BACK',
+           SCREEN_CARD: 'PGUP PGDN SEASONS  H HONORS  ESC BACK',
            SCREEN_MILESTONES: 'LEFT RIGHT WATCH   PGUP PGDN   ESC MENU',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU',
            SCREEN_SETTINGS: 'UP DOWN MOVE   ENTER CHANGE   ESC MENU',
@@ -2567,6 +2641,8 @@ def footer_text(state, data=None):
     screen, cat = s[0], s[2]
     if screen == SCREEN_MILESTONES and cat == 1:
         return 'ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC'
+    if screen == SCREEN_CARD and s[3] == 1:
+        return 'PGUP PGDN  H SEASONS  ESC BACK'
     if screen == SCREEN_LEADERS and cat >> 5 == MODE_BYYEAR:
         return 'LEFT RIGHT STAT  - + YEAR  TAB MODE'
     if screen == SCREEN_MENU and cat >> 4:
@@ -2682,7 +2758,8 @@ def body_cols(state, data):
         return COLS_WATCH if watch_items(data['hist']) else COLS_SINGLE
     return {SCREEN_MENU: COLS_SINGLE, SCREEN_HISTORY: COLS_HISTORY,
             SCREEN_HOF: COLS_HOF, SCREEN_MILESTONES: COLS_MILESTONES,
-            SCREEN_REVIEW: COLS_SINGLE, SCREEN_CARD: COLS_SINGLE}[state[0]]
+            SCREEN_REVIEW: COLS_SINGLE,
+            SCREEN_CARD: COLS_HONORS if unpack(state)[3] == 1 else COLS_SINGLE}[state[0]]
 
 
 def draw_row(fb, font, cols, cells, y0, color, band):
@@ -2709,7 +2786,8 @@ def card_pitcher(s, data):
 
 def draw_card(fb, s, data, main_ft):
     """The PLAYER CARD body (C13.5): the portrait (or the gray box with a ?), the five info
-    lines, the season table header, its rows and the CAREER row at its fixed slot."""
+    lines, the season table header, its rows and the CAREER row at its fixed slot. The
+    portrait and info lines are card_head (the HONORS view (C40) shares them)."""
     info, last = card_info(s, data)
     pic = portrait_of(data, last['face']) if last is not None else None
     px, py = PORTRAIT_X, PORTRAIT_Y
@@ -2759,7 +2837,39 @@ def render(state, data):
     s = unpack(state)
     screen, page, cat = s[0], s[1], s[2]
     if screen == SCREEN_CARD:
-        draw_card(fb, s, data, main_ft)
+        if s[3] == 1:
+            # HONORS (C40): the portrait and the five info lines as the SEASONS view, the
+            # two columns drawn where the season table is (header at CARD_HDR_Y), the
+            # page's honors_rows from CARD_ROW_Y0 (9 rows between the header and CAREER)
+            info, _last = card_info(s, data)
+            pic = portrait_of(data, _last['face']) if _last is not None else None
+            px, py = PORTRAIT_X, PORTRAIT_Y
+            if pic is None:
+                rect(fb, px, py, px + PORTRAIT_W - 1, py + PORTRAIT_H - 1, C_GRID_GRAY)
+                q = glyph_of(main_ft, '?')[0]
+                draw_text(fb, main_ft, px + (PORTRAIT_W - text_width(main_ft, '?')) // 2,
+                          py + (PORTRAIT_H - q) // 2, '?', C_WHITE)
+            else:
+                w, h, pixels = pic
+                for y in range(h):
+                    base = (py + y) * FB_W + px
+                    fb[base:base + w] = pixels[y * w:(y + 1) * w]
+            for y, text in zip(INFO_Y, info):
+                draw_text(fb, main_ft, INFO_X, y, text, C_WHITE)
+            cols = COLS_HONORS
+            rect(fb, 8, CARD_HDR_Y, 311, CARD_HDR_Y + 9, C_HEADER_GOLD)
+            for header, x, w, align in cols:
+                h = header[:w]
+                if align == 'R':
+                    draw_text(fb, main_ft, x + w * CHAR_W - text_width(main_ft, h),
+                              CARD_HDR_Y + 2, h, C_BLACK)
+                else:
+                    draw_text(fb, main_ft, x, CARD_HDR_Y + 2, h, C_BLACK)
+            for r, cells in enumerate(rows(state, data)):
+                y0 = CARD_ROW_Y0 + r * ROW_H
+                draw_row(fb, main_ft, cols, cells, y0, C_BLACK, C_ROW_TAN)
+        else:
+            draw_card(fb, s, data, main_ft)
         draw_text(fb, main_ft, 10, 185, footer_text(state, data), C_WHITE)
         return fb
     cols = body_cols(state, data)
