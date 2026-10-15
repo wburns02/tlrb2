@@ -84,7 +84,7 @@ COLS_SLOT = [('SLOT', _cx(0), 4, 'L'), ('PLAYER', _cx(5), 20, 'L'),
 COLS_ONE = [(' ', _cx(0), 42, 'L')]
 
 FOOT_TEAM = 'UP DOWN   ENTER PICK   ESC EXIT'
-FOOT_SLOT = 'UP DOWN   ENTER PICK   ESC TEAMS'
+FOOT_SLOT = 'UP DOWN  ENTER NEW  C COPY  ESC TEAMS'
 FOOT_CONFIRM = 'ENTER REPLACE   ESC BACK'
 FOOT_DONE = 'ENTER CREATE ANOTHER   ESC EXIT'
 FOOT_NAME = 'TYPE NAME   UP DOWN   ESC SLOTS'
@@ -356,6 +356,56 @@ def default_form(image, slot, n_faces):
             'r': r, 'face': FACE_DEFAULT_N if n_faces > FACE_DEFAULT_N else 0}
 
 
+def copy_form(image, slot, ctx):
+    """C44: form of a copy of the slot's record. Names come from the record bytes
+    (NAME_CHARS filter, then cut), everything else is the record decoded and
+    clamped; a face id outside the FACE list falls back to default_form's face;
+    callers only copy an occupied slot."""
+    rec = record(image, slot)
+    last = rec[rookies.OFF_LAST:rookies.OFF_FIRST]
+    first = rec[rookies.OFF_FIRST:rookies.OFF_AGE]
+    def _name(b, mx):
+        s = ''
+        for byte in b.split(b'\0', 1)[0]:
+            ch = chr(byte)
+            if ch not in NAME_CHARS:
+                continue
+            s += ch
+            if len(s) == mx:
+                break
+        return s
+    if slot < PITCHER_SLOTS:
+        pos, pos2 = 0, rookies.POS2_OF[0]
+    else:
+        pos1, pos2hi = rec[rookies.OFF_POS] & 15, rec[rookies.OFF_POS] >> 4
+        pos = pos1 if 1 <= pos1 <= 9 else 1
+        pos2 = pos2hi if 1 <= pos2hi <= 15 else rookies.POS2_OF[pos]
+    hands_code = rec[rookies.OFF_HAND]
+    bats_nib = hands_code >> 1 & 3
+    bats = 'R' if bats_nib == 1 or bats_nib == 3 else ('S' if bats_nib == 2 else 'L')
+    throws = 'R' if hands_code & 8 else 'L'
+    hands = HANDS.index((bats, throws))
+    age = min(AGE_MAX, max(AGE_MIN, rec[rookies.OFF_AGE]))
+    order = (rookies.PITCHER_RATING_ORDER if slot < PITCHER_SLOTS
+             else rookies.BATTER_RATING_ORDER)
+    r = []
+    for i, (_key, off, shift) in enumerate(order):
+        cap = PIT_ENDURANCE_CAP if slot < PITCHER_SLOTS and i == 2 else RATING_CAP
+        nib = rec[off] >> shift & 15
+        r.append(1 if nib == 0 else (cap if nib > cap else nib))
+    n_faces = ctx['faces'][0]
+    default = default_form(image, slot, n_faces)
+    face = struct.unpack('<H', rec[rookies.OFF_PORTRAIT:rookies.OFF_PORTRAIT + 2])[0]
+    if face >= n_faces and not (FACE_CUSTOM_BASE <= face
+                                < FACE_CUSTOM_BASE
+                                + face_walk_len(n_faces, ctx['anm_count'])
+                                - n_faces):
+        face = default['face']
+    return {'last': _name(last, LAST_MAX), 'first': _name(first, FIRST_MAX),
+            'pos': pos, 'pos2': pos2, 'hands': hands, 'age': age,
+            'r': r, 'face': face}
+
+
 def start_state():
     return {'screen': S_TEAM, 'cursor': 0, 'team': 0, 'slot': 0, 'form': blank_form(),
             'msg': 0, 'budget': 0, 'seed': 1, 'image': bytes(IMAGE_LEN)}
@@ -444,6 +494,12 @@ def _step_slot(st, key, ctx):
         st['slot'] = st['cursor']
         st['form'] = default_form(st['image'], st['slot'], ctx['faces'][0])
         st['screen'], st['cursor'] = S_EDIT, 0
+        return st, False
+    if key in (67, 99):                      # C44: copy an occupied slot's player
+        if record(st['image'], st['cursor'])[0]:
+            st['slot'] = st['cursor']
+            st['form'] = copy_form(st['image'], st['slot'], ctx)
+            st['screen'], st['cursor'] = S_EDIT, 0
         return st, False
     st['cursor'] = _list_key(st['cursor'], key, ROSTER_SLOTS)
     return st, False

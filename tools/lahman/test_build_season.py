@@ -16,6 +16,8 @@ import build_season                                              # noqa: E402
 import ratings                                                   # noqa: E402
 import v20                                                       # noqa: E402
 from m4 import history                                           # noqa: E402
+from m4 import realign                                           # noqa: E402
+from m4 import teamids                                           # noqa: E402
 
 DB = '/mnt/nvme/tlrb2/lahman/lahmansbaseballdb.sqlite'
 TEMPLATE = '/mnt/nvme/tlrb2/hist/template/CLASSIC'
@@ -246,7 +248,7 @@ def test_header_partition(league):
 
 
 def test_year_out_of_range(tmp_path):
-    for year in (1976, 1994):
+    for year in (1976, 1998):
         out = os.path.join(tmp_path, 'x')
         rc = build_season.main(['build_season.py', str(year), str(out)])
         assert rc == 2
@@ -254,7 +256,7 @@ def test_year_out_of_range(tmp_path):
     # existing empty OUT_DIR is also left empty on exit 2
     out = os.path.join(tmp_path, 'y')
     os.mkdir(out)
-    rc = build_season.main(['build_season.py', '1994', str(out)])
+    rc = build_season.main(['build_season.py', '1998', str(out)])
     assert rc == 2
     assert os.listdir(out) == []
 
@@ -622,6 +624,71 @@ def test_maj_patch_errors(tmp_path):
 
 
 @pytest.fixture(scope='module')
+def league94(tmp_path_factory):
+    out = tmp_path_factory.mktemp('league') / 'hist1994'
+    rc = build_season.main(['build_season.py', '1994', str(out)])
+    assert rc == 0, out
+    return out
+
+
+def _maj_bytes(league):
+    with open(os.path.join(str(league), 'CLASSIC.MAJ'), 'rb') as f:
+        return f.read()
+
+
+DIV94_AL = {0: ['BAL', 'BOS', 'DET', 'NYA', 'TOR'], 8: ['CAL', 'OAK', 'SEA', 'TEX'],
+            16: ['CLE', 'MIL', 'CHA', 'KC', 'MIN']}
+DIV94_NL = {0: ['MON', 'NYN', 'PHI', 'FLA', 'ATL'], 8: ['LA', 'SD', 'SF', 'COL'],
+            16: ['CHN', 'PIT', 'SL', 'CIN', 'HOU']}
+
+
+def test_1994_three_divisions(league94):
+    names = sorted(os.listdir(league94))
+    assert 'TEAMID.DAT' in names and 'HISTORY.DAT' in names
+    maj = _maj_bytes(league94)
+    assert maj[0x20d] == 3 and maj[0x20a] == 0xf3
+    for L in (0, 1):
+        s = teamids.S[L]
+        assert [maj[s + 0x298 + dv] for dv in range(3)] == [5, 4, 5]
+        assert [maj[0x20e + 3 * L + dv] for dv in range(3)] == [5, 4, 5]
+    for L, want in ((0, DIV94_AL), (1, DIV94_NL)):
+        s = teamids.S[L]
+        for start, abbrs in want.items():
+            for i, abbr in enumerate(abbrs):
+                a = s + teamids.O_ABBR + 3 * (start + i)
+                got = bytes(maj[a:a + 3]).rstrip(b'\0').decode('latin-1')
+                assert got == abbr, (L, start + i, abbr, got)
+
+
+def test_1994_teamid_dat(league94):
+    """TEAMID.DAT was written from the pre-realignment MAJ: every team's stable id is its
+    2-division engine id (AL slot, NL slot + 16), and the ids survive the realignment."""
+    with open(os.path.join(str(league94), 'TEAMID.DAT'), 'rb') as f:
+        table = f.read()
+    assert len(table) == 256
+    d = _maj_bytes(league94)
+    tl = build_season.team_list(1994)
+    for stem, tid, slot in tl:
+        L = 0 if stem.startswith('clasal') else 1
+        k = slot if L == 0 else slot + 16
+        assert table[8 * k:8 * k + 8].rstrip(b'\0').decode('latin-1') == stem, stem
+    teams = teamids.teams(d, table)
+    assert len(teams) == 28
+    for _k, L, slot, st in teams:
+        stem = st.rstrip(b'\0').decode('latin-1')
+        slot2 = {s2: sl for s2, _t, sl in tl if s2 == stem}[stem]
+        assert _k == (slot2 if L == 0 else slot2 + 16), (_k, L, slot2, stem)
+    # every stem of the realigned MAJ appears exactly once in the table
+    for _L, _slot, st in teamids.maj_teams(d):
+        assert sum(1 for k in range(32) if table[8 * k:8 * k + 8] == st) == 1
+
+
+def test_1994_history(league94):
+    with open(os.path.join(str(league94), 'HISTORY.DAT'), 'rb') as f:
+        assert f.read()[0] == 1
+
+
+@pytest.fixture(scope='module')
 def league93(tmp_path_factory):
     out = tmp_path_factory.mktemp('league') / 'hist1993'
     rc = build_season.main(['build_season.py', '1993', str(out)])
@@ -698,3 +765,76 @@ def test_1993_rosters(league93):
         t = v20.Team.load(team_path(league93, stem))
         assert any(p.active and p['last'].upper() == last.upper()
                    for p in t.players[:40]), (stem, last, pid)
+
+
+@pytest.fixture(scope='module')
+def league97(tmp_path_factory):
+    out = tmp_path_factory.mktemp('league') / 'hist1997'
+    rc = build_season.main(['build_season.py', '1997', str(out)])
+    assert rc == 0, out
+    return out
+
+
+def test_1997_ana_rename(league97):
+    t = v20.Team.load(team_path(league97, 'clasalw1'))
+    assert (t.name, t.abbr) == ('ANAHEIM', 'ANA')
+    with open(os.path.join(str(league97), 'CLASSIC.MAJ'), 'rb') as f:
+        d = f.read()
+    s = teamids.S[0]
+    # ANA is in the West block (DIV94_AL's CAL spot) in team_list order
+    a = s + teamids.O_ABBR + 3 * 8
+    assert bytes(d[a:a + 3]).rstrip(b'\0') == b'ANA'
+    n = s + teamids.O_NAMES + 16 * 8
+    assert bytes(d[n:n + 16]).rstrip(b'\0') == b'ANAHEIM'
+    assert bytes(d[s + teamids.O_ABBR:s + teamids.O_ABBR + 3]).rstrip(b'\0') == b'BAL'
+    assert d[0x20d] == 3
+
+
+def test_1997_ana_players_from_lahman(league97):
+    c = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    t = v20.Team.load(team_path(league97, 'clasalw1'))
+    db_names = {row[0].upper() for row in c.execute(
+        'select nameLast from people p join appearances a on p.playerID=a.playerID'
+        ' where a.yearID=1997 and a.teamID="ANA" and a.G_all > 0')}
+    named = [p for p in t.players[:40] if p.raw[0]]
+    assert len(named) >= 20
+    for p in named:
+        assert p['last'].upper() in db_names, p['last']
+    c.close()
+
+
+def test_1993_no_teamid(league93):
+    with open(os.path.join(str(league93), 'CLASSIC.MAJ'), 'rb') as f:
+        d = f.read()
+    assert d[0x20d] == 2 and d[0x20a] != 0xf3
+    assert not [f for f in os.listdir(league93) if f.upper() == 'TEAMID.DAT']
+    with open(os.path.join(str(league93), 'HISTORY.DAT'), 'rb') as f:
+        assert f.read()[0] == 0
+
+
+def test_1994_1997_history_rolled(league94, league97):
+    for lg in (league94, league97):
+        with open(os.path.join(str(lg), 'HISTORY.DAT'), 'rb') as f:
+            assert f.read()[0] == 1
+
+
+def _classic_maj_bytes():
+    with open(os.path.join(TEMPLATE, 'CLASSIC.MAJ'), 'rb') as f:
+        return f.read()
+
+
+def test_realign_known_table_overrides_default():
+    """realign(known=...) with the default KNOWN table is byte-identical to known=None; a known
+    table with the same AL abbr set in another order changes the AL and leaves the NL alone."""
+    d = _classic_maj_bytes()
+    new, why = realign.realign(d, 3)
+    assert why is None
+    same, why1 = realign.realign(d, 3, known=realign.KNOWN[3])
+    assert why1 is None and same == new
+    al = [['BAL', 'BOS', 'CLE', 'NYA', 'TOR'], ['CAL', 'OAK', 'SEA', 'TEX'],
+          ['CHA', 'DET', 'KC', 'MIL', 'MIN']]
+    moved, why2 = realign.realign(d, 3, known={0: al, 1: realign.KNOWN[3][1]})
+    assert why2 is None
+    s0, s1 = teamids.S[0], teamids.S[1]
+    assert moved[s0 + 0x0f:s0 + 0x2b3] != new[s0 + 0x0f:s0 + 0x2b3]
+    assert moved[s1 + 0x0f:s1 + 0x2b3] == new[s1 + 0x0f:s1 + 0x2b3]

@@ -1534,6 +1534,71 @@ but a Lahman league's career totals, seasons_played and award counts start from 
 before YEAR. The identity matches C2's (name bytes 0..19, birth = 1000 + season_no - age) at
 season_no 1, so the dynasty continues the seeded entry instead of appending a new zero one.
 
+## C44. CREATE copy a player (added 2026-10-15)
+
+On the CREATE slot list (S_SLOT), key C (67 or 99) on a slot whose roster record
+byte 0 is nonzero opens the edit screen for that slot with the record's player
+copied into the form (create.copy_form, the C port's copy_form); st['slot'] =
+the cursor, cursor 0, exactly like ENTER. On an empty slot (byte 0 == 0) C does
+nothing: the state is unchanged. ENTER is unchanged (default_form). C on the
+team screen does nothing.
+
+copy_form(image, slot, ctx) decodes the record:
+
+- last: bytes 0..11 up to the first NUL, latin-1, characters not in NAME_CHARS
+  (letters plus space . ' -) dropped, then cut to LAST_MAX = 11; first: bytes
+  12..19 the same with FIRST_MAX = 7. The record's case is kept (only typed
+  names are upper-cased).
+- A pitcher slot (slot < 16): pos 0, pos2 = POS2_OF[0]. A batter: pos = the
+  pos1 nibble of byte 31 when 1..9 else 1; pos2 = the hi nibble when 1..15 else
+  POS2_OF[pos].
+- hands: the index in HANDS of (bats, throws) decoded from byte 29: bats nibble
+  (bits 2..1; the code 3 counts as R) and throws bit 3 (1 R, 0 L).
+- age: byte 20 clamped to 18..45.
+- r: each nibble of the slot kind's rating order (PITCHER_/BATTER_RATING_ORDER,
+  form order), 0 -> 1, above RATING_CAP = 12 -> 12.
+- face: the u16 at bytes 27..28 when it is in the FACE list (face < n, or
+  400 <= face < 400 + face_walk_len(n, c) - n), else default_form's face for
+  the slot (30 when n > 30, else 0).
+
+Saving after a copy goes through the normal save path (S_CONFIRM on an occupied
+slot, then C10 build_record), so the saved record is rebuilt from the form and
+the stat line is the implied one, not the player's history.
+
+Footer: FOOT_SLOT becomes 'UP DOWN  ENTER NEW  C COPY  ESC TEAMS'; every other
+footer is unchanged.
+
+C port: create.c gains copy_form with the same rules and the C branch in its
+step_slot; the host binary is rebuilt with gcc after the parity gate. The
+parity tests cover the new FOOT_SLOT frame, C on a pitcher, lowercase c on a
+batter, C on an empty slot, ENTER unchanged, C on the team screen, and C then
+a save with identical V20 bytes.
+
+## C38. Lahman 1994-1997, three divisions (added 2026-10-15)
+
+tools/lahman/build_season.py accepts 1977..1997 (YEAR_MAX 1997; 1998+ still exit 2). team_list is
+unchanged through 1996 (1993's 28 teams carry over); from 1997 the AL slot 8 team is Lahman 'ANA'.
+
+- 1994+ (realign_lahman, after seed_history and the All-Star rebuild): the league dir gains TEAMID.DAT
+  written from the pre-realignment MAJ by the C12.3 no-file rule, so every team's stable id is its
+  2-division engine id (AL slot, NL slot + 16); the ids survive the realignment unchanged.
+- The MAJ is written already realigned to 3 divisions (C12.5 layout) with the real Lahman alignment:
+  divID 'E'/'W'/'C' of the year's teams table, teams in team_list order inside each division, passed
+  to realign.realign as a Python-only known table. The known lists hold the MAJ's NUL-stripped
+  abbreviations; a franchise whose Lahman teamID changed in the 3-division era maps by
+  ML4->MIL, KCA->KC, SLN->SL, LAN->LA, SDN->SD, SFN->SF, and CAL->ANA in 1997. A teams-table row
+  without a divID is an error (exit 2). 0x20a = 0xf3, 0x20d = 3, counts 5/4/5 per league.
+- HISTORY.DAT byte 0 = 1 for 1994+ (rolled, next season not started): DYNASTY does not roll the 0xf3
+  MAJ; the player starts the season with START NEW SEASON > GENERATED (C12.6), and DYNASTY clears
+  byte 0 itself. 1993 and earlier keep byte 0 = 0 and no TEAMID.DAT.
+- 1997 also renames the clasalw1 team: V20 header name ANAHEIM / abbr ANA and the MAJ AL slot 8 name
+  (16 B NUL padded) and abbr; the roster is built from Lahman 'ANA' rows.
+- 1977..1993 output is byte-identical to the pre-C38 build (V20s, MAJ, HISTORY.DAT, no TEAMID.DAT).
+- realign.realign (Python only; the C port realign.h is unchanged and stays byte-identical to the
+  default path) gains an optional `known` argument: a {league: division lists} table replacing
+  KNOWN[target] with the same set-equality check (a set that does not match the league's
+  abbreviations falls back to the generic rule). known=None behaves exactly as today.
+
 ## C39. LEADERS postseason mode (added 2026-10-15)
 
 LEADERS (SCREEN_LEADERS) gains mode 3, POSTSEASON: the career leaders summed from the
