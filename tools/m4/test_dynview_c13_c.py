@@ -1688,9 +1688,10 @@ def test_c63_home_end_parity(tmp_path):
     # HOME and END move the hub cursor (C67): HOME stays the plain frame (row 0), END
     # highlights the last row
     hub = league(tmp_path, name='c63menu')
-    plain = check(hub, tmp_path, 'c63_menu_plain', ())
-    assert check(hub, tmp_path, 'c63_menu_home', [HOME]) == plain
-    assert check(hub, tmp_path, 'c63_menu_end', [END]) != plain
+    assert check(hub, tmp_path, 'c63_menu_home', [HOME]) == \
+        check(hub, tmp_path, 'c63_menu_plain', ())
+    assert check(hub, tmp_path, 'c63_menu_end', [END]) == \
+        check(hub, tmp_path, 'c63_menu_down11', [DOWN] * 11)
 
 # ---------------------------------------------------------------- C64 WORLD SERIES row cursor
 SERIES_LEAGUE_MS = [(3, 5 * 256 + 3, 192, 5 * 256 + 3),          # game 1: BOS at ATL, 5-3
