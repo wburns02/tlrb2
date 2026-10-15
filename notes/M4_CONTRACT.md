@@ -1655,10 +1655,13 @@ switches carry in team_list:clasalw1 is ANA 1997..2004 and LAA from 2005, clasnl
   (2012, 9999, 'clasnle7', 1, 6, 'MIAMI', 'MIA'). Each row active for the year sets the V20 header
   name/abbr and the MAJ league L slot entry's name (16 B NUL padded) and abbr. Called where
   rename_anaheim was (year >= 1997, after add_expansion_1998).
-- realign_lahman logic is unchanged: 1994+ writes TEAMID.DAT from the pre-realignment MAJ and
-  realigns to 3 divisions with the Lahman divID known table (HISTORY.DAT byte 0 = 1). For 1998+ the
-  NL's 16th team trips the Python tool's over-15-team refusal ('NL TOO MANY TEAMS', a tool-only
-  cap; the game's GENERATED layout holds 8 teams a division), which build_season answers by
-  repeating realign's exact C12.5 write sequence without the count gate (build_season._realign_16):
-  the same writes byte for byte, division sizes straight off the Lahman divID groups.
+- realign_lahman: 1994+ writes TEAMID.DAT from the pre-realignment MAJ and realigns to 3 divisions
+  with the Lahman divID known table (HISTORY.DAT byte 0 = 1). For 1998+ the NL holds 16 teams, over
+  realign.realign's default 3-division cap of 15 (a tool cap; the GENERATED layout holds 8 teams a
+  division), so realign.realign takes a Python-only cap argument (default unchanged, the C port takes
+  none) and build_season passes cap=16. In the 2-division layout ARI fills NL slot 15, the hidden
+  ALL STARS 2 entry (NUL-led stem); after the realign slot 15 is free (NL West has 5 teams), so
+  realign_lahman copies the template MAJ's NL slot 15 name, abbr and stem back, as every other
+  league keeps it. Open: whether the game's All-Star game or the engine id of slot 15 care that ARI
+  held that id in TEAMID.DAT (rig check, C52).
 - 1977..1997 output is byte-identical to the pre-C46 build (V20s, MAJ, TEAMID.DAT, HISTORY.DAT).
