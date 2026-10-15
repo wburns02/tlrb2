@@ -2139,3 +2139,11 @@ STANDINGS returns the TEAM HISTORY state with the row kept through the existing
 st_back rule (data['th_back'] is untouched); ESC on the returned TEAM HISTORY goes to
 th_back. FOOTERS[17] = 'ENTER SEASON  LEFT RIGHT TEAM  PGUP PGDN ESC'. teamhist_title
 counts titles and pennants from the shared walk. Reads only; writes nothing.
+
+## C63. DYNVIEW HOME and END (added 2026-10-15)
+On every cursor screen (cursor_screen true, C13.4) HOME (0x4700) moves the cursor to
+row 0 and END (0x4f00) to row n - 1 (n = total_rows), when the cursor is not already
+there; the result goes through cursor_state like every other move, so the page follows
+the row. At the ends and on n == 0 the state comes back unchanged. Non-cursor screens
+ignore both keys, exactly as they ignore any unbound key now. Footers unchanged. Reads
+only; writes nothing.

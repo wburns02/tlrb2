@@ -60,7 +60,8 @@ KEY_CARD = (67, 99)
 KEY_ACTIVE = (65, 97)
 # PLAYER CARD view toggle key (C40)
 KEY_VIEW = (72, 104)
-CURSOR_KEYS = (KEY_UP, KEY_DOWN, KEY_PGUP, KEY_PGDN)
+KEY_HOME, KEY_END = 0x4700, 0x4f00
+CURSOR_KEYS = (KEY_UP, KEY_DOWN, KEY_PGUP, KEY_PGDN, KEY_HOME, KEY_END)
 YEAR_KEYS = (KEY_MINUS, KEY_PLUS, KEY_EQUALS)
 
 SCREEN_MENU, SCREEN_HISTORY, SCREEN_HOF = 0, 1, 2
@@ -2216,8 +2217,8 @@ def cursor_state(s, row):
 
 def cursor_move(state, s, key, data):
     """UP / DOWN move the cursor one row within the list; PGUP / PGDN move the page and put the
-    cursor on its first row, only when the page changes. state comes back as it was when
-    nothing moves."""
+    cursor on its first row, only when the page changes; HOME / END jump to the first and last
+    row. state comes back as it was when nothing moves."""
     page, row = s[1], s[3]
     n = total_rows(s, data)
     if key == KEY_UP and row > 0:
@@ -2228,6 +2229,10 @@ def cursor_move(state, s, key, data):
         row = (page + 1) * ROWS_PER_PAGE
     elif key == KEY_PGUP and page > 0:
         row = (page - 1) * ROWS_PER_PAGE
+    elif key == KEY_HOME and row > 0:
+        row = 0
+    elif key == KEY_END and row < n - 1:
+        row = n - 1
     else:
         return state
     return cursor_state(s, row)

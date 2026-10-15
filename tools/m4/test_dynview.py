@@ -4883,3 +4883,61 @@ def test_c58_card_footers_both_views(tmp_path):
         'LEFT RIGHT  PGUP PGDN  H SEASONS  ESC'
     assert dynview.FOOTERS[dynview.SCREEN_CARD] == 'LEFT RIGHT  PGUP PGDN  H HONORS  ESC'
 
+
+# ---------------------------------------------------------------- C63 HOME and END
+def test_c63_home_end_cursor_jumps(tmp_path):
+    """HOME jumps to row 0 and END to row n - 1 on every cursor screen (HALL OF FAME and
+    SEASON STANDINGS here), the page follows the row; end and one-row no-ops; MENU ignores
+    both keys."""
+    from test_dynview_c13 import line, player, write_league
+    HC = dynview.SCREEN_HOF
+
+    def tb(h):
+        return [(h), 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    ldir = tmp_path / 'c63'
+    write_league(ldir, [player('HOF%02d' % i, first='A', status=3, hof=1 + i,
+                               totals=tb(100 + i)) for i in range(13)],
+                 seasons=4, lines=[line(0, 1, totals=tb(100))])
+    data = dynview.load_data(str(ldir))
+    n = dynview.total_rows((HC, 0, 0), data)
+    assert n == 13                                 # two pages
+    end = press((HC, 0, 0), dynview.KEY_END, data)
+    assert end == (HC, 1, 0, 12)                   # page (n - 1) // 12, row n - 1
+    assert press(end, dynview.KEY_HOME, data) == (HC, 0, 0)
+    # row 0 HOME and the last row END are no-ops
+    assert press((HC, 0, 0), dynview.KEY_HOME, data) == (HC, 0, 0)
+    assert press(end, dynview.KEY_END, data) == end
+    # HOME is a no-op and END a jump when the cursor starts mid-list
+    assert press((HC, 1, 0, 6), dynview.KEY_HOME, data) == (HC, 0, 0)
+    # SEASON STANDINGS of the FULL season: 36 rows, 3 pages; END from row 0 goes to row 35
+    sldir = make_standings(tmp_path, [FULL_SEASON] * 3)
+    sdata = dynview.load_data(str(sldir))
+    s0 = press((SS, 0, 0), dynview.KEY_PGDN, sdata)
+    assert s0 == (SS, 1, 0, 12)
+    send = press(s0, dynview.KEY_END, sdata)
+    assert send == (SS, 2, 0, 35)
+    assert dynview.total_rows(send, sdata) == 36
+    assert press(send, dynview.KEY_HOME, sdata) == (SS, 0, 0)
+    assert press(send, dynview.KEY_END, sdata) == send
+    # a one-row list: both keys are no-ops (SEASON STANDINGS of an empty season)
+    (tmp_path / 'st1').mkdir()
+    l1 = make_standings(tmp_path / 'st1')
+    d1 = dynview.load_data(str(l1))
+    assert dynview.total_rows((SS, 0, 0), d1) == 1
+    one = press((SS, 0, 0), dynview.KEY_END, d1)
+    assert press(one, dynview.KEY_HOME, d1) == one
+    # the empty standings season (one message row): both keys are no-ops
+    empty = (SS, 0, 0)
+    assert press(press(empty, dynview.KEY_END, sdata), dynview.KEY_HOME, sdata) == empty
+    # MENU is not a cursor screen: both keys are ignored
+    assert press((dynview.SCREEN_MENU, 0, 0), dynview.KEY_HOME, sdata) == \
+        (dynview.SCREEN_MENU, 0, 0)
+    assert press((dynview.SCREEN_MENU, 0, 0), dynview.KEY_END, sdata) == \
+        (dynview.SCREEN_MENU, 0, 0)
+    # cursor_move keeps the HoF state unchanged at the ends (the empty-filter one-row list)
+    assert dynview.cursor_move((HC, 0, 1, 0), (HC, 0, 1, 0), dynview.KEY_END, data) == \
+        (HC, 0, 1, 0)
+    assert dynview.cursor_move((HC, 0, 1, 0), (HC, 0, 1, 0), dynview.KEY_HOME, data) == \
+        (HC, 0, 1, 0)
+
