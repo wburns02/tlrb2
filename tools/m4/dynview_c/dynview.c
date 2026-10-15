@@ -90,6 +90,8 @@
 #define FIND_MAX 12
 #define FIND_LIST 300     /* dynview.FIND_LIST: 300 * 28 B fits the DOS far data budget */
 #define KEY_BKSP 8
+
+#define SCREEN_TEAMHIST 17
 /* LEADERS modes (C13.3, C39): the state cat is mode * MODE_SHIFT + category index */
 #define MODE_CAREER 0
 #define MODE_SEASON 1
@@ -204,6 +206,9 @@ typedef struct {
 #define PLAYOFF_HDR_MAX 48
 #define PLAYOFF_G_MIN 16
 #define PLAYOFF_G_MAX 63
+
+/* C29 TEAM HISTORY: the season rows of one team (at most all 64 seasons) */
+#define TEAMHIST_MAX 64
 
 /* offseason phases: cat & 15 is the phase, cat >> 4 the launched flag */
 #define OFF_REVIEW 0
@@ -338,6 +343,9 @@ typedef struct {
     int32_t cat, row, year;
 } State;
 
+/* a state with no cursor, row and year */
+static State mk_state(int screen, int page, int32_t cat);
+
 /* a leader category (C13.3): title label, kind (CK_*) and TOTALS index */
 enum { CK_COUNT, CK_AVG, CK_ERA, CK_WAR, CK_AW0, CK_AW3, CK_IP };
 typedef struct {
@@ -386,6 +394,8 @@ typedef struct {
     const char *header;
     int x, w, ralign;
 } ColDef;
+
+static const ColDef COLS_TEAMHIST[];        /* C29, defined with the other tables */
 
 static Font *g_main, *g_bold;
 static uint8_t FARDATA g_fb[FB_SIZE];
@@ -522,6 +532,20 @@ static PlHdr FARDATA g_pl[PLAYOFF_HDR_MAX];
 static BoxRec FARDATA g_pbox[BOX_MAX_RECS];
 static long g_pl_season;
 static int g_pl_n;
+
+/* C29 TEAM HISTORY: the rows of the team on the screen (TEAMHIST_MAX at most) */
+/* a TEAM HISTORY row: six short cells (the longest the 19-char message), not a full Row,
+ * to stay inside the DOS far data budget */
+#define TH_CW 20
+typedef struct {
+    char cells[6][TH_CW];
+    int ncells;
+} ThRow;
+static ThRow FARDATA g_th[TEAMHIST_MAX];
+/* the roster state kept for ESC (data['th_back']): the SEASON STANDINGS state the
+ * screen was opened from; th_live marks it set */
+static State g_th_back;
+static int g_th_live;
 
 /* ROSTERS.TXT draft table (loaded once): the first DRAFT_KEEP valid DRAFT lines.
  * Slot: [0] stem length, [1] name length, then the upper-case stem and the joined
@@ -687,6 +711,12 @@ static int offseason_body(State st, int page, const ColDef **cols);
 static int awards_body(State st, int page, const ColDef **cols);
 static int awhist_body(State st, int page, const ColDef **cols);
 static int standings_body(State st, int page, const ColDef **cols);
+static int teamhist_body(State st, int page, const ColDef **cols);
+static void screen_title(State st, char *dst);
+static void fmt_avg(int32_t v, char *dst);
+static int playoff_headers(long season);
+static void year_text(int32_t n, char *dst);
+static void star_cell(char *c);
 static int series_body(State st, int page, const ColDef **cols);
 static int box_body(State st, int page, const ColDef **cols);
 static int playoffs_body(State st, int page, const ColDef **cols);
@@ -3632,6 +3662,156 @@ static int playoff_header_of(long season, int g, PlHdr *out)
     return 0;
 }
 
+/* ---------------- C29 TEAM HISTORY ---------------- */
+
+/* the 1-based rank as an ordinal standing label: '1ST' .. '3RD', then '%dTH'
+ * (dynview.ordinal_label; 11..13 always TH) */
+static void ordinal_label(int rank, char *dst)
+{
+    static const char *suf[3] = { "ST", "ND", "RD" };
+    int ones = rank % 10;
+    if (rank % 100 != 11 && rank % 100 != 12 && rank % 100 != 13
+        && ones >= 1 && ones <= 3)
+        sprintf(dst, "%d%s", rank, suf[ones - 1]);
+    else
+        sprintf(dst, "%dTH", rank);
+}
+
+/* the display name of t (stand_name_plain): the C18 star is not used on TEAM HISTORY
+ * (dynview.teamhist_name reads data['teams'], the same walk stand_name_plain mirrors) */
+static void th_name(int t, char *dst)
+{
+    stand_name_plain(t, dst);
+}
+
+/* one TEAM HISTORY message row */
+static int th_message(void)
+{
+    strcpy(g_th[0].cells[0], "NO SEASONS RECORDED");
+    g_th[0].ncells = 1;
+    return 1;
+}
+
+/* TEAM HISTORY rows of team id t into g_th (dynview.team_history_rows); returns the
+ * count. Newest season first, one row per season where t has W + L > 0: YEAR, W, L,
+ * PCT, FINISH (the 1-based rank among the teams of t's league with games in t's
+ * division of the entry, the standings order), RESULT (CHAMPION, PENNANT, LCS over any
+ * rnd 2 round header of the season, DS over any rnd 1 one, else ''). */
+static int build_teamhist(long season_hi, int t)
+{
+    SeasonEntry se;
+    int n = 0, season, u, lo, mates[16], nm = 0, i, j, k, dd;
+    lo = season_hi < SEASON_COUNT ? (int)season_hi : SEASON_COUNT;
+    for (season = lo; season >= 1; season--) {
+        int result;
+        ThRow *row;
+        memset(&se, 0, sizeof se);
+        read_season(&se, season);
+        if (se.wl[t][0] + se.wl[t][1] == 0)
+            continue;
+        nm = 0;
+        for (u = (t / 16) * 16; u < (t / 16) * 16 + 16; u++) {
+            if (se.wl[u][0] + se.wl[u][1] == 0)
+                continue;
+            dd = division_of(&se, u);
+            if (dd != division_of(&se, t))
+                continue;
+            /* insertion sort as the teams come in id order; the standings order is
+             * (PCT desc, W desc, id asc): keep shifting while the stored mate ranks
+             * after u (a strictly worse record, or the full tie with a higher id);
+             * equal keys with a lower id stay ahead */
+            for (j = nm; j > 0; j--) {
+                int p = mates[j - 1];
+                long pp = (long)se.wl[p][0] * 1000 / (se.wl[p][0] + se.wl[p][1]);
+                long pu = (long)se.wl[u][0] * 1000 / (se.wl[u][0] + se.wl[u][1]);
+                if (pp > pu || (pp == pu && se.wl[p][0] > se.wl[u][0])
+                    || (pp == pu && se.wl[p][0] == se.wl[u][0] && p < u))
+                    break;
+            }
+            for (k = nm; k > j; k--)
+                mates[k] = mates[k - 1];
+            mates[j] = u;
+            nm++;
+        }
+        result = 0;
+        if (t == se.champion)
+            result = 1;
+        else if (t == se.al_pennant || t == se.nl_pennant)
+            result = 2;
+        else {
+            int count = (int)playoff_headers(season);
+            for (i = 0; i < count && result == 0; i++) {
+                if ((g_pl[i].b & 3) == 2
+                    && ((g_pl[i].idx >> 8) == t || (g_pl[i].idx & 255) == t))
+                    result = 3;
+            }
+            for (i = 0; i < count && result == 0; i++) {
+                if ((g_pl[i].b & 3) == 1
+                    && ((g_pl[i].idx >> 8) == t || (g_pl[i].idx & 255) == t))
+                    result = 4;
+            }
+        }
+        row = &g_th[n++];
+        year_text(season, row->cells[0]);
+        sprintf(row->cells[1], "%d", se.wl[t][0]);
+        sprintf(row->cells[2], "%d", se.wl[t][1]);
+        fmt_avg((int32_t)((long)se.wl[t][0] * 1000 / (se.wl[t][0] + se.wl[t][1])),
+                row->cells[3]);
+        for (i = 0; i < nm && mates[i] != t; i++)
+            ;
+        ordinal_label(i + 1, row->cells[4]);
+        strcpy(row->cells[5], result == 1 ? "CHAMPION" : result == 2 ? "PENNANT"
+                              : result == 3 ? "LCS" : result == 4 ? "DS" : "");
+        row->ncells = 6;
+    }
+    if (n == 0)
+        return th_message();
+    return n;
+}
+
+/* the TEAM HISTORY title: '%s  %d TITLES  %d PENNANTS' of the team on the screen */
+static void teamhist_title(State st, char *dst)
+{
+    char nm[NAME_CAP_MAX];
+    SeasonEntry se;
+    int titles = 0, pennants = 0, season, lo;
+    long n = g_hdr_seasons;
+    lo = n < SEASON_COUNT ? (int)n : SEASON_COUNT;
+    for (season = lo; season >= 1; season--) {
+        memset(&se, 0, sizeof se);
+        read_season(&se, season);
+        if (se.wl[st.cat][0] + se.wl[st.cat][1] == 0)
+            continue;
+        if (st.cat == se.champion) {
+            titles++;
+            pennants++;
+        } else if (st.cat == se.al_pennant || st.cat == se.nl_pennant)
+            pennants++;
+    }
+    th_name((int)st.cat, nm);
+    sprintf(dst, "%s  %d TITLES  %d PENNANTS", nm, titles, pennants);
+}
+
+/* TEAM HISTORY page: the rows of the team st.cat (page < 0 counts only). Returns
+ * the row count; *cols is COLS_SINGLE for the lone message row, else COLS_TEAMHIST. */
+static int teamhist_body(State st, int page, const ColDef **cols)
+{
+    int n, k, r;
+    *cols = COLS_TEAMHIST;
+    n = build_teamhist((long)g_hdr_seasons, (int)st.cat);
+    if (n == 1 && g_th[0].ncells == 1)
+        *cols = COLS_SINGLE;
+    if (page >= 0) {
+        for (k = 0, r = page * ROWS_PER_PAGE; r < n && k < ROWS_PER_PAGE; r++, k++) {
+            int c;
+            for (c = 0; c < g_th[r].ncells; c++)
+                strcpy(g_rows[k].cells[c], g_th[r].cells[c]);
+            g_rows[k].ncells = g_th[r].ncells;
+        }
+    }
+    return n;
+}
+
 /* PLAYOFF BOX rows of round game g of season into g_box (dynview.pbox_rows): the box_rows
  * layout from the (season, g) records that are not the flags-4 header, the two teams from
  * the header's idx; one message row without a header or without any other record. The
@@ -4279,6 +4459,8 @@ static int total_rows(State st)
         return playoffs_body(st, -1, &cols);
     case SCREEN_PBOX:
         return pbox_body(st, -1, &cols);
+    case SCREEN_TEAMHIST:
+        return teamhist_body(st, -1, &cols);
     case SCREEN_SETTINGS:
         return SET_TEAM0 + g_nteams;
     case SCREEN_ABOUT:
@@ -4355,6 +4537,9 @@ static int refresh_rows(State st, const ColDef **cols)
         return page_rows(pbox_body(st, st.page, cols), st.page);
     case SCREEN_FIND:
         return find_body(st, st.page, cols);
+
+    case SCREEN_TEAMHIST:
+        return page_rows(teamhist_body(st, st.page, cols), st.page);
     default:
         return build_review_rows();
     }
@@ -4508,7 +4693,7 @@ static State cursor_to(State st, int32_t row)
     return cursor_state(st, row);
 }
 
-/* the screens LEFT and RIGHT step a season on */
+/* the screens LEFT and RIGHT step a season on (TEAM HISTORY steps teams instead, C29) */
 static int season_screen(int screen)
 {
     return screen == SCREEN_AWARDS || screen == SCREEN_STANDINGS
@@ -4547,6 +4732,11 @@ static State step(State in, int32_t key)
                 return mk_state(SCREEN_AWARDS, 0, 0);
             return g_awh_back;
         }
+
+        /* TEAM HISTORY goes back to the SEASON STANDINGS state it was opened from (C29);
+         * it was never opened: the default (STANDINGS, 0, 0) like Python's data.get */
+        if (s.screen == SCREEN_TEAMHIST)
+            return g_th_live ? g_th_back : mk_state(SCREEN_STANDINGS, 0, 0);
         if (s.screen == SCREEN_MENU)
             g_exit = 1;
         return mk_state(SCREEN_MENU, 0, 0);
@@ -4939,6 +5129,31 @@ static State step(State in, int32_t key)
      * page and row reset. Other screens' season stepping first. */
     if (s.screen == SCREEN_MILESTONES && (key == KEY_LEFT || key == KEY_RIGHT))
         return mk_state(SCREEN_MILESTONES, 0, s.cat == 1 ? 0 : 1);
+    /* C29 TEAM HISTORY keys */
+    if (s.screen == SCREEN_STANDINGS && (key == 84 || key == 116)) {
+        /* T opens the TEAM HISTORY of the lowest managed team id, else the first of
+         * g_teams (nothing happens with no teams). The standings state is kept for ESC. */
+        int first = -1, i;
+        if (g_nteams == 0)
+            return s;
+        for (i = 0; i < g_nteams; i++)
+            if (g_tlg[i] < 32 && ((g_mask >> g_tlg[i]) & 1u) != 0
+                && (first < 0 || g_tlg[i] < g_tlg[first]))
+                first = i;
+        g_th_back = mk_state(SCREEN_STANDINGS, s.page, s.cat);
+        g_th_live = 1;
+        return mk_state(SCREEN_TEAMHIST, 0, g_tlg[first >= 0 ? first : 0]);
+    }
+    if (s.screen == SCREEN_TEAMHIST && (key == KEY_LEFT || key == KEY_RIGHT)) {
+        /* LEFT / RIGHT step to the previous / next id of the MAJ teams (the listed order),
+         * wrapping; the page resets to 0 */
+        int k = 0, d, i;
+        for (i = 0; i < g_nteams; i++)
+            if (g_tlg[i] == s.cat)
+                k = i;
+        d = key == KEY_LEFT ? (k + g_nteams - 1) % g_nteams : (k + 1) % g_nteams;
+        return mk_state(SCREEN_TEAMHIST, 0, g_tlg[d]);
+    }
     if (season_screen(s.screen) && key == KEY_LEFT) {
         if ((long)g_hdr_seasons - s.cat > 1) {
             s.cat = (int16_t)(s.cat + 1);
@@ -5038,6 +5253,12 @@ static const ColDef COLS_FIND[4] = {
     { "NAME", CX(0), 20, 0 }, { "POS", CX(21), 3, 0 }, { "YRS", CX(25), 3, 1 },
     { "STATUS", CX(30), 12, 0 } };
 
+/* C29 TEAM HISTORY */
+static const ColDef COLS_TEAMHIST[] = {
+    { "YEAR", CX(0), 4, 0 }, { "W", CX(5), 4, 1 }, { "L", CX(10), 4, 1 },
+    { "PCT", CX(15), 5, 1 }, { "FINISH", CX(22), 6, 0 },
+    { "RESULT", CX(30), 12, 0 } };
+
 /* PLAYER CARD season tables (C13.5): batters and pitchers */
 static const ColDef COLS_CARD_BAT[] = {
     { "YEAR", CX(0), 4, 0 }, { "TM", CX(4), 4, 1 }, { "G", CX(8), 4, 1 },
@@ -5089,6 +5310,8 @@ static int n_cols(const ColDef *cols)
         return NCOLS(COLS_SEASON_LEADERS);
     if (cols == COLS_POST_LEADERS)
         return NCOLS(COLS_POST_LEADERS);
+    if (cols == COLS_TEAMHIST)
+        return NCOLS(COLS_TEAMHIST);
     if (cols == COLS_CARD_BAT)
         return NCOLS(COLS_CARD_BAT);
     if (cols == COLS_CARD_PIT)
@@ -5140,6 +5363,11 @@ static const ColDef *body_cols(State st)
     case SCREEN_PLAYOFFS:
     case SCREEN_PBOX:
         return COLS_SERIES;
+    case SCREEN_TEAMHIST: {
+        const ColDef *c2;
+        teamhist_body(st, -1, &c2);
+        return c2;
+    }
     default:
         return COLS_SINGLE;
     }
@@ -5679,7 +5907,9 @@ static const char *footer_of(State st)
     if (st.screen == SCREEN_AWHIST)
         return "ENTER CARD  LEFT RIGHT AWARD  PGUP PGDN  ESC";
     if (st.screen == SCREEN_STANDINGS)
-        return "LEFT RIGHT SEASON   PGUP PGDN   ESC MENU";
+        return "T TEAM  LEFT RIGHT SEASON  PGUP PGDN  ESC";
+    if (st.screen == SCREEN_TEAMHIST)
+        return "LEFT RIGHT TEAM   PGUP PGDN   ESC";
     if (st.screen == SCREEN_SERIES)
         return "1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC";
     if (st.screen == SCREEN_BOX)
@@ -5751,6 +5981,8 @@ static void screen_title(State st, char *dst)
             sprintf(dst, "%ld STANDINGS", (long)year_of((int32_t)g_hdr_seasons - st.cat));
         else
             strcpy(dst, "SEASON STANDINGS");
+    } else if (st.screen == SCREEN_TEAMHIST) {
+        teamhist_title(st, dst);
     } else if (st.screen == SCREEN_SERIES) {
         if (g_hdr_seasons)
             sprintf(dst, "%ld WORLD SERIES", (long)year_of((int32_t)g_hdr_seasons - st.cat));
@@ -6099,12 +6331,12 @@ static void draw_card(int32_t entry, int page)
 static void render(State st)
 {
     const ColDef *cols;
-    uint8_t up[64];
+    uint8_t up[160];
     int tx, r, ci, hot;
     draw_panel();
     /* screen_title then the centered bold title with its shadow */
     {
-        char tbuf[64];
+        char tbuf[160];
         screen_title(st, tbuf);
         strcpy((char *)up, tbuf);
     }
@@ -6398,7 +6630,8 @@ static int left_right_screen(int screen)
     return screen == SCREEN_LEADERS || screen == SCREEN_AWARDS || screen == SCREEN_STANDINGS
            || screen == SCREEN_SERIES || screen == SCREEN_BOX || screen == SCREEN_PLAYOFFS
            || screen == SCREEN_MILESTONES   /* C27: a title click toggles the mode */
-           || screen == SCREEN_AWHIST;      /* C28: a title click steps the award code */
+           || screen == SCREEN_AWHIST       /* C28: a title click steps the award code */
+           || screen == SCREEN_TEAMHIST;    /* C29: a title click steps the team */
 }
 
 /* the key of a left click at (x, y) (dynview.click_to_key, C13.6), in order: a hub row band is that
