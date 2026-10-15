@@ -1621,13 +1621,72 @@ def test_c17_managed_by_stem_parity(tmp_path):
     data = dynview.load_data(str(ldir), FILES)
     assert data['teams'] == [(0, 'SEATTLE'), (7, 'SEATTLE'), (20, 'NEW YORK N')]
     rows = dynview.offseason_body((dynview.SCREEN_OFFSEASON, 0, oc(2)), data)[1]
-    assert rows == [('#1', '*SEATTLE', '', 'Bobby Holmes'),
-                    ('#2', 'SEATTLE', '', 'Bobby Holmes')]
+    assert rows == [('#1', '*SEATTLE', '', 'Bobby Holmes', 'C'),
+                    ('#2', 'SEATTLE', '', 'Bobby Holmes', 'C')]
     trade = dynview.offseason_body((dynview.SCREEN_OFFSEASON, 0, oc(3)), data)[1]
     assert trade == [('*SEATTLE', 'Duke Snider', 'SEATTLE'),
                      ('SEATTLE', 'TONY BERNAZARD', 'SEATTLE')]
     check_offseason(ldir, tmp_path, 'c17_twin_draft', 2)
     check_offseason(ldir, tmp_path, 'c17_twin_trades', 3)
+
+
+def test_c70_draft_need_parity(tmp_path):
+    """C70: the draft screen with the NEED column, Python vs host, a league with two
+    drafting teams: SEATTLE with a full team file (thinnest position shown, shared by
+    both of its picks), BOSTON with no batters (all counts 0: 'C' on the tie), two
+    picks of one team sharing the NEED cell."""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    tmps = tmp_path / 'c70 need'
+    tmps.mkdir()
+    ldir = draft_managed_test_league(
+        tmps, b'DRAFT CLASALE1 Lou Green\r\n'
+              b'DRAFT CLASALE1 Bobby Holmes\r\n'
+              b'DRAFT CLASALW2 Pat Smol\r\n'
+              b'SIGN CLASALW7 Lou Green CLASALE1\r\n'
+              b'SIGN CLASALW7 Bobby Holmes CLASALE1\r\n'
+              b'SIGN CLASALW2 Pat Smol CLASALW2\r\n', 0)
+    write_team_v20_full(
+        ldir, 'CLASALW7',
+        {0: ('Lou Green', 6), 1: ('Bobby Holmes', 0),
+         16: ('C A', 1), 17: ('C B', 1), 18: ('1B A', 2), 19: ('1B B', 2),
+         20: ('2B A', 3), 22: ('SS A', 5), 23: ('SS B', 5), 24: ('LF A', 6),
+         25: ('LF B', 6), 26: ('CF A', 7), 27: ('RF A', 8), 28: ('RF B', 8),
+         29: ('Up Mid', 12)},
+        name='SEATTLE')
+    write_team_v20_full(ldir, 'CLASALW2', {5: ('Pat Smol', 4)}, name='BOSTON')
+    data = dynview.load_data(str(ldir), FILES)
+    cols, rows = dynview.offseason_body((dynview.SCREEN_OFFSEASON, 0, oc(2)), data)
+    assert cols is dynview.COLS_DRAFT
+    # BOSTON's file has the pick but no batters (every count 0): NEED is 'C' on the tie
+    assert rows == [('#1', 'SEATTLE', 'LF', 'Lou Green', '3B'),
+                    ('#2', 'SEATTLE', 'P', 'Bobby Holmes', '3B'),
+                    ('#3', 'BOSTON', '3B', 'Pat Smol', 'C')]
+    check_offseason(ldir, tmp_path, 'c70_need_draft', 2)
+
+
+def test_c70_draft_need_group_rf_parity(tmp_path):
+    """C70: an OF group code (10) covers RF (q = 8, bit 8 of the C cover table): with RF
+    covered only by two OF players and one 2B, NEED is 2B (RF counts 2), not RF."""
+    if not _fonts_ready():
+        pytest.skip('fonts missing')
+    tmps = tmp_path / 'c70 rf'
+    tmps.mkdir()
+    ldir = draft_managed_test_league(
+        tmps, b'DRAFT CLASALE1 Lou Green\r\n'
+              b'SIGN CLASALW7 Lou Green CLASALE1\r\n', 0)
+    write_team_v20_full(
+        ldir, 'CLASALW7',
+        {0: ('Lou Green', 0),
+         16: ('C A', 1), 17: ('C B', 1), 18: ('1B A', 2), 19: ('1B B', 2),
+         20: ('2B A', 3), 21: ('3B A', 4), 22: ('3B B', 4), 23: ('SS A', 5),
+         24: ('SS B', 5), 25: ('LF A', 6), 26: ('CF A', 7), 27: ('OF A', 10),
+         28: ('OF B', 10)},
+        name='SEATTLE')
+    data = dynview.load_data(str(ldir), FILES)
+    rows = dynview.offseason_body((dynview.SCREEN_OFFSEASON, 0, oc(2)), data)[1]
+    assert rows == [('#1', 'SEATTLE', 'P', 'Lou Green', '2B')]
+    check_offseason(ldir, tmp_path, 'c70_need_rf', 2)
 
 
 # ---------------- three divisions: DYNASTY SETTINGS, PLAYOFF FORMAT, SEASON STANDINGS ----------------

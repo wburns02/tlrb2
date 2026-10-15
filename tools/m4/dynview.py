@@ -472,6 +472,43 @@ def draft_pos(league_dir, stem, name, cache=None):
     return ''
 
 
+def draft_need(league_dir, stem, cache=None):
+    """NEED column of an offseason DRAFT pick (C70): the thinnest field position of the
+    drafting team's <STEM>.V20 as dynview.pos_name. For q = 1..8 the count is the on
+    (first byte non-zero) batter slots 16..39 whose rosters.can_play(rec, q) holds
+    (pitchers do not count, a NEED is about the lineup); NEED is the name of the
+    position with the smallest count, ties to the lowest q. '' when the file is missing
+    or shorter than HDR + REC * 40. The team file is read at most once per screen build
+    (the same cache draft_pos uses: token -> raw bytes, None when there is no readable
+    file)."""
+    if cache is not None and stem in cache:
+        raw = cache[stem]
+    else:
+        path = v20_path(league_dir, stem.encode('latin-1'))
+        raw = None
+        if path is not None:
+            try:
+                with open(path, 'rb') as fh:
+                    raw = fh.read()
+            except OSError:
+                raw = None
+        if cache is not None:
+            cache[stem] = raw
+    if raw is None or len(raw) < rosters.HDR + rosters.REC * 40:
+        return ''
+    best, best_n = 1, None
+    for q in range(1, 9):
+        n = 0
+        for slot in range(16, 40):
+            off = rosters.HDR + rosters.REC * slot
+            rec = raw[off:off + rosters.REC]
+            if rec[0] != 0 and rosters.can_play(rec, q):
+                n += 1
+        if best_n is None or n < best_n:
+            best, best_n = q, n
+    return pos_name(best)
+
+
 def parse_rosters(league_dir):
     """ROSTERS.TXT as offseason events, in file order: ('DRAFT', stem, name) for the
     first DRAFT_KEEP valid DRAFT lines; ('SIGN', team, name, frm); ('TRADE', a, x, b,
@@ -2194,7 +2231,8 @@ def offseason_body(state, data):
         picks, _fa = sign_split(ev)
         cache = {}                                # team token -> V20 bytes, once per build
         rows = [('#%d' % k, managed_cell(data, team, disp(team)),
-                 draft_pos(ld, team, name, cache), name)
+                 draft_pos(ld, team, name, cache), name,
+                 draft_need(ld, team, cache))
                 for k, (team, name) in enumerate(picks[:LIST_MAX], 1)]
     elif phase == OFF_TRADES:
         cols, msg = COLS_MOVE, 'NO TRADES'
@@ -3262,7 +3300,7 @@ COLS_WATCH = [('NAME', _cx(0), 16, 'L'), ('MARK', _cx(17), 9, 'L'),
 COLS_RETIRE = [('NAME', _cx(0), 18, 'L'), ('AGE', _cx(18), 5, 'R'), ('YRS', _cx(23), 5, 'R'),
                ('WAR', _cx(28), 7, 'R'), ('HOF', _cx(36), 6, 'R')]
 COLS_DRAFT = [('#', _cx(0), 4, 'L'), ('TEAM', _cx(4), 13, 'L'), ('POS', _cx(18), 3, 'L'),
-              ('PLAYER', _cx(22), 20, 'L')]
+              ('PLAYER', _cx(22), 15, 'L'), ('NEED', _cx(38), 4, 'L')]
 COLS_MOVE = [('TEAM', _cx(0), 13, 'L'), ('PLAYER', _cx(14), 15, 'L'), ('FROM', _cx(30), 12, 'L')]
 COLS_AWARDS = [('AWARD', _cx(0), 13, 'L'), ('NAME', _cx(14), 16, 'L'),
                ('VALUE', _cx(30), 12, 'R')]
