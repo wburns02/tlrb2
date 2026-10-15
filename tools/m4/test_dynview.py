@@ -675,7 +675,7 @@ def test_roster_events_parse(tmp_path):
         ('SIGN', 'CLASALW7', 'Lou Green', 'pool'),
         ('SIGN', 'CLASALE1', 'Lou Green', 'CLASNLE3'),
         ('TRADE', 'CLASALE1', 'Duke Snider', 'CLASNLW4', 'TONY BERNAZARD'),
-        ('REL',), ('REL',),
+        ('REL', 'CLASALE1', 'Some Guy'), ('REL', 'CLASALW2', 'Other Guy Jr'),
         ('TRADE', 'CLASNLE3', 'Lou', 'CLASALW2', 'Lou Green'),
         ('SIGN', 'CLASNLW5', 'Tom Free', 'pool'),
         ('SIGN', 'CLASNLW5', 'Tom Free', 'CLASALE2')]
@@ -697,7 +697,8 @@ def test_roster_line_length_boundary(tmp_path):
             + head + b'R' * 114 + b'\r\n'                  # 128 raw, 127 content: kept
             + head + b'R' * 115 + b'\r\n')                 # 129 raw, 128 content: ignored
     (ldir / 'ROSTERS.TXT').write_bytes(body)
-    assert dynview.parse_rosters(str(ldir)) == [('REL',), ('REL',)]
+    assert dynview.parse_rosters(str(ldir)) == [('REL', 'CLASALE1', 'R' * 114),
+                                                ('REL', 'CLASALE1', 'R' * 114)]
 
 
 def test_roster_missing_file(tmp_path):
@@ -744,7 +745,9 @@ def test_offseason_phase_rows(tmp_path):
     assert body(4) == [('CLASNLE4', 'Bobby Holmes', 'CLASALE1'),
                        ('SEATTLE', 'Lou Green', 'FREE AGENT'),
                        ('CLASNLW5', 'Tom Free', 'FREE AGENT'),
-                       ('CLASNLW5', 'Tom Free', 'CLASALE2')]
+                       ('CLASNLW5', 'Tom Free', 'CLASALE2'),
+                       ('CLASALE1', 'Some Guy', 'RELEASED'),
+                       ('BOSTON', 'Other Guy Jr', 'RELEASED')]
     assert dynview.body_cols((SO, 0, oc(4)), data) == dynview.COLS_MOVE
     ready = ['RETIRED: 4   NEW HALL OF FAME: 1', 'ROOKIES DRAFTED: 3', 'TRADES: 2',
              'FREE AGENT SIGNINGS: 4', 'PLAYERS RELEASED: 2',
@@ -757,7 +760,8 @@ def test_offseason_phase_rows(tmp_path):
 def test_offseason_empty_phases(tmp_path):
     ldir = make_offseason(tmp_path, rosters=None)
     data = dynview.load_data(str(ldir))
-    for phase, msg in ((2, 'NO DRAFT PICKS'), (3, 'NO TRADES'), (4, 'NO FREE AGENT SIGNINGS')):
+    for phase, msg in ((2, 'NO DRAFT PICKS'), (3, 'NO TRADES'),
+                       (4, 'NO SIGNINGS OR RELEASES')):
         s = (SO, 0, oc(phase))
         assert dynview.rows(s, data) == [(msg,)]
         assert dynview.body_cols(s, data) == dynview.COLS_SINGLE
@@ -772,7 +776,7 @@ def test_offseason_titles_footers_and_menu(tmp_path):
     ldir = make_offseason(tmp_path)
     data = dynview.load_data(str(ldir))
     titles = ['1/6 1995 IN REVIEW', '2/6 RETIREMENTS', '3/6 ROOKIE DRAFT',
-              '4/6 TRADES', '5/6 FREE AGENT SIGNINGS', '6/6 1996 IS READY']
+              '4/6 TRADES', '5/6 SIGNINGS AND RELEASES', '6/6 1996 IS READY']
     for phase, title in enumerate(titles):
         assert dynview.screen_title((SO, 0, oc(phase)), data) == title
         assert dynview.screen_title((SO, 0, oc(phase, 0)), data) == title
@@ -3030,3 +3034,207 @@ def test_about_playoff_format_lines():
         'THEN START THE NEW SEASON WITH THE',
         'GENERATED SCHEDULE.']
     assert dynview.ABOUT_ROWS[i + 7] == ''
+
+
+# ---------------------------------------------------------------- C18: starred teams
+def test_standings_managed_star(tmp_path):
+    """C18: a managed team's first STANDINGS cell is starred, an unmanaged one unchanged,
+    headers and the blank spacer never; tid >= 32 is never starred even with bit set."""
+    ldir = make_standings(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[12:16] = ((1 << 1) | (1 << 9)).to_bytes(4, 'little')   # DETROIT (1), KANSAS CITY (9)
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    rows = [r for pg in range(3) for r in dynview.rows((SS, pg, 2), data)]
+    want = [((('*' + r[0]) if r[0] in ('DETROIT', 'KANSAS CITY') else r[0]),) + r[1:]
+            for r in STAND_1_ROWS]
+    assert rows == want
+    assert all(r[0] == ('AL ' + r[0][3:] if False else r[0])
+               for r in rows if not any(r[1:]))
+    # tid >= 32 with its bit set is never starred
+    (tmp_path / 'full').mkdir()
+    ldir = make_standings(tmp_path / 'full')
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[12:16] = b'\xff\xff\xff\xff'
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    rows = [r for pg in range(3) for r in dynview.rows((SS, pg, 2), data)]
+    ids = {disp: tid for tid, disp in data['teams']}
+    for r in rows:
+        if r[0].startswith('*'):
+            name = r[0].lstrip('*')
+            tid = ids.get(name, int(name[5:]) if name.startswith('TEAM ') else 99)
+            assert tid < 32
+    # and every listed team's cell stars exactly when its tid is under 32 (all bits set)
+    shown = {}
+    for r in rows:
+        if any(r[1:]):
+            shown.setdefault(r[0].lstrip('*'), r[0])
+    for tid, disp in data['teams']:
+        if disp in shown:
+            assert shown[disp].startswith('*') == (tid < 32)
+
+
+def test_standings_mask_zero_unchanged(tmp_path):
+    """C18: mask 0 keeps the exact pre-change STANDINGS rows"""
+    ldir = make_standings(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[12:16] = b'\0\0\0\0'
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    rows = [r for pg in range(3) for r in dynview.rows((SS, pg, 2), data)]
+    assert rows == STAND_1_ROWS
+
+
+def test_series_managed_star(tmp_path):
+    """C18: visitor, home and summary rows of a managed team are starred; GAME headers
+    and the SERIES row are not; mask 0 keeps SERIES6_ROWS byte for byte."""
+    ldir = make_series(tmp_path, series_recs(3, SERIES6))
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[12:16] = (1 << 0).to_bytes(4, 'little')               # BOSTON is AL id 0
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    want = [('*' + c if c == 'BOSTON' else c) if k == 0 else c for k, c in []] or [
+        r[:1] + r[1:] for r in SERIES6_ROWS]
+    want = [(('*' + r[0]) if r[0] == 'BOSTON' else r[0],) + r[1:]
+            for r in SERIES6_ROWS]
+    assert want[-1] == ('*BOSTON', '', '', '', 'WINS 4-2')
+    assert ('*BOSTON', '3', '7', '1', '') in want
+    rows = [r for pg in range(2) for r in dynview.rows((SW, pg, 0), data)]
+    assert rows == want
+    assert ('GAME 1', '', '', '', '') in rows
+    # mask 0: exactly SERIES6_ROWS
+    d[12:16] = b'\0\0\0\0'
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    rows = [r for pg in range(2) for r in dynview.rows((SW, pg, 0), data)]
+    assert rows == SERIES6_ROWS
+
+
+def test_series_tid_32_star_rule_and_summary(tmp_path):
+    """C18: a tid >= 32 never stars, even with the mask bit set; the summary row of a
+    managed leader is starred too"""
+    ldir = make_series(tmp_path, series_recs(3, SERIES6))
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[12:16] = b'\xff\xff\xff\xff'
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    rows = [r for pg in range(2) for r in dynview.rows((SW, pg, 0), data)]
+    starred = [r[0] for r in rows if r[0].startswith('*')]
+    ids = {disp: tid for tid, disp in data['teams']}
+    for name in starred:
+        assert ids[name.lstrip('*')] < 32
+
+
+def test_history_champion_star_and_mask_zero(tmp_path):
+    """C18: the CHAMPION cell of a managed champion stem is starred; mask 0 keeps the
+    pre-change rows exactly"""
+    ldir = make_data(tmp_path)[0]
+    write_team(ldir, 'ALA03', 'MILWAUKEE')
+    write_maj(ldir, {2: b'ALA03'})
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[12:16] = (1 << 2).to_bytes(4, 'little')
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    rows = dynview.rows(st(dynview.SCREEN_HISTORY), data)
+    assert rows[0][1] == '*MILWAUKEE'
+    assert rows[1][1] == 'ALA02' and rows[2][1] == 'ALA01'
+    # mask 0: the champion shows without the star
+    d[12:16] = b'\0\0\0\0'
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    rows = dynview.rows(st(dynview.SCREEN_HISTORY), data)
+    assert rows[0][1] == 'MILWAUKEE'
+    # a champion stem with no team file has no stable id: never starred
+    (tmp_path / 'nstem').mkdir()
+    ldir = make_data(tmp_path / 'nstem')[0]
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    write_season(d, 3, b'NOSTEM9', b'NL03')
+    d[12:16] = b'\xff\xff\xff\xff'
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    rows = dynview.rows(st(dynview.SCREEN_HISTORY), data)
+    assert rows[0][1] == 'NOSTEM9'
+
+
+def test_history_rows_optional_args(tmp_path):
+    """history_rows' existing (hist, league_dir) form still works (no stars)"""
+    ldir, hb = make_data(tmp_path)
+    hist = history.History.load(str(ldir / 'HISTORY.DAT'))
+    rows = dynview.history_rows(hist, str(ldir))
+    assert rows[0][1] == 'ALA03'
+    assert rows == dynview.history_rows(hist, str(ldir), {'ALA03': 2}, 0)
+
+
+# ---------------------------------------------------------------- C19: releases
+REL19 = (b'SIGN CLASALW7 Sign One pool\r\n'
+         b'SIGN CLASNLW4 Sign Two pool\r\n'
+         b'SIGN CLASALW7 Sign Three CLASALE1\r\n'
+         b'REL CLASALW7 Cut One\r\n'
+         b'REL CLASNLE4 Cut Two Words\r\n'
+         b'REL BOSTON Cut Three\r\n')
+
+
+def test_releases_rows_order_and_star(tmp_path):
+    """C19 phase 4: the SIGN rows first, then one RELEASED row per REL event in file
+    order, FROM 'RELEASED'; a managed stem's cell is starred; a two-word name keeps
+    both words; a stem with no team file shows upper case"""
+    ldir = draft_managed_test_league(tmp_path, REL19, 1 << 7)
+    data = dynview.load_data(str(ldir))
+    rows = dynview.offseason_body((SO, 0, oc(4)), data)[1]
+    assert rows == [('*SEATTLE', 'Sign One', 'FREE AGENT'),
+                    ('NEW YORK N', 'Sign Two', 'FREE AGENT'),
+                    ('*SEATTLE', 'Sign Three', 'CLASALE1'),
+                    ('*SEATTLE', 'Cut One', 'RELEASED'),
+                    ('CLASNLE4', 'Cut Two Words', 'RELEASED'),
+                    ('BOSTON', 'Cut Three', 'RELEASED')]
+    assert dynview.body_cols((SO, 0, oc(4)), data) == dynview.COLS_MOVE
+    assert dynview.screen_title((SO, 0, oc(4)), data) == '5/6 SIGNINGS AND RELEASES'
+
+
+def test_releases_empty_message_and_count(tmp_path):
+    """C19: the empty phase-4 message is NO SIGNINGS OR RELEASES; the phase-5
+    PLAYERS RELEASED count is unchanged (REL lines with 3+ tokens only)"""
+    ldir = make_offseason(tmp_path, rosters=None)
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows((SO, 0, oc(4)), data) == [('NO SIGNINGS OR RELEASES',)]
+    assert dynview.body_cols((SO, 0, oc(4)), data) == dynview.COLS_SINGLE
+    (tmp_path / 'full').mkdir()
+    ldir = make_offseason(tmp_path / 'full')
+    data = dynview.load_data(str(ldir))
+    ready = dynview.rows((SO, 0, oc(5)), data)
+    assert ready[4] == ('PLAYERS RELEASED: 2',)
+    assert ready[3] == ('FREE AGENT SIGNINGS: 4',)
+
+
+def test_releases_parse_rosters_tuple(tmp_path):
+    """C19: parse_rosters REL events carry the stem and the name"""
+    ldir = make_offseason(tmp_path, rosters=None)
+    (ldir / 'ROSTERS.TXT').write_bytes(
+        b'REL CLASALW7 A Guy\r\n'
+        b'REL\r\n'                       # one token: not an event
+        b'REL TEAM\r\n'                  # two tokens: not an event
+        b'REL CLASALE1 Solo\r\n')
+    assert dynview.parse_rosters(str(ldir)) == [('REL', 'CLASALW7', 'A Guy'),
+                                                ('REL', 'CLASALE1', 'Solo')]
+
+
+def test_releases_total_rows_capped(tmp_path, monkeypatch):
+    """C19: the combined SIGN + RELEASE row count is still capped at LIST_MAX"""
+    rosters = b''.join(b'SIGN CLASALW7 Player%02d pool\r\n' % k for k in range(30))
+    rosters += b''.join(b'REL CLASNLW4 Gone%02d\r\n' % k for k in range(30))
+    ldir = make_offseason(tmp_path, rosters)
+    monkeypatch.setattr(dynview, 'LIST_MAX', 45)
+    data = dynview.load_data(str(ldir))
+    rows = dynview.offseason_body((SO, 0, oc(4)), data)[1]
+    assert len(rows) == 45
+    assert rows[29] == ('SEATTLE', 'Player29', 'FREE AGENT')
+    assert rows[30] == ('NEW YORK N', 'Gone00', 'RELEASED')
+    assert rows[-1] == ('NEW YORK N', 'Gone14', 'RELEASED')
