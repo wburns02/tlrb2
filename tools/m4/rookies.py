@@ -56,6 +56,11 @@ POS_P, POS_C, POS_1B, POS_2B, POS_3B, POS_SS = 0, 1, 2, 3, 4, 5
 POS_LF, POS_CF, POS_RF, POS_DH, POS_OF = 6, 7, 8, 9, 10
 POS_IF, POS_OI, POS_CO, POS_CI, POS_C3 = 11, 12, 13, 14, 15
 
+# C20b second position (byte 31 high nibble) per pos1 code 0..9, the most
+# common stock pairing: P->P, C->C, 1B->1B, 2B->IF, 3B->O/I, SS->IF,
+# LF/CF/RF->OF, DH->DH. Codes 10..15 (never emitted) keep pos2 = 0.
+POS2_OF = (0, 1, 2, 11, 12, 11, 10, 10, 10, 9)
+
 BATTER_POSITIONS = set(range(1, 16))  # everything except pitcher is a batter
 
 # Age distribution: 18..23 weighted toward 20-22 (as the WIP blob; weights
@@ -319,9 +324,10 @@ class RookieGen:
         rec[OFF_HAND] = (rec[OFF_HAND] & 0xF0) | nib
 
     def _write_position(self, rec, position):
-        # pos1 = actual position, pos2 = 0 (none) for rookies.
+        # pos1 = actual position, pos2 = POS2_OF[position] (C20b). Codes
+        # 10..15 are never emitted here and keep pos2 = 0.
         _set_nibble_lo(rec, OFF_POS, position & 0x0F)
-        _set_nibble_hi(rec, OFF_POS, 0)
+        _set_nibble_hi(rec, OFF_POS, POS2_OF[position] if position <= 9 else 0)
 
     def _write_portrait(self, rec):
         face = self.rng.draw() % self.face_n

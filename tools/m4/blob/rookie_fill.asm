@@ -21,6 +21,8 @@
 ; Constants per position code (pinned against the Python reference):
 ;   P (0):     salary 255, IP 200, pitch4 135 lo = 4, 136..139=77 140=07
 ;   batters:   salary 109, AB 40 split by bats, 75 hi = 70, 76 = 78
+; C20b: byte 31 = pos1 (low nibble) | pos2 (high) = pos2_table[cl]; the
+; pitcher-path compares keep testing the position code only.
 ; C20: after the ladder, each remaining vacancy draws ONE rng draw and its
 ; position code = rem_table[draw % 20]; these remainder draws (one per
 ; remainder vacancy, in fill order) precede pass 3's record draws.
@@ -446,8 +448,16 @@ bats_set:
         or [cs:scratch+OFF_EXPCONS], al
         ; position + salary
         pop cx                          ; cx = code
+        ; C20b: byte 31 = pos1 | (pos2 << 4), pos2 = pos2_table[code]
+        push bx
+        xor bx, bx
+        mov bl, cl
+        mov al, [cs:pos2_table + bx]    ; bx = code, al = pos2
+        shl al, 4                       ; pos2 to the high nibble
+        or cl, al
         mov [cs:scratch+OFF_POS], cl
-        cmp cx, 0
+        pop bx
+        cmp cx, 0                       ; cx = byte 31, 0 only for P (pos2 0)
         jne sal_min
         mov word [cs:scratch+OFF_SALARY], 255
         jmp sal_done
@@ -653,6 +663,12 @@ rem_table:
         db 6                            ; LF
         db 7,7                          ; CF
         db 8,8                          ; RF
+
+; C20b second position per pos1 code 0..9 (rookies.POS2_OF): the byte 31
+; high nibble. P->P, C->C, 1B->1B, 2B->IF, 3B->O/I, SS->IF, OF->OF, DH->DH.
+; Codes 10..15 are never emitted here.
+pos2_table:
+        db 0, 1, 2, 11, 12, 11, 10, 10, 10, 9
 
 scan_counts:    dw 16 dup(0)
 vac_list:       dw 40 dup(0)

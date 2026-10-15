@@ -247,7 +247,12 @@ def build_record(form, pitcher, year, grp):
     flag = grp[face] & 1 if face < FACE_CUSTOM_BASE else 0      # a custom face has group 0 (C14.1)
     rec[rookies.OFF_HAND] = ((8 if throws == 'R' else 0)
                              | (BATS_CODE[bats] << 1) | flag)
-    rec[rookies.OFF_POS] = 0 if pitcher else form['pos'] & 0x0F
+    if pitcher:
+        rec[rookies.OFF_POS] = 0
+    else:
+        # C20b: pos1 in the low nibble, POS2_OF[pos1] in the high nibble.
+        rec[rookies.OFF_POS] = ((rookies.POS2_OF[form['pos']] & 0x0F) << 4) \
+            | (form['pos'] & 0x0F)
     struct.pack_into('<H', rec, rookies.OFF_PORTRAIT, face)
     rec[rookies.OFF_EXP_CONSIST] = 0x02          # exper 0, consist 2
     position = rookies.POS_P if pitcher else form['pos']

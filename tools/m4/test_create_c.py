@@ -235,6 +235,27 @@ def test_parity_portrait_edge_cases(tmp_path):
 
 # ---------------------------------------------------------------- parity: saves
 @need_fonts
+def test_parity_save_pos2_v20_bytes_c20b(tmp_path):
+    """C20b: a saved SS has byte 31 = 0xB5, a saved LF 0xA6, a saved pitcher
+    0x00; the host's V20 bytes equal Python's on the same keys (parity())."""
+    # named batter B1 (slot 16, occupant pos SS): default form keeps pos 5
+    ss_keys = [ENTER] + [DOWN] * 16 + [ENTER] + SAVE_NAMED_BATTER + [ENTER, ENTER]
+    st, _ = parity(tmp_path, ss_keys)
+    assert st['screen'] == cr.S_DONE
+    assert cr.record(st['image'], 16)[31] == 0xB5
+    # same slot, form pos LEFT*? -> walk POSITION one RIGHT: 5 -> 6 (LF)
+    lf_keys = ([ENTER] + [DOWN] * 16 + [ENTER] + typed('Lefty') + [DOWN] * 2
+               + [RIGHT] + [DOWN] * 10 + [ENTER, ENTER])
+    st, _ = parity(tmp_path, lf_keys)
+    assert st['screen'] == cr.S_DONE
+    assert cr.record(st['image'], 16)[31] == 0xA6
+    # empty pitcher P2: byte 31 = 0
+    st, _ = parity(tmp_path, [ENTER, DOWN, ENTER] + SAVE_EMPTY_PITCHER)
+    assert st['screen'] == cr.S_DONE
+    assert cr.record(st['image'], 1)[31] == 0
+
+
+@need_fonts
 def test_parity_save_empty_slot_v20(tmp_path):
     st, _ = parity(tmp_path, [ENTER, DOWN, ENTER] + SAVE_EMPTY_PITCHER)
     assert st['screen'] == cr.S_DONE

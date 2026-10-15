@@ -34,7 +34,7 @@ for _p in (_TOOLS, _BLOB_DIR):
 from m4 import team_fill  # noqa: E402
 from m4.rollover import Rng  # noqa: E402
 from m4.rookies import (  # noqa: E402
-    RookieGen, STOCK_FACE_GROUP, default_faces, load_faces,
+    POS2_OF, RookieGen, STOCK_FACE_GROUP, default_faces, load_faces,
 )
 
 ASM = os.path.join(_BLOB_DIR, "rookie_fill.asm")
@@ -329,6 +329,24 @@ def test_c20_remainder_forty_empty_roster():
     image = _team({})
     for seed in (3, 2034, 4711):
         _assert_parity(image, seed, 50)
+
+
+def test_c20b_pos2_40_vacancy_parity_3_seeds():
+    """C20b: a fully empty team (40 vacancies) stays byte-identical (image,
+    rng word, AX) on 3 seeds, and every filled batter's byte 31 high nibble
+    equals POS2_OF[pos1] in both blob and reference."""
+    for seed in (5, 999, 60013):
+        image = _team({})
+        ax, got, _ = _run_blob(image, seed, 124, PTeamA)
+        nvac, ref, _ = _reference(image, seed, 124)
+        assert ax == nvac == 40
+        assert got == bytes(ref)
+        for i in range(40):
+            base = HDR + i * RECORD
+            code = ref[base + 31] & 0x0F
+            want = POS2_OF[code]
+            assert (ref[base + 31] >> 4) == want
+            assert (got[base + 31] >> 4) == want
 
 
 def test_year_byte_written_verbatim():

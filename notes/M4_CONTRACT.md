@@ -1218,3 +1218,22 @@ a 105-season league), and the C6 draft redrafts exactly these rookies. Shipped d
   7 x2, 8 x2): P 40 %, C 10 %, 1B/2B/3B 5 % each, SS 10 %, LF 5 %, CF 10 %, RF 10 %, DH never. One draw per remainder
   vacancy in fill order, all before the C4 record draws of the same team; no draw when the ladder covers every
   vacancy. Python team_fill.REM_TABLE and rookie_fill.asm rem_table hold the same bytes.
+
+## C20b. Second position (added 2026-10-14)
+
+Will, 2026-10-14: record byte 31 carries pos1 in the low nibble and pos2 (second position) in the high nibble
+(codes 0 P, 1 C, 2 1B, 3 2B, 4 3B, 5 SS, 6 LF, 7 CF, 8 RF, 9 DH, 10 OF, 11 IF, 12 O/I, 13 C/O, 14 C/I, 15 C/3).
+Every generated rookie and every CREATE A PLAYER batter was written with pos2 = 0, which is P; stock data never
+gives a batter pos2 = P. This amends the C4 rookie record and the CREATE record build; the blob ABI is unchanged.
+
+- POS2_OF (the most common stock pos2 per pos1) = (0, 1, 2, 11, 12, 11, 10, 10, 10, 9), indexed by pos1 code
+  0..9: P->P, C->C, 1B->1B, 2B->IF, 3B->O/I, SS->IF, LF/CF/RF->OF, DH->DH. Defined once in tools/m4/rookies.py
+  (module level) and held as the 10-byte pos2_table in rookie_fill.asm and POS2_OF in create_c/create.c.
+- Generated rookies: byte 31 = pos1 | POS2_OF[pos1] << 4 (the never-emitted codes 10..15 keep pos2 = 0). No rng
+  draw is added or removed: the draw order and count are unchanged. In rookie_fill.asm make_rookie, the code is
+  stored as cl | (pos2_table[cl] << 4); every following compare tests the position code only (the CX value), and
+  the P check `byte [cs:scratch+OFF_POS] compared with 0` stays correct (P has pos2 0, so the whole byte is 0
+  for P and non-zero otherwise). team_fill.fill_image keeps its `rookie[31] = (rookie[31] & 0xF0) | (code & 0x0F)`
+  line: the high nibble now comes from make() and equals POS2_OF[code].
+- CREATE A PLAYER: build_record (create.py and create.c) writes byte 31 = pos1 | POS2_OF[pos1] << 4 for batters;
+  pitchers stay all zero. The form, screens and keys are unchanged.

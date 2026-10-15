@@ -18,7 +18,7 @@ import pytest  # noqa: E402
 
 import rollover  # noqa: E402
 import v20  # noqa: E402
-from rookies import RookieGen  # noqa: E402
+from rookies import POS2_OF, RookieGen  # noqa: E402
 
 import team_fill  # noqa: E402
 
@@ -261,6 +261,39 @@ def test_position_priorities_all_pitcher_retirees(tmp_path):
 # ---------------------------------------------------------------------------
 # C20 remainder positions (post-ladder weighted draw)
 # ---------------------------------------------------------------------------
+
+def test_fill_image_pos2_on_40_vacancies():
+    """C20b: on an empty image (40 vacancies) every filled batter carries
+    pos2 = POS2_OF[pos1] in the high nibble of byte 31 (pitchers pos2 = 0)."""
+    image = bytearray(295 + 80 * 143)
+    rng = rollover.Rng(9)
+    gen = _make_rookie_gen(9)
+    nvac, _vac, positions = team_fill.fill_image(image, SEASON_YEAR, rng, gen)
+    assert nvac == 40
+    for i in range(40):
+        raw = image[295 + i * 143:295 + (i + 1) * 143]
+        pos1 = raw[31] & 0x0F
+        assert pos1 == positions[i]
+        assert raw[31] >> 4 == POS2_OF[pos1]
+
+
+def test_rookiegen_pos2_nibbles_and_draw_count():
+    """C20b: make(code, 124) gives byte 31 = pos1 | POS2_OF[pos1] << 4 for
+    codes 0..9 (10..15 keep pos2 = 0), and the draw count per make is
+    unchanged (parallel Rng ends on the same state)."""
+    from m4.rookies import Rng as R
+    for code in range(16):
+        rng_a = R(124)
+        gen = RookieGen(rng_a, [])
+        rec = gen.make(code, 124)
+        assert (rec[31] & 0x0F) == (code & 0x0F)
+        assert (rec[31] >> 4) == (POS2_OF[code] if code <= 9 else 0), code
+        # draws consumed: 9 + per-rating (3 P / 6 batter), unchanged by C20b
+        rng_b = R(124)
+        for _ in range(9 + (3 if code == 0 else 6)):
+            rng_b.draw()
+        assert rng_a.s == rng_b.s, "draw count changed for code %d" % code
+
 
 def _make_team_v20(name=b'FAILING', abbr=b'FAI'):
     """A fresh 11735 B V20 with header name/abbr and 80 records."""

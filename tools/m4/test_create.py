@@ -487,7 +487,7 @@ def test_build_record_batter():
     assert rec[12:14] == b'Al' and rec[14:20] == bytes(6)
     assert (rec[20], rec[21], rec[22], rec[23]) == (25, 117, 0, 140)
     assert rec[29] == 0xAD                          # speed 10 hi; S, R, group 1
-    assert rec[31] == 4 and rec[30] == 0x02
+    assert rec[31] == 0xC4 and rec[30] == 0x02      # pos 3B, pos2 O/I (C20b)
     assert struct.unpack('<H', rec[27:29])[0] == 3
     assert (rec[74], rec[75], rec[94]) == (0x87, 0x79, 0xBC)
     assert (rec[76], rec[134], rec[135]) == (0x78, 0x31, 0x10)
@@ -544,6 +544,27 @@ def test_season_half_zeroes_only_season_bytes():
             assert season[i] == 0
         else:
             assert season[i] == rec[i]
+
+
+def test_build_record_pos2_by_position():
+    """C20b: a saved SS carries byte 31 = 0xB5, a saved LF 0xA6, a saved
+    pitcher 0x00; every batter pos2 = POS2_OF[pos]."""
+    grp = bytes(30)
+    for pos in range(1, 10):
+        form = {'last': 'A', 'first': '', 'pos': pos, 'hands': 0, 'age': 22,
+                'r': [6] * 6, 'face': 0}
+        rec = cr.build_record(form, False, 1, grp)
+        assert rec[31] == ((rookies.POS2_OF[pos] << 4) | pos), pos
+    form = dict(form, r=[6, 6, 6])
+    rec = cr.build_record(form, True, 1, grp)
+    assert rec[31] == 0
+    # the pinning cases from the task
+    ss = cr.build_record({'last': 'A', 'first': '', 'pos': 5, 'hands': 0,
+                          'age': 22, 'r': [6] * 6, 'face': 0}, False, 1, grp)
+    assert ss[31] == 0xB5
+    lf = cr.build_record({'last': 'A', 'first': '', 'pos': 6, 'hands': 0,
+                          'age': 22, 'r': [6] * 6, 'face': 0}, False, 1, grp)
+    assert lf[31] == 0xA6
 
 
 def _header_with(path, offs):

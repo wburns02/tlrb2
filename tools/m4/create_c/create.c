@@ -195,6 +195,8 @@ static const char *POS_LABELS[16] = {
 /* hands index -> bats and throws letters (create.py HANDS) */
 static const char HANDS_BATS[6] = { 'R', 'L', 'S', 'R', 'L', 'S' };
 static const char HANDS_THROWS[6] = { 'R', 'L', 'R', 'L', 'R', 'L' };
+/* C20b second position per pos1 code 0..9 (rookies.POS2_OF) */
+static const uint8_t POS2_OF[10] = { 0, 1, 2, 11, 12, 11, 10, 10, 10, 9 };
 
 /* edit rows: field ids, then the row labels (batter 13 rows, pitcher 10 rows) */
 enum { FLD_LAST, FLD_FIRST, FLD_POS, FLD_HANDS, FLD_AGE, FLD_R0, FLD_R1, FLD_R2,
@@ -813,7 +815,11 @@ static void build_record(const Form *f, int pitcher, uint8_t year, uint8_t *rec)
     bats_code = bats == 'R' ? 1 : (bats == 'S' ? 2 : 0);
     rec[29] = (uint8_t)((throws == 'R' ? 8 : 0) | (bats_code << 1)
                         | (face < FACE_CUSTOM_BASE ? (g_face_grp[face] & 1) : 0));
-    rec[31] = (uint8_t)(pitcher ? 0 : (f->pos & 15));
+    if (pitcher) {
+        rec[31] = 0;
+    } else {
+        rec[31] = (uint8_t)((POS2_OF[f->pos] << 4) | (f->pos & 15));  /* C20b */
+    }
     rec[27] = (uint8_t)(face & 0xff);
     rec[28] = (uint8_t)((face >> 8) & 0xff);
     rec[30] = 0x02;                             /* exper 0, consist 2 */
