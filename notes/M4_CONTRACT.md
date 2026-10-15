@@ -2223,3 +2223,66 @@ league the result and seed are byte-identical to C37. The C port reads the
 other teams' names without a league-sized buffer: per team it opens the V20
 and freads only the 21 name span bytes (byte 0 plus OFF_LAST..OFF_AGE) of
 each roster slot into a small stack buffer.
+
+## C69. CREATE release to the pool (added 2026-10-15)
+
+Key D (68 or 100) on the CREATE slot list (S_SLOT) opens a new screen
+S_RELEASE = 5 when the roster record byte 0 of the cursor's slot is nonzero;
+st['slot'] = the cursor. On an empty slot D does nothing. S_RELEASE draws the
+slot list exactly as S_SLOT (same title, columns, rows and highlight, the
+highlighted slot's row text unchanged) with the footer
+FOOT_RELEASE = 'Y RELEASE   N ESC BACK'. Keys: Y/y (89, 121) releases; N/n
+(78, 110) and ESC return to S_SLOT with the cursor on st['slot']; every other
+key is a no-op.
+
+Release of slot s (pitcher = s < 16):
+
+- Pool path for POOLn: v20_path(league_dir, b'POOLn') when it finds a file
+  (case-insensitive), else os.path.join(league_dir, 'POOLn.V20'). Pool target:
+  walk POOL1..POOL4 in order. A pool file that exists with exactly V20 size
+  (11735 bytes) is a candidate; one that exists with another size is skipped
+  and left unchanged; a missing one is a candidate created as
+  rosters.pool_blank(st['image']) (name FREE AGENTS, league code from the team
+  image). In a candidate the lowest free slot (record byte 0 == 0) in 0..15
+  for a pitcher, 16..39 for a batter wins; the first pool with a free slot
+  wins.
+- No pool has room: nothing is written, st['msg'] = 'POOL FULL', stay on
+  S_RELEASE (Y again shows the same; N/ESC back clears st['msg']).
+- Team header: img = bytearray(image); vacate(img, s); repair(img, {s})
+  (rosters.repair, the managed-team repair). Then if any byte in 111..120
+  (staff) or 122..157 (lineups) still equals s (no same-type reserve could
+  take a staff or lineup place), the release is refused: nothing is written,
+  st['msg'] = 'NO RESERVE', stay on S_RELEASE. Otherwise every byte in
+  194..236 (bench, then reserves) still equal to s becomes 0xff.
+- Pool: write_pair(pool, ps, copy_pair(original image, s));
+  write_pool_years(pool, ps, 0) (record byte 141 = 0 in both halves).
+- Writes: the pool file whole, then the team V20 whole (not in-place pairs);
+  write errors are ignored (like save_slot). st['image'] = the new team
+  image, st['msg'] = 'RELEASED TO POOLn' (n = 1..4), screen S_SLOT, cursor s.
+
+st['msg'] (default '' in start_state) is drawn on S_SLOT and S_RELEASE in the
+footer row instead of the footer while non-empty; any key clears it before
+handling the key (the cleared value is falsy). The edit screen keeps the
+integer messages 1 (name) and 2 (budget).
+
+Footer: FOOT_SLOT keeps its C44 text 'UP DOWN  ENTER NEW  C COPY  ESC TEAMS':
+the DROP footer 'UP DOWN  ENTER NEW  C COPY  D DROP  ESC TEAMS' would not fit
+the existing footer width rule (the longest footers of the game, dynview's
+FOOTERS, are 44 characters; the DROP text would be 45).
+
+C port (create_c/create.c): the same keys, screens, messages, file writes and
+byte results; the message is an int code 0/1/2/3 (POOL FULL)/4 (NO
+RESERVE)/5 (RELEASED TO POOLn, msgn = n) in State, cleared to 0 with msgn = 0
+by step(). The repair core shared with ROSTERS moved verbatim into a new
+header tools/m4/repair.h (V20_HDR/V20_REC/V20_N/V20_SIZE, H_STAFF/H_LINEUP/
+H_DEF/H_BENCH/H_RESERVE, the R_* offsets, RIMG, IS_ON, pos1f, pos2f,
+is_pitcher, covers, can_play, fld_w, fld_of, offv, score, pitch_score4,
+relief_score2, and repair with its rp_* state, all static); rosters.c includes
+it and deletes its copies; create.c includes it. The pool uses one new static
+11735-byte buffer (the only new static array); the team image is create.c's
+existing buffer. Host builds stay gcc -Werror clean; the parity tests cover
+the S_RELEASE frame, the pool and team V20 bytes both sides, POOL1..POOL4
+order, the wrong-size skip, the refusals and every key.
+
+Gate fix (brain, 2026-10-15): repair (rosters.repair and repair.h) skips a header list byte >= 40 (other than
+0xff) and leaves it as is; before, C indexed chg[40] out of bounds and Python raised IndexError at 80 and up.

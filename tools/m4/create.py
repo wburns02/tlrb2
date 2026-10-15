@@ -25,6 +25,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 import ratings  # noqa: E402
 import rookies  # noqa: E402
+import rosters  # noqa: E402
 import statline  # noqa: E402
 import teamids  # noqa: E402
 from dynview import (C_BLACK, C_WHITE, C_DRED, C_TITLE_RED, C_HEADER_GOLD,  # noqa: E402
@@ -35,7 +36,7 @@ from dynview import (C_BLACK, C_WHITE, C_DRED, C_TITLE_RED, C_HEADER_GOLD,  # no
                      parse_keys, load_fonts, load_palette, write_png)  # noqa: E402
 
 # ---------------------------------------------------------------- constants
-S_TEAM, S_SLOT, S_EDIT, S_CONFIRM, S_DONE = range(5)
+S_TEAM, S_SLOT, S_EDIT, S_CONFIRM, S_DONE, S_RELEASE = range(6)
 KEY_BACK = 8
 
 RECORD_LEN = rookies.RECORD_LEN           # 143
@@ -85,16 +86,18 @@ COLS_ONE = [(' ', _cx(0), 42, 'L')]
 
 FOOT_TEAM = 'UP DOWN   ENTER PICK   ESC EXIT'
 FOOT_SLOT = 'UP DOWN  ENTER NEW  C COPY  ESC TEAMS'
+FOOT_RELEASE = 'Y RELEASE   N ESC BACK'
 FOOT_CONFIRM = 'ENTER REPLACE   ESC BACK'
 FOOT_DONE = 'ENTER CREATE ANOTHER   ESC EXIT'
 FOOT_NAME = 'TYPE NAME   UP DOWN   ESC SLOTS'
 FOOT_SAVE = 'ENTER SAVE   UP DOWN   ESC SLOTS'
 FOOT_FIELD = 'UP DOWN LEFT RIGHT  A AUTO  N NAME  ESC'
 MSG_NAME = 'TYPE A LAST NAME FIRST'
+MSG_BUDGET = 'OVER THE POINT BUDGET, PRESS B'
+MSG_POOL = ('POOL FULL', 'NO RESERVE')
 BUDGET_BAT = (0, 36, 45, 54)              # C31: points per budget mode, batters
 BUDGET_PIT = (0, 18, 24, 28)              # pitchers
 BUDGET_NAMES = ('OFF', 'ROOKIE', 'REGULAR', 'STAR')
-MSG_BUDGET = 'OVER THE POINT BUDGET, PRESS B'
 
 
 # ---------------------------------------------------------------- league data
@@ -322,6 +325,69 @@ def slot_role(image, s):
     return ''
 
 
+# ---------------------------------------------------------------- release
+def pool_path(league_dir, n):
+    """The league's POOLn file: v20_path's find when the file exists (any case),
+    else the plain uppercase path (the file that would be created)."""
+    p = v20_path(league_dir, b'POOL%d' % n)
+    return p if p is not None else os.path.join(league_dir, 'POOL%d.V20' % n)
+
+
+def release_slot(st, ctx):
+    """Release roster slot st['slot'] to the lowest free slot of the first
+    POOLn (1..4) that has room. Returns ('ok', pool_path), ('pool', None) when
+    every pool is full or ('res', None) when no same-type reserve could fill
+    the slot's staff or lineup places. Nothing is written on a refusal; on a
+    release the pool file is written whole, then the team file, write errors
+    ignored (like save_slot). st['image'] and the team file take the released
+    state: the slot vacated, repair applied and any leftover bench or reserve
+    byte holding the slot emptied to 0xff."""
+    s = st['slot']
+    pitch = s < PITCHER_SLOTS
+    slots = range(PITCHER_SLOTS) if pitch else range(PITCHER_SLOTS, ROSTER_SLOTS)
+    target = None
+    for n in (1, 2, 3, 4):
+        p = pool_path(ctx['league_dir'], n)
+        if os.path.isfile(p) and os.path.getsize(p) != IMAGE_LEN:
+            continue
+        img = bytearray(open(p, 'rb').read()) if os.path.isfile(p) \
+            else rosters.pool_blank(bytearray(st['image']))
+        for ps in slots:
+            if not img[HEADER_LEN + RECORD_LEN * ps]:
+                target = (n, p, img, ps)
+                break
+        if target:
+            break
+    if target is None:
+        return 'pool', None
+    n, p, pimg, ps = target
+    img = bytearray(st['image'])
+    rosters.vacate(img, s)
+    rosters.repair(img, {s})
+    if s in img[111:121] or s in img[122:158]:
+        return 'res', None
+    for o in range(194, 237):
+        if img[o] == s:
+            img[o] = 0xff
+    rosters.write_pair(pimg, ps, rosters.copy_pair(bytearray(st['image']), s))
+    rosters.write_pool_years(pimg, ps, 0)
+    try:
+        with open(p, 'wb') as fh:
+            fh.write(bytes(pimg))
+    except OSError:
+        pass
+    stem = ctx['teams'][st['team']][1].encode('latin-1')
+    tp = v20_path(ctx['league_dir'], stem)
+    if tp is not None:
+        try:
+            with open(tp, 'wb') as fh:
+                fh.write(bytes(img))
+        except OSError:
+            pass
+    st['image'] = bytes(img)
+    return 'ok', n
+
+
 def control_return(path):
     """CONTROL[1] = CONTROL[0] in place, when the file has at least 2 bytes."""
     try:
@@ -408,7 +474,7 @@ def copy_form(image, slot, ctx):
 
 def start_state():
     return {'screen': S_TEAM, 'cursor': 0, 'team': 0, 'slot': 0, 'form': blank_form(),
-            'msg': 0, 'budget': 0, 'seed': 1, 'image': bytes(IMAGE_LEN)}
+            'msg': '', 'budget': 0, 'seed': 1, 'image': bytes(IMAGE_LEN)}
 
 
 def _copy(st):
@@ -501,7 +567,28 @@ def _step_slot(st, key, ctx):
             st['form'] = copy_form(st['image'], st['slot'], ctx)
             st['screen'], st['cursor'] = S_EDIT, 0
         return st, False
+    if key in (68, 100):                     # C69: release an occupied slot
+        if record(st['image'], st['cursor'])[0]:
+            st['slot'] = st['cursor']
+            st['screen'] = S_RELEASE
+        return st, False
     st['cursor'] = _list_key(st['cursor'], key, ROSTER_SLOTS)
+    return st, False
+
+
+def _step_release(st, key, ctx):
+    if key == KEY_ESC or key in (78, 110):
+        st['screen'], st['cursor'] = S_SLOT, st['slot']
+        return st, False
+    if key in (89, 121):
+        how, n = release_slot(st, ctx)
+        if how == 'ok':
+            st['msg'] = 'RELEASED TO POOL%d' % n
+            st['screen'], st['cursor'] = S_SLOT, st['slot']
+        elif how == 'pool':
+            st['msg'] = MSG_POOL[0]
+        else:
+            st['msg'] = MSG_POOL[1]
     return st, False
 
 
@@ -644,12 +731,14 @@ def _step_done(st, key, ctx):
 
 
 _STEPS = {S_TEAM: _step_team, S_SLOT: _step_slot, S_EDIT: _step_edit,
-          S_CONFIRM: _step_confirm, S_DONE: _step_done}
+          S_CONFIRM: _step_confirm, S_DONE: _step_done,
+          S_RELEASE: _step_release}
 
 
 def step(state, key, ctx):
-    """(state, exit_flag). Every key first clears msg. ESC on TEAM and on DONE
-    exits; every other ESC goes back one screen."""
+    """(state, exit_flag). Every key first clears msg (0; a pool message on
+    S_SLOT / S_RELEASE is a string, falsy when cleared either way). ESC on TEAM
+    and on DONE exits; every other ESC goes back one screen."""
     st = _copy(state)
     st['msg'] = 0
     return _STEPS[st['screen']](st, key, ctx)
@@ -678,6 +767,9 @@ def _list_view(st, ctx):
                 rows.append((slot_label(s), '(EMPTY)', '', '', ''))
         title = 'PICK A SLOT: ' + ctx['teams'][st['team']][2]
         return title, COLS_SLOT, rows, FOOT_SLOT, True
+    if scr == S_RELEASE:
+        title, cols, rows, _foot, hl = _list_view(dict(st, screen=S_SLOT), ctx)
+        return title, cols, rows, FOOT_RELEASE, hl
     if scr == S_CONFIRM:
         old = record(st['image'], st['slot'])
         rows = [('THIS REPLACES ' + name_display(old[0:20], 18),),
@@ -811,7 +903,9 @@ def render(st, ctx):
     title, cols, rows, footer, hl = _list_view(st, ctx)
     draw_panel(fb)
     _draw_title(fb, bold_ft, title)
-    _draw_list(fb, main_ft, cols, rows, st['cursor'], hl, footer)
+    _draw_list(fb, main_ft, cols, rows, st['cursor'], hl,
+               st['msg'] if st['msg'] and st['screen'] in (S_SLOT, S_RELEASE)
+               else footer)
     return fb
 
 

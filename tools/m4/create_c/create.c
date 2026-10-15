@@ -25,6 +25,18 @@
 
 #include "../statline.h"
 
+/* the managed-repair core shared with ROSTERS (C69, tools/m4/repair.h). The
+ * helpers this file does not call would fail the host build's -Werror (unused
+ * static function), so their warnings are off for the include. */
+#if defined(__GNUC__) && !defined(__WATCOMC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
+#include "../repair.h"
+#if defined(__GNUC__) && !defined(__WATCOMC__)
+#pragma GCC diagnostic pop
+#endif
+
 /* teamids.h has helpers this file does not call; gcc -Werror would stop on them */
 #if defined(__GNUC__) && !defined(__WATCOMC__)
 #pragma GCC diagnostic push
@@ -72,6 +84,7 @@
 #define S_EDIT 2
 #define S_CONFIRM 3
 #define S_DONE 4
+#define S_RELEASE 5
 
 /* V20 layout: 295 byte header, then 80 records of 143 bytes; record s is the roster
  * half of slot s, record s + 40 its season half */
@@ -143,6 +156,7 @@ typedef struct {
 /* the program state (create.py state dict; the image lives in g_image) */
 typedef struct {
     int16_t screen, cursor, team, slot, msg, budget;
+    int16_t msgn;               /* C69: the POOLn of a RELEASED TO POOLn message */
     uint32_t seed;              /* C34: session auto-fill seed, 1 at start */
     Form form;
 } State;
@@ -182,6 +196,7 @@ static int g_face_n;             /* face table size (faces.py load_faces) */
 static int g_face_c;             /* PORTRAIT.ANM count c, capped at FACE_TABLE_MAX (create.py portrait_count) */
 static uint8_t g_face_grp[FACE_TABLE_MAX];
 static uint8_t g_px[PORTRAIT_W * PORTRAIT_H];
+static uint8_t FARDATA g_poolimg[V20_SIZE];   /* C69: the pools' image buffer */
 static State g_state;
 static int g_saved;
 
@@ -215,6 +230,7 @@ static const char *PIT_LABEL[10] = { "LAST NAME", "FIRST NAME", "POSITION", "HAN
 
 static const char *FOOT_TEAM = "UP DOWN   ENTER PICK   ESC EXIT";
 static const char *FOOT_SLOT = "UP DOWN  ENTER NEW  C COPY  ESC TEAMS";
+static const char *FOOT_RELEASE = "Y RELEASE   N ESC BACK";
 static const char *FOOT_CONFIRM = "ENTER REPLACE   ESC BACK";
 static const char *FOOT_DONE = "ENTER CREATE ANOTHER   ESC EXIT";
 static const char *FOOT_NAME = "TYPE NAME   UP DOWN   ESC SLOTS";
@@ -226,6 +242,8 @@ static const uint8_t BUDGET_BAT[4] = { 0, 36, 45, 54 };
 static const uint8_t BUDGET_PIT[4] = { 0, 18, 24, 28 };
 static const char *BUDGET_NAMES[4] = { "OFF", "ROOKIE", "REGULAR", "STAR" };
 static const char *MSG_BUDGET = "OVER THE POINT BUDGET, PRESS B";
+/* C69: pool release messages (st->msg indexes MSG_POOL; 0 = cleared) */
+static const char *MSG_POOL[2] = { "POOL FULL", "NO RESERVE" };
 
 /* C37: the rookie name pools (rookies.LAST_NAMES / FIRST_NAMES, identical order;
  * the pointer arrays kept out of DGROUP like the other big tables). LAST_NAMES has
@@ -473,6 +491,25 @@ static FILE *v20_fopen(const uint8_t *s, int n, const char *mode)
         return NULL;
     path_join(path, g_lgdir, leaf);
     return fopen(path, mode);
+}
+
+/* LEAGUE_DIR\<STEM>.V20 (upper-cased stem) into dst: 1 when it fits, else 0.
+ * The writing twin of v20_fopen (a path v20_fopen would open). */
+static int v20_stem_path(const uint8_t *s, int n, char *dst, size_t cap)
+{
+    char leaf[16];
+    int i;
+    (void)cap;
+    if (n < 1 || n > 8)
+        return 0;
+    for (i = 0; i < n; i++) {
+        if (s[i] == 0 || s[i] == '/' || s[i] == '\\' || s[i] == ':')
+            return 0;
+        leaf[i] = (char)ascii_up(s[i]);
+    }
+    strcpy(leaf + n, ".V20");
+    path_join(dst, g_lgdir, leaf);
+    return 1;
 }
 
 /* team_name: V20 header name (bytes 0..13, NUL ended, trailing spaces cut) of the
@@ -962,6 +999,148 @@ static void control_return(void)
     fclose(f);
 }
 
+/* ---------------- C69: release a player to the free-agent pool ---------------- */
+
+/* The league's POOLn file: LEAGUE_DIR\POOLn.V20 (the file opened when it
+ * exists; if not, the path a created file would get) */
+static void pool_path(int n, char *dst, size_t cap)
+{
+    char leaf[16];
+    (void)cap;
+    sprintf(leaf, "POOL%d.V20", n);
+    path_join(dst, g_lgdir, leaf);
+}
+
+/* exactly V20_SIZE when the file exists and is a full image, else -1 when it
+ * exists with another size, else 0 when it is missing */
+static int pool_size_class(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    long sz;
+    if (!f)
+        return 0;
+    if (fseek(f, 0L, SEEK_END) != 0) {
+        fclose(f);
+        return -1;
+    }
+    sz = ftell(f);
+    fclose(f);
+    if (sz == V20_SIZE)
+        return 1;
+    return -1;
+}
+
+static void put_file(const char *path, const uint8_t *img, int len)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return;
+    (void)fwrite(img, 1, (size_t)len, f);
+    fclose(f);
+}
+
+/* C69 release of roster slot st->slot (create.py release_slot): returns 0
+ * released (*pn = the POOLn used, the pool file then the team file written
+ * whole), 1 when every pool is full, 2 when the team header has no same-type
+ * reserve for the slot's staff or lineup places. Nothing is written on 1 or 2.
+ * Write errors are ignored like save_form. msg codes: 3 = POOL FULL,
+ * 4 = NO RESERVE, 5 = RELEASED TO POOLn (st->msgn = n). */
+static int do_release(State *st, int *pn)
+{
+    int s = st->slot;
+    int pitch = s < PITCHER_SLOTS;
+    int lo = pitch ? 0 : PITCHER_SLOTS;
+    int hi = pitch ? PITCHER_SLOTS : ROSTER_SLOTS;
+    int n, ps, o, found = 0;
+    uint8_t tmphdr[V20_SIZE];
+    uint8_t chg[40];
+    uint8_t pair[2 * V20_REC];
+    const char *stem = g_teams[st->team].stem;
+    FILE *f;
+
+    for (n = 1; n <= 4 && !found; n++) {
+        char pp[300];
+        int cls;
+        pool_path(n, pp, sizeof pp);
+        cls = pool_size_class(pp);
+        if (cls < 0)
+            continue;
+        if (cls == 1) {
+            f = fopen(pp, "rb");
+            if (!f || fread(g_poolimg, 1, V20_SIZE, f) != V20_SIZE) {
+                if (f)
+                    fclose(f);
+                continue;       /* unreadable file: not a candidate */
+            }
+            fclose(f);
+        } else {
+            /* missing: the blank pool built from the team image */
+            memset(g_poolimg, 0, V20_SIZE);
+            memcpy(g_poolimg, "FREE AGENTS", 11);
+            memcpy(g_poolimg + 14, g_image + 14, 2);
+        }
+        for (ps = lo; ps < hi; ps++)
+            if (g_poolimg[V20_HDR + V20_REC * ps] == 0) {
+                found = 1;
+                break;
+            }
+    }
+    if (!found) {
+        st->msg = 3;                            /* POOL FULL */
+        return 1;
+    }
+    n--;
+    /* the player's record pair, copied from the untouched team image: the
+     * roster record s and its season half, record s + 40 */
+    memcpy(pair, g_image + V20_HDR + V20_REC * s, V20_REC);
+    memcpy(pair + V20_REC, g_image + V20_HDR + V20_REC * (s + 40), V20_REC);
+    /* team header: vacate, then the managed repair with this slot changed */
+    memcpy(tmphdr, g_image, V20_SIZE);
+    memset(tmphdr + V20_HDR + V20_REC * s, 0, V20_REC);
+    memset(tmphdr + V20_HDR + V20_REC * (s + 40), 0, V20_REC);
+    memset(chg, 0, sizeof chg);
+    chg[s] = 1;
+    repair(tmphdr, chg);
+    for (o = H_STAFF; o < H_STAFF + 10; o++)
+        if (tmphdr[o] == s)
+            break;
+    if (o >= H_STAFF + 10)
+        for (o = H_LINEUP; o < H_LINEUP + 36; o++)
+            if (tmphdr[o] == s)
+                break;
+    if (o < H_LINEUP + 36) {                    /* still in staff or lineups */
+        st->msg = 4;                            /* NO RESERVE */
+        return 2;
+    }
+    for (o = H_BENCH; o < H_BENCH + 43; o++)
+        if (tmphdr[o] == (uint8_t)s)
+            tmphdr[o] = 0xff;
+    /* the new team image: the released header state */
+    memcpy(g_image, tmphdr, V20_SIZE);
+    /* the pool: the pair into ps (roster record s, season record s + 40),
+     * pool years 0 (both halves) */
+    memcpy(g_poolimg + V20_HDR + V20_REC * ps, pair, V20_REC);
+    memcpy(g_poolimg + V20_HDR + V20_REC * (ps + 40), pair + V20_REC, V20_REC);
+    g_poolimg[V20_HDR + V20_REC * ps + R_PYEAR] = 0;
+    g_poolimg[V20_HDR + V20_REC * (ps + 40) + R_PYEAR] = 0;
+    /* write the pool file whole, then the team file whole; errors ignored */
+    {
+        char pp[300];
+        pool_path(n, pp, sizeof pp);
+        put_file(pp, g_poolimg, V20_SIZE);
+    }
+    {
+        char tpath[300];
+        if (v20_stem_path((const uint8_t *)stem, (int)strlen(stem),
+                          tpath, sizeof tpath))
+            put_file(tpath, g_image, V20_SIZE);
+    }
+    st->msg = 5;
+    st->msgn = (int16_t)n;
+    *pn = n;
+    return 0;
+}
+
 /* ---------------- state machine ---------------- */
 
 /* blank_form: no names, position 1, pos2 = POS2_OF[1], age 22, every rating 6, hands 0,
@@ -1202,7 +1381,34 @@ static int step_slot(State *st, int32_t key)
         }
         return 0;
     }
+    if (key == 68 || key == 100) {       /* C69: release an occupied slot */
+        if (recp(st->cursor)[0]) {
+            st->slot = st->cursor;
+            st->screen = S_RELEASE;
+        }
+        return 0;
+    }
     st->cursor = (int16_t)list_key(st->cursor, key, ROSTER_SLOTS);
+    return 0;
+}
+
+/* C69: the release confirm screen; Y releases, N or ESC goes back to the slot
+ * list with the cursor on the slot, every other key is a no-op */
+static int step_release(State *st, int32_t key)
+{
+    int n;
+    if (key == KEY_ESC || key == 78 || key == 110) {
+        st->screen = S_SLOT;
+        st->cursor = st->slot;
+        return 0;
+    }
+    if (key == 89 || key == 121) {
+        (void)do_release(st, &n);
+        if (st->msg == 5) {
+            st->screen = S_SLOT;
+            st->cursor = st->slot;
+        }
+    }
     return 0;
 }
 
@@ -1423,6 +1629,7 @@ static int step_done(State *st, int32_t key)
 static int step(State *st, int32_t key)
 {
     st->msg = 0;
+    st->msgn = 0;
     switch (st->screen) {
     case S_TEAM:
         return step_team(st, key);
@@ -1432,6 +1639,8 @@ static int step(State *st, int32_t key)
         return step_edit(st, key);
     case S_CONFIRM:
         return step_confirm(st, key);
+    case S_RELEASE:
+        return step_release(st, key);
     default:
         return step_done(st, key);
     }
@@ -1461,6 +1670,14 @@ static void list_view(const State *st, ListView *lv)
         lv->cols = COLS_SLOT;
         lv->ncols = NCOLS(COLS_SLOT);
         lv->footer = FOOT_SLOT;
+        lv->nrows = ROSTER_SLOTS;
+        break;
+    case S_RELEASE:
+        strcpy(lv->title, "PICK A SLOT: ");
+        strcat(lv->title, g_teams[st->team].disp);
+        lv->cols = COLS_SLOT;
+        lv->ncols = NCOLS(COLS_SLOT);
+        lv->footer = FOOT_RELEASE;
         lv->nrows = ROSTER_SLOTS;
         break;
     case S_CONFIRM:
@@ -1497,7 +1714,8 @@ static void list_cells(const State *st, int i, char cells[5][SLEN])
         strcpy(cells[0], g_teams[i].disp);
         strcpy(cells[1], g_teams[i].lg < 16 ? "AMERICAN" : "NATIONAL");
         break;
-    case S_SLOT: {
+    case S_SLOT:
+    case S_RELEASE: {
         const uint8_t *rec = recp(i);
         make_slot_label(i, cells[0]);
         if (rec[0]) {
@@ -1712,6 +1930,7 @@ static void draw_edit(const State *st)
 static void render(const State *st)
 {
     ListView lv;
+    char msgbuf[SLEN];          /* C69 message footer, drawn before render returns */
     if (st->screen == S_EDIT) {
         draw_edit(st);
         return;
@@ -1719,6 +1938,14 @@ static void render(const State *st)
     list_view(st, &lv);
     draw_panel();
     draw_title(lv.title);
+    /* C69: on the slot and release lists a message replaces the footer */
+    if (st->msg >= 3 && (st->screen == S_SLOT || st->screen == S_RELEASE)) {
+        if (st->msg == 5)
+            sprintf(msgbuf, "RELEASED TO POOL%d", st->msgn);
+        else
+            strcpy(msgbuf, MSG_POOL[st->msg - 3]);
+        lv.footer = msgbuf;
+    }
     draw_list(st, &lv);
 }
 

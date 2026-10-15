@@ -854,3 +854,119 @@ def test_parity_copy_foot_slot_text_c44():
     assert cr.FOOT_SLOT == 'UP DOWN  ENTER NEW  C COPY  ESC TEAMS'
     src = open(os.path.join(HERE_C, 'create.c')).read()
     assert ('static const char *FOOT_SLOT = "%s";' % cr.FOOT_SLOT) in src
+
+
+# ---------------------------------------------------------------- C69: release to the pool
+def rel_league_c(w, pools=None, mut=None):
+    """test_create.rel_league on a tmp_path work dir (the C tests pass real
+    key lists to both sides; the records: Adams (P) 0, Bloh (P) 1)."""
+    from m4.test_create import pool_img, add_b1, rel_league
+    return rel_league(os.path.join(w, 'L'), pools=pools, mut=mut)
+
+
+@need_fonts
+def test_parity_release_bench_batter_pool1_c69(tmp_path):
+    """Release of a bench batter: identical frames and identical POOL1.V20 +
+    BOS.V20 bytes (POOL1 created, pair at slot 16, years 0, header repaired,
+    leftovers 0xff)."""
+    from m4.test_create import add_b1
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    base = rel_league_c(os.path.join(work, 'mk'), mut=add_b1)
+    st, _ = parity(tmp_path, [ENTER] + [DOWN] * 16 + [ord('D'), ord('Y')],
+                   base=base)
+    assert st['msg'] == 'RELEASED TO POOL1'
+    assert st['screen'] == cr.S_SLOT
+
+
+@need_fonts
+def test_parity_release_staff_pitcher_c69(tmp_path):
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    base = rel_league_c(os.path.join(work, 'mk'))
+    st, _ = parity(tmp_path, [ENTER, ord('D'), ord('Y')], base=base)
+    assert st['msg'] == 'RELEASED TO POOL1'
+    assert st['screen'] == cr.S_SLOT
+
+
+@need_fonts
+def test_parity_release_screen_frame_c69(tmp_path):
+    """The S_RELEASE list frame (slot rows, FOOT_RELEASE) matches."""
+    from m4.test_create import add_b1
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    base = rel_league_c(os.path.join(work, 'mk'), mut=add_b1)
+    st, _ = parity(tmp_path, [ENTER] + [DOWN] * 16 + [ord('D')], base=base)
+    assert st['screen'] == cr.S_RELEASE
+
+
+@need_fonts
+def test_parity_pool1_full_uses_pool2_c69(tmp_path):
+    from m4.test_create import add_b1, pool_img
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    base = rel_league_c(os.path.join(work, 'mk'),
+                        pools={'POOL1.V20': pool_img(n_bat=24)}, mut=add_b1)
+    st, _ = parity(tmp_path, [ENTER] + [DOWN] * 16 + [ord('D'), ord('Y')],
+                   base=base)
+    assert st['msg'] == 'RELEASED TO POOL2'
+
+
+@need_fonts
+def test_parity_pool_full_refusal_c69(tmp_path):
+    """All four pools of 16 pitchers: POOL FULL, nothing written, the frame
+    keeps FOOT_RELEASE's row (msg replaces the footer)."""
+    from m4.test_create import pool_img
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    base = rel_league_c(os.path.join(work, 'mk'),
+                        pools={'POOL%d.V20' % i: pool_img(n_pit=16)
+                               for i in (1, 2, 3, 4)})
+    st, _ = parity(tmp_path, [ENTER, ord('D'), ord('Y')], base=base)
+    assert st['msg'] == 'POOL FULL' and st['screen'] == cr.S_RELEASE
+    st, _ = parity(tmp_path, [ENTER, ord('D'), ord('Y'), ord('N')], base=base)
+    assert st['screen'] == cr.S_SLOT
+
+
+@need_fonts
+def test_parity_no_reserve_refusal_c69(tmp_path):
+    def mut(base):
+        img = bytearray(open(os.path.join(base, 'BOS.V20'), 'rb').read())
+        img[222] = 0xff
+        open(os.path.join(base, 'BOS.V20'), 'wb').write(bytes(img))
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    base = rel_league_c(os.path.join(work, 'mk'), mut=mut)
+    st, _ = parity(tmp_path, [ENTER, ord('D'), ord('Y')], base=base)
+    assert st['msg'] == 'NO RESERVE' and st['screen'] == cr.S_RELEASE
+    st, _ = parity(tmp_path, [ENTER, ord('D'), ord('Y'), 27], base=base)
+    assert st['screen'] == cr.S_SLOT
+
+
+@need_fonts
+def test_parity_wrong_size_pool_skipped_c69(tmp_path):
+    """A 100-byte POOL1 is skipped and left unchanged; the release uses POOL2."""
+    from m4.test_create import add_b1
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    base = rel_league_c(os.path.join(work, 'mk'),
+                        pools={'POOL1.V20': bytes(100)}, mut=add_b1)
+    st, _ = parity(tmp_path, [ENTER] + [DOWN] * 16 + [ord('D'), ord('Y')],
+                   base=base)
+    assert st['msg'] == 'RELEASED TO POOL2'
+
+
+@need_fonts
+def test_parity_release_keys_c69(tmp_path):
+    """D on an empty slot is a no-op; d opens; N and ESC back; lowercase y
+    releases; the next key clears a shown message."""
+    from m4.test_create import add_b1
+    work = tempfile.mkdtemp(dir=str(tmp_path))
+    base = rel_league_c(os.path.join(work, 'mk'), mut=add_b1)
+    parity(tmp_path, [ENTER, DOWN, DOWN, ord('D')], base=base)
+    parity(tmp_path, [ENTER] + [DOWN] * 16 + [100, ord('N')], base=base)
+    parity(tmp_path, [ENTER] + [DOWN] * 16 + [100, 27], base=base)
+    parity(tmp_path, [ENTER] + [DOWN] * 16 + [100, 121], base=base)
+    parity(tmp_path, [ENTER] + [DOWN] * 16 + [ord('D'), ord('Y'), ord('x')],
+           base=base)
+    parity(tmp_path, [ENTER, 0x1234, ord('D'), ord('Y'), 32], base=base)
+
+
+def test_parity_foot_release_text_c69():
+    """C69: the FOOT_RELEASE text matches, and the C source text matches."""
+    assert cr.FOOT_RELEASE == 'Y RELEASE   N ESC BACK'
+    src = open(os.path.join(HERE_C, 'create.c')).read()
+    assert ('static const char *FOOT_RELEASE = "%s";' % cr.FOOT_RELEASE) in src

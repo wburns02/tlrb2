@@ -1750,3 +1750,13 @@ def test_format_writes_are_atomic(tmp_path, monkeypatch):
         after = {n: _read(os.path.join(league, n)) for n in os.listdir(league)}
         assert after == before, bad
         assert not [n for n in os.listdir(league) if n.endswith('.TMP')], bad
+
+
+def test_repair_skips_out_of_range_header_byte():
+    """C69 gate: a corrupt header list byte (>= 40, not 0xff) is left as is and never
+    indexes past the roster (C: chg[40]; Python raised IndexError at 80+)."""
+    img = bytearray(full_image('clasale1'))
+    img[194] = 200
+    img[195] = 45
+    rosters.repair(img, {16})
+    assert img[194] == 200 and img[195] == 45
