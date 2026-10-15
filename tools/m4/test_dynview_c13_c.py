@@ -1350,3 +1350,32 @@ def test_c56_history_cursor_standings_parity(tmp_path):
         (dynview.SCREEN_HISTORY, 0, 0, 1)
     check(ldir, tmp_path, 'c56_esc_menu', [K1, DOWN, ENTER, ESC, ESC])
     check(nohist, tmp_path, 'c56_nohistory', [K1])
+
+
+@needs_dos
+def test_c58_dos_browse_frames(tmp_path):
+    """C58 under headless DOSBox-X: HOF card, RIGHT, RIGHT then ESC, LEADERS card RIGHT and
+    LEFT, AWARDS card RIGHT, HONORS LEFT, RIGHT on the last award row; DOS bytes == Python"""
+    players = player_set()
+    for i, hof in ((0, 2), (1, 3), (2, 3)):             # three Hall of Famers
+        players[i].update(status=3, hof=hof)
+    ms = [(3, 0, 64, 0), (3, 3, 65, 1000), (3, 0xffff, 66, 30), (3, 4, 67, 987),
+          (3, 6, 68, 999), (2, 0, 64, 1)]
+    ldir = league(tmp_path, players, seasons=3, start=1990, lines=season_lines_fixture(),
+                  ms=ms, name='c58dos')
+    d = tmp_path / 'dos'
+    (d / 'LEAGUE').mkdir(parents=True)
+    (d / 'FONTS').mkdir()
+    for f in os.listdir(str(ldir)):
+        shutil.copy2(os.path.join(str(ldir), f), str(d / 'LEAGUE' / f))
+    for f in DOS_FONTS:
+        shutil.copy2(os.path.join(FILES, f), str(d / 'FONTS' / f))
+    cases = ([K2, DOWN, ENTER], [K2, DOWN, ENTER, RIGHT], [K2, DOWN, ENTER, RIGHT, ESC],
+             [K3, DOWN, ENTER, RIGHT], [K3, DOWN, ENTER, LEFT], [K9, ENTER, RIGHT],
+             [K9, ENTER, ord('H'), LEFT], [K9, ENTER, PGDN, PGDN, DOWN, DOWN, DOWN, RIGHT])
+    for n, keys in enumerate(cases):
+        out = 'C58_%d.RAW' % n                          # DOS 8.3 name
+        rc = run_dos(str(d), ['DYNVIEW.EXE /RAW:%s /KEYS:%s LEAGUE FONTS' % (out, toks(keys))])
+        assert rc == 0, 'case %d: dos rc %d' % (n, rc)
+        dos = open(str(d / out), 'rb').read()
+        assert_frames(dos, py_fb(ldir, tmp_path, keys), 'c58 dos case %d' % n)

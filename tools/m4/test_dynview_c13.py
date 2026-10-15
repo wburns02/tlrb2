@@ -4,34 +4,15 @@ start year. Synthetic HISTORY.DAT, SEASLINE.DAT, MILESTON.DAT, MAJ, fonts and po
 are built in tmp_path; nothing needs /mnt/nvme.
 Run:  python3 -m pytest -q tools/m4/test_dynview_c13.py
 """
-import os, shutil, struct, subprocess, sys, tempfile
+import os, struct, sys, tempfile
 from pathlib import Path
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 import dynview
 import history
-import pytest
 from test_teamids import build_maj
 from test_dynview import box_rec, write_box, game_ms
-
-FILES = os.environ.get('DYNVIEW_FILES', '/mnt/nvme/tlrb2/files')
-HERE_C = os.path.join(HERE, 'dynview_c')
-EXE = os.path.join(HERE_C, 'DYNVIEW.EXE')
-DOSBOX = (os.environ.get('DOSBOX') or shutil.which('dosbox-x')
-          or '/mnt/nvme/src/dosbox-x/src/dosbox-x')
-
-
-def _fonts_ready():
-    return os.path.exists(os.path.join(FILES, 'MAIN.FNT'))
-
-
-def _dos_ready():
-    return os.path.isfile(EXE) and os.path.isfile(DOSBOX) and os.access(DOSBOX, os.X_OK)
-
-
-needs_dos = pytest.mark.skipif(not (_dos_ready() and _fonts_ready()),
-                               reason='DYNVIEW.EXE, dosbox-x or fonts missing')
 
 ENTER, ESC = dynview.KEY_ENTER, dynview.KEY_ESC
 UP, DOWN = dynview.KEY_UP, dynview.KEY_DOWN
@@ -1608,120 +1589,20 @@ def test_c54_no_active_qualifiers(tmp_path):
     assert dynview.leaders_body((LEAD, 0, cidx('WAR')), data) == \
         (dynview.COLS_SINGLE, [('NO ACTIVE QUALIFIERS.',)])
 
-# ---------------------------------------------------------------- the C58 DOS rig
-BAT_LADDER = ['if errorlevel 3 goto e3', 'if errorlevel 2 goto e2',
-              'if errorlevel 1 goto e1', 'echo 0 > RC.TXT', 'goto end',
-              ':e3', 'echo 3 > RC.TXT', 'goto end',
-              ':e2', 'echo 2 > RC.TXT', 'goto end',
-              ':e1', 'echo 1 > RC.TXT', ':end']
-
-
-def run_dos(cdir, bat_lines):
-    """RUN.BAT (CRLF) in cdir under headless dosbox-x; returns the RC.TXT code"""
-    shutil.copy2(EXE, os.path.join(cdir, 'DYNVIEW.EXE'))
-    with open(os.path.join(cdir, 'RUN.BAT'), 'wb') as f:
-        for text in list(bat_lines) + BAT_LADDER:
-            f.write(text.encode('latin-1') + b'\r\n')
-    rc_txt = os.path.join(cdir, 'RC.TXT')
-    if os.path.exists(rc_txt):
-        os.remove(rc_txt)
-    env = dict(os.environ, SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
-    proc = subprocess.run([DOSBOX, '-silent', '-set', 'mixer nosound=true', '-set',
-                           'cpu cycles=max', '-c', 'mount c ' + cdir, '-c', 'c:',
-                           '-c', 'RUN.BAT', '-c', 'exit'],
-                          capture_output=True, text=True, timeout=600, env=env)
-    if not os.path.exists(rc_txt):
-        raise AssertionError('RC.TXT missing rc=%d out=%s err=%s'
-                             % (proc.returncode, proc.stdout[-400:], proc.stderr[-400:]))
-    return int(open(rc_txt).read().strip() or 0)
-
-
-def toks(seq):
-    """key sequence -> /KEYS: token string (decimal, hex keys as 0x)."""
-    out = []
-    for k in seq:
-        out.append('0x%04x' % k if k in (dynview.KEY_LEFT, dynview.KEY_RIGHT,
-                                         dynview.KEY_UP, dynview.KEY_DOWN,
-                                         dynview.KEY_PGUP, dynview.KEY_PGDN)
-                   else str(k))
-    return ','.join(out)
-
-
-def fb_python(ldir, keys=None, font_dir=FILES):
-    """Python reference frame of the keys from the hub start."""
-    data = dynview.load_data(str(ldir), font_dir)
-    s = (dynview.SCREEN_MENU, 0, 0)
-    for k in (keys or []):
-        s, _ex = dynview.step(s, k, data)
-    return bytes(dynview.render(s, data))
-
-
-# -- C58: PLAYER CARD LEFT/RIGHT browse the card_back list (see also test_dynview.py) --
-def _c58_dos_league(tmp_path):
-    """the DOS league: the c13 fixture players, 3 seasons with lines, AL award records
-    over seasons 2..3 and one NONE (0xffff) GLOVE C slot of season 3"""
-    ldir = tmp_path / 'c58lg'
-    ms = [(3, 0, 64, 0), (3, 3, 65, 1000), (3, 0xffff, 66, 30), (3, 4, 67, 987),
-          (3, 6, 68, 999), (2, 0, 64, 1)]
+# ---------------------------------------------------------------- C58 (the DOS frames are in test_dynview_c13_c.py)
+def test_c58_hof_browse_esc_state(tmp_path):
+    """HOF card of row 1, RIGHT to row 2, ESC lands on HOF with the cursor on row 2"""
     players = player_set()
-    for i, hof in ((0, 2), (1, 3), (2, 3)):      # three Hall of Famers for the HOF cases
+    for i, hof in ((0, 2), (1, 3), (2, 3)):
         players[i].update(status=3, hof=hof)
-    write_league(ldir, players, seasons=3, start=1990,
-                 lines=season_lines_fixture(), ms=ms)
-    return ldir
-
-
-@needs_dos
-def test_c58_card_browse_parity(tmp_path):
-    """C58 frames under headless DOSBox-X, framebuffer parity with Python: HOF card then
-    RIGHT, RIGHT across a page boundary then ESC (the list on page 2), LEADERS card then
-    LEFT, the HONORS view browse (LEFT then RIGHT in HONORS), RIGHT on the last row
-    (the frame is the unchanged card), and the two new footers."""
-    if not _dos_ready():
-        pytest.skip('DYNVIEW.EXE or dosbox-x missing')
-    if not _fonts_ready():
-        pytest.skip('fonts missing')
-    ldir = _c58_dos_league(tmp_path)
-    d = str(tmp_path / 'dos')
-    os.makedirs(d)
-    os.makedirs(os.path.join(d, 'LEAGUE'))
-    os.makedirs(os.path.join(d, 'FONTS'))
-    for f in os.listdir(str(ldir)):
-        shutil.copy2(os.path.join(str(ldir), f),
-                     os.path.join(d, 'LEAGUE', f))
-    for f in ('MAIN.FNT', 'BOLD.FNT', 'DEFAULT.PAL'):
-        shutil.copy2(os.path.join(FILES, f), os.path.join(d, 'FONTS', f))
-    K_HOF = ord('2')
-    K_LEAD = ord('3')
-    K_AWARDS = ord('9')
-    cases = (
-        ('hof_card', [K_HOF, DOWN, ENTER]),
-        ('hof_right', [K_HOF, DOWN, ENTER, RIGHT]),
-        ('hof_right_esc', [K_HOF, DOWN, ENTER, RIGHT, ESC]),
-        ('lead_right', [K_LEAD, DOWN, ENTER, RIGHT]),
-        ('lead_left', [K_LEAD, DOWN, ENTER, LEFT]),
-        ('award_right_skip', [K_AWARDS, ENTER, RIGHT]),
-        ('honors_left_right', [K_AWARDS, ENTER, ord('H'), LEFT]),
-        ('award_right_last', [K_AWARDS, ENTER, PGDN, PGDN, DOWN, DOWN, DOWN, RIGHT]),
-    )
-    for n, (tag, keys) in enumerate(cases):
-        out = 'C58_%d.RAW' % n
-        args = 'DYNVIEW.EXE /RAW:%s /KEYS:%s LEAGUE FONTS' % (out, toks(keys))
-        rc = run_dos(d, [args])
-        assert rc == 0, '%s: dos rc %d' % (tag, rc)
-        dos_raw = open(os.path.join(d, out), 'rb').read()
-        py = fb_python(str(ldir), keys=keys)
-        assert dos_raw == py, '%s: DOS frame differs from Python' % tag
-    # the footers of the two views, rendered as text by Python
-    data = dynview.load_data(str(ldir))
+    ldir = tmp_path / 'c58hof'
+    write_league(ldir, players, seasons=3, start=1990)
+    data = load(ldir)
+    s = (dynview.SCREEN_MENU, 0, 0)
+    for k in (ord('2'), DOWN, ENTER, RIGHT, ESC):
+        s, _ex = dynview.step(s, k, data)
+    assert s == (dynview.SCREEN_HOF, 0, 0, 2)
     assert dynview.footer_text((dynview.SCREEN_CARD, 0, 0), data) == \
         'LEFT RIGHT  PGUP PGDN  H HONORS  ESC'
     assert dynview.footer_text((dynview.SCREEN_CARD, 0, 0, 1), data) == \
         'LEFT RIGHT  PGUP PGDN  H SEASONS  ESC'
-    # the states along one key walk: the ESC after the browse lands on row 1's page
-    keys = [K_HOF, DOWN, ENTER, RIGHT, ESC]
-    data = dynview.load_data(str(ldir), FILES)
-    s = (dynview.SCREEN_MENU, 0, 0)
-    for k in keys:
-        s, _ex = dynview.step(s, k, data)
-    assert s == (dynview.SCREEN_HOF, 0, 0, 2)      # row 1's card, RIGHT to row 2, ESC there
