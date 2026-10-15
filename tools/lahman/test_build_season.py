@@ -2,6 +2,7 @@
 """H1 build_season tests. All skip if the Lahman DB or the template league is missing.
 usage: python3 -m pytest -q tools/lahman/test_build_season.py"""
 import os
+import shutil
 import sqlite3
 import sys
 
@@ -244,7 +245,7 @@ def test_header_partition(league):
 
 
 def test_year_out_of_range(tmp_path):
-    for year in (1976, 1993):
+    for year in (1976, 1994):
         out = os.path.join(tmp_path, 'x')
         rc = build_season.main(['build_season.py', str(year), str(out)])
         assert rc == 2
@@ -252,7 +253,7 @@ def test_year_out_of_range(tmp_path):
     # existing empty OUT_DIR is also left empty on exit 2
     out = os.path.join(tmp_path, 'y')
     os.mkdir(out)
-    rc = build_season.main(['build_season.py', '1993', str(out)])
+    rc = build_season.main(['build_season.py', '1994', str(out)])
     assert rc == 2
     assert os.listdir(out) == []
 
@@ -303,3 +304,156 @@ def test_allstars_from_built_rosters(league):
         assert len(named) >= 30, (name, len(named))
         stale = [r[:14] for r in named if r not in pool]
         assert not stale, (name, stale[:3])
+
+
+def test_team_lists():
+    old = build_season.team_list(1985)
+    assert len(old) == 26
+    assert [(s, tid, k) for s, tid, k in old if s.startswith('clasnle')] == [
+        ('clasnle1', 'CHN', 0), ('clasnle2', 'MON', 1), ('clasnle3', 'NYN', 2),
+        ('clasnle4', 'PHI', 3), ('clasnle5', 'PIT', 4), ('clasnle6', 'SLN', 5)]
+    assert [(s, tid, k) for s, tid, k in old if s.startswith('clasnlw')] == [
+        ('clasnlw1', 'ATL', 8), ('clasnlw2', 'CIN', 9), ('clasnlw3', 'HOU', 10),
+        ('clasnlw4', 'LAN', 11), ('clasnlw5', 'SDN', 12), ('clasnlw6', 'SFN', 13)]
+    assert build_season.team_list(1992) == old
+    new = build_season.team_list(1993)
+    assert len(new) == 28
+    fle = new.index(('clasnle7', 'FLO', 6))
+    col = new.index(('clasnlw7', 'COL', 14))
+    assert fle < col
+    assert new[:len(old) - 6] == old[:len(old) - 6]          # AL unchanged
+    # the six old NL East teams sit before FLO, the six old NL West teams before COL
+    assert [tid for _, tid, _ in new[fle - 6:fle]] == ['CHN', 'MON', 'NYN', 'PHI', 'PIT', 'SLN']
+    assert [tid for _, tid, _ in new[col - 6:col]] == ['ATL', 'CIN', 'HOU', 'LAN', 'SDN', 'SFN']
+
+
+def test_maj_patch_minimal(tmp_path):
+    # add_expansion patches only the two NL slot entries and the four count bytes
+    src = os.path.join(TEMPLATE, 'CLASSIC.MAJ')
+    img = bytearray(open(src, 'rb').read())
+    for stem, tid, slot, name, abbr, tmpl in build_season.EXPANSION_1993:
+        shutil.copyfile(os.path.join(TEMPLATE, tmpl.upper() + '.V20'),
+                     os.path.join(str(tmp_path), tmpl.upper() + '.V20'))
+    shutil.copyfile(src, str(tmp_path / 'classic.maj'))
+    build_season.add_expansion(str(tmp_path))
+    with open(str(tmp_path / 'classic.maj'), 'rb') as f:
+        out = f.read()
+    diff = [i for i in range(len(img)) if img[i] != out[i]]
+    allowed = set()
+    for stem, tid, slot, name, abbr, tmpl in build_season.EXPANSION_1993:
+        allowed |= set(range(0x758c + 0x0f + 16 * slot, 0x758c + 0x0f + 16 * slot + 16))
+        allowed |= set(range(0x758c + 0x18f + 3 * slot, 0x758c + 0x18f + 3 * slot + 3))
+        allowed |= set(range(0x758c + 0x1d7 + 8 * slot, 0x758c + 0x1d7 + 8 * slot + 8))
+    allowed |= {0x758c + 0x298, 0x758c + 0x299, 0x20e + 3, 0x20e + 4}
+    assert set(diff) <= allowed, sorted(set(diff) - allowed)
+    assert out[0x758c + 0x298] == 7 and out[0x758c + 0x299] == 7
+    assert out[0x20e + 3] == 7 and out[0x20e + 4] == 7
+    assert out[0x758c + 0x1d7 + 8 * 6:0x758c + 0x1d7 + 8 * 6 + 8] == b'clasnle7'
+    assert out[0x758c + 0x1d7 + 8 * 14:0x758c + 0x1d7 + 8 * 14 + 8] == b'clasnlw7'
+    assert out[0x758c + 0x0f + 16 * 6:0x758c + 0x0f + 16 * 6 + 7] == b'FLORIDA'
+    assert out[0x758c + 0x0f + 16 * 14:0x758c + 0x0f + 16 * 14 + 8] == b'COLORADO'
+
+
+def test_maj_patch_errors(tmp_path):
+    src = os.path.join(TEMPLATE, 'CLASSIC.MAJ')
+    for stem, tid, slot, name, abbr, tmpl in build_season.EXPANSION_1993:
+        shutil.copyfile(os.path.join(TEMPLATE, tmpl.upper() + '.V20'),
+                     os.path.join(str(tmp_path), tmpl.upper() + '.V20'))
+    # no MAJ
+    with pytest.raises(ValueError):
+        build_season.add_expansion(str(tmp_path))
+    # two MAJs
+    shutil.copyfile(src, str(tmp_path / 'a.maj'))
+    shutil.copyfile(src, str(tmp_path / 'b.MAJ'))
+    with pytest.raises(ValueError):
+        build_season.add_expansion(str(tmp_path))
+    os.remove(str(tmp_path / 'b.MAJ'))
+    # slot occupied: pre-seed the FLO stem
+    img = bytearray(open(src, 'rb').read())
+    img[0x758c + 0x1d7 + 8 * 6:0x758c + 0x1d7 + 8 * 6 + 8] = b'clasnle6'
+    open(str(tmp_path / 'a.maj'), 'wb').write(bytes(img))
+    with pytest.raises(ValueError):
+        build_season.add_expansion(str(tmp_path))
+    # truncated MAJ
+    open(str(tmp_path / 'a.maj'), 'wb').write(bytes(img[:0x758c + 0x298]))
+    with pytest.raises(ValueError):
+        build_season.add_expansion(str(tmp_path))
+
+
+@pytest.fixture(scope='module')
+def league93(tmp_path_factory):
+    out = tmp_path_factory.mktemp('league') / 'hist1993'
+    rc = build_season.main(['build_season.py', '1993', str(out)])
+    assert rc == 0, out
+    return out
+
+
+def test_expansion_headers(league93):
+    for stem, name, abbr in (('clasnle7', 'FLORIDA', 'FLA'), ('clasnlw7', 'COLORADO', 'COL')):
+        t = v20.Team.load(team_path(league93, stem))
+        assert (t.name, t.abbr, t.stadium) == (name, abbr, 'grass')
+        # header bytes 0..110 in the untouched part are still the copied template's
+        with open(os.path.join(TEMPLATE, 'CLASNLE6.V20' if stem == 'clasnle7'
+                               else 'CLASNLW6.V20'), 'rb') as f:
+            s = f.read()
+        with open(team_path(league93, stem), 'rb') as f:
+            d = f.read()
+        assert len(s) == len(d)
+        assert s[27:111] == d[27:111]
+
+
+def test_1993_maj(league93):
+    with open(os.path.join(TEMPLATE, 'CLASSIC.MAJ'), 'rb') as f:
+        img = f.read()
+    majs = [f for f in os.listdir(league93) if f.upper().endswith('.MAJ')]
+    assert majs == ['CLASSIC.MAJ']
+    with open(os.path.join(league93, majs[0]), 'rb') as f:
+        out = f.read()
+    assert len(out) == len(img)
+    diff = [i for i in range(len(img)) if img[i] != out[i]]
+    allowed = set()
+    for stem, tid, slot, name, abbr, tmpl in build_season.EXPANSION_1993:
+        allowed |= set(range(0x758c + 0x0f + 16 * slot, 0x758c + 0x0f + 16 * slot + 16))
+        allowed |= set(range(0x758c + 0x18f + 3 * slot, 0x758c + 0x18f + 3 * slot + 3))
+        allowed |= set(range(0x758c + 0x1d7 + 8 * slot, 0x758c + 0x1d7 + 8 * slot + 8))
+    allowed |= {0x758c + 0x298, 0x758c + 0x299, 0x20e + 3, 0x20e + 4}
+    assert set(diff) <= allowed, sorted(set(diff) - allowed)
+
+
+def test_1993_files_and_teamids(league93):
+    names = sorted(os.listdir(league93))
+    for stem, tid, slot in build_season.team_list(1993):
+        assert (stem.upper() + '.V20') in names, stem
+    assert names.count('ALLSTAR1.V20') == 1 and names.count('ALLSTAR2.V20') == 1
+    assert names.count('CLASSIC.MAJ') == 1
+    assert len(names) == len(os.listdir(TEMPLATE)) + 2          # 28 V20 + ALLSTAR1/2 + MAJ
+    assert len(build_season.team_list(1993)) == 28
+    import m4.teamids as teamids
+    teams = teamids.maj_teams(open(os.path.join(str(league93), 'CLASSIC.MAJ'), 'rb').read())
+    assert len(teams) == 28
+    stems = [t[2].split(b'\0', 1)[0].decode('latin-1') for t in teams]
+    assert stems == [s for s, _, _ in build_season.team_list(1993)]
+    for t in teams:
+        assert t[0] == (0 if t[2].startswith(b'clasal') else 1)
+
+
+def test_1993_rosters(league93):
+    c = sqlite3.connect('file:%s?mode=ro' % DB, uri=True)
+    for stem, tid in (('clasnle7', 'FLO'), ('clasnlw7', 'COL')):
+        t = v20.Team.load(team_path(league93, stem))
+        named = [p for p in t.players[:40] if p.raw[0]]
+        assert len(named) >= 20, (stem, len(named))
+        db_names = {row[0].upper() for row in c.execute(
+            'select nameLast from people p join appearances a on p.playerID=a.playerID'
+            ' where a.yearID=1993 and a.teamID=? and a.G_all > 0', (tid,))}
+        for p in named:
+            assert p['last'].upper() in db_names, (stem, p['last'])
+    # spot: each team's 1993 AB leader is on the roster by name
+    for stem, tid, want_last in (('clasnle7', 'FLO', None), ('clasnlw7', 'COL', None)):
+        pid, last, first = c.execute(
+            'select b.playerID, p.nameLast, p.nameFirst from batting b join people p'
+            ' on b.playerID=p.playerID where b.yearID=1993 and b.teamID=?'
+            ' order by b.AB desc limit 1', (tid,)).fetchone()
+        t = v20.Team.load(team_path(league93, stem))
+        assert any(p.active and p['last'].upper() == last.upper()
+                   for p in t.players[:40]), (stem, last, pid)

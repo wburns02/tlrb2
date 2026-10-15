@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Lahman season -> playable TLRB2 league (H1).
 usage: build_season.py YEAR OUT_DIR [--db PATH] [--template DIR]
-YEAR 1977..1992. Copies the template league dir to OUT_DIR (must not exist or be empty), then
-rewrites the 26 CLAS*.V20 files, then rebuilds ALLSTAR1/2 from them (C9, rosters.refresh_allstars).
-MAJ and every V20 header bytes 0..110 are kept from the template. Exit 0 ok, 2 on any error."""
+YEAR 1977..1993. Copies the template league dir to OUT_DIR (must not exist or be empty), then (1993:
+the two NL expansion teams), rewrites the 28 CLAS*.V20 files, then rebuilds ALLSTAR1/2 from them (C9,
+rosters.refresh_allstars). MAJ and every V20 header bytes 0..110 are kept from the template (1993: the
+MAJ NL slot entries and division counts are patched, C15's UTIL NEW TEAM fields). Exit 0 ok, 2 on any
+error."""
 import os
 import shutil
 import sqlite3
@@ -20,7 +22,7 @@ from m4 import rosters                                            # noqa: E402 (
 
 DB = '/mnt/nvme/tlrb2/lahman/lahmansbaseballdb.sqlite'
 TEMPLATE = '/mnt/nvme/tlrb2/hist/template/CLASSIC'
-YEAR_MIN, YEAR_MAX = 1977, 1992
+YEAR_MIN, YEAR_MAX = 1977, 1993
 
 # 1977-1992 alignment, slot = division*8 + i (all-star team is slot 15): AL East 0..6, AL West
 # 8..14, NL East 0..5, NL West 8..14. Files clasale1..7, clasalw1..7, clasnle1..6, clasnlw1..6.
@@ -31,17 +33,68 @@ NL_TEAMS = ['CHN', 'MON', 'NYN', 'PHI', 'PIT', 'SLN',
             'ATL', 'CIN', 'HOU', 'LAN', 'SDN', 'SFN']
 
 
-def team_list():
+def team_list(year=1992):
+    """[(stem, Lahman teamID, MAJ slot)] for the season: the 26 pre-1993 teams; 1993 adds
+    the two NL expansion teams (East 7th FLO slot 6, West 7th COL slot 14)."""
     out = []
     for i, tid in enumerate(AL_TEAMS):
         et = i < 7
         out.append(('clasale%d' % (i + 1) if et else 'clasalw%d' % (i - 6),
                     tid, i if et else i + 1))
-    for i, tid in enumerate(NL_TEAMS):
-        et = i < 6
-        out.append(('clasnle%d' % (i + 1) if et else 'clasnlw%d' % (i - 5),
-                    tid, i if et else i + 2))
+    nl = list(NL_TEAMS)
+    if year >= 1993:
+        nl.insert(6, 'FLO')
+        nl.append('COL')
+    ne = 7 if year >= 1993 else 6                  # NL East size
+    for i, tid in enumerate(nl):
+        et = i < ne
+        out.append(('clasnle%d' % (i + 1) if et else 'clasnlw%d' % (i - ne + 1),
+                    tid, i if et else i - ne + 8))
     return out
+
+
+# 1993 NL expansion (stem, Lahman teamID, NL slot, display name, abbr, template stem to copy)
+EXPANSION_1993 = [('clasnle7', 'FLO', 6, 'FLORIDA', 'FLA', 'clasnle6'),
+                  ('clasnlw7', 'COL', 14, 'COLORADO', 'COL', 'clasnlw6')]
+
+
+def _maj_path(out_dir):
+    majs = [f for f in os.listdir(out_dir) if f.lower().endswith('.maj')]
+    if len(majs) != 1:
+        raise ValueError('expected exactly one MAJ file in %s, got %r' % (out_dir, majs))
+    return os.path.join(out_dir, majs[0])
+
+
+def add_expansion(out_dir):
+    """1993: add the two NL expansion teams. Copies the neighbouring template V20 to
+    CLASNLE7.V20 / CLASNLW7.V20, renames them, then patches the MAJ: each NL team entry's
+    name, abbr, stem (the C15 UTIL NEW TEAM fields) and the NL division counts 6 -> 7.
+    Everything else in the MAJ must stay the template's (and the target slots empty)."""
+    maj = _maj_path(out_dir)
+    img = bytearray(open(maj, 'rb').read())
+    if len(img) < 0x758c + 0x298 + 2:
+        raise ValueError('MAJ too short: %d B' % len(img))
+    for stem, tid, slot, name, abbr, tmpl in EXPANSION_1993:
+        if img[0x758c + 0x1d7 + 8 * slot] != 0:
+            raise ValueError('MAJ slot %d is not empty' % slot)
+    for stem, tid, slot, name, abbr, tmpl in EXPANSION_1993:
+        shutil.copy2(os.path.join(out_dir, tmpl.upper() + '.V20'),
+                     os.path.join(out_dir, stem.upper() + '.V20'))
+        t = v20.Team.load(os.path.join(out_dir, stem.upper() + '.V20'))
+        t.set_name(name)
+        t.set_abbr(abbr)
+        t.set_stadium('grass')
+        t.save(os.path.join(out_dir, stem.upper() + '.V20'))
+        b = 0x758c + 0x0f + 16 * slot
+        img[b:b + 16] = name.encode('latin-1').ljust(16, b'\0')
+        b = 0x758c + 0x18f + 3 * slot
+        img[b:b + 3] = abbr.encode('latin-1').ljust(3, b'\0')
+        b = 0x758c + 0x1d7 + 8 * slot
+        img[b:b + 8] = stem.encode('latin-1').ljust(8, b'\0')
+    for d in (0, 1):
+        img[0x758c + 0x298 + d] = 7
+        img[0x20e + 3 + d] = 7
+    open(maj, 'wb').write(bytes(img))
 
 
 BAT_COLS = ['AB', 'R', 'H', '2B', '3B', 'HR', 'RBI', 'SB', 'CS', 'BB', 'SO', 'SH']
@@ -338,7 +391,7 @@ def build_league(db, year, out_dir, template):
         'select playerID, nameFirst, nameLast, birthYear, birthMonth, bats, throws'
         ' from people')}
     sel = select(c, year)
-    for stem, tid, slot in team_list():
+    for stem, tid, slot in team_list(year):
         path = os.path.join(out_dir, stem.upper() + '.V20')
         build_team(c, year, tid, path, people, exps, sel.get(tid, []))
 
@@ -394,6 +447,8 @@ def main(argv):
         for f in os.listdir(template):
             shutil.copy2(os.path.join(template, f), os.path.join(out, f))
             os.chmod(os.path.join(out, f), 0o644)
+        if year >= 1993:
+            add_expansion(out)
         build_league(db, year, out, template)
         rosters.refresh_allstars(out)               # else the template's classic stars play the first All-Star game
     except Exception as e:
