@@ -466,6 +466,135 @@ static void sl_pitcher(uint8_t *r)
     sl_runs(r, 9, 0, 3);
 }
 
+/* ---------------- ratings.py: the game salary (C21) ---------------- */
+
+/* ratings.era100: (u16(103) * 900000 + era100base >> 1) // era100base, capped 9999;
+ * the +0xe9 / +0x1d3 bumps reproduce the game's ERA rounding to hundredths */
+static long sl_era100(const uint8_t *r)
+{
+    unsigned long a = (unsigned long)sl_u16(r, 101) * 100;
+    unsigned long er = (unsigned long)sl_u16(r, 103);
+    unsigned long n;
+    if (a % 1000 == 100)
+        a += 0xe9;
+    if (a % 1000 == 200)
+        a += 0x1d3;
+    n = er * 900000 + (a >> 1);
+    return a ? sl_min((long)(n / a), 9999) : (n ? 9999 : 0);
+}
+
+/* ratings.pitcher_class: 1 starters, 2 unscored c = 0 end < 3, 4 that plus a high
+ * endurance starter, 3 the rest */
+static long sl_pitcher_class(const uint8_t *r)
+{
+    long end = r[135] >> 4, g = r[23], gs = r[98], ip10 = sl_u16(r, 101);
+    long c = 0;
+    if (end > 5 || (g * 33 <= gs * 100 && ip10 > 1000))
+        c = 1;
+    if (end < 3 && c == 0)
+        c = 2;
+    if (end > 1 && gs < g / 2)
+        c += 3;
+    return c ? c : 3;
+}
+
+/* ratings.salary_pitcher. Python's // floors; every division here sees a
+ * nonnegative dividend, except none: w/so/sv are u8, (400 - era) > 0 in the taken
+ * branches and the inn / 180 and inn / 50 shrink factors have inn >= 0, so plain
+ * C division truncates exactly like ratings.py */
+static long sl_salary_pitcher(const uint8_t *r)
+{
+    long w = r[95], so = (sl_u16(r, 125) + sl_u16(r, 127)) & 0xffffL;
+    long sv = r[100], era = sl_era100(r), inn = sl_u16(r, 101) / 10;
+    long x;
+    if (sl_pitcher_class(r) == 1 || sl_pitcher_class(r) == 4) {
+        x = w * 50 + so * 5;
+        if (era < 400)
+            x += (400 - era) * 5;
+        if (w > 20)
+            x += (w - 20) * 100;
+        if (so > 200)
+            x += (so - 200) * 5;
+        if (inn < 180)
+            x = (x & 0xffffL) * inn / 180;
+    } else {
+        x = sv * 20 + so * 5;
+        if (era < 400)
+            x += (400 - era) * 25 / 10;
+        if (sv > 30)
+            x += (sv - 30) * 10;
+        if (inn < 50)
+            x = (x & 0xffffL) * inn / 50;
+    }
+    return sl_max(109, sl_min(9999, (x & 0xffffL) * 115 / 100));
+}
+
+/* ratings.salary_batter */
+static long sl_salary_batter(const uint8_t *r)
+{
+    long ab = sl_s2(r, 37), h = sl_s2(r, 41), d = sl_s2(r, 45);
+    long t3 = sl_b2(r, 49), hr = sl_b2(r, 51), bb = sl_s2(r, 53);
+    long slg = sl_per_mille(h + d + 2 * t3 + 3 * hr, ab);
+    long obp = sl_per_mille(h + bb, ab + bb);
+    long ba = sl_per_mille(h, ab);
+    long sb = r[35], cs = r[36], rbi = r[33], runs = r[32];
+    long hrs = r[51] + r[52];
+    long pos = r[31] & 15, rg = r[94] >> 4, am = r[94] & 15;
+    long pa = (ab + bb) & 0xffffL;
+    long x = obp + slg + hrs * 30 + rbi * 75 / 10;
+    if (runs > rbi)
+        x += (runs - rbi) * 75 / 10;
+    if (hrs > 30)
+        x += (hrs - 30) * 50;
+    if (sb > cs)
+        x += (sb - cs) * 10;
+    if (sb > 50)
+        x += (sb - 50) * 20;
+    if (ba > 300)
+        x += (ba - 300) * 20;
+    if (pos == 1) {
+        if (am > 7)
+            x += (am - 7) * 100;
+    } else if (pos == 3) {
+        if (rg > 8)
+            x += (rg - 8) * 50;
+        if (rg == 12)
+            x -= 50;
+    } else if (pos == 4) {
+        if (rg > 8)
+            x += (rg - 8) * 50;
+        if (am > 8)
+            x += (am - 8) * 50;
+        if (rg + am > 22)
+            x -= (rg + am - 22) * 50;
+    } else if (pos == 5) {
+        if (rg > 8)
+            x += (rg - 8) * 100;
+        if (am > 8)
+            x += (am - 8) * 100;
+    } else if (pos == 6 || pos == 8) {
+        if (am > 8)
+            x += (am - 8) * 100;
+    } else if (pos == 7) {
+        if (am > 8)
+            x += (am - 8) * 50;
+        if (rg > 8)
+            x += (rg - 8) * 50;
+        if (rg == 12)
+            x -= 50;
+    }
+    x &= 0xffffL;
+    if (pa < 0x20d)
+        x = x * pa / 0x23f;
+    return sl_max(109, sl_min(9999, x));
+}
+
+/* ratings.salary: the pitcher formula when the pos code (byte 31 low nibble) is 0 */
+static long sl_salary(const uint8_t *r)
+{
+    return (r[31] & 15) == 0 ? sl_salary_pitcher(r) : sl_salary_batter(r);
+}
+
 /* statline.fill: overwrite every season stat byte of a 143 B record in place with the
  * line its rating nibbles imply. Pitcher iff pos code (byte 31 low nibble) is 0. */
 static void sl_fill(uint8_t *rec)

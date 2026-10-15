@@ -122,10 +122,11 @@ def parity(tmp_path, keys, base=None, anms=True, control=None, anms_path=None, f
 
 
 SAVE_EMPTY_PITCHER = typed('Ruiz') + [DOWN] + typed('Tom') + [DOWN] * 8 + [ENTER]
-SAVE_NAMED_BATTER = typed('Lowe') + [DOWN] * 12
+SAVE_NAMED_BATTER = typed('Lowe') + [DOWN] * 13
 # every rating at its cap: batter power, bunt, hit and run, speed, range, arm; pitcher
 # control, velocity, endurance (the cap, 10)
-SAVE_ALL12_BATTER = typed('Lowe') + [DOWN] * 5 + ([RIGHT] * 6 + [DOWN]) * 6 + [DOWN, ENTER]
+SAVE_ALL12_BATTER = typed('Lowe') + [DOWN] * 6 + ([RIGHT] * 6 + [DOWN]) * 6 \
+    + [DOWN, ENTER]
 SAVE_ALL_MAX_PITCHER = (typed('Ruiz') + [DOWN] + typed('Tom') + [DOWN] * 4
                         + ([RIGHT] * 6 + [DOWN]) * 2 + [RIGHT] * 6 + [DOWN] * 2 + [ENTER])
 
@@ -233,6 +234,25 @@ def test_parity_portrait_edge_cases(tmp_path):
     parity(tmp_path, [ENTER, ENTER], anms_path=short)
 
 
+@need_fonts
+def test_parity_salary_and_second_pos_c21(tmp_path):
+    """C21: the SALARY text under the portrait and the SECOND POS row match the Python
+    render: a batter edit screen with the cursor on SECOND POS, a pitcher edit screen
+    (salary text only), a save after changing ratings (the salary text differs from the
+    default) and the empty-name message screen on both edit forms."""
+    # named batter B1: cursor on SECOND POS (row 3), and the save after rating changes
+    batter = ([ENTER] + [DOWN] * 16 + [ENTER] + typed('Lowe') + [DOWN] * 3)
+    parity(tmp_path, batter)
+    ratings = typed('Lowe') + [DOWN] * 6 + ([RIGHT] * 6 + [DOWN]) * 3
+    parity(tmp_path, [ENTER] + [DOWN] * 16 + [ENTER] + ratings)
+    # empty pitcher P2: the pitcher screen shows SALARY (no SECOND POS row)
+    parity(tmp_path, [ENTER, DOWN, ENTER] + typed('Ruiz') + [DOWN] + typed('Tom')
+           + [DOWN] * 4 + [RIGHT] * 6)
+    # empty-name message screen, batter and pitcher (MSG_NAME moved to y 175)
+    parity(tmp_path, [ENTER] + [DOWN] * 16 + [ENTER] + [DOWN] * 13 + [ENTER])
+    parity(tmp_path, [ENTER, ENTER] + [DOWN] * 9 + [ENTER])
+
+
 # ---------------------------------------------------------------- parity: saves
 @need_fonts
 def test_parity_save_pos2_v20_bytes_c20b(tmp_path):
@@ -243,9 +263,9 @@ def test_parity_save_pos2_v20_bytes_c20b(tmp_path):
     st, _ = parity(tmp_path, ss_keys)
     assert st['screen'] == cr.S_DONE
     assert cr.record(st['image'], 16)[31] == 0xB5
-    # same slot, form pos LEFT*? -> walk POSITION one RIGHT: 5 -> 6 (LF)
+    # same slot, POSITION one RIGHT: 5 -> 6 (LF, pos2 resets to OF)
     lf_keys = ([ENTER] + [DOWN] * 16 + [ENTER] + typed('Lefty') + [DOWN] * 2
-               + [RIGHT] + [DOWN] * 10 + [ENTER, ENTER])
+               + [RIGHT] + [DOWN] * 11 + [ENTER, ENTER])
     st, _ = parity(tmp_path, lf_keys)
     assert st['screen'] == cr.S_DONE
     assert cr.record(st['image'], 16)[31] == 0xA6

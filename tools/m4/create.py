@@ -23,6 +23,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
+import ratings  # noqa: E402
 import rookies  # noqa: E402
 import statline  # noqa: E402
 import teamids  # noqa: E402
@@ -67,11 +68,11 @@ POS_LABELS = ['P', 'C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH', 'OF', 'I
 HANDS = [('R', 'R'), ('L', 'L'), ('S', 'R'), ('R', 'L'), ('L', 'R'), ('S', 'L')]
 BATS_CODE = {'R': 1, 'S': 2, 'L': 0}      # record byte 29 bits 2..1
 
-# edit rows: (field, label); batter 13 rows, pitcher 10 rows
+# edit rows: (field, label); batter 14 rows, pitcher 10 rows
 BAT_FIELDS = [('last', 'LAST NAME'), ('first', 'FIRST NAME'), ('pos', 'POSITION'),
-              ('hands', 'HANDS'), ('age', 'AGE'), ('r0', 'POWER'), ('r1', 'BUNT'),
-              ('r2', 'HIT AND RUN'), ('r3', 'SPEED'), ('r4', 'RANGE'), ('r5', 'ARM'),
-              ('face', 'FACE'), ('save', 'SAVE PLAYER')]
+              ('pos2', 'SECOND POS'), ('hands', 'HANDS'), ('age', 'AGE'), ('r0', 'POWER'),
+              ('r1', 'BUNT'), ('r2', 'HIT AND RUN'), ('r3', 'SPEED'), ('r4', 'RANGE'),
+              ('r5', 'ARM'), ('face', 'FACE'), ('save', 'SAVE PLAYER')]
 PIT_FIELDS = [('last', 'LAST NAME'), ('first', 'FIRST NAME'), ('pos', 'POSITION'),
               ('hands', 'HANDS'), ('age', 'AGE'), ('r0', 'CONTROL'), ('r1', 'VELOCITY'),
               ('r2', 'ENDURANCE'), ('face', 'FACE'), ('save', 'SAVE PLAYER')]
@@ -250,9 +251,8 @@ def build_record(form, pitcher, year, grp):
     if pitcher:
         rec[rookies.OFF_POS] = 0
     else:
-        # C20b: pos1 in the low nibble, POS2_OF[pos1] in the high nibble.
-        rec[rookies.OFF_POS] = ((rookies.POS2_OF[form['pos']] & 0x0F) << 4) \
-            | (form['pos'] & 0x0F)
+        # C20b/C21: pos1 in the low nibble, the chosen pos2 in the high nibble.
+        rec[rookies.OFF_POS] = ((form['pos2'] & 0x0F) << 4) | (form['pos'] & 0x0F)
     struct.pack_into('<H', rec, rookies.OFF_PORTRAIT, face)
     rec[rookies.OFF_EXP_CONSIST] = 0x02          # exper 0, consist 2
     position = rookies.POS_P if pitcher else form['pos']
@@ -264,7 +264,8 @@ def build_record(form, pitcher, year, grp):
         else:
             rookies._set_nibble_lo(rec, off, v)
     statline.fill(rec)                           # the stat line the ratings imply
-    gen._write_salary(rec, position)
+    sal = ratings.salary(rec)                    # C21: the game's own salary
+    struct.pack_into('<H', rec, rookies.OFF_SALARY, sal)
     return bytes(rec)
 
 
@@ -332,8 +333,8 @@ def control_return(path):
 
 # ---------------------------------------------------------------- state machine
 def blank_form():
-    return {'last': '', 'first': '', 'pos': 1, 'hands': 0, 'age': DEFAULT_AGE,
-            'r': [DEFAULT_RATING] * 6, 'face': 0}
+    return {'last': '', 'first': '', 'pos': 1, 'pos2': rookies.POS2_OF[1],
+            'hands': 0, 'age': DEFAULT_AGE, 'r': [DEFAULT_RATING] * 6, 'face': 0}
 
 
 def default_form(image, slot, n_faces):
@@ -346,7 +347,8 @@ def default_form(image, slot, n_faces):
         occupant = rec[rookies.OFF_POS] & 15
         pos = occupant if rec[0] and 1 <= occupant <= 9 else 1
         r = [DEFAULT_RATING] * 6
-    return {'last': '', 'first': '', 'pos': pos, 'hands': 0, 'age': DEFAULT_AGE,
+    return {'last': '', 'first': '', 'pos': pos, 'pos2': rookies.POS2_OF[pos],
+            'hands': 0, 'age': DEFAULT_AGE,
             'r': r, 'face': FACE_DEFAULT_N if n_faces > FACE_DEFAULT_N else 0}
 
 
@@ -395,6 +397,9 @@ def _adjust(st, fld, d, ctx):
     if fld == 'pos':
         if not pitcher:
             form['pos'] = (form['pos'] - 1 + d) % 9 + 1
+            form['pos2'] = rookies.POS2_OF[form['pos']]      # C21: reset on POSITION
+    elif fld == 'pos2':
+        form['pos2'] = (form['pos2'] - 1 + d) % 15 + 1
     elif fld == 'hands':
         form['hands'] = (form['hands'] + d) % 6
     elif fld == 'age':
@@ -587,6 +592,8 @@ def _edit_value(st, fld, ctx, cur):
         return s + CURSOR if cur and len(s) < mx else s
     if fld == 'pos':
         return POS_LABELS[form['pos']]
+    if fld == 'pos2':
+        return POS_LABELS[form['pos2']]
     if fld == 'hands':
         return 'BATS %s THROWS %s' % HANDS[form['hands']]
     if fld == 'age':
@@ -623,11 +630,16 @@ def _draw_edit(fb, st, ctx, main_ft, bold_ft):
             base = (FACE_Y + y) * FB_W + FACE_X
             fb[base:base + w] = px[y * w:(y + 1) * w]
     if st['msg'] == 1:
-        draw_text(fb, main_ft, 10, 172, MSG_NAME, C_DRED)
+        draw_text(fb, main_ft, 10, 175, MSG_NAME, C_DRED)      # C21: 14 rows end at 173
     fld = fields[st['cursor']][0]
     foot = FOOT_NAME if fld in ('last', 'first') else (FOOT_SAVE if fld == 'save'
                                                        else FOOT_FIELD)
     draw_text(fb, main_ft, 10, 185, foot, C_WHITE)
+    # C21: the salary of the record this form would save (derived, updates on every key)
+    rec = build_record(st['form'], st['slot'] < PITCHER_SLOTS,
+                       year_byte(st['image']), ctx['faces'][1])
+    draw_text(fb, main_ft, 228, 110, 'SALARY', C_BLACK)
+    draw_text(fb, main_ft, 228, 120, '%d' % ratings.salary(rec), C_BLACK)
 
 
 def render(st, ctx):

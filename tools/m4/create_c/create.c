@@ -82,8 +82,6 @@
 #define PITCHER_SLOTS 16
 #define IMAGE_LEN (HEADER_LEN + 80 * RECORD_LEN)
 #define DEFAULT_YEAR_BYTE 123
-#define SALARY_PITCHER 255
-#define SALARY_BATTER 109
 
 /* *.MAJ: AL stems at 0x21d, NL stems at 0x758c, 8 bytes per slot after 0x1d7 (3 divisions
  * use slots 16..23, so the last stem is NL slot 23) */
@@ -136,7 +134,7 @@ typedef struct {
 typedef struct {
     char last[12];
     char first[8];
-    int16_t pos, hands, age, face;
+    int16_t pos, pos2, hands, age, face;
     int16_t r[6];
 } Form;
 
@@ -198,15 +196,16 @@ static const char HANDS_THROWS[6] = { 'R', 'L', 'R', 'L', 'R', 'L' };
 /* C20b second position per pos1 code 0..9 (rookies.POS2_OF) */
 static const uint8_t POS2_OF[10] = { 0, 1, 2, 11, 12, 11, 10, 10, 10, 9 };
 
-/* edit rows: field ids, then the row labels (batter 13 rows, pitcher 10 rows) */
-enum { FLD_LAST, FLD_FIRST, FLD_POS, FLD_HANDS, FLD_AGE, FLD_R0, FLD_R1, FLD_R2,
-       FLD_R3, FLD_R4, FLD_R5, FLD_FACE, FLD_SAVE };
-static const uint8_t BAT_FIELDS[13] = { FLD_LAST, FLD_FIRST, FLD_POS, FLD_HANDS,
-    FLD_AGE, FLD_R0, FLD_R1, FLD_R2, FLD_R3, FLD_R4, FLD_R5, FLD_FACE, FLD_SAVE };
+/* edit rows: field ids, then the row labels (batter 14 rows, pitcher 10 rows) */
+enum { FLD_LAST, FLD_FIRST, FLD_POS, FLD_POS2, FLD_HANDS, FLD_AGE, FLD_R0, FLD_R1,
+       FLD_R2, FLD_R3, FLD_R4, FLD_R5, FLD_FACE, FLD_SAVE };
+static const uint8_t BAT_FIELDS[14] = { FLD_LAST, FLD_FIRST, FLD_POS, FLD_POS2,
+    FLD_HANDS, FLD_AGE, FLD_R0, FLD_R1, FLD_R2, FLD_R3, FLD_R4, FLD_R5, FLD_FACE,
+    FLD_SAVE };
 static const uint8_t PIT_FIELDS[10] = { FLD_LAST, FLD_FIRST, FLD_POS, FLD_HANDS,
     FLD_AGE, FLD_R0, FLD_R1, FLD_R2, FLD_FACE, FLD_SAVE };
-static const char *BAT_LABEL[13] = { "LAST NAME", "FIRST NAME", "POSITION", "HANDS",
-    "AGE", "POWER", "BUNT", "HIT AND RUN", "SPEED", "RANGE", "ARM", "FACE",
+static const char *BAT_LABEL[14] = { "LAST NAME", "FIRST NAME", "POSITION", "SECOND POS",
+    "HANDS", "AGE", "POWER", "BUNT", "HIT AND RUN", "SPEED", "RANGE", "ARM", "FACE",
     "SAVE PLAYER" };
 static const char *PIT_LABEL[10] = { "LAST NAME", "FIRST NAME", "POSITION", "HANDS",
     "AGE", "CONTROL", "VELOCITY", "ENDURANCE", "FACE", "SAVE PLAYER" };
@@ -804,7 +803,7 @@ static const char *slot_role(const uint8_t *img, int s)
  * build_record with the rookies.RookieGen draws replaced by the form values) */
 static void build_record(const Form *f, int pitcher, uint8_t year, uint8_t *rec)
 {
-    int face = f->face, hands = f->hands, bats_code, left, right, sal;
+    int face = f->face, hands = f->hands, bats_code, left, right;
     char bats = HANDS_BATS[hands], throws = HANDS_THROWS[hands];
     size_t ll = strlen(f->last), fl = strlen(f->first);
     memset(rec, 0, RECORD_LEN);
@@ -818,7 +817,7 @@ static void build_record(const Form *f, int pitcher, uint8_t year, uint8_t *rec)
     if (pitcher) {
         rec[31] = 0;
     } else {
-        rec[31] = (uint8_t)((POS2_OF[f->pos] << 4) | (f->pos & 15));  /* C20b */
+        rec[31] = (uint8_t)((f->pos2 << 4) | (f->pos & 15));    /* C21: chosen pos2 */
     }
     rec[27] = (uint8_t)(face & 0xff);
     rec[28] = (uint8_t)((face >> 8) & 0xff);
@@ -873,9 +872,11 @@ static void build_record(const Form *f, int pitcher, uint8_t year, uint8_t *rec)
         set_lo(rec, 94, f->r[5]);
     }
     sl_fill(rec);                               /* the stat line the ratings imply */
-    sal = pitcher ? SALARY_PITCHER : SALARY_BATTER;
-    rec[25] = (uint8_t)(sal & 0xff);
-    rec[26] = (uint8_t)((sal >> 8) & 0xff);
+    {                                           /* C21: the game salary of that record */
+        long sal = sl_salary(rec);
+        rec[25] = (uint8_t)(sal & 0xff);
+        rec[26] = (uint8_t)((sal >> 8) & 0xff);
+    }
 }
 
 /* save: the roster record of the slot and its season half go into the team V20 in
@@ -920,12 +921,14 @@ static void control_return(void)
 
 /* ---------------- state machine ---------------- */
 
-/* blank_form: no names, position 1, age 22, every rating 6, hands 0, face 0 */
+/* blank_form: no names, position 1, pos2 = POS2_OF[1], age 22, every rating 6, hands 0,
+ * face 0 */
 static void blank_form(Form *f)
 {
     int i;
     memset(f, 0, sizeof *f);
     f->pos = 1;
+    f->pos2 = (int16_t)POS2_OF[1];
     f->age = DEFAULT_AGE;
     for (i = 0; i < 6; i++)
         f->r[i] = DEFAULT_RATING;
@@ -944,6 +947,7 @@ static void default_form(Form *f, int slot)
     } else if (rec[0] && (rec[31] & 15) >= 1 && (rec[31] & 15) <= 9) {
         f->pos = rec[31] & 15;
     }
+    f->pos2 = (int16_t)POS2_OF[f->pos];         /* C21: POS2_OF of the form position */
     f->face = (int16_t)(g_face_n > FACE_DEFAULT_N ? FACE_DEFAULT_N : 0);
 }
 
@@ -972,7 +976,7 @@ static int list_key(int cur, int32_t key, int n)
 
 static int edit_rows(int pitcher)
 {
-    return pitcher ? 10 : 13;
+    return pitcher ? 10 : 14;
 }
 
 static int edit_field(int pitcher, int r)
@@ -1011,8 +1015,12 @@ static void adjust(State *st, int fld, int d)
     int pitcher = st->slot < PITCHER_SLOTS;
     int i, cap, v;
     if (fld == FLD_POS) {
-        if (!pitcher)
+        if (!pitcher) {
             f->pos = (int16_t)((f->pos - 1 + d + 9) % 9 + 1);
+            f->pos2 = (int16_t)POS2_OF[f->pos];             /* C21: reset on POSITION */
+        }
+    } else if (fld == FLD_POS2) {
+        f->pos2 = (int16_t)((f->pos2 - 1 + d + 15) % 15 + 1);
     } else if (fld == FLD_HANDS) {
         f->hands = (int16_t)((f->hands + d + 6) % 6);
     } else if (fld == FLD_AGE) {
@@ -1341,6 +1349,8 @@ static void edit_value(const State *st, int fld, int cur, char *dst)
             strcat(dst, CURSOR);  /* glyph '^' is a filled ball in the game font; '_' is an arrow */
     } else if (fld == FLD_POS) {
         strcpy(dst, POS_LABELS[f->pos]);
+    } else if (fld == FLD_POS2) {
+        strcpy(dst, POS_LABELS[f->pos2]);
     } else if (fld == FLD_HANDS) {
         sprintf(dst, "BATS %c THROWS %c", HANDS_BATS[f->hands], HANDS_THROWS[f->hands]);
     } else if (fld == FLD_AGE) {
@@ -1385,7 +1395,15 @@ static void draw_edit(const State *st)
                 C_GRID_GRAY);
     }
     if (st->msg == 1)
-        dtext(g_main, 10, 172, MSG_NAME, C_DRED);
+        dtext(g_main, 10, 175, MSG_NAME, C_DRED);      /* C21: 14 rows end at 173 */
+    {   /* C21: the salary of the record this form would save, live under the portrait */
+        char sal[16];
+        uint8_t rec[RECORD_LEN];
+        build_record(&st->form, pitcher, year_of_image(), rec);
+        dtext(g_main, 228, 110, "SALARY", C_BLACK);
+        sprintf(sal, "%ld", sl_salary(rec));
+        dtext(g_main, 228, 120, sal, C_BLACK);
+    }
     fld = edit_field(pitcher, st->cursor);
     if (fld == FLD_LAST || fld == FLD_FIRST)
         dtext(g_main, 10, 185, FOOT_NAME, C_WHITE);

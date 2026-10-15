@@ -1237,3 +1237,33 @@ gives a batter pos2 = P. This amends the C4 rookie record and the CREATE record 
   line: the high nibble now comes from make() and equals POS2_OF[code].
 - CREATE A PLAYER: build_record (create.py and create.c) writes byte 31 = pos1 | POS2_OF[pos1] << 4 for batters;
   pitchers stay all zero. The form, screens and keys are unchanged.
+
+## C21. CREATE A PLAYER salary and second position (added 2026-10-14)
+
+Finding: CREATE A PLAYER stored constant salaries (109 batters, 255 pitchers) even though
+build_record already fills the stat line the ratings imply, so the game's own salary
+formula (ratings.salary, exact on 1185 of 1188 shipped batters) is computable at create
+time. The edit screen also had no way to set the C20b pos2 nibble: every created batter
+carried the default POS2_OF[pos] with no choice.
+- Rule 1: build_record stores the real salary. After statline.fill(rec), salary =
+  ratings.salary(rec) as u16 at record +25, batters and pitchers both (it replaces
+  gen._write_salary; the wire form is ratings.salary of the finished record).
+- Rule 2: the edit screen, batter and pitcher, draws 'SALARY' at (228, 110) and the value
+  '%d' % salary at (228, 120), C_BLACK on the panel, below the portrait box. The value is
+  derived, not stored: it is ratings.salary of the record build_record would save for the
+  current form (same year byte the save uses) and updates on every key.
+- Rule 3: the batter rows gain ('pos2', 'SECOND POS') right after ('pos', 'POSITION')
+  (batter rows 13 -> 14, pitcher rows unchanged). form['pos2'] defaults to
+  POS2_OF[form['pos']] in blank_form and default_form; LEFT/RIGHT cycles codes 1..15 as
+  (pos2 - 1 + d) % 15 + 1 and shows POS_LABELS[pos2]; a POSITION change resets
+  pos2 = POS2_OF[new pos]; ENTER moves to the next row like other fields. build_record
+  now writes byte 31 = pos | pos2 << 4 from the form for batters (pitchers stay 0),
+  which supersedes the C20b build_record line (the defaults agree with POS2_OF).
+- Rule 4: the batter rows now end at y 173, so the MSG_NAME 'TYPE A LAST NAME FIRST'
+  line moves from y 172 to y 175 on both screens (Python and C). Nothing else moves.
+- C port: statline.h gains sl_salary with sl_salary_batter, sl_salary_pitcher, sl_era100
+  and sl_pitcher_class, a line-by-line port of ratings.py's salary family in long
+  arithmetic with the same & 0xffff masks; create.c gains rules 2 to 4 and uses
+  sl_salary for rules 1 and 2. sl_host gains a 'salary' mode (N x 143 B records in, N x
+  u16 LE salaries out).
+- V20 layout unchanged: salary u16 at +25, byte 31 pos1 low / pos2 high nibble.

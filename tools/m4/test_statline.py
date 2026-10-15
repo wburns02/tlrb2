@@ -273,6 +273,30 @@ def test_host_fill_parity_grid_and_random(tmp_path):
     _assert_same(got, _fill_py(recs), REC, 'fill grid')
 
 
+def test_host_salary_parity_random_and_shipped(tmp_path):
+    """sl_host salary vs ratings.salary: 3000 seeded random 143 B records (byte 104 < 0x10,
+    some pitchers) plus every active record of the shipped fixture when present."""
+    rnd = random.Random(0xc210)
+    recs = []
+    for _ in range(3000):
+        rec = bytearray(rnd.getrandbits(8) for _ in range(REC))
+        rec[104] = rnd.getrandbits(4)
+        if rnd.random() < 0.4:
+            rec[31] = rnd.getrandbits(8) & 0xf0    # pos code 0: the pitcher path
+        recs.append(bytes(rec))
+    if os.path.isdir(PRISTINE):
+        for p in sorted(glob.glob(os.path.join(PRISTINE, '*', '*.V20'))):
+            img = open(p, 'rb').read()
+            for k in range(80):
+                rec = img[sl.HEADER_LEN + REC * k:sl.HEADER_LEN + REC * (k + 1)]
+                if rec[0]:
+                    recs.append(bytes(rec))
+    data = b''.join(recs)
+    got = _run_host('salary', data, str(tmp_path))
+    exp = b''.join(rt.salary(r).to_bytes(2, 'little') for r in recs)
+    _assert_same(got, exp, 2, 'salary')
+
+
 def test_host_repair_parity_synthetic_and_shipped(tmp_path):
     rnd = random.Random(0x4e11)
     imgs = [bytes(_synth_image(rnd)) for _ in range(20)]

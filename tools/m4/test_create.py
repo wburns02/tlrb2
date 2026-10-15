@@ -325,7 +325,7 @@ def test_position_and_hands_wrap(tmp_path):
     assert (st['cursor'], st['form']['pos']) == (2, 1)
     st, _ = walk(ctx, [LEFT], st)
     assert st['form']['pos'] == 9
-    st, _ = walk(ctx, [DOWN, LEFT], st)
+    st, _ = walk(ctx, [DOWN, DOWN, LEFT], st)
     assert st['form']['hands'] == 5
     st, _ = walk(ctx, [RIGHT, RIGHT], st)
     assert st['form']['hands'] == 1
@@ -349,17 +349,17 @@ def test_pitcher_pos_fixed_and_ratings_clamp(tmp_path):
 def test_batter_ratings_age_clamp(tmp_path):
     ctx = ctx_for(make_league(str(tmp_path / 'L')))
     st = to_edit(ctx, 0, 17)                       # empty batter, all ratings 6
-    st, _ = walk(ctx, [DOWN] * 5 + [LEFT] * 10, st)        # POWER row 5
+    st, _ = walk(ctx, [DOWN] * 6 + [LEFT] * 10, st)        # POWER row 6
     assert st['form']['r'][0] == 1
-    st, _ = walk(ctx, [DOWN] + [RIGHT] * 4, st)            # BUNT row 6: 6 -> 10
+    st, _ = walk(ctx, [DOWN] + [RIGHT] * 4, st)            # BUNT row 7: 6 -> 10
     assert st['form']['r'][1] == 10
     st, _ = walk(ctx, [RIGHT] * 5, st)
     assert st['form']['r'][1] == 12
-    st, _ = walk(ctx, [DOWN] * 4, st)                      # ARM row 10
-    assert (st['cursor'], st['form']['r'][5]) == (10, 6)
+    st, _ = walk(ctx, [DOWN] * 4, st)                      # ARM row 11
+    assert (st['cursor'], st['form']['r'][5]) == (11, 6)
     st, _ = walk(ctx, [UP] * 20, st)
     assert st['cursor'] == 0
-    st, _ = walk(ctx, [DOWN] * 4 + [RIGHT] * 40, st)       # AGE row 4
+    st, _ = walk(ctx, [DOWN] * 5 + [RIGHT] * 40, st)       # AGE row 5
     assert st['form']['age'] == 45
     st, _ = walk(ctx, [LEFT] * 40, st)
     assert st['form']['age'] == 18
@@ -426,7 +426,7 @@ def test_done_screen_and_keys(tmp_path):
     lg = make_league(str(tmp_path / 'L'))
     ctx = ctx_for(lg)
     st = to_edit(ctx, 0, 17)                       # empty batter B2
-    st, _ = walk(ctx, typed('Oak') + [DOWN] * 12 + [ENTER], st)
+    st, _ = walk(ctx, typed('Oak') + [DOWN] * 13 + [ENTER], st)
     assert st['screen'] == cr.S_DONE
     title, cols, rows, footer, hl = cr._list_view(st, ctx)
     assert (title, rows, hl) == ('PLAYER SAVED', [('SAVED: OAK',), ('TEAM: BOSTON',),
@@ -469,7 +469,7 @@ def test_save_image_matches_file(tmp_path):
     lg = make_league(str(tmp_path / 'L'))
     ctx = ctx_for(lg)
     st = to_edit(ctx, 0, 16)                       # named batter B1: confirm first
-    st, _ = walk(ctx, typed('Lowe') + [DOWN] * 12 + [ENTER], st)
+    st, _ = walk(ctx, typed('Lowe') + [DOWN] * 13 + [ENTER], st)
     assert st['screen'] == cr.S_CONFIRM
     st, _ = walk(ctx, [ENTER], st)
     assert st['screen'] == cr.S_DONE
@@ -478,7 +478,8 @@ def test_save_image_matches_file(tmp_path):
 
 # ---------------------------------------------------------------- record bytes
 def test_build_record_batter():
-    form = {'last': 'Smith', 'first': 'Al', 'pos': 4, 'hands': 2, 'age': 25,
+    form = {'last': 'Smith', 'first': 'Al', 'pos': 4, 'pos2': rookies.POS2_OF[4],
+            'hands': 2, 'age': 25,
             'r': [7, 8, 9, 10, 11, 12], 'face': 3}
     grp = rookies.default_faces()[1]
     rec = cr.build_record(form, False, 117, grp)
@@ -494,14 +495,14 @@ def test_build_record_batter():
     # the stat line: 500 AB split by bats (switch: 332 per mille left)
     assert struct.unpack('<H', rec[37:39])[0] == 166
     assert struct.unpack('<H', rec[39:41])[0] == 334
-    assert struct.unpack('<H', rec[25:27])[0] == rookies.SALARY_BATTER
+    assert struct.unpack('<H', rec[25:27])[0] == 2070          # C21: ratings.salary
     # the ratings read back from the stat line
     assert (rt.power(rec), rt.hit_and_run(rec), rt.speed(rec)) == (7, 9, 10)
     assert rt.arm(rec) == 12
 
 
 def test_build_record_pitcher():
-    form = {'last': 'Ruiz', 'first': 'Tom', 'pos': 7, 'hands': 4, 'age': 30,
+    form = {'last': 'Ruiz', 'first': 'Tom', 'pos': 7, 'pos2': 0, 'hands': 4, 'age': 30,
             'r': [9, 10, 6, 0, 0, 0], 'face': 0}
     rec = cr.build_record(form, True, 117, rookies.default_faces()[1])
     assert rec[31] == 0 and rec[29] == 0x78          # hands L bats, R throws, pos 0
@@ -511,7 +512,7 @@ def test_build_record_pitcher():
     # IP 185.0 from endurance 6: a starter (33 GS) with 4 complete games
     assert struct.unpack('<H', rec[101:103])[0] == 1850
     assert (rt.control(rec), rt.velocity(rec), rt.endurance(rec)) == (9, 10, 6)
-    assert struct.unpack('<H', rec[25:27])[0] == rookies.SALARY_PITCHER
+    assert struct.unpack('<H', rec[25:27])[0] == 2633          # C21: ratings.salary
     assert rec[30] == 0x02 and rec[21] == 117
 
 
@@ -520,21 +521,21 @@ def test_build_record_hand_combinations():
     want = {0: 0xA, 1: 0x0, 2: 0xC, 3: 0x2, 4: 0x8, 5: 0x4}
     grp = bytes(30)
     for h, lo in want.items():
-        form = {'last': 'A', 'first': '', 'pos': 1, 'hands': h, 'age': 20,
-                'r': [6] * 6, 'face': 0}
+        form = {'last': 'A', 'first': '', 'pos': 1, 'pos2': rookies.POS2_OF[1],
+                'hands': h, 'age': 20, 'r': [6] * 6, 'face': 0}
         assert (cr.build_record(form, False, 1, grp)[29] & 0x0F) == lo, h
         pit = cr.build_record(dict(form, r=[6, 6, 6]), True, 1, grp)
         assert (pit[29] & 0x0F) == lo, h
     flagged = bytes([1] + [0] * 29)
-    form = {'last': 'A', 'first': '', 'pos': 1, 'hands': 0, 'age': 20,
-            'r': [6] * 6, 'face': 0}
+    form = {'last': 'A', 'first': '', 'pos': 1, 'pos2': rookies.POS2_OF[1],
+            'hands': 0, 'age': 20, 'r': [6] * 6, 'face': 0}
     assert cr.build_record(form, False, 1, flagged)[29] & 1 == 1
     assert cr.build_record(form, False, 1, bytes(30))[29] & 1 == 0
 
 
 def test_season_half_zeroes_only_season_bytes():
-    form = {'last': 'Smith', 'first': 'Al', 'pos': 4, 'hands': 0, 'age': 25,
-            'r': [7, 8, 9, 10, 11, 12], 'face': 0}
+    form = {'last': 'Smith', 'first': 'Al', 'pos': 4, 'pos2': rookies.POS2_OF[4],
+            'hands': 0, 'age': 25, 'r': [7, 8, 9, 10, 11, 12], 'face': 0}
     rec = cr.build_record(form, False, 117, rookies.default_faces()[1])
     season = cr.season_half(rec)
     offs = set(statline.SEASON_STAT_BYTES)
@@ -548,23 +549,124 @@ def test_season_half_zeroes_only_season_bytes():
 
 def test_build_record_pos2_by_position():
     """C20b: a saved SS carries byte 31 = 0xB5, a saved LF 0xA6, a saved
-    pitcher 0x00; every batter pos2 = POS2_OF[pos]."""
+    pitcher 0x00; every batter pos2 = POS2_OF[pos] by default (C21: pos2 now comes
+    from the form, whose default is POS2_OF[pos])."""
     grp = bytes(30)
     for pos in range(1, 10):
-        form = {'last': 'A', 'first': '', 'pos': pos, 'hands': 0, 'age': 22,
-                'r': [6] * 6, 'face': 0}
+        form = {'last': 'A', 'first': '', 'pos': pos, 'pos2': rookies.POS2_OF[pos],
+                'hands': 0, 'age': 22, 'r': [6] * 6, 'face': 0}
         rec = cr.build_record(form, False, 1, grp)
         assert rec[31] == ((rookies.POS2_OF[pos] << 4) | pos), pos
     form = dict(form, r=[6, 6, 6])
     rec = cr.build_record(form, True, 1, grp)
     assert rec[31] == 0
     # the pinning cases from the task
-    ss = cr.build_record({'last': 'A', 'first': '', 'pos': 5, 'hands': 0,
-                          'age': 22, 'r': [6] * 6, 'face': 0}, False, 1, grp)
+    ss = cr.build_record({'last': 'A', 'first': '', 'pos': 5, 'pos2': rookies.POS2_OF[5],
+                          'hands': 0, 'age': 22, 'r': [6] * 6, 'face': 0}, False, 1, grp)
     assert ss[31] == 0xB5
-    lf = cr.build_record({'last': 'A', 'first': '', 'pos': 6, 'hands': 0,
-                          'age': 22, 'r': [6] * 6, 'face': 0}, False, 1, grp)
+    lf = cr.build_record({'last': 'A', 'first': '', 'pos': 6, 'pos2': rookies.POS2_OF[6],
+                          'hands': 0, 'age': 22, 'r': [6] * 6, 'face': 0}, False, 1, grp)
     assert lf[31] == 0xA6
+
+
+def test_build_record_salary_pins():
+    """C21: build_record stores ratings.salary of the filled record (SS 6s 1413, all-12s
+    batter 6592, pitcher 12/12/10 3685) and the chosen pos2 nibble."""
+    grp = bytes(30)
+    ss6 = cr.build_record({'last': 'A', 'first': '', 'pos': 5, 'pos2': rookies.POS2_OF[5],
+                           'hands': 0, 'age': 22, 'r': [6] * 6, 'face': 0}, False, 1, grp)
+    assert struct.unpack('<H', ss6[25:27])[0] == 1413
+    big = cr.build_record({'last': 'A', 'first': '', 'pos': 5, 'pos2': rookies.POS2_OF[5],
+                           'hands': 0, 'age': 22, 'r': [12] * 6, 'face': 0}, False, 1, grp)
+    assert struct.unpack('<H', big[25:27])[0] == 6592
+    pit = cr.build_record({'last': 'A', 'first': '', 'pos': 0, 'pos2': 0, 'hands': 0,
+                           'age': 22, 'r': [12, 12, 10, 0, 0, 0], 'face': 0}, True, 1, grp)
+    assert struct.unpack('<H', pit[25:27])[0] == 3685
+    # a chosen pos2 of 11 (IF) on a pos 5 batter goes into the high nibble
+    rec = cr.build_record({'last': 'A', 'first': '', 'pos': 5, 'pos2': 11, 'hands': 0,
+                           'age': 22, 'r': [6] * 6, 'face': 0}, False, 1, grp)
+    assert rec[31] == 0xB5 | (11 << 4) - 0xB0      # 0xB5's pos nibble, hi nibble 11
+
+
+def test_saved_salary_matches_ratings(tmp_path):
+    """A saved SS with every rating 6 stores salary 1413 at +25 in the team V20."""
+    lg = make_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    st = to_edit(ctx, 0, 16)                       # named batter B1, SS
+    st, _ = walk(ctx, typed('Lowe') + [DOWN] * 13 + [ENTER, ENTER], st)
+    assert st['screen'] == cr.S_DONE
+    img = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
+    rec = img[295 + 143 * 16:295 + 143 * 17]
+    assert struct.unpack('<H', rec[25:27])[0] == 1413
+
+
+def _edit_value_by_label(st, ctx, label):
+    fields = cr._edit_fields(st['slot'] < cr.PITCHER_SLOTS)
+    idx = [f for f, _l in fields].index([f for f, l in fields if l == label][0])
+    return cr._edit_value(st, fields[idx][0], ctx, False)
+
+
+def test_second_pos_walk_rules(tmp_path):
+    """The SECOND POS row: defaults to POS2_OF[pos] (OF 10 for LF), LEFT/RIGHT cycles
+    1..15 with POS_LABELS text, ENTER moves to the next row, and changing POSITION
+    resets pos2 to POS2_OF[new pos]."""
+    ctx = ctx_for(make_league(str(tmp_path / 'L')))
+    st = to_edit(ctx, 0, 16)                       # batter B1, occupant SS: pos 5
+    st, _ = walk(ctx, [DOWN, DOWN, DOWN], st)      # row 3: SECOND POS
+    assert (st['cursor'], st['form']['pos2']) == (3, rookies.POS2_OF[5])
+    assert _edit_value_by_label(st, ctx, 'SECOND POS') == cr.POS_LABELS[rookies.POS2_OF[5]]
+    st, _ = walk(ctx, [RIGHT], st)                 # IF (11) -> OI (12)
+    assert st['form']['pos2'] == 12
+    st, _ = walk(ctx, [RIGHT] * 5, st)             # 12 + 5 wraps to 2
+    assert st['form']['pos2'] == 2
+    st, _ = walk(ctx, [LEFT] * 4, st)              # 2 - 4 wraps to 13
+    assert st['form']['pos2'] == 13
+    st, _ = walk(ctx, [LEFT] * 13, st)             # 13 - 13 = 0 wraps to 15
+    assert st['form']['pos2'] == 15
+    st, _ = walk(ctx, [RIGHT], st)                 # 15 + 1 wraps to 1
+    assert st['form']['pos2'] == 1
+    st, _ = walk(ctx, [ENTER], st)                 # ENTER moves to the next row
+    assert st['cursor'] == 4
+    # changing POSITION resets SECOND POS
+    st, _ = walk(ctx, [UP, UP], st)                # row 2: POSITION (5)
+    st, _ = walk(ctx, [RIGHT], st)                 # 5 -> 6 (LF), pos2 resets to 10
+    assert (st['form']['pos'], st['form']['pos2']) == (6, rookies.POS2_OF[6])
+    st, _ = walk(ctx, [DOWN], st)
+    assert st['form']['pos2'] == rookies.POS2_OF[6]
+
+
+def test_position_reset_second_pos_saved_bytes(tmp_path):
+    """C20b/C21 through the state machine: a saved SS carries 0xB5; after RIGHT on
+    POSITION (5 -> 6) a saved LF carries 0xA6; after RIGHT on SECOND POS from IF (11)
+    once the high nibble is 12."""
+    lg = make_league(str(tmp_path / 'L'))
+    ctx = ctx_for(lg)
+    st = to_edit(ctx, 0, 16)                       # B1, SS, confirm first
+    st, _ = walk(ctx, typed('Lowe') + [DOWN] * 13 + [ENTER, ENTER], st)
+    assert st['screen'] == cr.S_DONE
+    rec = open(os.path.join(lg, 'BOS.V20'), 'rb').read()[295 + 143 * 16:295 + 143 * 17]
+    assert rec[31] == 0xB5
+    # RIGHT on POSITION: 5 -> 6 (LF), pos2 resets to OF (10): saves 0xA6
+    lg2 = make_league(str(tmp_path / 'L2'))
+    ctx2 = ctx_for(lg2)
+    st = to_edit(ctx2, 0, 16)
+    st, _ = walk(ctx2, typed('Lowe') + [DOWN, DOWN, RIGHT] + [DOWN] * 11
+                 + [ENTER, ENTER], st)
+    assert st['screen'] == cr.S_DONE
+    rec = open(os.path.join(lg2, 'BOS.V20'), 'rb').read()[295 + 143 * 16:295 + 143 * 17]
+    assert rec[31] == 0xA6
+    # LEFT twice on POSITION: 5 -> 4 -> 3 (2B), pos2 11 (IF); RIGHT on SECOND POS twice
+    # gives 13 (CO): saves 0xD3
+    lg3 = make_league(str(tmp_path / 'L3'))
+    ctx3 = ctx_for(lg3)
+    st = to_edit(ctx3, 0, 16)
+    keys = typed('Lowe') + [DOWN, DOWN, LEFT, LEFT, DOWN] + [RIGHT] * 2
+    keys += [DOWN] * 10
+    st, _ = walk(ctx3, keys + [ENTER, ENTER], st)
+    assert st['screen'] == cr.S_DONE
+    rec = open(os.path.join(lg3, 'BOS.V20'), 'rb').read()[295 + 143 * 16:295 + 143 * 17]
+    assert rec[0:4] == b'LOWE'
+    assert rec[31] == 0xD3                        # pos 2B, pos2 CO (13)
 
 
 def _header_with(path, offs):
@@ -582,7 +684,8 @@ def test_saved_max_ratings_read_back_from_roster(tmp_path):
     lg = make_league(str(tmp_path / 'L'))
     ctx = ctx_for(lg)
     st = to_edit(ctx, 0, 16)                       # named batter B1, SS: confirm first
-    keys = typed('Lowe') + [DOWN] * 5 + ([RIGHT] * 6 + [DOWN]) * 6 + [DOWN, ENTER, ENTER]
+    keys = typed('Lowe') + [DOWN] * 6 + ([RIGHT] * 6 + [DOWN]) * 6 + [DOWN, DOWN] \
+        + [ENTER, ENTER]
     st, _ = walk(ctx, keys, st)
     assert st['screen'] == cr.S_DONE
     img = open(os.path.join(lg, 'BOS.V20'), 'rb').read()
@@ -634,13 +737,13 @@ def test_role_cell_and_reserve_confirm_row(tmp_path):
     assert rows[0] == ('P1', 'Adams, Joe', 'P', '30', '')
     assert rows[1] == ('P2', '(EMPTY)', '', '', '')
     st = to_edit(ctx, 0, 16)
-    st, _ = walk(ctx, typed('Lowe') + [DOWN] * 12 + [ENTER], st)
+    st, _ = walk(ctx, typed('Lowe') + [DOWN] * 13 + [ENTER], st)
     assert st['screen'] == cr.S_CONFIRM
     title, cols, rows, footer, hl = cr._list_view(st, ctx)
     assert len(rows) == 4
     assert rows[3] == ('RESERVE SLOT: ACTIVATE HIM TO PLAY.',)
     st = to_edit(ctx, 0, 0)                        # P1 is not in RES: three rows
-    st, _ = walk(ctx, typed('Lowe') + [DOWN] * 12 + [ENTER], st)
+    st, _ = walk(ctx, typed('Lowe') + [DOWN] * 13 + [ENTER], st)
     assert st['screen'] == cr.S_CONFIRM
     assert len(cr._list_view(st, ctx)[2]) == 3
 
