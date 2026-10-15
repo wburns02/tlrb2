@@ -56,6 +56,8 @@ KEY_UP, KEY_DOWN = 0x4800, 0x5000
 KEY_TAB = 9
 KEY_MINUS, KEY_PLUS, KEY_EQUALS = 45, 43, 61
 KEY_CARD = (67, 99)
+# LEADERS active-only toggle (C54): A / a in CAREER mode
+KEY_ACTIVE = (65, 97)
 # PLAYER CARD view toggle key (C40)
 KEY_VIEW = (72, 104)
 CURSOR_KEYS = (KEY_UP, KEY_DOWN, KEY_PGUP, KEY_PGDN)
@@ -314,6 +316,7 @@ def load_data(league_dir, font_dir=None, game_dir='.', anms_dir='ANMS'):
             'team_stems': settings_team_stems(league_dir),
             'fmt': realign.wanted_for_dir(league_dir),
             'lines': load_lines(league_dir), 'abbrs': team_abbrs(league_dir),
+            'lead_active': False,
             'game_dir': game_dir, 'anms_dir': anms_dir}
 
 
@@ -1111,13 +1114,16 @@ def hof_rows(hist):
     return out
 
 
-def career_order(hist, cat_index):
+def career_order(hist, cat_index, active=False):
     """[(value, entry index, entry)] of the career qualifiers of CATS[cat_index] in leader order
-    (value descending, the ERA ascending; then entry index ascending), at most LIST_MAX."""
+    (value descending, the ERA ascending; then entry index ascending), at most LIST_MAX.
+    active=True keeps only STATUS_ACTIVE entries (C54, filtered before the cut)."""
     cat = CATS[cat_index]
     cands = []
     for i in range(n_entries(hist)):
         e = hist.read_entry(i)
+        if active and e['status'] != history.STATUS_ACTIVE:
+            continue
         if cat_qualifies(e, cat):
             cands.append((cat_value(e, cat), i, e))
     if cat[1] == 'era':
@@ -1127,12 +1133,12 @@ def career_order(hist, cat_index):
     return cands[:LIST_MAX]
 
 
-def career_leader_cells(hist, cat_index):
+def career_leader_cells(hist, cat_index, active=False):
     """Every career leader row (rank counted from the top of the list): rank, NAME, status
-    mark, YRS, value."""
+    mark, YRS, value. active=True ranks within the filtered order (C54)."""
     cat = CATS[cat_index]
     out = []
-    for rank, (val, _i, e) in enumerate(career_order(hist, cat_index)):
+    for rank, (val, _i, e) in enumerate(career_order(hist, cat_index, active)):
         status = e['status']
         if status == history.STATUS_RETIRED:
             mark = 'R'
@@ -2097,7 +2103,12 @@ def leaders_body(state, data):
     hist = data['hist']
     mode, idx = s[2] >> 5, s[2] & 31
     if mode == MODE_CAREER:
-        return COLS_LEADERS, career_leader_cells(hist, idx)
+        # C54: the session-only active-only filter of data['lead_active']
+        active = data.get('lead_active', False)
+        cells = career_leader_cells(hist, idx, active)
+        if active and not cells:
+            return COLS_SINGLE, [('NO ACTIVE QUALIFIERS.',)]
+        return COLS_LEADERS, cells
     if mode == MODE_POST:
         items = post_order(data['box'], POST_CATS[idx])
         if not items:
@@ -2135,7 +2146,7 @@ def row_entry(s, data):
         return order[row][0] if row < len(order) else None
     if s[0] == SCREEN_LEADERS:
         if s[2] >> 5 == MODE_CAREER:
-            cands = career_order(hist, s[2] & 31)
+            cands = career_order(hist, s[2] & 31, data.get('lead_active', False))
             return cands[row][1] if row < len(cands) else None
         if s[2] >> 5 == MODE_POST:
             items = post_order(data['box'], POST_CATS[s[2] & 31])
@@ -2755,6 +2766,10 @@ def step(state, key, data):
         if page > 0:
             page -= 1
         return (screen, page, cat), 0
+    if screen == SCREEN_LEADERS and key in KEY_ACTIVE and cat >> 5 == MODE_CAREER:
+        # C54: the active-only toggle (session only, not in the state); page and row reset
+        data['lead_active'] = not data.get('lead_active', False)
+        return pack(SCREEN_LEADERS, 0, cat, 0, s[4]), 0
     if screen == SCREEN_LEADERS and key in (KEY_LEFT, KEY_RIGHT):
         d = -1 if key == KEY_LEFT else 1
         mode, idx = cat >> 5, cat & 31
@@ -2866,7 +2881,7 @@ COLS_AWHIST = [('YEAR', _cx(0), 4, 'L'), ('NAME', _cx(5), 16, 'L'),
 FOOTERS = {SCREEN_MENU: '0-9 W P F SELECT   ESC EXIT',
            SCREEN_HISTORY: 'PGUP PGDN   ESC MENU',
            SCREEN_HOF: 'PGUP PGDN   ESC MENU',
-           SCREEN_LEADERS: 'LEFT RIGHT STAT  TAB MODE  ENTER CARD',
+           SCREEN_LEADERS: 'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD',
            SCREEN_CARD: 'PGUP PGDN SEASONS  H HONORS  ESC BACK',
            SCREEN_MILESTONES: 'LEFT RIGHT WATCH   PGUP PGDN   ESC MENU',
            SCREEN_REVIEW: 'ENTER MENU   ESC MENU',
@@ -2924,8 +2939,9 @@ def screen_title(state, data):
     if screen == SCREEN_LEADERS:
         mode = cat >> 5
         label = leader_cats(mode)[cat & 31][0]
+        flag = data.get('lead_active', False)
         if mode == MODE_CAREER:
-            return 'CAREER LEADERS: ' + label
+            return ('ACTIVE LEADERS: ' if flag else 'CAREER LEADERS: ') + label
         if mode == MODE_SEASON:
             return 'SEASON LEADERS: ' + label
         if mode == MODE_POST:

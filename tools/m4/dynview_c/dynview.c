@@ -143,6 +143,9 @@
 #define KEY_EQUALS 61
 #define KEY_CARD_CAP 67
 #define KEY_CARD_LOW 99
+/* C54 LEADERS active-only toggle (CAREER mode) */
+#define KEY_ACTIVE_CAP 65
+#define KEY_ACTIVE_LOW 97
 /* START YEAR (C13.1): u16 LE at HISTORY bytes 18..19; 0 or outside START_MIN..START_MAX counts as
  * START_DEFAULT */
 #define HDR_START 18
@@ -432,6 +435,8 @@ static int g_sn;
 static CardLine FARDATA g_card[CARD_MAX];
 static int g_ncard;
 static State g_card_back;       /* the list state the PLAYER CARD was opened from (C13.5) */
+/* C54: the LEADERS CAREER active-only filter, a session value like the card back state */
+static int g_lead_active;
 /* C28: the SEASON AWARDS state AWARD HISTORY was opened from, and whether one was */
 static State g_awh_back;
 static int g_awh_have;
@@ -2272,7 +2277,8 @@ static void hof_scan(List *b)
     }
 }
 
-/* career leaders: value desc (ERA asc), index asc */
+/* career leaders: value desc (ERA asc), index asc; g_lead_active keeps only STATUS_ACTIVE
+ * entries (C54, filtered before the LIST_MAX cut) */
 static void leaders_scan(List *b, int cat)
 {
     uint32_t i;
@@ -2281,6 +2287,8 @@ static void leaders_scan(List *b, int cat)
     b->n = 0;
     for (i = 0; i < n_entries(); i++) {
         read_entry(&e, i);
+        if (g_lead_active && e.status != STATUS_ACTIVE)
+            continue;
         if (cat_qualifies(&e, c)) {
             if (c->kind == CK_ERA)
                 list_add_asc(b, (int32_t)cat_value(&e, c), i);
@@ -4873,6 +4881,15 @@ static State step(State in, int32_t key)
             s.page--;
         return s;
     }
+    /* C54: A or a in CAREER mode flips the session-only active-only filter; page and row
+     * reset, the category and the BY YEAR season stay. Other modes are untouched. */
+    if (s.screen == SCREEN_LEADERS && (key == KEY_ACTIVE_CAP || key == KEY_ACTIVE_LOW)
+        && (s.cat >> 5) == MODE_CAREER) {
+        g_lead_active = !g_lead_active;
+        s.page = 0;
+        s.row = 0;
+        return s;
+    }
     if (s.screen == SCREEN_LEADERS && (key == KEY_LEFT || key == KEY_RIGHT)) {
         /* the category of the mode cycles; BY YEAR keeps its season (C13.3) */
         int d = (key == KEY_LEFT) ? -1 : 1;
@@ -5139,6 +5156,10 @@ static int leaders_body(State st, int page, const ColDef **cols)
     const CatDef *c;
     if (mode == MODE_CAREER) {
         leaders_scan(&g_leadl, idx);
+        if (g_lead_active && g_leadl.n == 0) {
+            *cols = COLS_SINGLE;
+            return msg_row(page, "NO ACTIVE QUALIFIERS.");
+        }
         *cols = COLS_LEADERS;
         if (page >= 0)
             build_lead_rows(idx, page);
@@ -5635,7 +5656,7 @@ static const char *footer_of(State st)
         "0-9 W P F SELECT   ESC EXIT",
         "PGUP PGDN   ESC MENU",
         "PGUP PGDN   ESC MENU",
-        "LEFT RIGHT STAT  TAB MODE  ENTER CARD",
+        "LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD",
         "LEFT RIGHT WATCH   PGUP PGDN   ESC MENU",
         "ENTER MENU   ESC MENU" };
     if (st.screen == SCREEN_FIND)
@@ -5689,7 +5710,7 @@ static void screen_title(State st, char *dst)
         int mode = (int)(st.cat >> 5);
         const char *label = leader_cats(mode)[st.cat & 31].label;
         if (mode == MODE_CAREER) {
-            strcpy(dst, "CAREER LEADERS: ");
+            strcpy(dst, g_lead_active ? "ACTIVE LEADERS: " : "CAREER LEADERS: ");
             strcat(dst, label);
         } else if (mode == MODE_SEASON) {
             strcpy(dst, "SEASON LEADERS: ");

@@ -320,7 +320,7 @@ def test_season_leaders_rows_team_column_and_columns(tmp_path):
         ('#4', 'DELTA, A', '1993', 'BOS', '10')]
     assert dynview.body_cols(hr, data) == dynview.COLS_SEASON_LEADERS
     assert dynview.screen_title(hr, data) == 'SEASON LEADERS: HR'
-    assert dynview.footer_text(hr, data) == 'LEFT RIGHT STAT  TAB MODE  ENTER CARD'
+    assert dynview.footer_text(hr, data) == 'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD'  # C54
     era = (LEAD, 0, SEASON + sidx('ERA'))
     rows = dynview.rows(era, data)
     assert rows[0] == ('#1', 'FOXTROT, A', '1994', '?', '1.33')      # team 9: no abbreviation
@@ -1434,3 +1434,73 @@ def test_awhist_open_from_awards_and_esc_back(tmp_path):
     assert card == (CARD, 0, 3)
     assert press(card, ESC, data2) == ah
     assert dynview.unpack(press(ah, ESC, data2)) == dynview.unpack(sa)
+
+
+# ---------------------------------------------------------------- C54 LEADERS active-only
+def test_c54_active_filter_and_frames_model(tmp_path):
+    """A on CAREER flips the flag, resets page and row and re-ranks; the title, the footers
+    and the empty-active row; A on the other LEADERS modes is a no-op (C54)."""
+    ldir = tmp_path / 'c54'
+    players = [player('ALPHA', totals=tot(H=3000, AB=9000)),
+               player('BRAVO', totals=tot(H=2000, AB=2999)),    # AVG: AB under the line
+               player('CHARLIE', totals=tot(H=2000, AB=3000)),
+               player('DELTA', status=2, totals=tot(H=2000, AB=3000)),
+               player('ECHO', status=3, totals=tot(H=2000, AB=3000)),
+               player('FOXTROT', status=2, totals=tot(H=100))]
+    write_league(ldir, players, seasons=3)
+    data = load(ldir)
+    assert data['lead_active'] is False
+    s = press((LEAD, 1, cidx('H'), 21), ord('A'), data)          # A: flip, page and row reset
+    assert s == (LEAD, 0, cidx('H')) and data['lead_active'] is True
+    assert [i for _v, i, _e in dynview.career_order(data['hist'], cidx('H'), True)] == \
+        [0, 1, 2]                    # DELTA and ECHO are out: H 2000 tie by entry index
+    rows = dynview.rows(s, data)
+    assert rows == [('#1', 'ALPHA, A', ' ', '3', '3000'),
+                    ('#2', 'BRAVO, A', ' ', '3', '2000'),
+                    ('#3', 'CHARLIE, A', ' ', '3', '2000')]
+    assert [r[0] for r in rows] == ['#1', '#2', '#3']            # ranks recount
+    assert dynview.screen_title(s, data) == 'ACTIVE LEADERS: H'
+    assert dynview.footer_text(s, data) == \
+        'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD'
+    assert dynview.career_leader_cells(data['hist'], cidx('H'), True) == rows
+    s = press(s, ord('a'), data)                                 # a back off, same reset
+    assert s == (LEAD, 0, cidx('H')) and data['lead_active'] is False
+    assert dynview.screen_title(s, data) == 'CAREER LEADERS: H'
+    # other modes: no-op with the flag untouched
+    for before in ((LEAD, 1, SEASON + sidx('H'), 9), (LEAD, 1, BY_YEAR + sidx('H'), 9, 2),
+                   (LEAD, 1, 3 * 32, 9)):
+        assert press(before, 65, data) == before
+        assert press(before, 97, data) == before
+    assert data['lead_active'] is False
+    # TAB round trip and the filter again (the state tuple never holds the flag)
+    s = press((LEAD, 0, cidx('SV')), ord('A'), data)
+    assert data['lead_active'] is True
+    for _n in range(4):
+        s = press(s, TAB, data)                                  # SEASON, BY YEAR, POST, CAREER:
+    assert s == (LEAD, 0, cidx('H'))    # SV falls back to the first category (no SEASON SV)
+    assert data['lead_active'] is True
+    assert dynview.screen_title((LEAD, 0, cidx('H')), data) == 'ACTIVE LEADERS: H'
+    # the cursor entry opens the filtered order's entry card, ESC back
+    entry = dynview.row_entry((LEAD, 0, cidx('H')), data)
+    assert entry == 0
+    card = press((LEAD, 0, cidx('H')), ENTER, data)
+    assert card == (CARD, 0, 0) and data['lead_active'] is True
+    assert press(card, ESC, data) == (LEAD, 0, cidx('H'))
+
+
+def test_c54_no_active_qualifiers(tmp_path):
+    """All entries non-active: one message row with COLS_SINGLE; left unfiltered the list
+    shows the retired marks."""
+    ldir = tmp_path / 'c54none'
+    players = [player('ALPHA', status=2, totals=tot(H=3000, AB=9000)),
+               player('BRAVO', status=3, totals=tot(H=2000, AB=3000))]
+    write_league(ldir, players, seasons=3)
+    data = load(ldir)
+    data['lead_active'] = True
+    assert dynview.leaders_body((LEAD, 0, 0), data) == \
+        (dynview.COLS_SINGLE, [('NO ACTIVE QUALIFIERS.',)])
+    assert dynview.total_rows((LEAD, 0, 0), data) == 1
+    assert dynview.career_leader_cells(data['hist'], 0)[0][2] == 'R'
+    # categories other than H: WAR has no qualifier, but the filter empties it too
+    assert dynview.leaders_body((LEAD, 0, cidx('WAR')), data) == \
+        (dynview.COLS_SINGLE, [('NO ACTIVE QUALIFIERS.',)])

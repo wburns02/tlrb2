@@ -1782,3 +1782,43 @@ port dynview_c/dynview.c renders the same framebuffers and walks the same states
   framebuffer parity: the empty-query prompt, a filtered frame with the cursor on
   row 1, the no-match frame, the MENU with the new footer, and a card opened from FIND
   then ESC back).
+
+## C54. DYNVIEW LEADERS active-only toggle (added 2026-10-15)
+
+LEADERS gains a session-only active-only filter for the CAREER mode (A or a; the state
+tuple is unchanged, the filter is not part of it). Reads only; writes nothing. Python
+tools/m4/dynview.py is the reference; the C port dynview_c/dynview.c (static
+g_lead_active, like the other session values) renders the same framebuffers.
+
+- data['lead_active'] (C: static int g_lead_active), default False (load_data sets it
+  False). In CAREER mode (cat >> 5 == MODE_CAREER) A / a (65, 97) flips it and returns
+  (3, 0, cat, 0 [year]) with the same cat and the BY YEAR season: page and row reset to
+  0. In any other LEADERS mode, and on any other screen, A / a does what it did
+  (ENTER walks the offseason, letters type on FIND); the state and the flag are
+  unchanged.
+- career_order(hist, cat_index, active=False) and career_leader_cells(hist, cat_index,
+  active=False) take the filter. With active True only entries with status ==
+  history.STATUS_ACTIVE (1) qualify, filtered before the LIST_MAX cut; the sort order
+  (value descending, ERA ascending, then entry index ascending) is unchanged and the
+  '#n' rank counts within the filtered list. leaders_body and the cursor-entry lookup
+  (row_entry) pass data.get('lead_active', False) in CAREER mode; other modes pass
+  nothing.
+- Titles: CAREER mode shows 'ACTIVE LEADERS: ' + label with the flag, 'CAREER LEADERS: '
+  without. The other modes ignore the flag ('SEASON LEADERS: ', 'POSTSEASON LEADERS: ',
+  the BY YEAR year label). FOOTERS[SCREEN_LEADERS] =
+  'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD' (the BY YEAR footer is unchanged).
+- CAREER with the flag and no qualifier: one row ('NO ACTIVE QUALIFIERS.',) with
+  COLS_SINGLE (the cursor is not drawn there, as on the other message rows). The flag
+  persists across TAB, LEFT/RIGHT, the PLAYER CARD and ESC to MENU for the session; TAB
+  to another mode and back to CAREER shows the filtered list again.
+- C port: dynview.c mirrors the flag in its leaders_scan (the entry pass skips non-active
+  entries), its leaders_body empty branch (the msg_row), its screen_title and footer_of,
+  and the step A/a branch (page and row reset, cat and year kept); the host binary is
+  rebuilt with gcc after the change (C89 only, no new arrays over 2 KB: the flag is one
+  int, the DOS parity tests fail with pixel diffs when the far-data budget is exceeded).
+- Tests: test_dynview.py (model), test_dynview_c13.py (model, the seasonal fixture) and
+  test_dynview_c13_c.py (host framebuffer parity: the CAREER frame with the new footer,
+  the ACTIVE frame, the ACTIVE frame with the cursor on row 1, the empty ACTIVE message
+  frame, a card from the ACTIVE list and ESC back, and A pressed in SEASON mode). The
+  test that pinned the old footer text (the SEASON LEADERS column test of
+  test_dynview_c13.py) pins the new one.

@@ -3939,3 +3939,101 @@ def test_c50_find_list_cap(tmp_path, monkeypatch):
     assert dynview.FIND_LIST == 300 and len(full) > 1
     monkeypatch.setattr(dynview, 'FIND_LIST', 1)
     assert dynview.find_rows(hist, 'SM') == full[:1]
+
+
+def test_c54_a_toggles_only_in_career(tmp_path):
+    """A/a flips data['lead_active'] in CAREER mode and resets page and row; in every other
+    LEADERS mode it is a no-op that leaves the flag untouched."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert data['lead_active'] is False
+    s, _ex = dynview.step((PM, 2, 0, 7), 65, data)                # A on CAREER page 2, row 7
+    assert s == (PM, 0, 0) and data['lead_active'] is True
+    s, _ex = dynview.step(s, 97, data)                            # a flips it back
+    assert s == (PM, 0, 0) and data['lead_active'] is False
+    # SEASON, BY YEAR, POST: the state and the flag are unchanged
+    for cat, year in ((dynview.MODE_SHIFT, 0),
+                      (2 * dynview.MODE_SHIFT, 2),
+                      (3 * dynview.MODE_SHIFT, 0)):
+        before = (PM, 1, cat + 3, 9, year) if year else (PM, 1, cat + 3, 9)
+        s, _ex = dynview.step(before, 65, data)
+        assert s == before and data['lead_active'] is False, cat
+    # other screens: A does what it did (nothing)
+    s, _ex = dynview.step((dynview.SCREEN_HOF, 0, 0), 65, data)
+    assert s == (dynview.SCREEN_HOF, 0, 0) and data['lead_active'] is False
+
+
+def test_c54_order_ranks_title_footer_and_empty(tmp_path):
+    """The active filter keeps only status 1 entries, re-ranks from #1, the title flips both
+    ways, the footer gained A ACTIVE, and every category still counts its ranks within the
+    filtered list."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    s, _ex = dynview.step((PM, 0, 0), 65, data)
+    full = [i for _v, i, _e in dynview.career_order(data['hist'], 0)]
+    active = [i for i in full
+              if data['hist'].read_entry(i)['status'] == history.STATUS_ACTIVE]
+    assert [i for _v, i, _e in dynview.career_order(data['hist'], 0, True)] == active
+    rows = dynview.leaders_body((PM, 0, 0), data)[1]
+    assert [r[0] for r in rows] == ['#%d' % (n + 1) for n in range(len(rows))]
+    assert set(r[2].strip() for r in rows) == {''}               # no R or H marks: all active
+    assert rows[0][1:] == \
+        dynview.leaders_rows(data['hist'], 0)[full.index(active[0])][1:]
+    assert dynview.screen_title(s, data) == 'ACTIVE LEADERS: H'
+    assert dynview.footer_text(s, data) == \
+        'LEFT RIGHT  TAB MODE  A ACTIVE  ENTER CARD'
+    s, _ex = dynview.step(s, 65, data)                            # back off: CAREER again
+    assert data['lead_active'] is False
+    assert dynview.screen_title((PM, 0, 0), data) == 'CAREER LEADERS: H'
+    # MVP AWARDS under the filter: ranks recount within the qualifiers
+    s, _ex = dynview.step((PM, 0, 16), 65, data)
+    mvp = dynview.leaders_body((PM, 0, 16), data)[1]
+    assert [r[0] for r in mvp] == ['#%d' % (n + 1) for n in range(len(mvp))]
+    assert dynview.screen_title((PM, 0, 16), data) == 'ACTIVE LEADERS: MVP AWARDS'
+
+
+def test_c54_message_row_when_none_qualify(tmp_path):
+    """Every entry retired: the ACTIVE H list is one 'NO ACTIVE QUALIFIERS.' row with
+    COLS_SINGLE; the unfiltered list is unchanged."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    hist = data['hist']
+    for i in range(dynview.n_entries(hist)):
+        hist.d[hist.entry_offset(i) + 22] = history.STATUS_RETIRED
+    data['lead_active'] = True
+    assert dynview.leaders_body((PM, 0, 0), data) == \
+        (dynview.COLS_SINGLE, [('NO ACTIVE QUALIFIERS.',)])
+    assert dynview.total_rows((PM, 0, 0), data) == 1
+    unfiltered = dynview.load_data(str(ldir))
+    assert dynview.leaders_body((PM, 0, 0), unfiltered)[1][0][2] == 'R'
+
+
+def test_c54_flag_survives_tab_card_and_menu(tmp_path):
+    """The flag is session state: it survives the TAB round trip, LEFT/RIGHT, the PLAYER
+    CARD walk and ESC to MENU, and the cursor entry under the filter opens that entry's
+    card."""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    s = press((PM, 0, 0), 65, data)                               # A on
+    assert data['lead_active'] is True
+    s = press(s, dynview.KEY_TAB, data)                           # -> SEASON
+    assert data['lead_active'] is True
+    for _n in range(3):                                           # BY YEAR, POST, CAREER
+        s = press(s, dynview.KEY_TAB, data)                       # H keeps its label
+    assert s == (PM, 0, 0) and data['lead_active'] is True
+    assert dynview.screen_title(s, data) == 'ACTIVE LEADERS: H'
+    s = press(s, dynview.KEY_RIGHT, data)                         # category steps, flag stays
+    assert data['lead_active'] is True
+    assert dynview.screen_title(s, data) == 'ACTIVE LEADERS: HR'
+    # the cursor entry under the filter opens that entry's card
+    entry = dynview.row_entry((PM, 0, 0), data)
+    assert entry == [i for _v, i, _e in dynview.career_order(data['hist'], 0, True)][0]
+    card, _ex = dynview.step((PM, 0, 0), dynview.KEY_ENTER, data)
+    assert card == (dynview.SCREEN_CARD, 0, entry)
+    assert data['lead_active'] is True
+    back, _ex = dynview.step(card, dynview.KEY_ESC, data)
+    assert back == (PM, 0, 0) and data['lead_active'] is True
+    menu, _ex = dynview.step(back, dynview.KEY_ESC, data)
+    assert menu == (dynview.SCREEN_MENU, 0, 0) and data['lead_active'] is True
+    # open_card kept the list state like on any other screen
+    assert data.get('card_back') == (PM, 0, 0)
