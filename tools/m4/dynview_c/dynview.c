@@ -80,6 +80,8 @@
 #define SCREEN_SERIES 11
 #define SCREEN_BOX 12
 #define SCREEN_CARD 13
+#define SCREEN_PLAYOFFS 14
+#define SCREEN_PBOX 15
 /* LEADERS modes (C13.3): the state cat is mode * MODE_SHIFT + category index */
 #define MODE_CAREER 0
 #define MODE_SEASON 1
@@ -145,7 +147,7 @@
 #define T_ER 20
 
 /* the hub rows (SCREEN_MENU) and the ABOUT THE MODS rows */
-#define N_MENU_ROWS 11
+#define N_MENU_ROWS 12
 #define N_ABOUT_ROWS 57
 #define N_TITLE_ROWS 11
 
@@ -165,6 +167,11 @@
 /* BOX SCORE (C7 fourth amendment BOXSCORE.DAT): the first BOX_MAX_RECS records of one
  * (season, game), in file order */
 #define BOX_MAX_RECS 112
+/* PLAYOFFS (C23c): the flags-4 round header records of one season, at most 48 kept
+ * (PLAYOFF_HDR_MAX); the round g is 16..63 */
+#define PLAYOFF_HDR_MAX 48
+#define PLAYOFF_G_MIN 16
+#define PLAYOFF_G_MAX 63
 
 /* offseason phases: cat & 15 is the phase, cat >> 4 the launched flag */
 #define OFF_REVIEW 0
@@ -395,11 +402,30 @@ static Row FARDATA g_stnd[STAND_MAX];
 /* WORLD SERIES: the rows of the season (SERIES_MAX at most) */
 static Row FARDATA g_ser[SERIES_MAX];
 
+/* PLAYOFFS (C23c): the rows of one season's rounds (PLAYOFF_ROWS_MAX at most: six
+ * series of a title, 7 games of 3 rows and the summary) */
+#define PLAYOFF_ROWS_MAX 140
+static Row FARDATA g_pser[PLAYOFF_ROWS_MAX];
+
 /* BOX SCORE: the records of the game on the screen (BOX_MAX_RECS at most); the file is
  * read again only for another (season, game): g_box_g -1 is none yet */
 static BoxRec FARDATA g_box[BOX_MAX_RECS];
 static long g_box_season;
 static int g_box_g = -1, g_box_n;
+
+/* PLAYOFFS (C23c): the season's flags-4 round headers, (g, idx, b, i, stats) streamed
+ * from BOXSCORE.DAT like the BOX screen does (never the whole file) */
+typedef struct {
+    uint8_t g, i;
+    uint16_t idx;
+    uint8_t b;
+    uint8_t s[8];
+} PlHdr;
+static PlHdr FARDATA g_pl[PLAYOFF_HDR_MAX];
+/* PLAYOFF BOX: the non-header records of the round game on the screen */
+static BoxRec FARDATA g_pbox[BOX_MAX_RECS];
+static long g_pl_season;
+static int g_pl_n;
 
 /* ROSTERS.TXT draft table (loaded once): the first DRAFT_KEEP valid DRAFT lines.
  * Slot: [0] stem length, [1] name length, then the upper-case stem and the joined
@@ -560,6 +586,13 @@ static int awards_body(State st, int page, const ColDef **cols);
 static int standings_body(State st, int page, const ColDef **cols);
 static int series_body(State st, int page, const ColDef **cols);
 static int box_body(State st, int page, const ColDef **cols);
+static int playoffs_body(State st, int page, const ColDef **cols);
+static int pbox_body(State st, int page, const ColDef **cols);
+static int msg_row(int page, const char *text);
+static Row *box_next(int *ord, int page);
+static void box_set(Row *row, const char *c0, const char *c1, const char *c2,
+                    const char *c3, const char *c4, const char *c5, const char *c6);
+static void box_rec_row(Row *row, const BoxRec *r, int pitch);
 static int leaders_body(State st, int page, const ColDef **cols);
 /* ---- helpers ---- */
 
@@ -2919,7 +2952,269 @@ static int build_series(long season)
     return n;
 }
 
-/* ---------------- row builders ---------------- */
+/* forward declarations: the PLAYOFFS bodies below sit before the ColDef tables */
+static const ColDef COLS_SINGLE[1];
+static const ColDef COLS_SERIES[5];
+static const ColDef COLS_BOX[7];
+/* ---------------- PLAYOFFS (C23c round header records) ---------------- */
+
+/* the season's flags-4 round headers into g_pl (playoff_games), streamed from
+ * BOXSCORE.DAT: at most PLAYOFF_HDR_MAX in g-ascending order (insertion sort on the
+ * stable g order; the file already holds them g-ascending). The read happens once per
+ * season: g_pl_season -1 is none yet. Returns the count. */
+static int playoff_headers(long season)
+{
+    char path[600];
+    FILE *f;
+    uint8_t rb[16];
+    int n = 0;
+    if (season == g_pl_season)
+        return g_pl_n;
+    g_pl_n = 0;
+    g_pl_season = season;
+    path_join(path, g_lgdir, "BOXSCORE.DAT");
+    f = fopen(path, "rb");
+    if (!f)
+        return 0;
+    while (fread(rb, 1, sizeof rb, f) == sizeof rb) {
+        uint16_t season_r = (uint16_t)(rb[0] | ((uint16_t)rb[1] << 8));
+        uint16_t idx = (uint16_t)(rb[4] | ((uint16_t)rb[5] << 8));
+        uint8_t g = rb[2], j, k;
+        if (season_r != season || rb[3] != 4 || g < PLAYOFF_G_MIN)
+            continue;
+        if (n == PLAYOFF_HDR_MAX)
+            break;
+        /* insertion sort by g (equal g keeps the first file order) */
+        for (j = n; j > 0 && g_pl[j - 1].g > g; j--)
+            g_pl[j] = g_pl[j - 1];
+        g_pl[j].g = g;
+        g_pl[j].i = rb[7];
+        g_pl[j].idx = idx;
+        g_pl[j].b = rb[6];
+        for (k = 0; k < 8; k++)
+            g_pl[j].s[k] = rb[8 + k];
+        n++;
+    }
+    if (ferror(f))
+        n = 0;
+    fclose(f);
+    g_pl_n = n;
+    return g_pl_n;
+}
+
+/* the one message row of PLAYOFFS */
+static int playoff_message(void)
+{
+    strcpy(g_pser[0].cells[0], "NO PLAYOFF ROUNDS RECORDED");
+    g_pser[0].ncells = 1;
+    return 1;
+}
+
+/* ser_put / ser_team into the PLAYOFFS row buffer g_pser (g_ser is the WS rows') */
+static void ser_pser_put(int k, const char *c0, const char *c1, const char *c2,
+                         const char *c3, const char *c4)
+{
+    strcpy(g_pser[k].cells[0], c0);
+    strcpy(g_pser[k].cells[1], c1);
+    strcpy(g_pser[k].cells[2], c2);
+    strcpy(g_pser[k].cells[3], c3);
+    strcpy(g_pser[k].cells[4], c4);
+    g_pser[k].ncells = 5;
+}
+
+/* the visitor or home row of a round game into g_pser[k] */
+static void ser_team_pser(int k, int t, int r, int hits, int errs, int won)
+{
+    char nm[SLEN], rs[SLEN], hs[SLEN], es[SLEN];
+    stand_name(t, nm);
+    sprintf(rs, "%d", r);
+    sprintf(hs, "%d", hits);
+    sprintf(es, "%d", errs);
+    ser_pser_put(k, nm, rs, hs, es, won ? "W" : "");
+}
+
+/* the g_pser cells of the PLAYOFFS rows of season (dynview.playoff_rows): per series
+ * (consecutive headers with the same b) the title row, then per game the three rows
+ * series_rows makes for a WS game, then the summary (WINS 3+ in a division series,
+ * 4 in a championship series). Past the history table or with no game, one message
+ * row. Returns the row count into g_ser. */
+static int build_playoffs(long season)
+{
+    int n = 0, k = 0, count;
+    char tmp[SLEN], aux[SLEN];
+    if (season > SEASON_COUNT)
+        return playoff_message();
+    count = playoff_headers(season);
+    if (count == 0)
+        return playoff_message();
+    while (k < count) {
+        uint8_t b = g_pl[k].b;
+        int rnd = b & 3, L = (b >> 2) & 1;
+        int wins[2] = { 0, 0 };
+        int v1, h1, last = k;
+        while (last < count && g_pl[last].b == b)
+            last++;
+        strcpy(tmp, L ? "NL " : "AL ");
+        strcat(tmp, rnd == 2 ? "CHAMPIONSHIP SERIES" : "DIVISION SERIES");
+        ser_pser_put(n++, tmp, "", "", "", "");
+        v1 = g_pl[k].idx >> 8;
+        h1 = g_pl[k].idx & 255;
+        while (k < last) {
+            int v = g_pl[k].idx >> 8, h = g_pl[k].idx & 255;
+            int vr = g_pl[k].s[0], hr = g_pl[k].s[1];
+            sprintf(tmp, "GAME %d", g_pl[k].i);
+            ser_pser_put(n++, tmp, "", "", "", "");
+            ser_team_pser(n++, v, vr, g_pl[k].s[2], g_pl[k].s[4], vr > hr);
+            ser_team_pser(n++, h, hr, g_pl[k].s[3], g_pl[k].s[5], hr > vr);
+            if (vr != hr) {
+                if ((vr > hr ? v : h) == v1)
+                    wins[0]++;
+                if ((vr > hr ? v : h) == h1)
+                    wins[1]++;
+            }
+            k++;
+        }
+        if (wins[0] == wins[1]) {
+            sprintf(tmp, "TIED %d-%d", wins[0], wins[1]);
+            ser_pser_put(n++, "SERIES", "", "", "", tmp);
+        } else {
+            int lead = wins[0] > wins[1] ? v1 : h1;
+            int a = wins[0] > wins[1] ? wins[0] : wins[1];
+            int b2 = wins[0] > wins[1] ? wins[1] : wins[0];
+            stand_name(lead, tmp);
+            sprintf(aux, "%s %d-%d", a >= (rnd == 1 ? 3 : 4) ? "WINS" : "LEADS",
+                    a, b2);
+            ser_pser_put(n++, tmp, "", "", "", aux);
+        }
+    }
+    return n;
+}
+
+/* the flags-4 header record of round game g of season into *out; 1 when there is one
+ * (dynview.pbox_rows' header lookup) */
+static int playoff_header_of(long season, int g, PlHdr *out)
+{
+    int i, count = playoff_headers(season);
+    for (i = 0; i < count; i++) {
+        if (g_pl[i].g == g) {
+            *out = g_pl[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* PLAYOFF BOX rows of round game g of season into g_box (dynview.pbox_rows): the box_rows
+ * layout from the (season, g) records that are not the flags-4 header, the two teams from
+ * the header's idx; one message row without a header or without any other record. The
+ * records stream the way box_body streams them (g_box_season / g_box_g cache). */
+static int build_pbox(long season, int g, int page)
+{
+    static PlHdr hd;
+    int n, ord = 0, t, k, nrec = 0, gmode;
+    uint16_t v, h;
+    Row *row;
+    gmode = g_hdr_seasons != 0 && season >= 1 && season <= SEASON_COUNT
+            && playoff_header_of(season, g, &hd);
+    if (!gmode)
+        return msg_row(0, "NO BOX SCORE RECORDED");
+    /* stream the records of (season, g) that are not the header, first BOX_MAX_RECS */
+    {
+        char path[600];
+        FILE *f;
+        uint8_t rb[16];
+        path_join(path, g_lgdir, "BOXSCORE.DAT");
+        f = fopen(path, "rb");
+        if (!f)
+            return msg_row(0, "NO BOX SCORE RECORDED");
+        while (fread(rb, 1, sizeof rb, f) == sizeof rb) {
+            BoxRec rec;
+            rec.season = (uint16_t)(rb[0] | ((uint16_t)rb[1] << 8));
+            rec.g = rb[2];
+            rec.flags = rb[3];
+            rec.idx = (uint16_t)(rb[4] | ((uint16_t)rb[5] << 8));
+            rec.b = rb[6];
+            rec.i = rb[7];
+            memcpy(rec.s, rb + 8, 8);
+            if (rec.season != season || rec.g != g || rec.flags == 4)
+                continue;
+            if (nrec == BOX_MAX_RECS)
+                break;
+            g_pbox[nrec++] = rec;
+        }
+        fclose(f);
+    }
+    if (nrec == 0)
+        return msg_row(0, "NO BOX SCORE RECORDED");
+    n = nrec;
+    v = hd.idx >> 8;
+    h = hd.idx & 255;
+    for (t = 0; t < 2; t++) {
+        uint16_t tid = t == 0 ? v : h;
+        int pitch;
+        row = box_next(&ord, page);
+        if (row) {
+            char nm[SLEN];
+            stand_name_plain(tid, nm);
+            box_set(row, nm, "AB", "R", "H", "RBI", "BB", "SO");
+        }
+        for (pitch = 0; pitch < 2; pitch++) {
+            if (pitch) {
+                row = box_next(&ord, page);
+                if (row)
+                    box_set(row, "PITCHING", "IP", "H", "R", "ER", "BB", "SO");
+            }
+            for (k = 0; k < n; k++) {
+                const BoxRec *r = &g_pbox[k];
+                if ((r->flags & 1) != t || ((r->flags >> 1) & 1) != pitch)
+                    continue;
+                row = box_next(&ord, page);
+                if (row)
+                    box_rec_row(row, r, pitch);
+            }
+        }
+    }
+    return ord;
+}
+
+/* the PLAYOFFS rows of the season build_playoffs into g_ser; the page rows of them into
+ * g_rows (dynview.playoffs_body / pbox_body shape: page < 0 counts only) */
+static int playoffs_body(State st, int page, const ColDef **cols)
+{
+    int n, k, r;
+    *cols = COLS_SERIES;
+    if (g_hdr_seasons == 0) {
+        *cols = COLS_SINGLE;
+        return 0;
+    }
+    n = build_playoffs((long)g_hdr_seasons - st.cat);
+    if (n == 1 && g_pser[0].ncells == 1)
+        *cols = COLS_SINGLE;
+    if (page >= 0) {
+        for (k = 0, r = page * ROWS_PER_PAGE; r < n && k < ROWS_PER_PAGE; r++, k++)
+            g_rows[k] = g_pser[r];
+    }
+    return n;
+}
+
+/* the PLAYOFF BOX page: round game (st.cat & 63) + 16 of the season st.cat >> 6 seasons
+ * back from the newest; *cols is COLS_SINGLE for the message row, else COLS_BOX */
+static int pbox_body(State st, int page, const ColDef **cols)
+{
+    int g = (int)(st.cat & 63) + PLAYOFF_G_MIN, n;
+    long season = (long)g_hdr_seasons - (st.cat >> 6);
+    *cols = COLS_BOX;
+    if (g_hdr_seasons == 0) {
+        *cols = COLS_SINGLE;
+        return 0;
+    }
+    n = build_pbox(season, g, page);
+    if (n == 1) {
+        *cols = COLS_SINGLE;
+        return msg_row(page, "NO BOX SCORE RECORDED");
+    }
+    return n;
+}
 
 /* history rows: YEAR, CHAMPION, RUNNER-UP, AL MVP, NL MVP */
 static int build_hist_rows(int page)
@@ -3115,13 +3410,12 @@ done:
     return n;
 }
 
-/* the hub rows (dynview.MENU_ROWS) */
 /* the hub rows (dynview.MENU_ROWS): the key of row k is its first char */
 static const char *MENU_ITEMS[N_MENU_ROWS] = {
     "1  SEASON HISTORY", "2  HALL OF FAME", "3  LEADERS",
     "4  MILESTONES", "5  LAST SEASON REVIEW", "6  OFFSEASON",
     "7  DYNASTY SETTINGS", "8  ABOUT THE MODS", "9  SEASON AWARDS",
-    "0  SEASON STANDINGS", "W  WORLD SERIES" };
+    "0  SEASON STANDINGS", "W  WORLD SERIES", "P  PLAYOFFS" };
 
 static void build_menu_rows(void)
 {
@@ -3351,6 +3645,10 @@ static int total_rows(State st)
         return series_body(st, -1, &cols);
     case SCREEN_BOX:
         return box_body(st, -1, &cols);
+    case SCREEN_PLAYOFFS:
+        return playoffs_body(st, -1, &cols);
+    case SCREEN_PBOX:
+        return pbox_body(st, -1, &cols);
     case SCREEN_SETTINGS:
         return SET_TEAM0 + g_nteams;
     case SCREEN_ABOUT:
@@ -3407,6 +3705,10 @@ static int refresh_rows(State st, const ColDef **cols)
         return page_rows(series_body(st, st.page, cols), st.page);
     case SCREEN_BOX:
         return page_rows(box_body(st, st.page, cols), st.page);
+    case SCREEN_PLAYOFFS:
+        return page_rows(playoffs_body(st, st.page, cols), st.page);
+    case SCREEN_PBOX:
+        return page_rows(pbox_body(st, st.page, cols), st.page);
     default:
         return build_review_rows();
     }
@@ -3532,7 +3834,7 @@ static State cursor_to(State st, int32_t row)
 static int season_screen(int screen)
 {
     return screen == SCREEN_AWARDS || screen == SCREEN_STANDINGS
-           || screen == SCREEN_SERIES;
+           || screen == SCREEN_SERIES || screen == SCREEN_PLAYOFFS;
 }
 
 /* step: ESC exits from MENU, otherwise goes back to MENU; PGUP/PGDN page by
@@ -3549,6 +3851,13 @@ static State step(State in, int32_t key)
             s.screen = SCREEN_SERIES;
             s.page = 0;
             s.cat = (int16_t)(s.cat >> 3);
+            return s;
+        }
+        if (s.screen == SCREEN_PBOX) {
+            /* the round box goes back to its season's PLAYOFFS, not the hub */
+            s.screen = SCREEN_PLAYOFFS;
+            s.page = 0;
+            s.cat = (int16_t)(s.cat >> 6);
             return s;
         }
         /* the PLAYER CARD goes back to the list state it was opened from (C13.5) */
@@ -3570,6 +3879,11 @@ static State step(State in, int32_t key)
         } else if (key == 87 || key == 119) {
             /* W or w: WORLD SERIES */
             s.screen = SCREEN_SERIES;
+            s.page = 0;
+            s.cat = 0;
+        } else if (key == 80 || key == 112) {
+            /* P or p: PLAYOFFS */
+            s.screen = SCREEN_PLAYOFFS;
             s.page = 0;
             s.cat = 0;
         } else if (key == KEY_ENTER && (s.cat >> 4)) {
@@ -3700,9 +4014,79 @@ static State step(State in, int32_t key)
         if (to >= 0) {
             s.cat = (int16_t)((s.cat >> 3) * 8 + to);
             s.page = 0;
+            return s;
+        }
+        /* LEFT on the season's first WS game with a record, when the season has round
+         * games: the last round game's PLAYOFF BOX (dynview.step's BOX LEFT rule) */
+        if (key == KEY_LEFT && season >= 1 && season <= SEASON_COUNT) {
+            int first = -1, count, lastp;
+            for (k = 0; k < SERIES_GAMES && first < 0; k++)
+                if (ws_game(season, k))
+                    first = k;
+            if (first >= 0 && g == first && (count = playoff_headers(season)) > 0
+                && (lastp = g_pl[count - 1].g) >= PLAYOFF_G_MIN) {
+                return mk_state(SCREEN_PBOX, 0,
+                                (int32_t)((s.cat >> 3) * 64 + lastp - PLAYOFF_G_MIN));
+            }
         }
         return s;
     }
+
+    if (s.screen == SCREEN_PBOX && (key == KEY_LEFT || key == KEY_RIGHT)) {
+        /* to the previous (LEFT) or next (RIGHT) round game of the season (by g); RIGHT
+         * past the last opens the first WORLD SERIES box of the season that has one */
+        long season = (long)g_hdr_seasons - (s.cat >> 6);
+        int g = (int)(s.cat & 63) + PLAYOFF_G_MIN, k, to = -1;
+        if (season >= 1 && season <= SEASON_COUNT) {
+            PlHdr hd;
+            if (key == KEY_LEFT) {
+                for (k = g - 1; k >= PLAYOFF_G_MIN && to < 0; k--)
+                    if (playoff_header_of(season, k, &hd))
+                        to = k;
+            } else {
+                for (k = g + 1; k <= PLAYOFF_G_MAX && to < 0; k++)
+                    if (playoff_header_of(season, k, &hd))
+                        to = k;
+                if (to < 0) {
+                    for (k = 0; k < SERIES_GAMES; k++)
+                        if (ws_game(season, k))
+                            return mk_state(SCREEN_BOX, 0,
+                                            (int32_t)((s.cat >> 6) * 8 + k));
+                }
+            }
+        }
+        if (to >= PLAYOFF_G_MIN)
+            return mk_state(SCREEN_PBOX, 0, (int32_t)((s.cat >> 6) * 64 + to - PLAYOFF_G_MIN));
+        return s;
+    }
+    if (s.screen == SCREEN_PLAYOFFS && key == KEY_ENTER) {
+        /* the box of the first game whose GAME row is on the page (the season's first
+         * round game when none is), when the season has one. The GAME rows come in the
+         * games' order, so the nth GAME row of the season is the nth playoff game. */
+        long season = (long)g_hdr_seasons - s.cat;
+        int count, before = 0, i, n = 0, to = -1;
+        const ColDef *cols;
+        if (season >= 1 && season <= SEASON_COUNT
+            && playoff_headers(season) > 0
+            && (count = playoffs_body(s, -1, &cols)) > 0) {
+            n = count;
+            for (i = 0; i < s.page * ROWS_PER_PAGE && i < n; i++)
+                if (strncmp(g_pser[i].cells[0], "GAME ", 5) == 0)
+                    before++;
+            for (i = s.page * ROWS_PER_PAGE;
+                 i < n && i < s.page * ROWS_PER_PAGE + ROWS_PER_PAGE; i++)
+                if (strncmp(g_pser[i].cells[0], "GAME ", 5) == 0) {
+                    to = before;            /* the nth GAME row, the nth game */
+                    break;
+                }
+            if (to < 0 || to >= g_pl_n)
+                to = 0;                     /* no GAME row on the page: the first game */
+            return mk_state(SCREEN_PBOX, 0,
+                            (int32_t)(s.cat * 64 + g_pl[to].g - PLAYOFF_G_MIN));
+        }
+        return s;
+    }
+
     if (key == KEY_PGDN) {
         int n = total_rows(s);
         if (s.page * ROWS_PER_PAGE + ROWS_PER_PAGE < n)
@@ -3917,6 +4301,9 @@ static const ColDef *body_cols(State st)
         return COLS_SERIES;
     case SCREEN_BOX:
         return COLS_BOX;
+    case SCREEN_PLAYOFFS:
+    case SCREEN_PBOX:
+        return COLS_SERIES;
     default:
         return COLS_SINGLE;
     }
@@ -4252,6 +4639,10 @@ static const char *footer_of(State st)
         return "1-7 BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC";
     if (st.screen == SCREEN_BOX)
         return "LEFT RIGHT GAME   PGUP PGDN   ESC SERIES";
+    if (st.screen == SCREEN_PLAYOFFS)
+        return "ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC";
+    if (st.screen == SCREEN_PBOX)
+        return "LEFT RIGHT GAME   PGUP PGDN   ESC PLAYOFFS";
     if (st.screen == SCREEN_OFFSEASON) {
         if ((st.cat & 15) < OFF_READY)
             return "ENTER NEXT   PGUP PGDN   ESC MENU";
@@ -4319,6 +4710,32 @@ static void screen_title(State st, char *dst)
                     (long)year_of((int32_t)g_hdr_seasons - (st.cat >> 3)), (st.cat & 7) + 1);
         else
             strcpy(dst, "WS BOX SCORE");
+    }
+    else if (st.screen == SCREEN_PLAYOFFS) {
+        if (g_hdr_seasons)
+            sprintf(dst, "%ld PLAYOFFS", (long)year_of((int32_t)g_hdr_seasons - st.cat));
+        else
+            strcpy(dst, "PLAYOFFS");
+    }
+    else if (st.screen == SCREEN_PBOX) {
+        /* '%d %s %s GAME %d' of the round game's header; PLAYOFF BOX SCORE without a
+         * season or without the header */
+        if (g_hdr_seasons) {
+            PlHdr hd;
+            long season = (long)g_hdr_seasons - (st.cat >> 6);
+            int g = (int)(st.cat & 63) + PLAYOFF_G_MIN;
+            if (season >= 1 && season <= SEASON_COUNT
+                && playoff_header_of(season, g, &hd)) {
+                int rnd = hd.b & 3, L = (hd.b >> 2) & 1;
+                sprintf(dst, "%ld %s %s GAME %d",
+                        (long)year_of((int32_t)season), L ? "NL" : "AL",
+                        rnd == 2 ? "LCS" : "DS", hd.i);
+            } else {
+                strcpy(dst, "PLAYOFF BOX SCORE");
+            }
+        } else {
+            strcpy(dst, "PLAYOFF BOX SCORE");
+        }
     }
     else if (st.screen == SCREEN_OFFSEASON) {
         int phase = st.cat & 15;
@@ -4833,7 +5250,7 @@ static int band_row(int y)
 static int left_right_screen(int screen)
 {
     return screen == SCREEN_LEADERS || screen == SCREEN_AWARDS || screen == SCREEN_STANDINGS
-           || screen == SCREEN_SERIES || screen == SCREEN_BOX;
+           || screen == SCREEN_SERIES || screen == SCREEN_BOX || screen == SCREEN_PLAYOFFS;
 }
 
 /* the key of a left click at (x, y) (dynview.click_to_key, C13.6), in order: a hub row band is that

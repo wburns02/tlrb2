@@ -792,7 +792,7 @@ def test_offseason_titles_footers_and_menu(tmp_path):
     assert dynview.footer_text((dynview.SCREEN_REVIEW, 0, 0)) == 'ENTER MENU   ESC MENU'
     # the menu's sixth row and key 6; key 7 opens DYNASTY SETTINGS, 9 SEASON AWARDS
     assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data)[5] == ('6  OFFSEASON',)
-    assert dynview.total_rows((dynview.SCREEN_MENU, 0, 0), data) == 11
+    assert dynview.total_rows((dynview.SCREEN_MENU, 0, 0), data) == 12
     s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('6'), data)
     assert s == (SO, 0, 0) and ex == 0
     s, ex = dynview.step((dynview.SCREEN_MENU, 0, 0), ord('9'), data)
@@ -1141,8 +1141,8 @@ def test_hub_rows_with_and_without_history(tmp_path):
     assert dynview.rows(HUB, data) == [(t,) for t in dynview.MENU_ROWS]
     assert dynview.MENU_ROWS[6:] == ['7  DYNASTY SETTINGS', '8  ABOUT THE MODS',
                                      '9  SEASON AWARDS', '0  SEASON STANDINGS',
-                                     'W  WORLD SERIES']
-    assert dynview.total_rows(HUB, data) == 11
+                                     'W  WORLD SERIES', 'P  PLAYOFFS']
+    assert dynview.total_rows(HUB, data) == 12
     empty = tmp_path / 'empty'
     empty.mkdir()
     data = dynview.load_data(str(empty))
@@ -2082,7 +2082,7 @@ def test_standings_hub_key_and_footers(tmp_path):
     data = dynview.load_data(str(ldir))
     assert dynview.MENU_ROWS[9] == '0  SEASON STANDINGS'
     assert dynview.rows(HUB, data)[9] == ('0  SEASON STANDINGS',)
-    assert dynview.total_rows(HUB, data) == 11
+    assert dynview.total_rows(HUB, data) == 12
     assert dynview.step(HUB, ord('0'), data) == ((SS, 0, 0), 0)
     # from the /TITLE menu too; ESC goes back to the plain hub
     T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
@@ -2358,7 +2358,7 @@ def test_series_hub_key_and_footers(tmp_path):
     data = dynview.load_data(str(ldir))
     assert dynview.MENU_ROWS[10] == 'W  WORLD SERIES'
     assert dynview.rows(HUB, data)[10] == ('W  WORLD SERIES',)
-    assert dynview.total_rows(HUB, data) == 11
+    assert dynview.total_rows(HUB, data) == 12
     # W and w open WORLD SERIES from the hub and from the /TITLE menu
     T = (dynview.SCREEN_MENU, 0, dynview.TITLE_FLAG)
     for key in (ord('W'), ord('w')):
@@ -3238,3 +3238,264 @@ def test_releases_total_rows_capped(tmp_path, monkeypatch):
     assert rows[29] == ('SEATTLE', 'Player29', 'FREE AGENT')
     assert rows[30] == ('NEW YORK N', 'Gone00', 'RELEASED')
     assert rows[-1] == ('NEW YORK N', 'Gone14', 'RELEASED')
+
+
+# ---------------------------------------------------------------- C23c PLAYOFFS and round box scores
+SP = dynview.SCREEN_PLAYOFFS
+SPB = dynview.SCREEN_PBOX
+PLAYOFFS_FOOTER = 'ENTER BOX  LEFT RIGHT SEASON  PGUP PGDN  ESC'
+PBOX_FOOTER = 'LEFT RIGHT GAME   PGUP PGDN   ESC PLAYOFFS'
+
+
+def round_hdr(season, g, v, h, rnd, L, k, vr, hr, vhi, hhi, ve, he, s=0):
+    """one flags-4 round header record: idx = visitor * 256 + home, b = rnd + 4 L + 8 s
+    (s the series number within (rnd, L)), i = the 1-based game number k,
+    stats = (vR, hR, vH, hH, vE, hE, 0, 0)."""
+    return box_rec(season, g, 4, v * 256 + h, (vr, hr, vhi, hhi, ve, he, 0, 0),
+                   b=rnd + 4 * L + 8 * s, i=k)
+
+
+def playoff_recs():
+    """BOXSCORE.DAT records of season 3, header g ascending: AL DS series 0 (ids 0/16,
+    games 1..3 at g 16..18, BOS LEADS 2-1), AL DS series 1 (ids 8/9, 4 games
+    at g 19..22, MIL WINS 3-1), AL LCS (ids 0/8, 4 games, BOS WINS 4-0), NL LCS (ids
+    16/24, 3 games, COL LEADS 3-0); every game one header then one batting and one pitching
+    row per side (entry 0xffff rows, '?' on the box)."""
+    recs = []
+    for k, g in enumerate((16, 17, 18)):
+        vr, hr = ((5, 3), (2, 6), (4, 2))[k]
+        recs.append(round_hdr(3, g, 0, 16, 1, 0, k + 1, vr, hr, 9, 7, 1, 0))
+    for k, g in enumerate((19, 20, 21, 22)):
+        vr, hr = ((7, 1), (2, 5), (9, 3), (5, 4))[k]
+        recs.append(round_hdr(3, g, 8, 9, 1, 0, k + 1, vr, hr, 6, 5, 2, 1, s=1))
+    for k, g in enumerate((23, 24, 25, 26)):
+        recs.append(round_hdr(3, g, 0, 8, 2, 0, k + 1, 7, 1, 11, 4, 0, 1))
+    for k, g in enumerate((27, 28, 29)):
+        vr, hr = ((2, 5), (1, 7), (4, 9))[k]
+        recs.append(round_hdr(3, g, 16, 24, 2, 1, k + 1, vr, hr, 6, 8, 1, 0))
+    for g in range(16, 30):
+        recs.append(box_rec(3, g, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)))
+        recs.append(box_rec(3, g, 2, 0xffff, (80, 5, 2, 2, 1, 1, 8, 30)))
+    return recs
+
+
+def game_side_rows(vr, hr, vhi, hhi, ve, he):
+    """the visitor and home cells (R, H, E and the W mark) of one round game's rows."""
+    return [('BOSTON', '%d' % vr, '%d' % vhi, '%d' % ve, 'W' if vr > hr else ''),
+            ('ATLANTA', '%d' % hr, '%d' % hhi, '%d' % he, 'W' if hr > vr else '')]
+
+
+def make_playoffs(tmp_path):
+    """make_series league (team names, the 2 WS games of game_ms(3, (0, 1))) whose
+    BOXSCORE.DAT holds playoff_recs() plus BOX_G0 (game 1) and two rows for WS game 2."""
+    ldir = make_series(tmp_path, game_ms(3, (0, 1)))
+    recs = playoff_recs() + BOX_G0 + \
+        [box_rec(3, 1, 0, 0xffff, (4, 1, 2, 1, 0, 0, 1, 0)),
+         box_rec(3, 1, 2, 0xffff, (80, 5, 2, 2, 1, 1, 8, 30))]
+    write_box(ldir, recs)
+    return ldir
+
+
+def playoffs_all_rows(state, data):
+    """every row of the paged PLAYOFFS screen state's season"""
+    n = dynview.total_rows(state, data)
+    return [r for p in range((n + 11) // 12) for r in dynview.rows((SP, p, state[2]), data)]
+
+
+def test_playoff_rows_titles_games_and_summaries(tmp_path):
+    """PLAYOFFS rows of a full season: per series the league and round title, the GAME k
+    rows (R, H, E, W on the side with more runs), then the summary of the first game's
+    two teams with the DS threshold 3 and the LCS threshold 4."""
+    ldir = make_playoffs(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.playoffs_body((SP, 0, 0), data)[0] == dynview.COLS_SERIES
+    assert dynview.playoffs_body((SP, 0, 0), data)[1] == playoffs_all_rows((SP, 0, 0), data)
+    # a title row keeps its full text (CELL_CUT covers it: 18 chars fit)
+
+    rows = playoffs_all_rows((SP, 0, 0), data)
+    assert len(rows) == 50 == dynview.total_rows((SP, 0, 0), data)
+    # series 0: the title, three games, the 2-1 lead below the DS threshold
+    assert rows[0] == ('AL DIVISION SERIES', '', '', '', '')
+    assert rows[1] == ('GAME 1', '', '', '', '')
+    assert rows[2:4] == game_side_rows(5, 3, 9, 7, 1, 0)
+    assert rows[10] == ('BOSTON', '', '', '', 'LEADS 2-1')
+    # series 1: 3-1 in a division series reaches the threshold (WINS, not LEADS)
+    assert rows[11][0] == 'AL DIVISION SERIES'
+    assert rows[24] == ('MILWAUKEE', '', '', '', 'WINS 3-1')
+    # AL LCS: 4-0, threshold 4
+    assert rows[25][0] == 'AL CHAMPIONSHIP SERIES'
+    assert rows[38] == ('BOSTON', '', '', '', 'WINS 4-0')
+    # NL LCS: 3-0 in a championship series stays a LEADS (threshold 4)
+    assert rows[39][0] == 'NL CHAMPIONSHIP SERIES'
+    assert rows[49] == ('COLORADO', '', '', '', 'LEADS 3-0')
+    # a game's rows carry R, H and E; the W mark follows the runs
+    assert rows[1] == ('GAME 1', '', '', '', '')
+    assert rows[2] == ('BOSTON', '5', '9', '1', 'W')
+    assert rows[3] == ('ATLANTA', '3', '7', '0', '')
+    # the columns fit; the draw cuts every cell to its column (cell[:w] in render, so an
+    # 18 char title renders as 17), and the model rows hold the full text
+    for row in dynview.rows((SP, 0, 0), data):
+        if not row[0].endswith('SERIES'):
+            for cell, (_h, _x, w, _a) in zip(row, dynview.COLS_SERIES):
+                assert len(cell) <= w, cell
+
+
+def test_playoffs_managed_star(tmp_path):
+    """C18: the managed star rides on the round rows' TEAM cells and the summary, never
+    on a GAME or title row."""
+    ldir = make_playoffs(tmp_path)
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    d[12] = 1                                     # id 0 (BOSTON) managed
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    rows = playoffs_all_rows((SP, 0, 0), data)
+    assert rows[0] == ('AL DIVISION SERIES', '', '', '', '')
+    assert rows[1] == ('GAME 1', '', '', '', '')
+    assert rows[2] == ('*BOSTON', '5', '9', '1', 'W')
+    assert rows[3] == ('ATLANTA', '3', '7', '0', '')
+    assert rows[10] == ('*BOSTON', '', '', '', 'LEADS 2-1')
+    assert rows[24] == ('MILWAUKEE', '', '', '', 'WINS 3-1')
+    assert rows[38] == ('*BOSTON', '', '', '', 'WINS 4-0')
+    assert rows[49] == ('COLORADO', '', '', '', 'LEADS 3-0')
+
+
+def test_playoff_box_rows_and_title(tmp_path):
+    """PBOX rows: the box_rows layout of the round game's records (the flags-4 header
+    excluded, '?' for the 0xffff entries), COLS_BOX, and the round title."""
+    ldir = make_playoffs(tmp_path)
+    data = dynview.load_data(str(ldir))
+    # round game g 16 (cat 0): one header, one batting and one pitching row per side
+    rows = dynview.rows((SPB, 0, 0), data)
+    assert dynview.pbox_body((SPB, 0, 0), data) == (dynview.COLS_BOX, rows)
+    assert rows == [('BOSTON',) + HDR_AB, ('?', '4', '1', '2', '1', '0', '1'),
+                    PIT_HDR, ('?', '8.0', '5', '2', '2', '1', '8'),
+                    ('ATLANTA',) + HDR_AB, PIT_HDR]
+    assert dynview.total_rows((SPB, 0, 0), data) == 6
+    assert dynview.screen_title((SPB, 0, 0), data) == '1995 AL DS GAME 1'
+    # game 2 of the AL DS series 1: (cat & 63) = g - 16 = 6
+    assert dynview.screen_title((SPB, 0, 6), data) == '1995 AL DS GAME 4'
+    # the AL LCS and NL LCS titles
+    assert dynview.screen_title((SPB, 0, 23 - 16), data) == '1995 AL LCS GAME 1'
+    assert dynview.screen_title((SPB, 0, 27 - 16), data) == '1995 NL LCS GAME 1'
+    assert dynview.screen_title((SPB, 0, 29 - 16), data) == '1995 NL LCS GAME 3'
+    # the box records of the WS game 1 still show on the BOX SCORE screen
+    assert dynview.rows((SB, 0, 0), data) == BOX_G0_ROWS
+
+
+def test_playoff_box_no_header_or_rows_message(tmp_path):
+    """no flags-4 header, or a header with no other record: one message row, COLS_SINGLE"""
+    ldir = make_playoffs(tmp_path)
+    write_box(ldir, [box_rec(3, 40, 0, 0, (1, 1, 1, 1, 1, 1, 1, 1))]     # no round header
+              + [r for r in playoff_recs() if r[2] != 4]
+              + [round_hdr(3, 41, 0, 8, 2, 0, 1, 7, 1, 11, 4, 0, 1)])    # no box rows
+    data = dynview.load_data(str(ldir))
+    for cat in (24, 25):
+        assert dynview.rows((SPB, 0, cat), data) == [('NO BOX SCORE RECORDED',)]
+        assert dynview.body_cols((SPB, 0, cat), data) == dynview.COLS_SINGLE
+        assert dynview.total_rows((SPB, 0, cat), data) == 1
+    # a header of a WS g (< 16) never counts
+    write_box(ldir, [box_rec(3, 5, 4, 0 * 256 + 16, (1, 2, 3, 4, 5, 6, 7, 8), b=9, i=1)]
+              + BOX_G0)
+    data = dynview.load_data(str(ldir))
+    # the WS box screen reads its game record from MILESTON.DAT: without those records
+    # the message row returns even with BOX_G0 records on file
+    assert dynview.rows((SB, 0, 5), data) == [('NO BOX SCORE RECORDED',)]
+    # pbox_rows ignores a flags-4 record of a g below 16 entirely
+    assert dynview.pbox_rows(data['hist'], data['box'], data['teams'], 3, 5) == \
+        [('NO BOX SCORE RECORDED',)]
+
+
+def test_playoffs_empty_season_message(tmp_path):
+    """a season with no round game and one past the history table: one message row,
+    COLS_SINGLE; the history table caps the season walk"""
+    ldir = make_playoffs(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.rows((SP, 0, 1), data) == [('NO PLAYOFF ROUNDS RECORDED',)]
+    assert dynview.body_cols((SP, 0, 1), data) == dynview.COLS_SINGLE
+    assert dynview.screen_title((SP, 0, 1), data) == '1994 PLAYOFFS'
+    assert dynview.rows((SP, 0, 2), data) == [('NO PLAYOFF ROUNDS RECORDED',)]
+    assert dynview.screen_title((SP, 0, 2), data) == '1993 PLAYOFFS'
+    assert dynview.rows((SP, 0, 3), data) == [('NO PLAYOFF ROUNDS RECORDED',)]
+
+
+def test_playoffs_hub_title_footer_and_keys(tmp_path):
+    """the hub's 12th row and key P (both cases), the PLAYOFFS title and footer, LEFT
+    and RIGHT season steps, PGUP and PGDN pages, and ENTER's box choice."""
+    ldir = make_playoffs(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.MENU_ROWS[11] == 'P  PLAYOFFS'
+    assert dynview.SCREEN_PLAYOFFS == 14 and dynview.SCREEN_PBOX == 15
+    assert dynview.rows(HUB, data)[11] == ('P  PLAYOFFS',)
+    assert dynview.total_rows(HUB, data) == 12
+    assert dynview.step(HUB, 80, data) == ((SP, 0, 0), 0)
+    assert dynview.step(HUB, 112, data) == ((SP, 0, 0), 0)
+    # a click on the row gives key ord('P') = 80
+    assert dynview.click_to_key(HUB, data, 100, 35 + 11 * 11 + 3) == (80, None)
+    assert dynview.screen_title((SP, 0, 0), data) == '1995 PLAYOFFS'
+    assert dynview.footer_text((SP, 0, 0)) == PLAYOFFS_FOOTER
+    assert len(PLAYOFFS_FOOTER) == 44
+    # LEFT and RIGHT step the seasons like WORLD SERIES does
+    s = dynview.step((SP, 0, 0), dynview.KEY_LEFT, data)[0]
+    assert s == (SP, 0, 1)
+    assert dynview.step(s, dynview.KEY_RIGHT, data)[0] == (SP, 0, 0)
+    assert dynview.step((SP, 0, 0), dynview.KEY_RIGHT, data)[0] == (SP, 0, 0)
+    # PGUP and PGDN page as every list screen (50 rows: 5 pages)
+    s = dynview.step((SP, 0, 0), dynview.KEY_PGDN, data)[0]
+    assert s == (SP, 1, 0)
+    assert dynview.step(s, dynview.KEY_PGUP, data)[0] == (SP, 0, 0)
+    assert dynview.step((SP, 4, 0), dynview.KEY_PGDN, data)[0] == (SP, 4, 0)
+    # ENTER opens the first game on the page: the nth GAME row of the season (the rows
+    # come in the games' order) is the nth playoff game. Page 0's first GAME row is the
+    # season's first game (g 16)
+    assert dynview.step((SP, 0, 0), dynview.KEY_ENTER, data) == ((SPB, 0, 0), 0)
+    # page 1 (rows 12..23): three GAME rows sat before it, so series 1's GAME 1 (g 19)
+    assert dynview.step((SP, 1, 0), dynview.KEY_ENTER, data) == ((SPB, 0, 3), 0)
+    # page 3 (rows 36..47): eleven GAME rows sat before it, so NL LCS GAME 1 (g 27)
+    assert dynview.step((SP, 3, 0), dynview.KEY_ENTER, data) == ((SPB, 0, 11), 0)
+    # page 4 (rows 48..49): no GAME row, so the season's first round game (cat 0)
+    assert dynview.step((SP, 4, 0), dynview.KEY_ENTER, data) == ((SPB, 0, 0), 0)
+    assert dynview.step((SP, 0, 1), dynview.KEY_ENTER, data) == ((SP, 0, 1), 0)
+
+
+def test_playoff_box_walk_and_esc(tmp_path):
+    """PBOX LEFT and RIGHT step between the season's round games by g, RIGHT past the
+    last opens the season's first WS box, LEFT from the first WS box comes back, and
+    ESC returns to PLAYOFFS."""
+    ldir = make_playoffs(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.footer_text((SPB, 0, 0)) == PBOX_FOOTER
+    assert len(PBOX_FOOTER) == 42
+    # RIGHT steps to the next round game, LEFT back; over 14 round games then into the WS
+    s = (SPB, 0, 13)                              # the last round game (g 29)
+    assert dynview.step(s, dynview.KEY_RIGHT, data) == ((SB, 0, 0), 0)
+    assert dynview.step((SB, 0, 0), dynview.KEY_LEFT, data) == ((SPB, 0, 13), 0)
+    assert dynview.step((SPB, 0, 0), dynview.KEY_LEFT, data) == ((SPB, 0, 0), 0)
+    assert dynview.step((SPB, 0, 0), dynview.KEY_RIGHT, data) == ((SPB, 0, 1), 0)
+    # the season's WS games with records are games 1 and 2 (cat 0 and 1); ESC to PLAYOFFS
+    assert dynview.step((SPB, 0, 5), dynview.KEY_ESC, data) == ((SP, 0, 0), 0)
+    # a season with round games but no WS game: RIGHT past the last does nothing
+    (tmp_path / 'nows').mkdir()
+    ldir2 = make_playoffs(tmp_path / 'nows')
+    write_mileston(str(ldir2 / 'MILESTON.DAT'), [])
+    data2 = dynview.load_data(str(ldir2))
+    assert dynview.step((SPB, 0, 13), dynview.KEY_RIGHT, data2) == ((SPB, 0, 13), 0)
+    # the WS screens keep their own LEFT/RIGHT: RIGHT past the last WS game stays
+    assert dynview.step((SB, 0, 1), dynview.KEY_RIGHT, data) == ((SB, 0, 1), 0)
+
+
+def test_box_left_from_first_ws_game_into_pbox(tmp_path):
+    """on the BOX SCORE screen, LEFT on the season's first WS game with a record opens
+    the last round game's PBOX; on other WS games LEFT walks as before."""
+    ldir = make_playoffs(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.step((SB, 0, 0), dynview.KEY_LEFT, data) == ((SPB, 0, 13), 0)
+    # game 2 of the season's WS has a record and walks left to game 1 as before
+    assert dynview.step((SB, 0, 1), dynview.KEY_LEFT, data) == ((SB, 0, 0), 0)
+    # a season without round games keeps LEFT where it is on the first WS game
+    (tmp_path / 'norounds').mkdir()
+    ldir2 = make_playoffs(tmp_path / 'norounds')
+    recs = [r for r in playoff_recs() if r[2] != 4 or False]
+    write_box(ldir2, BOX_G0)
+    data2 = dynview.load_data(str(ldir2))
+    assert dynview.step((SB, 0, 0), dynview.KEY_LEFT, data2) == ((SB, 0, 0), 0)
