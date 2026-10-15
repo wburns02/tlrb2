@@ -541,39 +541,50 @@ def _random_name(st, ctx):
     """C68: C37, then draw again when the pick collides with a named roster
     record (slots 0..39, roster halves only) of any league team: last and
     first both equal the pick exactly (after the cut at the first 0 byte).
-    The selected team is checked in st['image'], every other team from its
-    V20 file through read_v20 (zero padded, so a missing or short file has no
-    records past its end). Up to 8 picks in sequence; when all 8 collide the 8th is
-    kept anyway. st['seed'] keeps the seed after the last draw used."""
+    Up to 8 picks in sequence; when all 8 collide the 8th is kept anyway.
+    st['seed'] keeps the seed after the last draw used. The league's names are
+    read once per press (_league_names)."""
+    used = _league_names(st, ctx)
     seed = st['seed']
     for pick in range(8):
         seed = (seed * 1103515245 + 12345) % 2 ** 31
         last = rookies.LAST_NAMES[(seed >> 16) % len(rookies.LAST_NAMES)]
         seed = (seed * 1103515245 + 12345) % 2 ** 31
         first = rookies.FIRST_NAMES[(seed >> 16) % len(rookies.FIRST_NAMES)]
-        if pick == 7 or not _name_collides(st, ctx, last, first):
+        if pick == 7 or (last.encode('ascii'), first.encode('ascii')) not in used:
             break
     st['seed'] = seed
     st['form']['last'], st['form']['first'] = last, first
 
 
-def _name_collides(st, ctx, last, first):
-    """True when some named roster record of any ctx['teams'] team has both
-    names equal to the pick."""
+def _league_names(st, ctx):
+    """{(last, first)} name bytes (each cut at its first 0) of every named roster
+    record (slots 0..39, byte 0 != 0) of the ctx['teams'] teams. The selected team
+    (st['team'] is the list index, not the stable id) comes from st['image'];
+    every other team from its V20 file, skipped when the file is missing or
+    shorter than the 40 roster records (raw length, so not read_v20, which pads)."""
+    need = HEADER_LEN + RECORD_LEN * ROSTER_SLOTS
+    used = set()
     for i, (_k, stem, _d) in enumerate(ctx['teams']):
-        if i == st['team']:                  # st['team'] is the list index, not the id
+        if i == st['team']:
             image = st['image']
         else:
-            image = read_v20(ctx['league_dir'], stem)    # zero padded; missing = all zero
+            path = v20_path(ctx['league_dir'], stem.encode('latin-1'))
+            if path is None:
+                continue
+            try:
+                with open(path, 'rb') as fh:
+                    image = fh.read(need)
+            except OSError:
+                continue
+            if len(image) < need:
+                continue
         for r in range(ROSTER_SLOTS):
             rec = record(image, r)
-            if not rec[0]:
-                continue
-            rl = rec[rookies.OFF_LAST:rookies.OFF_FIRST].split(b'\0', 1)[0]
-            rf = rec[rookies.OFF_FIRST:rookies.OFF_AGE].split(b'\0', 1)[0]
-            if rl == last.encode('ascii') and rf == first.encode('ascii'):
-                return True
-    return False
+            if rec[0]:
+                used.add((bytes(rec[rookies.OFF_LAST:rookies.OFF_FIRST]).split(b'\0', 1)[0],
+                          bytes(rec[rookies.OFF_FIRST:rookies.OFF_AGE]).split(b'\0', 1)[0]))
+    return used
 
 
 def _step_edit(st, key, ctx):

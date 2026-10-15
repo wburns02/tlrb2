@@ -1264,8 +1264,8 @@ static int name_eq(const uint8_t *b, int n, const char *s)
 /* C68: 1 when some named roster record (byte 0 != 0, slots 0..39, roster half
  * only) of any league team has both names equal to the pick exactly (each cut
  * at the first NUL). The picked team (g_state.team) is checked in g_image,
- * every other team from its V20 file; a team whose file is missing or too
- * short contributes no records. Per team the file needs no league-sized
+ * every other team from its V20 file; a team whose file is missing or shorter
+ * than the 40 roster records is skipped. Per team the file needs no league-sized
  * buffer: each roster slot reads only its 21 name span bytes (byte 0 plus
  * OFF_LAST..OFF_AGE) into a small stack buffer. */
 static int name_used(const char *last, const char *first)
@@ -1286,11 +1286,17 @@ static int name_used(const char *last, const char *first)
                       (int)strlen(g_teams[t].stem), "rb");
         if (!f)
             continue;
+        /* a file shorter than the 40 roster records is skipped whole */
+        if (fseek(f, 0L, SEEK_END) != 0
+                || ftell(f) < (long)HEADER_LEN + (long)RECORD_LEN * ROSTER_SLOTS) {
+            fclose(f);
+            continue;
+        }
         for (r = 0; r < ROSTER_SLOTS; r++) {
             uint8_t buf[21];
-            if (fseek(f, (long)(HEADER_LEN + RECORD_LEN * r), SEEK_SET) != 0
+            if (fseek(f, (long)HEADER_LEN + (long)RECORD_LEN * r, SEEK_SET) != 0
                     || fread(buf, 1, sizeof buf, f) != sizeof buf)
-                break;              /* short file: the remaining slots are absent */
+                break;
             if (buf[0] && name_eq(buf, 12, last)
                     && name_eq(buf + 12, 8, first)) {
                 fclose(f);

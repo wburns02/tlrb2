@@ -662,6 +662,25 @@ def test_parity_random_name_unique_c68(tmp_path):
     assert (st['form']['last'], st['form']['first']) == picks[1]
 
 
+
+def test_parity_random_name_short_file_and_list_index_c68(tmp_path):
+    """C68 (brain): a DET file cut after its slot 20 (shorter than 40 roster records)
+    is skipped whole, so its planted pick does not collide; with NYA selected (list
+    index 2, id 15) DET (index 1, id 2) is read from its file and its plant collides."""
+    fonts = synth_fonts(os.path.join(str(tmp_path), 'c68fonts2'))
+    pit = [ENTER, ENTER] + [DOWN] * 2 + [ord('N')]
+    short = make_league(str(tmp_path / 'short'),
+                        recs={2: {20: named_rec('Russell', 'Marvin', 25, 4)}})
+    det = os.path.join(short, 'DET.V20')
+    data = open(det, 'rb').read()
+    open(det, 'wb').write(data[:295 + 143 * 21])
+    st, _ = parity(tmp_path, pit, base=short, fonts=fonts)
+    assert (st['form']['last'], st['form']['first']) == ('Russell', 'Marvin')
+    nya = make_league(str(tmp_path / 'nya'),
+                      recs={2: {20: named_rec('Russell', 'Marvin', 25, 4)}})
+    st, _ = parity(tmp_path, [DOWN, DOWN] + pit, base=nya, fonts=fonts)
+    assert (st['form']['last'], st['form']['first']) != ('Russell', 'Marvin')
+
 # ---------------------------------------------------------------- 3 divisions: team list (C12.3)
 # These run without the game fonts: synthetic MAIN.FNT / BOLD.FNT of the same layout (glyph
 # shapes do not matter, both sides draw the same ones), so the host team list is always checked.
