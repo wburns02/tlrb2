@@ -2,7 +2,8 @@
 """Lahman season -> playable TLRB2 league (H1).
 usage: build_season.py YEAR OUT_DIR [--db PATH] [--template DIR]
 YEAR 1977..1993. Copies the template league dir to OUT_DIR (must not exist or be empty), then (1993:
-the two NL expansion teams), rewrites the 28 CLAS*.V20 files, then rebuilds ALLSTAR1/2 from them (C9,
+the two NL expansion teams), rewrites the 28 CLAS*.V20 files, seeds HISTORY.DAT with the players'
+Lahman careers before YEAR (C36, seed_history), then rebuilds ALLSTAR1/2 from them (C9,
 rosters.refresh_allstars). MAJ and every V20 header bytes 0..110 are kept from the template (1993: the
 MAJ NL slot entries and division counts are patched, C15's UTIL NEW TEAM fields). Exit 0 ok, 2 on any
 error."""
@@ -356,7 +357,7 @@ def picks(c, year, tid, sel, bat, pit):
     return out
 
 
-def build_team(c, year, tid, path, people, exps, sel):
+def build_team(c, year, tid, path, people, exps, sel, placed=None):
     t = v20.Team.load(path)
     img = bytearray(t.to_bytes())
     orig = bytes(img)
@@ -380,6 +381,9 @@ def build_team(c, year, tid, path, people, exps, sel):
         build_player(c, year, pid, cur, rec, tw, agg, exps, people)
         img[ro:ro + v20.REC] = rec.raw
         img[so:so + v20.REC] = tw.raw
+        if placed is not None:
+            age = rec['age']
+            placed.append((bytes(rec.raw[0:20]), 1001 - age, pid, rec['pos1'], age))
     rosters.depth_rebuild(img)
     v20.Team(img).save(path)
 
@@ -391,9 +395,86 @@ def build_league(db, year, out_dir, template):
         'select playerID, nameFirst, nameLast, birthYear, birthMonth, bats, throws'
         ' from people')}
     sel = select(c, year)
+    placed = []
     for stem, tid, slot in team_list(year):
         path = os.path.join(out_dir, stem.upper() + '.V20')
-        build_team(c, year, tid, path, people, exps, sel.get(tid, []))
+        build_team(c, year, tid, path, people, exps, sel.get(tid, []), placed)
+    return placed
+
+
+def _career_rows(c, year):
+    """(pid -> year set, pid -> [25] totals sums) with yearID < year (NULL counts as 0), in
+    history.TOTALS order: batting G AB H 2B 3B HR R RBI BB SO SB CS = 0..11, fielding E = 12,
+    pitching W L SV GS CG SHO OUTS ER PH PBB PSO PHR = 13..24. The year set holds the years of
+    batting and pitching rows only."""
+    years, sums = {}, {}
+    for tab, cols, base in (
+            ('batting', ('G', 'AB', 'H', '2B', '3B', 'HR', 'R', 'RBI', 'BB', 'SO',
+                         'SB', 'CS'), 0),
+            ('fielding', ('E',), 12),
+            ('pitching', ('W', 'L', 'SV', 'GS', 'CG', 'SHO', 'IPouts', 'ER',
+                          'H', 'BB', 'SO', 'HR'), 13)):
+        sel = ', '.join('"%s"' % x for x in cols)
+        for r in c.execute('select playerID, yearID, %s from %s where yearID<?' % (sel, tab),
+                           (year,)):
+            pid = r[0]
+            if tab != 'fielding':
+                years.setdefault(pid, set()).add(r[1])
+            acc = sums.setdefault(pid, [0] * 25)
+            for j, v in enumerate(r[2:]):
+                acc[base + j] += v or 0
+    return years, sums
+
+
+AWARD_NAMES = ['Most Valuable Player', 'Cy Young Award', 'Rookie of the Year',
+               'Gold Glove', 'Silver Slugger']
+
+
+def _award_counts(c, year):
+    """playerID -> [MVP, CY, ROY, GG, SS] award counts with yearID < year, each capped at 255."""
+    out = {}
+    for pid, aid, n in c.execute(
+            'select playerID, awardID, count(*) from awardsplayers'
+            ' where yearID<? group by playerID, awardID', (year,)):
+        k = AWARD_NAMES.index(aid) if aid in AWARD_NAMES else -1
+        if k < 0:
+            continue
+        acc = out.setdefault(pid, [0] * 5)
+        acc[k] = min(255, acc[k] + n)
+    return out
+
+
+def seed_history(db, year, out_dir, placed):
+    """C36: write OUT_DIR/HISTORY.DAT with one prior-career entry per placed player who
+    has a pre-YEAR Lahman row. Identity = the V20 record's name bytes 0..19 and birth
+    = 1001 - age; a second player with the same (name, birth) identity is skipped."""
+    from m4 import history
+    c = sqlite3.connect('file:%s?mode=ro' % db, uri=True)
+    years, sums = _career_rows(c, year)
+    awards = _award_counts(c, year)
+    hist = history.History(None)
+    hist.version = 1
+    hist.seasons_recorded = 0
+    hist.start_year = year
+    seen = set()
+    for rec in placed:
+        pid = rec[2]
+        if pid not in years:
+            continue
+        name20, birth = rec[0], rec[1]
+        if (name20, birth) in seen:
+            continue
+        seen.add((name20, birth))
+        total = sums[pid]
+        pos1 = rec[3] & 15
+        hist.append_entry({'name': name20, 'birth': birth, 'status': history.STATUS_ACTIVE,
+                           'age': rec[4], 'first_season': 1, 'last_season': 0,
+                           'seasons_played': len(years[pid]), 'pos1': pos1,
+                           'pitcher': 1 if pos1 == 0 else 0, 'totals': total,
+                           'WAR10': 0, 'top7': [history.EMPTY_TOP] * 7, 'JAWS10': 0,
+                           'hof_season': 0, 'awards': awards.get(pid, [0] * 5)})
+    hist.save(os.path.join(out_dir, 'HISTORY.DAT'))
+    c.close()
 
 
 def main(argv):
@@ -449,7 +530,8 @@ def main(argv):
             os.chmod(os.path.join(out, f), 0o644)
         if year >= 1993:
             add_expansion(out)
-        build_league(db, year, out, template)
+        placed = build_league(db, year, out, template)
+        seed_history(db, year, out, placed)
         rosters.refresh_allstars(out)               # else the template's classic stars play the first All-Star game
     except Exception as e:
         print('build failed: %s' % e)
