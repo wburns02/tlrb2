@@ -1416,7 +1416,7 @@ the same framebuffers.
   recomputed only when the entry changes. Host builds with the gcc command in
   tools/m4/dynview_c/build_dynview.py (-Werror clean); DYNVIEW.EXE is untouched.
 
-## C34. CREATE auto-fill (added 2026-10-15)
+## C34. CREATE auto-fill (added 2026-10-14)
 
 The CREATE edit screen (create._step_edit and the C port) gains key A auto-fill. It
 does not change the V20 record build: save_slot, build_record and every saved byte
