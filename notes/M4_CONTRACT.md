@@ -1208,3 +1208,13 @@ Will, 2026-10-14: show the releases on the 5/6 phase next to the free agent sign
 - The C port counts one RELEASE row per REL event with an ord of fa + rel (the free agent rows first, then the
   releases), so paging and the caps are the combined list. The rows of a token with no team file show the token
   upper cased, like every TEAM cell.
+
+## C20. Rookie position mix (added 2026-10-14; amends the C4/P2 fill ladder)
+
+Finding: the ladder's "remaining vacancies become DH" made nearly every fill rookie a DH (7 of 8 drafted rookies in
+a 105-season league), and the C6 draft redrafts exactly these rookies. Shipped data has zero code-9 players.
+- The ladder (P to 8, C to 2, each IF code 2..5 to 1, OF 6+7+8 to 4 round robin) is unchanged and cut at nvac.
+- Each vacancy left after the ladder gets code REM_TABLE[draw() % 20], REM_TABLE = (0 x8, 1 x2, 2, 3, 4, 5 x2, 6,
+  7 x2, 8 x2): P 40 %, C 10 %, 1B/2B/3B 5 % each, SS 10 %, LF 5 %, CF 10 %, RF 10 %, DH never. One draw per remainder
+  vacancy in fill order, all before the C4 record draws of the same team; no draw when the ladder covers every
+  vacancy. Python team_fill.REM_TABLE and rookie_fill.asm rem_table hold the same bytes.

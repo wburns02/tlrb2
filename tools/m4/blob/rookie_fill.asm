@@ -21,6 +21,9 @@
 ; Constants per position code (pinned against the Python reference):
 ;   P (0):     salary 255, IP 200, pitch4 135 lo = 4, 136..139=77 140=07
 ;   batters:   salary 109, AB 40 split by bats, 75 hi = 70, 76 = 78
+; C20: after the ladder, each remaining vacancy draws ONE rng draw and its
+; position code = rem_table[draw % 20]; these remainder draws (one per
+; remainder vacancy, in fill order) precede pass 3's record draws.
 ; Season copy = roster copy with offsets 23,32..36,37..42,49..58,101..102,
 ; 111..112,121..122,125..126 zeroed (team_fill._SEASON_STAT_OFFSETS).
 ; Build: nasm -f bin -o rookie_fill.bin rookie_fill.asm
@@ -188,7 +191,14 @@ ladder_of:
 ladder_dh:
         call take_slot
         jc ladder_done
-        mov word [cs:di], 9
+        push di                          ; the fill word pointer
+        mov cx, 20                       ; C20: code = rem_table[d % 20]
+        call randmod                     ; AX = draw % 20; preserves BP
+        mov di, ax
+        xor ax, ax
+        mov al, [cs:rem_table + di]      ; byte load
+        pop di
+        mov [cs:di], ax                  ; di still points at the fill word
         jmp ladder_dh
 ladder_done:
 
@@ -632,6 +642,17 @@ ratings_pitcher:
         dw 134, 0, 12                   ; control (134 lo)
         dw 134, 4, 12                   ; velocity (134 hi)
         dw 135, 4, 10                   ; endurance (135 hi)
+
+; C20 remainder position table (team_fill.REM_TABLE): index = draw % 20.
+; P 40 %, C 10 %, 1B/2B/3B 5 % each, SS 10 %, LF 5 %, CF 10 %, RF 10 %.
+rem_table:
+        db 0,0,0,0,0,0,0,0              ; P
+        db 1,1                          ; C
+        db 2, 3, 4                      ; 1B, 2B, 3B
+        db 5,5                          ; SS
+        db 6                            ; LF
+        db 7,7                          ; CF
+        db 8,8                          ; RF
 
 scan_counts:    dw 16 dup(0)
 vac_list:       dw 40 dup(0)

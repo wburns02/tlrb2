@@ -288,6 +288,49 @@ def test_random_images_seeded_matrix():
     assert case == 100
 
 
+# ---------------------------------------------------------------------------
+# C20 remainder draws (post-ladder REM_TABLE codes) -- parity cases.
+# ---------------------------------------------------------------------------
+
+def _met_team():
+    """A team whose ladder targets are all already met: 8 P, 2 C, one each
+    2..5, 4 OF spread 6/7/8, the rest a 1..8 mix. Every vacancy is a
+    remainder vacancy."""
+    pos = [0] * 8 + [1] * 2 + [2, 3, 4, 5] + [6, 7, 8, 6]
+    pos += [1 + (i % 8) for i in range(40 - len(pos))]
+    return _all_active(lambda i: pos[i])
+
+
+def test_c20_remainder_zero_ladder_covers_all():
+    """Remainder 0: the ladder fills every vacancy, no remainder draw."""
+    pos = [0] * 6 + [1] * 2 + [2, 3, 4, 5] + [6, 7, 8, 6]
+    pos += [1 + (i % 8) for i in range(40 - len(pos))]
+    image = _all_active(lambda i: pos[i])
+    _vacate(image, [0, 1, 2])            # 3 pitcher vacancies: ladder only
+    for seed in (3, 2034, 4711):
+        _assert_parity(image, seed, 50)
+
+
+def test_c20_remainder_one():
+    image = _met_team()
+    _vacate(image, [20])                 # one vacancy: one remainder draw
+    for seed in (3, 2034, 4711):
+        _assert_parity(image, seed, 50)
+
+
+def test_c20_remainder_twelve():
+    image = _met_team()
+    _vacate(image, [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27])
+    for seed in (3, 2034, 4711):
+        _assert_parity(image, seed, 50)
+
+
+def test_c20_remainder_forty_empty_roster():
+    image = _team({})
+    for seed in (3, 2034, 4711):
+        _assert_parity(image, seed, 50)
+
+
 def test_year_byte_written_verbatim():
     """The season year byte lands at record offset 21 exactly as passed
     (it is already year - 1870)."""

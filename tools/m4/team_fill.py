@@ -10,7 +10,9 @@ generated rookie written into both halves:
 
 Position choice per vacancy follows a priority ladder so the team keeps a
 sane structure: pitchers to >= 8, catchers to >= 2, each infield code
-2..5 to >= 1, outfielders to >= 4, then DH (code 9) for any remainder.
+2..5 to >= 1, outfielders to >= 4 (the ladder). Each vacancy left after
+the ladder gets one draw of the shared rng: code = REM_TABLE[draw % 20]
+(C20). DH (code 9) is never emitted by fill_image.
 
 Counts are taken from the roster half AFTER retirement (byte 0 != 0),
 using the primary position in the low nibble of byte 31.
@@ -97,6 +99,20 @@ POS_INFIELD_MAX = 5
 POS_DH = 9
 _OUTFIELD_CODES = (6, 7, 8)
 
+# C20 remainder positions: after the ladder, each remaining vacancy draws
+# code = REM_TABLE[rng.draw() % 20] (one draw per remainder vacancy, in fill
+# order, before any rookie record draw). Shares: P 40 %, C 10 %, 1B/2B/3B
+# 5 % each, SS 10 %, LF 5 %, CF 10 %, RF 10 %; DH (9) never.
+REM_TABLE = (
+    0, 0, 0, 0, 0, 0, 0, 0,      # P 40 %
+    1, 1,                        # C 10 %
+    2, 3, 4,                     # 1B, 2B, 3B 5 % each
+    5, 5,                        # SS 10 %
+    6,                           # LF 5 %
+    7, 7,                        # CF 10 %
+    8, 8,                        # RF 10 %
+)
+
 # Priority targets.
 TARGET_PITCHERS = 8
 TARGET_CATCHERS = 2
@@ -176,7 +192,8 @@ def fill_image(image, season_year, rng, rookie_gen):
 
     image = 295 B header + 80 records x 143 B (bytearray, mutated).
     season_year = the byte stored at record offset 21 (year - 1870).
-    rng = a rollover.Rng; every draw flows through it.
+    rng = a rollover.Rng; every draw flows through it: one remainder draw
+    per post-ladder vacancy (C20), then the C4 record draws.
     rookie_gen = a m4.rookies.RookieGen sharing that rng.
 
     Returns (nvac, vacancies, positions).
@@ -220,7 +237,10 @@ def fill_image(image, season_year, rng, rookie_gen):
         counts[code] += 1
         of_i += 1
         of_have += 1
-    positions += [POS_DH] * len(vacancies)
+    # C20: one rng draw per remainder vacancy, in fill order, all before
+    # any rookie generation draw. The ladder part itself is unchanged.
+    for _ in range(nvac - len(positions)):
+        positions.append(REM_TABLE[rng.draw() % 20])
     positions = positions[:nvac]
 
     # One rookie per vacancy, roster copy + season-twin copy.

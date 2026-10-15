@@ -161,6 +161,19 @@ def test_season_half_stats_zero_identity_matches(tmp_path, rolled_team):
         assert p_season["first"] == p_roster["first"]
 
 
+def _positions_for_team(team):
+    """fill_image's position list for a team-view team (roster half active
+    by pos, every inactive slot a vacancy)."""
+    counts = {}
+    for i in range(40):
+        raw = team.players[i].raw
+        if raw[0]:
+            counts[raw[31] & 0x0F] = counts.get(raw[31] & 0x0F, 0) + 1
+    return team_fill._priority_order(counts, sum(
+        1 for i in range(40) if not team.players[i].raw[0]
+    ))
+
+
 def test_position_priorities_all_pitcher_retirees(tmp_path):
     """Synthesise a team whose 4 retirees are all pitchers."""
     name = _snap_teams(1)[0]
@@ -198,8 +211,16 @@ def test_position_priorities_all_pitcher_retirees(tmp_path):
             pre[code] = pre.get(code, 0) + 1
 
     # Walk the fills in order and check the priority ladder.
+    expected = _positions_for_team(_load(work))
+    assert len(expected) == len(res["positions"])
+    # The ladder part is _priority_order without its DH padding; every fill
+    # after it is a C20 remainder draw (REM_TABLE code, never DH).
+    ladder_n = sum(1 for c in expected if c != team_fill.POS_DH)
+    assert res["positions"][:ladder_n] == expected[:ladder_n]
+    for code in res["positions"][ladder_n:]:
+        assert code in team_fill.REM_TABLE and code != team_fill.POS_DH
     sim = dict(pre)
-    for idx, code in enumerate(res["positions"]):
+    for idx, code in enumerate(res["positions"][:ladder_n]):
         if code == 0:
             assert sim.get(0, 0) < 8, (
                 "pitcher fill #%d but already >= 8 pitchers" % idx
@@ -219,7 +240,9 @@ def test_position_priorities_all_pitcher_retirees(tmp_path):
             of_have = sum(sim.get(c, 0) for c in (6, 7, 8))
             assert of_have < 4, "OF fill past target"
         else:
-            assert code == 9, "unexpected fill code %d" % code
+            assert code in team_fill.REM_TABLE, (
+                "unexpected fill code %d (ladder leftover or DH)" % code
+            )
         sim[code] = sim.get(code, 0) + 1
 
     # Final counts respect the targets.
@@ -233,6 +256,126 @@ def test_position_priorities_all_pitcher_retirees(tmp_path):
     for c in (2, 3, 4, 5):
         assert counts.get(c, 0) >= 1
     assert sum(counts.get(c, 0) for c in (6, 7, 8)) >= 4 or counts.get(9, 0) > 0
+
+
+# ---------------------------------------------------------------------------
+# C20 remainder positions (post-ladder weighted draw)
+# ---------------------------------------------------------------------------
+
+def _make_team_v20(name=b'FAILING', abbr=b'FAI'):
+    """A fresh 11735 B V20 with header name/abbr and 80 records."""
+    d = bytearray(11735)
+    d[0:14] = name.ljust(14, b'\0')[:14]
+    d[14:16] = b'cl'
+    d[16:19] = abbr.ljust(3, b'\0')[:3]
+    return bytes(d)
+
+
+def test_c20_remainder_draws_match_fresh_rng(tmp_path):
+    """A team with 10 vacancies where the ladder covers 2 (6 P, 2 C, IF and
+    OF targets already met -> 2 pitcher fills): exactly 8 remainder draws,
+    and the codes equal REM_TABLE[d % 20] for the first 8 draws of a fresh
+    Rng(seed)."""
+    # 30 active: 6 P, 2 C, IF and OF targets already met -> the ladder covers
+    pos = [0] * 6 + [1] * 2 + [2, 3, 4, 5] + [6, 7, 8, 6]
+    pos += [1 + (i % 8) for i in range(30 - len(pos))]
+    work = str(tmp_path / "c20.V20")
+    d = bytearray(_make_team_v20())
+    for i in range(30):
+        base = 295 + i * 143
+        d[base] = 1
+        d[base + 31] = pos[i] & 0x0F
+    open(work, "wb").write(bytes(d))
+
+    out = str(tmp_path / "c20_filled.V20")
+    seed = 777
+    res = team_fill.fill_team(work, out, SEASON_YEAR, rollover.Rng(seed),
+                              _make_rookie_gen(seed))
+    assert len(res["vacancies"]) == 10
+
+    # A fresh Rng(seed) taken right after nothing else: its first 8 draws are
+    # the remainder draws the fill replayed.
+    rng = rollover.Rng(seed)
+    draws = [team_fill.REM_TABLE[rng.draw() % 20] for _ in range(8)]
+    assert res["positions"] == [0, 0] + draws
+
+
+def test_c20_no_code9_over_random_images():
+    """No fill ever emits code 9, over 200 seeded random images."""
+    import random
+    rnd = random.Random(2026)
+    for _ in range(200):
+        image = bytearray(295 + 80 * 143)
+        for i in range(40):
+            if rnd.random() < 0.45:
+                base = 295 + i * 143
+                image[base] = 1
+                image[base + 31] = rnd.randrange(0, 10)
+        _, _, positions = team_fill.fill_image(
+            image, 2, rollover.Rng(1), _make_rookie_gen(1))
+        for code in positions:
+            assert 0 <= code <= 8, "code %d leaked (DH never)" % code
+
+
+def test_c20_ladder_full_no_remainder_draw(tmp_path):
+    """A fill where the ladder covers every vacancy consumes no remainder
+    draw: its rookie records equal RookieGen.make(code, year) called in fill
+    order with the ladder codes on a fresh Rng(seed) (pos byte low nibble =
+    the code, as fill_image does)."""
+    # 24 active: 2 P and 22 DH -> ladder covers 6 P + 2 C + 4 IF + 4 OF =
+    # 16 fills, and there are exactly 16 vacancies.
+    pos = [0] * 2 + [9] * 22
+    d = bytearray(_make_team_v20())
+    for i in range(24):
+        base = 295 + i * 143
+        d[base] = 1
+        d[base + 31] = pos[i] & 0x0F
+    work = str(tmp_path / "ladder.V20")
+    open(work, "wb").write(bytes(d))
+
+    seed = 31337
+    out = str(tmp_path / "ladder_filled.V20")
+    res = team_fill.fill_team(work, out, SEASON_YEAR, rollover.Rng(seed),
+                              _make_rookie_gen(seed))
+
+    # Every fill code comes from the ladder (P, C, IF, OF), in ladder order.
+    assert res["positions"] == [0] * 6 + [1] * 2 + [2, 3, 4, 5] + [6, 7, 8, 6]
+
+    # Replay: ladder codes in fill order, record draws on a fresh Rng(seed).
+    vacs = res["vacancies"]
+    image = bytearray(open(out, "rb").read())
+    replay = bytearray(open(work, "rb").read())
+    rng = rollover.Rng(seed)
+    gen = RookieGen(rng, [])
+    for index, code in zip(vacs, res["positions"]):
+        rookie = bytearray(gen.make(code, SEASON_YEAR))
+        rookie[31] = (rookie[31] & 0xF0) | (code & 0x0F)
+        season_copy = bytearray(rookie)
+        for off in team_fill._SEASON_STAT_OFFSETS:
+            season_copy[off] = 0
+        base = 295 + index * 143
+        replay[base:base + 143] = rookie
+        replay[base + 40 * 143:base + 41 * 143] = season_copy
+    assert image == bytes(replay), (
+        "fill output diverges from a no-remainder replay"
+    )
+
+
+def test_c20_remainder_share_over_2000_draws():
+    """Over 2000 remainder draws from Rng(1), each REM_TABLE code's share is
+    within 3 points of its table share."""
+    counts = {}
+    rng = rollover.Rng(1)
+    n = 2000
+    for _ in range(n):
+        code = team_fill.REM_TABLE[rng.draw() % 20]
+        counts[code] = counts.get(code, 0) + 1
+    for code in set(team_fill.REM_TABLE):
+        share = 100.0 * counts.get(code, 0) / n
+        table_share = 100.0 * team_fill.REM_TABLE.count(code) / 20
+        assert abs(share - table_share) < 3.0, (
+            "code %d: %.2f%% vs table %.2f%%" % (code, share, table_share)
+        )
 
 
 def test_determinism_same_seed(tmp_path, three_rolled_teams):
