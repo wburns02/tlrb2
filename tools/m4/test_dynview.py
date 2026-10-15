@@ -148,6 +148,144 @@ def test_hof_rows_order(tmp_path):
     # pitcher columns for entry 5 are not in the HOF table (status 2)
 
 
+# ---------------------------------------------------------------- HOF filter (C53)
+def test_hof_match_each_filter():
+    P = dict(pitcher=1, pos1=0)
+    C = dict(pitcher=0, pos1=1)
+    B1B = dict(pitcher=0, pos1=2)
+    B2B = dict(pitcher=0, pos1=3)
+    B3B = dict(pitcher=0, pos1=4)
+    SS = dict(pitcher=0, pos1=5)
+    LF = dict(pitcher=0, pos1=6)
+    CF = dict(pitcher=0, pos1=7)
+    RF = dict(pitcher=0, pos1=8)
+    DH = dict(pitcher=0, pos1=9)
+    entry = dict(P, **{'name': b'X'})
+    assert dynview.HOF_FILTERS == [('ALL', None), ('P', None), ('C', (1,)),
+                                   ('1B', (2,)), ('2B', (3,)), ('3B', (4,)),
+                                   ('SS', (5,)), ('OF', (6, 7, 8)), ('DH', (9,))]
+    for e in (P, C, B1B, B2B, B3B, SS, LF, CF, RF, DH):
+        assert dynview.hof_match(e, 0)
+    assert dynview.hof_match(P, 1)
+    for e in (C, B1B, B2B, B3B, SS, LF, CF, RF, DH):
+        assert not dynview.hof_match(e, 1)
+    for who, f in ((C, 2), (B1B, 3), (B2B, 4), (B3B, 5), (SS, 6), (DH, 8)):
+        assert dynview.hof_match(who, f)
+        for f2 in range(9):
+            if f2 != f and f2 != 0:
+                assert not dynview.hof_match(who, f2), (who, f2)
+    for e in (LF, CF, RF):
+        assert dynview.hof_match(e, 7)               # OF covers LF CF RF
+        assert not dynview.hof_match(e, 2)
+    # a pitcher never matches a position filter, a batter never P
+    assert not dynview.hof_match(P, 7)
+    assert not dynview.hof_match(C, 1)
+    assert dynview.hof_match(dict(C, pitcher=1), 1)  # a pitcher: P, not C
+
+
+def test_hof_tab_cycles_filters(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.KEY_TAB == 9
+    s = (dynview.SCREEN_HOF, 0, 0)
+    for want in (1, 2, 3, 4, 5, 6, 7, 8, 0):
+        s, _ex = dynview.step(s, dynview.KEY_TAB, data)
+        assert s == (dynview.SCREEN_HOF, 0, want)
+    # page and row reset (not a cursor move)
+    s, _ex = dynview.step((dynview.SCREEN_HOF, 1, 0, 3), dynview.KEY_TAB, data)
+    assert s == (dynview.SCREEN_HOF, 0, 1)
+    # other screens unchanged: TAB does nothing on HISTORY, LEADERS mode logic intact
+    s, _ex = dynview.step((dynview.SCREEN_HISTORY, 0, 0), dynview.KEY_TAB, data)
+    assert s == (dynview.SCREEN_HISTORY, 0, 0)
+    s, _ex = dynview.step((dynview.SCREEN_LEADERS, 0, 0), dynview.KEY_TAB, data)
+    assert s == (dynview.SCREEN_LEADERS, 0, dynview.MODE_SHIFT + 3)   # CAREER H -> SEASON H
+
+
+def test_hof_filter_titles(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    assert dynview.screen_title((dynview.SCREEN_HOF, 0, 0), data) == 'HALL OF FAME'
+    assert dynview.screen_title((dynview.SCREEN_HOF, 0, 1), data) == 'HALL OF FAME: P'
+    assert dynview.screen_title((dynview.SCREEN_HOF, 0, 6), data) == 'HALL OF FAME: SS'
+    assert dynview.screen_title((dynview.SCREEN_HOF, 0, 7), data) == 'HALL OF FAME: OF'
+    assert dynview.screen_title((dynview.SCREEN_HOF, 0, 8), data) == 'HALL OF FAME: DH'
+    assert dynview.footer_text((dynview.SCREEN_HOF, 0, 0), data) == \
+        'TAB POSITION   PGUP PGDN   ESC MENU'
+    assert dynview.FOOTERS[dynview.SCREEN_HOF] == \
+        'TAB POSITION   PGUP PGDN   ESC MENU'
+
+
+def test_hof_filter_order(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    # make_data leaves byte 30 (pos1) at 0 for its HoF entries (28, 29), batters by
+    # the pitcher byte: only ALL shows them; 2B (filter 4) sees none
+    rows = dynview.rows(st(dynview.SCREEN_HOF, 0, 4), data)       # 2B filter: none
+    assert rows == [('NO HALL OF FAMERS AT 2B',)]
+    assert dynview.body_cols(st(dynview.SCREEN_HOF, 0, 4), data) == dynview.COLS_SINGLE
+    # ALL row cells unchanged
+    assert dynview.rows(st(dynview.SCREEN_HOF), data) == dynview.hof_rows(data['hist'], 0)
+    assert dynview.total_rows(st(dynview.SCREEN_HOF, 0, 1), data) == 1   # P: no HoF pitchers
+    assert dynview.total_rows(st(dynview.SCREEN_HOF, 0, 0), data) == 2   # ALL: both
+    # the cursor of an empty filter names no entry
+    assert dynview.row_entry((dynview.SCREEN_HOF, 0, 1, 0), data) is None
+
+
+def test_hof_filter_keep_season_order_then_index(tmp_path):
+    """Filter keeps (HoF season desc, index asc)."""
+    from test_dynview_c13 import player, write_league
+
+    def tb(h):
+        t = [0] * 25
+        t[1], t[2] = 20, h
+        return t
+
+    ldir = tmp_path / 'ord'
+    ldir.mkdir()
+    players = [player('HOFB', first='B', status=3, hof=3, pos1=5, totals=tb(6)),
+               player('HOFA', first='A', status=3, hof=2, pos1=5, totals=tb(5))]
+    write_league(ldir, players, seasons=4)
+    data = dynview.load_data(str(ldir))
+    rows = dynview.rows(st(dynview.SCREEN_HOF, 0, 6), data)      # SS filter
+    assert [r[0] for r in rows] == ['HOFB, B', 'HOFA, A']
+    assert dynview.rows(st(dynview.SCREEN_HOF, 0, 6), data) == \
+        dynview.hof_rows(data['hist'], 6)
+    assert [i for i, _e in dynview.hof_order(data['hist'], 6)] == [0, 1]
+
+
+def test_hof_enter_opens_filtered_card_and_esc(tmp_path):
+    from test_dynview_c13 import player, write_league, line
+
+    def tb(h):
+        t = [0] * 25
+        t[1], t[2] = 20, h
+        return t
+
+    ldir = tmp_path / 'card'
+    # HOFA (entry 0) has the older HoF season, so the list's row 0 is HOFB (entry 1)
+    write_league(ldir, [player('HOFA', first='A', status=3, hof=2, pos1=5,
+                               totals=tb(5)),
+                        player('HOFB', first='B', status=3, hof=3, pos1=5,
+                               totals=tb(6))], seasons=4,
+                 lines=[line(0, 3, totals=tb(5))])
+    data = dynview.load_data(str(ldir))
+    s, _ex = dynview.step((dynview.SCREEN_HOF, 0, 6), dynview.KEY_ENTER, data)
+    assert s == (dynview.SCREEN_CARD, 0, 1)
+    s2, _ex = dynview.step(s, dynview.KEY_ESC, data)
+    assert s2 == (dynview.SCREEN_HOF, 0, 6)
+    # ENTER on an empty filter does nothing
+    s3, _ex = dynview.step((dynview.SCREEN_HOF, 0, 1), dynview.KEY_ENTER, data)
+    assert s3 == (dynview.SCREEN_HOF, 0, 1)
+    # cat 0 with no members keeps today's behaviour: empty table, COLS_HOF
+    ldir2 = tmp_path / 'none'
+    write_league(ldir2, [player('ACT', totals=tb(1))], seasons=2)
+    data2 = dynview.load_data(str(ldir2))
+    assert dynview.rows(st(dynview.SCREEN_HOF, 0, 0), data2) == []
+    assert dynview.body_cols(st(dynview.SCREEN_HOF, 0, 0), data2) == dynview.COLS_HOF
+    assert dynview.rows(st(dynview.SCREEN_HOF, 0, 2), data2) == \
+        [('NO HALL OF FAMERS AT C',)]
+
+
 def test_leaders_count_order_and_ties(tmp_path):
     ldir, _ = make_data(tmp_path)
     data = dynview.load_data(str(ldir))
@@ -799,7 +937,8 @@ def test_offseason_titles_footers_and_menu(tmp_path):
     assert dynview.footer_text((SO, 0, oc(5))) == 'ENTER CONTINUE   ESC MENU'
     assert dynview.footer_text((SO, 0, oc(5, 0))) == 'ENTER MENU   ESC MENU'
     assert dynview.footer_text((dynview.SCREEN_MENU, 0, 0)) == '0-9 W P F SELECT   ESC EXIT'
-    assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == 'PGUP PGDN   ESC MENU'
+    assert dynview.footer_text((dynview.SCREEN_HISTORY, 0, 0)) == \
+        'ENTER STANDINGS   PGUP PGDN   ESC MENU'
     assert dynview.footer_text((dynview.SCREEN_REVIEW, 0, 0)) == 'ENTER MENU   ESC MENU'
     # the menu's sixth row and key 6; key 7 opens DYNASTY SETTINGS, 9 SEASON AWARDS
     assert dynview.rows((dynview.SCREEN_MENU, 0, 0), data)[5] == ('6  OFFSEASON',)
@@ -3998,8 +4137,46 @@ def test_find_open_edit_and_rows(tmp_path):
     s3 = (dynview.SCREEN_FIND, 0, 0)
     s4 = press(s3, ord('c'), data)
     assert s4 == (dynview.SCREEN_FIND, 0, 0)
-    # ESC back to the hub, query unchanged
-    assert dynview.step((dynview.SCREEN_FIND, 0, 0, 2), ESC, data) == (HUB, 0)
+    # ESC clears the typed query first (C59): reset to the prompt row, not the hub
+    assert dynview.step((dynview.SCREEN_FIND, 0, 0, 2), ESC, data) == \
+        ((dynview.SCREEN_FIND, 0, 0), 0)
+    assert data['find'] == ''
+
+
+def test_find_esc_clears_then_menu(tmp_path):
+    """C59: ESC on FIND with a non-empty query clears data['find'] and resets to the
+    prompt row (18, 0, 0); a second ESC goes to the MENU; ESC with an empty query goes
+    straight to the MENU; the footer labels the ESC key CLEAR only while the query has
+    text; ESC after moving the cursor resets it too."""
+    ldir = make_find(tmp_path, write_player)
+    data = dynview.load_data(str(ldir))
+    HUB = (dynview.SCREEN_MENU, 0, 0)
+    s, _ex = dynview.step(HUB, ord('F'), data)
+    s = press(s, ord('S'), data)
+    s = press(s, ord('M'), data)
+    assert data['find'] == 'SM'
+    assert dynview.footer_text(s, data) == 'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR'
+    assert press(s, ESC, data) == (dynview.SCREEN_FIND, 0, 0)
+    assert data['find'] == ''
+    assert dynview.footer_text((dynview.SCREEN_FIND, 0, 0), data) == \
+        'TYPE NAME  BKSP  ENTER CARD  ESC MENU'
+    assert dynview.step((dynview.SCREEN_FIND, 0, 0), ESC, data) == (HUB, 0)
+    # ESC on an empty query goes straight to the MENU
+    assert dynview.step((dynview.SCREEN_FIND, 0, 0), ESC, data) == (HUB, 0)
+    # ESC after moving the cursor resets it too
+    s = press(HUB, ord('f'), data)
+    s = press(s, ord('S'), data)
+    s = press((dynview.SCREEN_FIND, 0, 0, 2), ESC, data)
+    assert s == (dynview.SCREEN_FIND, 0, 0) and data['find'] == ''
+    # a card opened from FIND keeps the exact FIND state on ESC (unchanged)
+    s = press(s, ord('S'), data)
+    s = press(s, ord('M'), data)
+    card, _ex = dynview.step((dynview.SCREEN_FIND, 0, 0, 1), ENTER, data)
+    assert data['card_back'] == (dynview.SCREEN_FIND, 0, 0, 1)
+    assert dynview.step(card, ESC, data)[0] == (dynview.SCREEN_FIND, 0, 0, 1)
+    assert data['find'] == 'SM'
+    assert dynview.footer_text((dynview.SCREEN_FIND, 0, 0, 1), data) == \
+        'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR'
 
 
 def _find_cells(hist, q):
@@ -4348,3 +4525,68 @@ def test_c54_flag_survives_tab_card_and_menu(tmp_path):
     assert menu == (dynview.SCREEN_MENU, 0, 0) and data['lead_active'] is True
     # open_card kept the list state like on any other screen
     assert data.get('card_back') == (PM, 0, 0)
+
+# ---------------------------------------------------------------- C56 HISTORY cursor and STANDINGS jump
+def test_history_cursor_moves_and_footer(tmp_path):
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    hs = dynview.SCREEN_HISTORY
+    assert dynview.cursor_screen((hs, 0, 0)) is True
+    s = press((hs, 0, 0), dynview.KEY_DOWN, data)
+    assert s == (hs, 0, 0, 1)                    # the cursor state packs the row
+    assert dynview.unpack(s)[3] == 1
+    s = press(s, dynview.KEY_DOWN, data)
+    assert s == (hs, 0, 0, 2)                    # 3 rows: the last
+    assert press(s, dynview.KEY_DOWN, data) == (hs, 0, 0, 2)
+    assert press((hs, 0, 0), dynview.KEY_UP, data) == (hs, 0, 0)
+    # PGDN on a 3-row list is a no-op (below 12 rows), PGUP at page 0 too
+    assert press((hs, 0, 0), dynview.KEY_PGDN, data) == (hs, 0, 0)
+    assert press((hs, 0, 0), dynview.KEY_PGUP, data) == (hs, 0, 0)
+    assert dynview.footer_text((hs, 0, 0), data) == \
+        'ENTER STANDINGS   PGUP PGDN   ESC MENU'
+
+
+def test_history_enter_opens_standings_and_esc_back(tmp_path):
+    """ENTER row r opens the STANDINGS of the row's season; ESC returns the exact
+    HISTORY state (cursor kept) then MENU"""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    hs, ss = dynview.SCREEN_HISTORY, dynview.SCREEN_STANDINGS
+    assert dynview.history_pos(data['hist']) == [3, 2, 1]   # season_no 3, 2, 1 newest first
+    s0 = press((hs, 0, 0), dynview.KEY_DOWN, data)          # row 1: season 2
+    s, _ex = dynview.step(s0, ENTER, data)
+    assert s == (ss, 0, 1)                       # cat = 3 recorded - pos 2 = 1
+    assert dynview.screen_title(s, data) == '1994 STANDINGS'
+    assert data['st_back'] == (hs, 0, 0, 1)
+    s2, _ex = dynview.step(s, ESC, data)
+    assert s2 == (hs, 0, 0, 1)
+    assert 'st_back' not in data                 # deleted after the one level
+    s3, _ex = dynview.step(s2, ESC, data)
+    assert s3 == (dynview.SCREEN_MENU, 0, 0)
+    # row 2 (the last): season 1, cat 2
+    s, _ex = dynview.step((hs, 0, 0, 2), ENTER, data)
+    assert s == (ss, 0, 2)
+    assert dynview.screen_title(s, data) == '1993 STANDINGS'
+    assert dynview.step(s, ESC, data)[0] == (hs, 0, 0, 2)
+
+
+def test_history_enter_key0_path_esc_goes_to_menu(tmp_path):
+    """STANDINGS opened another way (key 0 on the hub) deletes st_back first, so a
+    later ESC goes to MENU; T then ESC ESC keeps st_back, returning STANDINGS then
+    HISTORY (the standings league: T needs a MAJ team)"""
+    hs, ss, hub = dynview.SCREEN_HISTORY, dynview.SCREEN_STANDINGS, (dynview.SCREEN_MENU, 0, 0)
+    ldir = make_standings(tmp_path)
+    data = dynview.load_data(str(ldir))
+    press((hs, 0, 0), ENTER, data)               # arms st_back (state thrown away)
+    assert 'st_back' in data
+    s, _ex = dynview.step(hub, ord('0'), data)   # key 0: clears it
+    assert s == (ss, 0, 0) and 'st_back' not in data
+    assert dynview.step(s, ESC, data)[0] == hub  # ESC goes to MENU
+    # T then ESC ESC: TEAM HISTORY keeps st_back, so ESC returns STANDINGS then HISTORY
+    press((hs, 0, 0), ENTER, data)
+    st = press((ss, 0, 0), ord('T'), data)
+    assert st[0] == dynview.SCREEN_TEAMHIST
+    assert 'st_back' in data                     # untouched by T
+    back = dynview.step(st, ESC, data)[0]
+    assert back == (ss, 0, 0)
+    assert dynview.step(back, ESC, data)[0] == (hs, 0, 0)

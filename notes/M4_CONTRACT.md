@@ -1825,6 +1825,37 @@ renders the same framebuffers and walks the same states.
   rebuilds with the gcc command in tools/m4/dynview_c/build_dynview.py (-Werror clean);
   DYNVIEW.EXE is untouched.
 
+## C53. DYNVIEW HALL OF FAME position filter (added 2026-10-15)
+
+HALL OF FAME (SCREEN_HOF 2, a cursor screen) gains a position filter: the state's cat is
+the filter index 0..8 of HOF_FILTERS = [('ALL', None), ('P', None), ('C', (1,)),
+('1B', (2,)), ('2B', (3,)), ('3B', (4,)), ('SS', (5,)), ('OF', (6, 7, 8)), ('DH', (9,))].
+Reads only; writes nothing.
+
+hof_match(e, f): f == 0 always True; f == 1 (P) e['pitcher'] != 0; otherwise
+e['pitcher'] == 0 and e['pos1'] in HOF_FILTERS[f][1]. hof_order(hist, f=0) keeps only
+entries with status 3 that match the filter (the filter applies before the LIST_MAX cut),
+still by (HoF season descending, index ascending); hof_rows(hist, f=0) formats
+hof_order(hist, f) (the same seven COLS_HOF cells). Every caller passes the state's cat:
+row_entry, total_rows, rows and body_cols on HALL OF FAME.
+
+Keys: TAB (9) on HALL OF FAME cycles cat = (cat + 1) % 9 with page 0 and row 0. No other
+screen reacts to TAB. Title: 'HALL OF FAME' when cat == 0, else 'HALL OF FAME: ' + label
+('HALL OF FAME: SS'). FOOTERS[SCREEN_HOF] = 'TAB POSITION   PGUP PGDN   ESC MENU'.
+
+Filtered to nothing while history exists (the filter's list empty and cat != 0): one
+message row ('NO HALL OF FAMERS AT ' + label,) with COLS_SINGLE (the cursor there names
+no entry, ENTER does nothing, the row is never highlighted). cat == 0 with no members
+keeps today's behaviour exactly: an empty COLS_HOF table. ENTER on a row opens the PLAYER
+CARD of hof_order(hist, cat)[row]; ESC returns to the identical HOF state (cat kept)
+through card_back.
+
+C port: the same constants and rules; HOF_MATCH is a one-byte 9 x 2 x 16 table built at
+boot (no far array over 64 KB, no static array over 2 KB: hof_scan fills the List keybox
+and build_hof_rows formats only the page's rows from the List); the host binary is
+rebuilt with gcc after the parity gate. Parity covers the ALL frame with the new footer,
+P, OF with the cursor on row 1, the empty-filter message row, the card from a filtered
+row and ESC back.
 ## C30. PLAYOFFS postseason leaders (added 2026-10-15)
 
 The PLAYOFFS screen (SCREEN_PLAYOFFS = 14, state (14, page, cat), cat = seasons
@@ -1899,6 +1930,62 @@ g_lead_active, like the other session values) renders the same framebuffers.
   test that pinned the old footer text (the SEASON LEADERS column test of
   test_dynview_c13.py) pins the new one.
 
+
+## C56. DYNVIEW HISTORY cursor and STANDINGS jump (added 2026-10-15)
+
+SEASON HISTORY (SCREEN_HISTORY = 1, history_rows newest first) joins the cursor
+screens (C13.4 rules) and ENTER on a row opens that season's SEASON STANDINGS.
+Reads only; writes nothing.
+
+- history_pos(hist) -> [pos, ...]: the season-entry positions
+  (pos = 1..n, n = min(hist.seasons_recorded, SEASON_COUNT)) sorted by
+  (-season_no, pos), the exact order of history_rows' rows; history_rows keeps
+  its exact output.
+- SCREEN_HISTORY is in cursor_screen (Python and the C port): UP/DOWN/PGUP/PGDN
+  move the row cursor exactly as on HALL OF FAME (cursor_move, cursor_state,
+  pack(screen, row // ROWS_PER_PAGE, cat, row)), the cursor row is highlighted
+  the same way (C_TITLE_RED with white text), and no history
+  (seasons_recorded == 0) means no rows, so the cursor keys do nothing.
+- ENTER on HISTORY row r (r < len(rows)): cat = hist.seasons_recorded -
+  history_pos(hist)[r]; when cat >= 0, data['st_back'] = the packed HISTORY
+  state (cursor kept) and the new state is pack(SCREEN_STANDINGS, 0, cat).
+  Otherwise nothing happens.
+- ESC on SEASON STANDINGS: when data has 'st_back', return it and delete the
+  key (one level); otherwise MENU as before. STANDINGS entered any other way
+  (key 0 on the hub, TEAM HISTORY's th_back) deletes data['st_back'] first, so
+  a later ESC goes to MENU. T on STANDINGS (TEAM HISTORY) leaves st_back
+  untouched: ESC from TEAM HISTORY returns the standings state, a second ESC
+  then returns HISTORY.
+- FOOTERS[SCREEN_HISTORY] = 'ENTER STANDINGS   PGUP PGDN   ESC MENU' (Python
+  and the C port).
+- C port: cursor_screen, hist_scan (which already yields the rows' positions
+  in order) and one static State + flag pair (g_st_back, g_st_have, the
+  g_th_back pattern) for the kept HISTORY state; C89, no new static array, so
+  the DOS far-data budget is untouched. DYNVIEW.EXE is untouched; the host
+  binary rebuilds with the gcc command in tools/m4/dynview_c/build_dynview.py
+  (-Werror clean).
+
+## C59. DYNVIEW FIND ESC clears (added 2026-10-15)
+FIND PLAYER (SCREEN_FIND 18, state pack(18, page, 0, row); the query in data['find'], the
+C port's static g_find_q) gained a first ESC: ESC with a non-empty query clears it and
+resets the state to pack(SCREEN_FIND, 0, 0) (the prompt row). ESC with an empty query
+goes to (SCREEN_MENU, 0, 0) as before. The card round trip is untouched: ESC on a card
+opened from FIND still returns card_back with the query kept.
+- Footer: footer_text on FIND returns 'TYPE NAME  BKSP  ENTER CARD  ESC CLEAR' while the
+  query is non-empty, otherwise FOOTERS[SCREEN_FIND] = 'TYPE NAME  BKSP  ENTER CARD
+  ESC MENU' (the constant keeps the MENU text).
+- Every other key on FIND is unchanged: letters append their upper case (FIND_MAX 12 at
+  most), BACKSPACE (8) removes the last char, either edit resets the state to
+  pack(SCREEN_FIND, 0, 0), digits, TAB, PGUP and PGDN do nothing.
+- C port: dynview.c step clears g_find_q in its ESC branch (before the generic
+  SCREEN_MENU fallthrough), footer_of returns the CLEAR text on g_find_q[0]; C89, no
+  new static array. Host binary rebuilt with gcc -Werror.
+- Tests: test_dynview.py (state and footer rules, ESC after the cursor moved, the card
+  round trip unchanged), test_dynview_c13_c.py (framebuffer parity: the typed frame with
+  the ESC CLEAR footer, ESC once back to the prompt frame, ESC twice to the hub, ESC
+  after DOWN). Two expectations updated: the C50 test that pinned ESC-from-a-typed-FIND
+  to MENU now pins the prompt row, and a C50 test that pinned the MENU footer on a
+  non-empty query pins the CLEAR footer.
 
 ## C61. DYNVIEW MILESTONES row cursor (added 2026-10-15)
 - MILESTONES cat 0 is a cursor screen (state (4, page, 0, row)): cursor_screen is True for
