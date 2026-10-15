@@ -696,6 +696,10 @@ def main(argv):
         rosters.refresh_allstars(out)               # else the template's classic stars play the first All-Star game
         if year >= 1994:
             realign_lahman(db, year, out, template)
+        if year >= 1998:
+            # C71 (rig, 2026-10-15): 16 teams overflow the engine's 15 team indexes a league, and
+            # GENERATED refuses an odd (15/15) split, so a 30-team league does not play in-game yet
+            print('warning: %d builds 30 teams (NL 16), which the game cannot schedule (C71)' % year)
     except Exception as e:
         print('build failed: %s' % e)
         return 2

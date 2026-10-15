@@ -1696,8 +1696,8 @@ switches carry in team_list:clasalw1 is ANA 1997..2004 and LAA from 2005, clasnl
   rename_anaheim was (year >= 1997, after add_expansion_1998).
 - realign_lahman: 1994+ writes TEAMID.DAT from the pre-realignment MAJ and realigns to 3 divisions
   with the Lahman divID known table (HISTORY.DAT byte 0 = 1). For 1998+ the NL holds 16 teams, over
-  realign.realign's default 3-division cap of 15 (a tool cap; the GENERATED layout holds 8 teams a
-  division), so realign.realign takes a Python-only cap argument (default unchanged, the C port takes
+  realign.realign's default 3-division cap of 15 (called a tool cap here; C71 proved it is the
+  engine's: see C71), so realign.realign takes a Python-only cap argument (default unchanged, the C port takes
   none) and build_season passes cap=16. In the 2-division layout ARI fills NL slot 15, the hidden
   ALL STARS 2 entry (NUL-led stem); after the realign slot 15 is free (NL West has 5 teams), so
   realign_lahman copies the template MAJ's NL slot 15 name, abbr and stem back, as every other
@@ -2260,3 +2260,17 @@ C67 also fixed (brain, 2026-10-15): FIND PLAYER with no recorded season shows it
 prompt (and a typed query its NO PLAYER FOUND row) in COLS_SINGLE in both ports; the C
 port showed NO DYNASTY HISTORY YET and Python raised on a typed letter with no
 HISTORY.DAT.
+
+## C71. Lahman 1998+ (30 teams) does not play in-game (rig, 2026-10-15)
+- The engine indexes a league's teams 0..15 (teamids.slot_to_engine). With 3 divisions, division d slot i is
+  index 5*d + i, so a division holds at most 5 and index 15 is the hidden ALL STARS entry; with 2 divisions the
+  index is the slot (division 0 up to 8, division 1 up to 7). A league holds at most 15 teams either way.
+- L1998 as built by C46 (AL 5/4/5, NL 5/5/6): GENERATED accepts it (even counts) but HOU sits at index 15 and the
+  season never leaves APRIL 1 (dynasty_gate timeout after 2400 s, shot s114_sim_timeout.png).
+- The same league rebuilt 15/15 (MIL in the AL West, every division 5): Start New Season refuses GENERATED
+  ("NOT COMPATIBLE WITH THE SCHEDULE SELECTED. TRY ROUND ROBIN INSTEAD"; GENERATED needs an even count, C12.1).
+- Control: L1997 (28 teams, 5/4/5 both leagues) plays a full season and its playoffs, roll check clean.
+- So 1998..2012 (NL 16) and 2013+ (15/15) builds are not playable with the stock schedulers. build_season prints a
+  warning for 1998+. Paths: RE the GENERATED even-count check in the season start code (15/15 with a bye
+  a day), or ship 1998+ as a 28-team league (a product call for Will).
+
