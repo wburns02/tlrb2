@@ -3499,3 +3499,62 @@ def test_box_left_from_first_ws_game_into_pbox(tmp_path):
     write_box(ldir2, BOX_G0)
     data2 = dynview.load_data(str(ldir2))
     assert dynview.step((SB, 0, 0), dynview.KEY_LEFT, data2) == ((SB, 0, 0), 0)
+
+
+# ---------------------------------------------------------------- C27 MILESTONES WATCH
+def test_watch_offsets_and_message(tmp_path):
+    """watch_items through the reference renderer's own helpers: the WATCH rows of
+    make_data's league (3000-H hitter is retired so no row; the empty league shows the
+    message), the WATCH columns and the message row's COLS_SINGLE"""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    # entries 0 and 5 are retired; the role players have H = 10 + i <= 37: no watch rows
+    assert dynview.watch_items(data['hist']) == []
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    data2 = dynview.load_data(str(empty))
+    assert dynview.watch_items(data2['hist']) == []
+    # BODY: an active H-2950 batter and an active PSO-2995 pitcher
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    t = [0] * 25
+    t[AB], t[H] = 8000, 2950
+    write_player(d, 2, b'WACTCHA', b'W', status=1, totals=t)   # entry 2 was retired
+    p.write_bytes(bytes(d))
+    data3 = dynview.load_data(str(ldir))
+    items = dynview.watch_items(data3['hist'])
+    assert items == [(50, 3000, 2, 2, 2950)]
+    assert dynview.watch_rows(data3['hist']) == [('WACTCHA, W', '3000 H', '2950', '50')]
+
+
+def test_watch_state_and_clicks(tmp_path):
+    """LEFT/RIGHT toggle with page and row reset, WATCH is a cursor screen (mode 0 is not),
+    row_entry names the row's entry, and the title bands are LEFT/RIGHT on both modes"""
+    ldir, _ = make_data(tmp_path)
+    data = dynview.load_data(str(ldir))
+    p = ldir / 'HISTORY.DAT'
+    d = bytearray(p.read_bytes())
+    t = [0] * 25
+    t[AB], t[H] = 8000, 2950
+    write_player(d, 2, b'WACTCHA', b'W', status=1, totals=t)
+    t = [0] * 25
+    t[AB], t[HR] = 3000, 298
+    write_player(d, 3, b'NEARHR', b'N', status=1, totals=t)
+    p.write_bytes(bytes(d))
+    data = dynview.load_data(str(ldir))
+    MS = dynview.SCREEN_MILESTONES
+    s, _ex = dynview.step((MS, 2, 0), dynview.KEY_RIGHT, data)
+    assert s == (MS, 0, 1)
+    s2, _ex = dynview.step((MS, 0, 0, 5), dynview.KEY_LEFT, data)
+    assert s2 == (MS, 0, 1)
+    assert dynview.step(s2, dynview.KEY_RIGHT, data)[0] == (MS, 0, 0)
+    assert dynview.cursor_screen((MS, 0, 0)) is False
+    assert dynview.cursor_screen((MS, 0, 1)) is True
+    assert dynview.row_entry((MS, 0, 1, 0), data) == 3          # HR row sorts first
+    assert dynview.row_entry((MS, 0, 1, 1), data) == 2
+    assert dynview.row_entry((MS, 0, 1, 9), data) is None
+    s3, _ex = dynview.step((MS, 0, 1, 1), dynview.KEY_ENTER, data)
+    assert s3 == (dynview.SCREEN_CARD, 0, 2)
+    assert dynview.step(s3, dynview.KEY_ESC, data)[0] == (MS, 0, 1, 1)
+    assert dynview.click_to_key((MS, 0, 0), data, 159, 12) == (dynview.KEY_LEFT, None)
+    assert dynview.click_to_key((MS, 0, 1), data, 161, 18) == (dynview.KEY_RIGHT, None)

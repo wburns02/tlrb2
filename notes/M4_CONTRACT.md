@@ -1415,6 +1415,40 @@ the same framebuffers.
   whole-file buffer); the sums are 32-bit integers; the sums are cached per entry and
   recomputed only when the entry changes. Host builds with the gcc command in
   tools/m4/dynview_c/build_dynview.py (-Werror clean); DYNVIEW.EXE is untouched.
+## C27. MILESTONES watch (added 2026-10-15)
+
+MILESTONES (SCREEN_MILESTONES = 4) gains WATCH, cat 1: the active players within 10% of an
+unreached career milestone mark. Mode 0 (cat 0) is today's MILESTON.DAT list, unchanged
+except its footer. Python tools/m4/dynview.py is the reference; the C port dynview_c/dynview.c
+renders the same framebuffers and walks the same states. Reads HISTORY.DAT only; writes
+nothing.
+
+- watch_items(hist) -> [(need, mark, kind, entry, now)]: for each entry with status
+  STATUS_ACTIVE, for each stat key of history.MILESTONE_CAREER (H, HR, RBI, SB, W, PSO, SV;
+  now the entry's career total at history.TOTALS.index(key)), the lowest mark of that key
+  with now < mark; keep the item when now * 10 >= mark * 9 (within 10%); need = mark - now.
+  Sorted by (need * 1000 // mark, need, entry, kind) ascending, at most LIST_MAX (kind the
+  MILESTONE_CAREER kind of the mark, so a mark two keys share keeps its own kind; a need tie
+  breaks by entry then kind).
+- watch_rows(hist): one row per item, NAME (entry_name 16), '%d %s' % (mark, label),
+  '%d' % now, '%d' % need; label = the key with PSO shown as SO. No item or no history: one
+  row ('NO ACTIVE PLAYER NEAR A MILESTONE',) with COLS_SINGLE (no cursor highlight).
+- Columns COLS_WATCH = [('NAME', _cx(0), 16, 'L'), ('MARK', _cx(17), 9, 'L'),
+  ('NOW', _cx(27), 6, 'R'), ('NEED', _cx(35), 6, 'R')]. Title 'MILESTONE WATCH' for cat 1,
+  'MILESTONES' for cat 0. Footers: cat 0 'LEFT RIGHT WATCH   PGUP PGDN   ESC MENU'; cat 1
+  'ENTER CARD  LEFT RIGHT MODE  PGUP PGDN  ESC'.
+- LEFT and RIGHT on MILESTONES toggle cat 0 <-> 1 and reset page and row to 0 (state
+  (4, 0, 1) or (4, 0, 0)); SCREEN_MILESTONES joins LEFT_RIGHT_SCREENS, so a title click is
+  LEFT or RIGHT on both modes. Mode 0 has no cursor and pages as before.
+- WATCH is a cursor screen (cursor_screen true for (4, *, 1)): UP / DOWN / PGUP / PGDN move
+  the cursor as on HOF; row_entry returns the row's entry (None on the message row or past
+  the end); ENTER opens the PLAYER CARD of the row's entry and ESC returns to the identical
+  WATCH state.
+- C port: HISTORY.DAT entries stream one 160 B record at a time (no whole-file buffer), the
+  MILESTONE_CAREER kinds, TOTALS keys and marks are fixed tables, the items live in a FARDATA
+  table of LIST_MAX entries, the need-per-mille sort key is 32-bit (need < 1000), and the
+  insert keeps the exact Python total order. Host builds with the gcc command in
+  tools/m4/dynview_c/build_dynview.py (-Werror clean); DYNVIEW.EXE is untouched.
 
 ## C34. CREATE auto-fill (added 2026-10-14)
 
