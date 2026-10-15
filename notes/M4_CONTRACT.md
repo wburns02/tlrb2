@@ -1744,3 +1744,34 @@ C port: dynview.c mirrors the same state (row field), toggle and paging in its s
 card_head + honors render path; the host binary is rebuilt with gcc after the parity gate.
 Parity covers HONORS page 0 and page 1 of a batter, HONORS of an entry with no items, the
 HOF entry, and the SEASONS card with the new footer.
+## C53. DYNVIEW HALL OF FAME position filter (added 2026-10-15)
+
+HALL OF FAME (SCREEN_HOF 2, a cursor screen) gains a position filter: the state's cat is
+the filter index 0..8 of HOF_FILTERS = [('ALL', None), ('P', None), ('C', (1,)),
+('1B', (2,)), ('2B', (3,)), ('3B', (4,)), ('SS', (5,)), ('OF', (6, 7, 8)), ('DH', (9,))].
+Reads only; writes nothing.
+
+hof_match(e, f): f == 0 always True; f == 1 (P) e['pitcher'] != 0; otherwise
+e['pitcher'] == 0 and e['pos1'] in HOF_FILTERS[f][1]. hof_order(hist, f=0) keeps only
+entries with status 3 that match the filter (the filter applies before the LIST_MAX cut),
+still by (HoF season descending, index ascending); hof_rows(hist, f=0) formats
+hof_order(hist, f) (the same seven COLS_HOF cells). Every caller passes the state's cat:
+row_entry, total_rows, rows and body_cols on HALL OF FAME.
+
+Keys: TAB (9) on HALL OF FAME cycles cat = (cat + 1) % 9 with page 0 and row 0. No other
+screen reacts to TAB. Title: 'HALL OF FAME' when cat == 0, else 'HALL OF FAME: ' + label
+('HALL OF FAME: SS'). FOOTERS[SCREEN_HOF] = 'TAB POSITION   PGUP PGDN   ESC MENU'.
+
+Filtered to nothing while history exists (the filter's list empty and cat != 0): one
+message row ('NO HALL OF FAMERS AT ' + label,) with COLS_SINGLE (the cursor there names
+no entry, ENTER does nothing, the row is never highlighted). cat == 0 with no members
+keeps today's behaviour exactly: an empty COLS_HOF table. ENTER on a row opens the PLAYER
+CARD of hof_order(hist, cat)[row]; ESC returns to the identical HOF state (cat kept)
+through card_back.
+
+C port: the same constants and rules; HOF_MATCH is a one-byte 9 x 2 x 16 table built at
+boot (no far array over 64 KB, the per-page rows live compact in a far HofRow buffer of
+LIST_MAX with 24-byte cells and are copied per page); the host binary is rebuilt with
+gcc after the parity gate. Parity covers the ALL frame with the new footer, P, OF with
+the cursor on row 1, the empty-filter message row, the card from a filtered row and ESC
+back.
