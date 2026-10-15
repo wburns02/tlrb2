@@ -1285,6 +1285,167 @@ def test_box_no_playoffs_host_empty_file(tmp_path):
         assert open(os.path.join(d, 'BOXSCORE.DAT'), 'rb').read() == b''
 
 
+# ---------------- C23b: playoff round games (PLAYOFFS.A1..A4 / N1..N4) ----------------
+
+def round_maj_bytes(ds=(2, 3, 5, 6), lcs=(2, 5), nds=(16, 17, 18, 19), nlcs=(16, 21)):
+    """make_maj at 0x20d = 3 with the playoff bytes (engine ids) as given (ndiv 3: engine
+    2..9 = ALA02..ALA12 stable 2..9; NL engine 16..21 = NL00..NL08 stable 16..21).
+    Returns the 59771 B MAJ bytes."""
+    m = make_maj()
+    m.d[0x20d] = 3
+    S_AL, S_NL = S_AL_, S_NL_
+    # 4-byte slices of a bytearray resize on a shorter right-hand side: pad to 4
+    m.d[S_AL + 0x3d3:S_AL + 0x3d7] = (bytes(ds).ljust(4, b'\0') if ds else b'\0' * 4)
+    m.d[S_AL + 0x3d7], m.d[S_AL + 0x3d8] = lcs
+    m.d[S_NL + 0x3d3:S_NL + 0x3d7] = (bytes(nds).ljust(4, b'\0') if nds else b'\0' * 4)
+    m.d[S_NL + 0x3d7], m.d[S_NL + 0x3d8] = nlcs
+    return bytes(m.d)
+
+
+def round_league(tmp_path, tag, maj_bytes, archives):
+    """full_award_league + the MAJ maj_bytes + the round archives {name: games list}."""
+    ldir = str(tmp_path / tag)
+    os.makedirs(ldir)
+    full_award_league(ldir)
+    open(os.path.join(ldir, 'CLASSIC.MAJ'), 'wb').write(maj_bytes)
+    for name, games in archives.items():
+        with open(os.path.join(ldir, name), 'wb') as f:
+            f.write(playoffs_al(games))
+    return ldir
+
+
+S_AL_, S_NL_ = S_AL, S_NL
+
+# a full 10-game DS archive and its LCS: AL field engines 2, 3, 5, 6; LCS 2 vs 5; NL LCS 16 v 21
+DS_PAIR_A = (b'ALA02', b'ALA03')          # engines 2, 3
+DS_PAIR_B = (b'ALA08', b'ALA09')          # engines 5, 6
+LCS_AL = (b'ALA02', b'ALA08')             # engines 2, 5
+LCS_NL = (b'NL00', b'NL08')               # engines 16, 21
+
+ROUND_MAJ = round_maj_bytes()
+
+
+def round_case_archives():
+    """A1: a stale cross-league game; A2: 5 DS games of two series interleaved; A3 3 LCS
+    AL games; N1: 4 NL LCS games; N2: a 10-game DS archive of one series."""
+    return {
+        'PLAYOFFS.A1': [game(b'clasale1', b'NL00', 3, 5)],
+        'PLAYOFFS.A2': [game(*DS_PAIR_A, 1, 2), game(*DS_PAIR_B, 3, 4),
+                        game(DS_PAIR_B[1], DS_PAIR_B[0], 5, 6),
+                        game(DS_PAIR_A[1], DS_PAIR_A[0], 7, 8),
+                        game(*DS_PAIR_A, 9, 0)],
+        'PLAYOFFS.A3': [game(*LCS_AL, 2, 1), game(LCS_AL[1], LCS_AL[0], 1, 4),
+                        game(*LCS_AL, 6, 5)],
+        'PLAYOFFS.N1': [game(*LCS_NL, 1, 0), game(LCS_NL[1], LCS_NL[0], 2, 3),
+                        game(*LCS_NL, 4, 5), game(LCS_NL[1], LCS_NL[0], 7, 6)],
+        'PLAYOFFS.N2': [game(b'NL01', b'NL02', i % 7, (i + 1) % 7) for i in range(10)],
+                         # a second NL DS series (engines 17 / 18 -> stable 17 / 18)
+    }
+
+
+def test_round_games_host_parity(tmp_path):
+    """C23b: HISTWR and history.record_season on the round archive case: BOXSCORE.DAT has the
+    World Series rows first, then per round game the header (g 16 + q) then its rows."""
+    _build()
+    ldir = round_league(tmp_path, 'lg', ROUND_MAJ, dict(round_case_archives(),
+                                                        **{'PLAYOFFS.AL':
+                                                           [game(b'clasale1', b'NL03', 2, 4)]}))
+    host, py = str(tmp_path / 'host'), str(tmp_path / 'py')
+    for d in (host, py):
+        shutil.copytree(ldir, d)
+    hp = os.path.join(host, 'H.DAT')
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    rc = HISTWR(host, hp, ret)
+    assert rc.returncode == 0, rc.stderr
+    hp2 = os.path.join(py, 'H.DAT')
+    history.record_season(py, hp2, 1, None)
+    for name in ('H.DAT', MS_NAME, 'BOXSCORE.DAT'):
+        a = open(os.path.join(host, name), 'rb').read()
+        b = open(os.path.join(py, name), 'rb').read()
+        if name == 'H.DAT':
+            off, ent = first_diff(a, b)
+            assert off < 0, f'{name}: first diff at offset {off} (entry {ent})'
+        else:
+            assert a == b, f'{name} differs'
+    rows = history.box_entries(hp2)
+    # WS game 0 rows first, then the round header records in row order
+    heads = [r for r in rows if r[2] == 4]
+    assert [r[1] for r in heads] == list(range(16, 16 + len(heads)))
+    # q < 48: 5 + 3 + 4 + 10 = 22 round games kept (the stale WS in A1 is ignored)
+    assert len(heads) == 22
+    h0 = heads[0]
+    assert h0[1] == 16 and h0[4] == 1 + 8 * 0 and h0[5] == 1      # rnd 1, L 0, s 0, k 1
+    assert h0[6] == (1, 2, 0, 0, 0, 0, 0, 0)
+    # a game whose box bytes are all zero has no rows; any rows a round g has belong to
+    # this season (the archives here carry no box data beyond the runs/hits/errors sums)
+    for qi, h in enumerate(heads):
+        g = 16 + qi
+        for r in (x for x in rows if x[1] == g and x[2] != 4):
+            assert r[0] == 1
+    # the World Series game rows (g < 7) come before every round header
+    first_h = next(i for i, r in enumerate(rows) if r[2] == 4)
+    assert all(r[1] < 7 for r in rows[:first_h])
+
+
+def test_round_archive_only_season_host_parity(tmp_path):
+    """C23b: a season with round archives and no PLAYOFFS.AL: HISTORY.DAT, MILESTON.DAT and
+    BOXSCORE.DAT still match the Python reference byte for byte."""
+    _build()
+    ldir = round_league(tmp_path, 'lg', ROUND_MAJ, round_case_archives())
+    host, py = str(tmp_path / 'host'), str(tmp_path / 'py')
+    for d in (host, py):
+        shutil.copytree(ldir, d)
+    hp = os.path.join(host, 'H.DAT')
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    rc = HISTWR(host, hp, ret)
+    assert rc.returncode == 0, rc.stderr
+    hp2 = os.path.join(py, 'H.DAT')
+    history.record_season(py, hp2, 1, None)
+    for name in ('H.DAT', MS_NAME, 'BOXSCORE.DAT'):
+        a = open(os.path.join(host, name), 'rb').read()
+        b = open(os.path.join(py, name), 'rb').read()
+        if name == 'H.DAT':
+            off, ent = first_diff(a, b)
+            assert off < 0, f'{name}: first diff at offset {off} (entry {ent})'
+        else:
+            assert a == b, f'{name} differs'
+    assert len(open(os.path.join(py, 'BOXSCORE.DAT'), 'rb').read()) > 0
+
+
+def test_round_two_division_host_parity(tmp_path):
+    """C23b: a 2-division league: DS-shaped games are dropped, LCS kept; HISTWR matches Python."""
+    _build()
+    m = make_maj()
+    S_AL_, S_NL_2 = S_AL, S_NL
+    m.d[S_AL_ + 0x3d7], m.d[S_AL_ + 0x3d8] = 2, 9       # engines: ALA02 vs ALA09
+    archives = {'PLAYOFFS.A1': [game(b'ALA03', b'ALA04', 1, 1)],          # DS-shaped: dropped
+                'PLAYOFFS.A2': [game(b'ALA02', b'ALA09', 3, 2),
+                                game(b'ALA09', b'ALA02', 1, 4)]}
+    ldir = str(tmp_path / 'lg')
+    os.makedirs(ldir)
+    full_award_league(ldir)
+    open(os.path.join(ldir, 'CLASSIC.MAJ'), 'wb').write(bytes(m.d))
+    for name, games in archives.items():
+        open(os.path.join(ldir, name), 'wb').write(playoffs_al(games))
+    host, py = str(tmp_path / 'host'), str(tmp_path / 'py')
+    for d in (host, py):
+        shutil.copytree(ldir, d)
+    hp = os.path.join(host, 'H.DAT')
+    ret = os.path.join(str(tmp_path), 'R.DAT')
+    open(ret, 'wb').write(bytes(1))
+    rc = HISTWR(host, hp, ret)
+    assert rc.returncode == 0, rc.stderr
+    hp2 = os.path.join(py, 'H.DAT')
+    history.record_season(py, hp2, 1, None)
+    a = open(os.path.join(host, 'BOXSCORE.DAT'), 'rb').read()
+    b = open(os.path.join(py, 'BOXSCORE.DAT'), 'rb').read()
+    assert a == b
+    heads = [r for r in history.box_entries(hp2) if r[2] == 4]
+    assert len(heads) == 2 and all(r[4] == 2 for r in heads)     # rnd 2 only
+
+
 # ---------------- C12.3 / C12.7: 3 divisions, TEAMID.DAT and stable ids ----------------
 
 def classic_maj():

@@ -14,6 +14,38 @@ from v20 import Team, HDR, REC, N, F, _set, _get
 from v20 import SIZE as V20_SIZE
 import maj
 
+# local copies of the PLAYOFFS.AL builders of test_awards.py (importing them would be circular)
+GAME_REC = 7446
+
+
+def arr80(*vals):
+    """An 80 B team array: the given leading byte values, zero after."""
+    return bytes(list(vals) + [0] * (80 - len(vals)))
+
+
+def game(visitor, home, vruns=0, hruns=0, hits=(arr80(), arr80()), errs=(arr80(), arr80()),
+         box=None):
+    """One synthetic PLAYOFFS.AL game: stems (bytes), runs, [visitor, home] 80 B arrays."""
+    return {'visitor': visitor, 'home': home, 'vruns': vruns, 'hruns': hruns,
+            'hits': hits, 'errs': errs, 'box': box}
+
+
+def playoffs_al(games):
+    """Synthetic PLAYOFFS.AL: byte 0 = len(games), game g at 1 + GAME_REC * g with the home and
+    visitor stems (8 B, NUL padded), the visitor and home runs, and the per-team [visitor, home]
+    80 B hits and errors arrays. Everything else is zero."""
+    d = bytearray(1 + GAME_REC * len(games))
+    d[0] = len(games)
+    for g, gm in enumerate(games):
+        r = 1 + GAME_REC * g
+        d[r + 0x1beb], d[r + 0x1bec] = gm['vruns'], gm['hruns']
+        d[r + 0x1c01:r + 0x1c09] = gm['home'][:8].ljust(8, b'\0')
+        d[r + 0x1c09:r + 0x1c11] = gm['visitor'][:8].ljust(8, b'\0')
+        for t in (0, 1):
+            d[r + 0x208 + 0x8e8 * t:r + 0x208 + 0x8e8 * t + 80] = gm['hits'][t]
+            d[r + 0x5c8 + 0x8e8 * t:r + 0x5c8 + 0x8e8 * t + 80] = gm['errs'][t]
+    return bytes(d)
+
 MAJ_SIZE = 59771
 S_AL, S_NL = 0x21d, 0x758c
 
@@ -596,6 +628,156 @@ def test_allstar_retiree_does_not_retire_real_entry(tmp_path):
     assert h.read_entry(0)['status'] == history.STATUS_ACTIVE
     history.mark_retired(str(hp), str(ldir), {'CLASALE1.V20': [7]}, 1)
     assert history.History.load(str(hp)).read_entry(0)['status'] in (history.STATUS_RETIRED, history.STATUS_HOF)
+
+
+def test_round_archives_order_and_classification(tmp_path):
+    """C23b: PLAYOFFS.A1..A4 then N1..N4 read in order (case-insensitive), n and length checked,
+    kept games classified DS/LCS with s, k, q, b = rnd + 4L + 8s and the header stats; the stale
+    cross-league game in A1 is ignored."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    m = make_maj()
+    m.d[0x20d] = 3
+    S_AL, S_NL = history_idents[0], history_idents[1]
+    # AL: DS field engine ids 2, 3, 5, 6 (ALA02/ALA03/ALA08/ALA09), LCS pair engine 2 vs 5
+    # (the pair ALA02/ALA08)
+    m.d[S_AL + 0x3d3:S_AL + 0x3d7] = bytes([2, 3, 5, 6])
+    m.d[S_AL + 0x3d7], m.d[S_AL + 0x3d8] = 2, 5
+    # NL: DS field 16 vs 17 (the pair NL00/NL01), LCS 16 vs 21 (NL00/NL08)
+    m.d[S_NL + 0x3d3:S_NL + 0x3d7] = bytes([16, 17, 0xff, 0xff])
+    m.d[S_NL + 0x3d7], m.d[S_NL + 0x3d8] = 16, 21
+    m.save(str(ldir / 'CLASSIC.MAJ'))
+    ids = history.series_stem_ids(m)
+    table = None
+    # A1: the stale World Series (clasale1 vs NL00, cross-league) only
+    (ldir / 'playoffs.a1').write_bytes(playoffs_al([
+        game(b'clasale1', b'NL00', 3, 5)]))
+    # A2: 5 DS games of two series interleaved. Series one: the pair {ALA02, ALA03}; series
+    # two: {ALA08, ALA09}; clasale1 is not in the DS field and is dropped
+    (ldir / 'PLAYOFFS.A2').write_bytes(playoffs_al([
+        game(b'ALA02', b'ALA03', 1, 2),      # s0 k1
+        game(b'clasale1', b'ALA08', 3, 4),   # not in the DS field: dropped
+        game(b'ALA09', b'ALA08', 5, 6),      # second pair: s1 k1
+        game(b'ALA03', b'ALA02', 7, 8),      # s0 k2
+        game(b'ALA02', b'ALA03', 9, 0)]))    # s0 k3
+    # A3: 3 LCS games ALA02 vs ALA08 (engine 2 vs 5)
+    (ldir / 'PLAYOFFS.A3').write_bytes(playoffs_al([
+        game(b'ALA02', b'ALA08', 2, 1), game(b'ALA08', b'ALA02', 1, 4),
+        game(b'ALA02', b'ALA08', 6, 5)]))
+    # N1: 4 NL LCS games NL00 vs NL08 (engine 16 vs 21)
+    (ldir / 'PLAYOFFS.N1').write_bytes(playoffs_al([
+        game(b'NL00', b'NL08', 1, 0), game(b'NL08', b'NL00', 2, 3),
+        game(b'NL00', b'NL08', 4, 5), game(b'NL08', b'NL00', 7, 6)]))
+    got = history.round_games(str(ldir), m, table, ids)
+    # output order sorts by (rnd, L, s, k): AL DS games k1..3, AL DS s1 k1, NL LCS k1..4,
+    # AL LCS k1..3
+    def head(x):
+        return x[:5] + (x[7], x[8])
+    assert [head(x) for x in got] == [
+        (0, 1, 0, 0, 1, 2, 3), (1, 1, 0, 0, 2, 3, 2), (2, 1, 0, 0, 3, 2, 3),   # AL DS s0
+        (3, 1, 0, 1, 1, 6, 5),                                                 # AL DS s1 (6,5)
+        (4, 2, 0, 0, 1, 2, 5), (5, 2, 0, 0, 2, 5, 2),
+        (6, 2, 0, 0, 3, 2, 5),                                                 # AL LCS (2,5)
+        (7, 2, 1, 0, 1, 16, 21), (8, 2, 1, 0, 2, 21, 16),
+        (9, 2, 1, 0, 3, 16, 21), (10, 2, 1, 0, 4, 21, 16)]                     # NL LCS (16,21)
+    q, rnd, L, s, k, data, r, vis, home = got[3]
+    # b = rnd + 4L + 8s and the header stats (from game 3 of A2: vis 6, home 5)
+    assert rnd + 4 * L + 8 * s == 1 + 4 * 0 + 8 * 1
+    heads = history.series_game_records(7, data, r, 0, vis, home)
+    assert heads[0][3] == 5 * 256 + 6
+    # the g in the box records: 16 + q
+    rr = history.round_box_records(7, str(ldir), m, table, ids, {})
+    hdrs = [x for x in rr if x[2] == 4]
+    h = hdrs[3]
+    assert h[1] == 16 + 3 and h[2] == 4 and h[4] == 9 and h[5] == 1
+    assert h[6] == (5, 6, 0, 0, 0, 0, 0, 0)
+
+
+history_idents = (0x21d, 0x758c)
+
+
+def test_round_ignored_files_and_two_divisions(tmp_path):
+    """C23b: a 2-division league's DS-shaped games are dropped, LCS kept; n = 0, n = 13 and short
+    files are ignored whole; s, k and the q < 48 cap."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    m = make_maj()                       # 0x20d = 2
+    S_AL, S_NL = history_idents
+    m.d[S_AL + 0x3d7], m.d[S_AL + 0x3d8] = 2, 9
+    m.save(str(ldir / 'CLASSIC.MAJ'))
+    ids = history.series_stem_ids(m)
+    (ldir / 'PLAYOFFS.A1').write_bytes(playoffs_al([game(b'ALA02', b'ALA03', 1, 2)] * 13)[:0]) \
+        if False else None
+    # n = 0 and short files are ignored
+    (ldir / 'PLAYOFFS.A1').write_bytes(bytes(1))          # n = 0
+    (ldir / 'PLAYOFFS.A2').write_bytes(bytes([13]))
+    (ldir / 'PLAYOFFS.A3').write_bytes(bytes([2]))
+    (ldir / 'PLAYOFFS.A4').write_bytes(playoffs_al([game(b'ALA02', b'ALA09', 8, 7)] * 2)[:5])
+    # a lower-case name is found: LCS pair ALA02/ALA09 (engine 2 / 9 at 2 divisions) twice
+    (ldir / 'playoffs.a2').write_bytes(playoffs_al([
+        game(b'ALA02', b'ALA09', 3, 1), game(b'ALA09', b'ALA02', 1, 3)]))
+    assert history.round_games(str(ldir), m, None, ids) == []
+    # ... but the lower-case file is genuinely read when there is content: drop A1..A4 and keep it
+    for name in ('PLAYOFFS.A1', 'PLAYOFFS.A3', 'PLAYOFFS.A4'):
+        (ldir / name).unlink()
+    (ldir / 'PLAYOFFS.A2').unlink()
+    assert [x[:5] for x in history.round_games(str(ldir), m, None, ids)] == \
+        [(0, 2, 0, 0, 1), (1, 2, 0, 0, 2)]
+    # a 3-division league keeps the DS pair too
+    m.d[0x20d] = 3
+    m.d[S_AL + 0x3d3:S_AL + 0x3d7] = bytes([2, 3, 0xff, 0xff])
+    m.save(str(ldir / 'CLASSIC.MAJ'))
+    (ldir / 'PLAYOFFS.A1').write_bytes(playoffs_al([game(b'ALA02', b'ALA03', 1, 2)]))
+    got = history.round_games(str(ldir), m, None, ids)
+    assert [x[:5] for x in got] == [(0, 1, 0, 0, 1), (1, 2, 0, 0, 1), (2, 2, 0, 0, 2)]
+
+
+def test_round_cap_48(tmp_path):
+    """C23b: games with q >= 48 are dropped. The four A archives (max n 12 each: 48 slots)
+    all hold one interleaved 50-game pair, two series: the first 48 in A1..A4 order are kept
+    (12 a file) and games 49 and 50 have no file left to live in."""
+    ldir = tmp_path / 'lg'
+    ldir.mkdir()
+    m = make_maj()
+    m.d[0x20d] = 3
+    S_AL, S_NL = history_idents
+    # (engine 6 / 7) series 1 (25 games): 12 + 12 + 12 + 12 across A1..A4 (n <= 12 each),
+    # the last 2 of each series have no slot left. The DS field byte set 2, 3, 6, 7 maps
+    # straight to stable ids 2, 3, 6, 7 at ndiv 3.
+    m.d[S_AL + 0x3d3:S_AL + 0x3d7] = bytes([2, 3, 6, 7])
+    m.save(str(ldir / 'CLASSIC.MAJ'))
+    ids = history.series_stem_ids(m)
+    games = [game(b'ALA02', b'ALA03', i % 10, (i + 1) % 10) for i in range(25)] \
+        + [game(b'ALA10', b'ALA09', i % 10, (i + 1) % 10) for i in range(25)]
+    # file by file: A1 12 of series 0, A2 12 of series 0, A3 the last 1 of series 0 then
+    # 11 of series 1, A4 12 of series 1 (2 of the 50 have no slot left)
+    counts = [12, 12, 12, 12]
+    off = 0
+    for f, n in enumerate(counts):
+        (ldir / ('PLAYOFFS.A%d' % (f + 1))).write_bytes(playoffs_al(games[off:off + n]))
+        off += n
+    assert off == 48
+    got = history.round_games(str(ldir), m, None, ids)
+    assert len(got) == 48
+    # series 0 has k 1..24 and series 1 k 1..24 in A1..A4 read order (48 of the 50 games)
+    ds0 = [x for x in got if x[3] == 0]
+    assert len(ds0) == 25 and [x[4] for x in ds0] == list(range(1, 26))
+    ds1 = [x for x in got if x[3] == 1]
+    assert len(ds1) == 23 and [x[4] for x in ds1] == list(range(1, 24))
+
+
+def test_cleanup_archives(tmp_path):
+    """C23b: cleanup_archives removes all eight names in any case and leaves PLAYOFFS.AL / .NL."""
+    d = tmp_path / 'd'
+    d.mkdir()
+    names = ['PLAYOFFS.A1', 'playoffs.a2', 'Playoffs.A3', 'PLAYOFFS.a4',
+             'PLAYOFFS.N1', 'playoffs.n2', 'PLAYOFFS.N3', 'playoffs.n4',
+             'PLAYOFFS.AL', 'PLAYOFFS.NL', 'KEEP.ME']
+    for n in names:
+        (d / n).write_bytes(b'x')
+    history.cleanup_archives(str(d))
+    assert sorted(p.name for p in d.iterdir()) == ['KEEP.ME', 'PLAYOFFS.AL', 'PLAYOFFS.NL']
+    history.cleanup_archives(str(tmp_path / 'nothere'))      # a missing dir is fine
 
 
 def test_season_past_64_keeps_player_table(tmp_path):

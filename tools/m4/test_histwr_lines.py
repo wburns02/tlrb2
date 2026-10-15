@@ -390,3 +390,69 @@ def test_dos_build_exit_zero():
     r = subprocess.run([sys.executable, os.path.join(TH.HERE_H, 'build_histwr.py')],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# ---------------- C23b: the default mode deletes the round archives ----------------
+
+ARCH_NAMES = ['PLAYOFFS.A1', 'PLAYOFFS.A2', 'PLAYOFFS.A3', 'PLAYOFFS.A4',
+              'PLAYOFFS.N1', 'PLAYOFFS.N2', 'PLAYOFFS.N3', 'PLAYOFFS.N4']
+
+
+def round_pair(tmp_path):
+    """A pre-roll league with the eight archive names (as on disk, mixed case) in both the
+    league dir and its copy-as-snapshot, and PLAYOFFS.AL / .NL with KEEP bytes."""
+    ldir = tmp_path / 'TEAMS' / 'CLASSIC'
+    ldir.mkdir(parents=True)
+    pre_roll_league(ldir, 1)
+    keep = ['PLAYOFFS.AL', 'PLAYOFFS.NL']
+    for name in ARCH_NAMES:
+        (ldir / name.lower() if name[9] in '1234' else ldir / name).write_bytes(  # noqa
+            bytes([1]) + bytes(100))
+    for name in keep:
+        (ldir / name).write_bytes(b'KEEP' + bytes(100))
+    return ldir
+
+
+def test_default_mode_deletes_archives_from_snapshot_and_live(tmp_path):
+    """No arguments, rc 0: the eight archive names are gone from the snapshot dir and the
+    live league dir; PLAYOFFS.AL / .NL stay."""
+    ldir = round_pair(tmp_path)
+    snap = tmp_path / 'C:' / 'DYNSNAP'
+    shutil.copytree(ldir, snap)
+    before = {p.name for p in snap.iterdir()}
+    rc = host(cwd=str(tmp_path))
+    assert rc.returncode == 0, rc.stderr
+    left = {p.name for p in snap.iterdir()}
+    assert 'PLAYOFFS.AL' in left and 'PLAYOFFS.NL' in left
+    for name in ARCH_NAMES:
+        assert name not in left and name.upper() not in {x.upper() for x in left}
+    live_left = {p.name for p in ldir.iterdir()}
+    assert 'PLAYOFFS.AL' in live_left and 'PLAYOFFS.NL' in live_left
+    for name in ARCH_NAMES:
+        assert name not in live_left and name.upper() not in {x.upper() for x in live_left}
+    # the run itself still recorded the season (HISTORY.DAT exists)
+    assert (tmp_path / 'TEAMS' / 'CLASSIC' / 'HISTORY.DAT').exists()
+    assert before - {n.lower() if n[9] in '1234' else n for n in ARCH_NAMES}  # sanity: mix
+
+
+def test_explicit_args_keep_archives(tmp_path):
+    """PRE HIST RET: the pre dir's archives are untouched."""
+    ldir = round_pair(tmp_path)
+    hp = tmp_path / 'H.DAT'
+    ret = tmp_path / 'R.DAT'
+    ret.write_bytes(bytes(1))
+    rc = host(str(ldir), str(hp), str(ret))
+    assert rc.returncode == 0, rc.stderr
+    for name in ARCH_NAMES:
+        assert (ldir / name.lower() if name[9] in '1234' else ldir / name).exists()
+
+
+def test_cleanup_archives_python_leaves_al_nl(tmp_path):
+    """history.cleanup_archives removes all eight names in any case and keeps PLAYOFFS.AL/.NL."""
+    import history as history_mod
+    d = tmp_path / 'zz'
+    d.mkdir()
+    for name in ARCH_NAMES + ['PLAYOFFS.AL', 'PLAYOFFS.NL', 'X.DAT']:
+        (d / name).write_bytes(b'x')
+    history_mod.cleanup_archives(str(d))
+    assert sorted(p.name for p in d.iterdir()) == ['PLAYOFFS.AL', 'PLAYOFFS.NL', 'X.DAT']

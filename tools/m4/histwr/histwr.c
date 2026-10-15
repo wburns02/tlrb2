@@ -1782,6 +1782,329 @@ bad:
     return -1;
 }
 
+/* ---------------- C23b: playoff round games (division series, LCS) ---------------- */
+
+/* the round archive names in read order (0..3 from PLAYOFFS.AL, 4..7 from .NL); each is
+ * matched case-insensitively in the dir */
+#define ARCH_GAME_REC 7446L
+#define ARCH_MAX_GAMES 12
+#define ARCHIVE_SLOTS 8
+#define ROUND_KEEP 48
+
+static const char FARDATA round_names[ARCHIVE_SLOTS][12] = {
+    "PLAYOFFS.A1", "PLAYOFFS.A2", "PLAYOFFS.A3", "PLAYOFFS.A4",
+    "PLAYOFFS.N1", "PLAYOFFS.N2", "PLAYOFFS.N3", "PLAYOFFS.N4" };
+
+/* the on-disk name of archive slot which (any case), or 0 when absent. scan_dir "" lists
+ * every name upper-cased (l > 0), so the name is already matched case-insensitively */
+static int find_archive(const char *dir, int which, char *out)
+{
+    char scan[MAXV][16];
+    int n, i;
+    if (which < 0 || which >= ARCHIVE_SLOTS)
+        return 0;
+    n = scan_dir(dir, "", scan);
+    for (i = 0; i < n; i++) {
+        if (strcmp(scan[i], round_names[which]) == 0) {
+            strcpy(out, scan[i]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* one kept round game: where it came from and how it classified */
+typedef struct {
+    uint8_t file_ix;              /* archive slot 0..7 */
+    char fname[13];               /* its on-disk name (any case) */
+    uint8_t game_ix;              /* game index within the file */
+    uint8_t rnd, L, s, k;
+    uint8_t vis, home;            /* stable ids */
+} RoundGame;
+
+/* the stable ids of league L's LCS pair and division-series field (engine ids via
+ * ti_id_of_engine; 0xff entries never match). Returns 1 when the MAJ has 3 divisions. */
+static int round_field_ids(const Maj *m, int L, int *lcs0, int *lcs1,
+                           int *ds0, int *ds1, int *ds2, int *ds3)
+{
+    const uint8_t *tab = m->have_table ? m->table : NULL;
+    long S = L ? MAJ_S_NL : MAJ_S_AL;
+    int j;
+    int vals[4];
+    *lcs0 = ti_id_of_engine(m->d, MAJ_SIZE, tab, m->d[S + 0x3d7]);
+    *lcs1 = ti_id_of_engine(m->d, MAJ_SIZE, tab, m->d[S + 0x3d8]);
+    for (j = 0; j < 4; j++)
+        vals[j] = ti_id_of_engine(m->d, MAJ_SIZE, tab, m->d[S + 0x3d3 + j]);
+    *ds0 = vals[0];
+    *ds1 = vals[1];
+    *ds2 = vals[2];
+    *ds3 = vals[3];
+    return ti_ndiv(m->d, MAJ_SIZE) == 3;
+}
+
+/* classify one same-league game: 2 (LCS) when the unordered pair equals the LCS pair, else
+ * 1 (division series) when ds_ok (3 divisions), neither id is 0xff and both are in the DS
+ * field, else 0 (dropped). */
+static int round_classify(uint8_t vis, uint8_t home, int lcs0, int lcs1, int ds_ok,
+                          int ds0, int ds1, int ds2, int ds3)
+{
+    int a = vis < home ? vis : home;
+    int b = vis < home ? home : vis;
+    int c0 = lcs0 < lcs1 ? lcs0 : lcs1;
+    int c1 = lcs0 < lcs1 ? lcs1 : lcs0;
+    int f[4], i, na = 0, nb = 0;
+    if (c0 != 0xff && c1 != 0xff && c0 == a && c1 == b)
+        return 2;
+    if (!ds_ok || a == 0xff || b == 0xff)
+        return 0;
+    f[0] = ds0; f[1] = ds1; f[2] = ds2; f[3] = ds3;
+    for (i = 0; i < 4; i++) {
+        if (f[i] == a)
+            na = 1;
+        if (f[i] == b)
+            nb = 1;
+    }
+    return (na && nb) ? 1 : 0;
+}
+
+/* the archive's game count and length check: n = byte 0 kept when the file is at least
+ * 1 + 7446 * n bytes with n in 1..12; 0 ok, 1 no file or ignored */
+static int archive_head(const char *path, int *n)
+{
+    FILE *p = fopen(path, "rb");
+    long len;
+    int c;
+    if (!p)
+        return 1;
+    if (fseek(p, 0, SEEK_END) != 0 || (len = ftell(p)) < 0 || fseek(p, 0, SEEK_SET) != 0) {
+        fclose(p);
+        return 1;
+    }
+    c = fgetc(p);
+    fclose(p);
+    if (c == EOF || c < 1 || c > ARCH_MAX_GAMES || len < 1 + ARCH_GAME_REC * c)
+        return 1;
+    *n = c;
+    return 0;
+}
+
+/* (rnd, L, s, k) compare for the output sort */
+static int round_cmp(const RoundGame *a, const RoundGame *b)
+{
+    if (a->rnd != b->rnd) return a->rnd - b->rnd;
+    if (a->L != b->L) return a->L - b->L;
+    if (a->s != b->s) return a->s - b->s;
+    return a->k - b->k;
+}
+
+/* the per-side 80 B sum capped at 255 (series_records hits/errs rule) */
+static int sum80_span(const uint8_t *span, long off)
+{
+    uint32_t s = 0;
+    int i;
+    for (i = 0; i < 80; i++)
+        s += span[off + i];
+    return s > 255 ? 255 : (int)s;
+}
+
+/* one box stat of id i from a team block span already at span + BOX_TEAM * t */
+static uint8_t box_val_span(const uint8_t *base, const BoxStat *bs, int i)
+{
+    const uint8_t *p = base + (bs->off - BOX_LO);
+    uint32_t s;
+    if (!bs->pair)
+        return p[i];
+    s = (uint32_t)p[2 * i] + p[2 * i + 1];
+    return (uint8_t)(s > 255 ? 255 : s);
+}
+
+/* the box rows of one side from the game span (side t, team id tid) into bx with game g:
+ * the same sorting and stats as box_side reads from a file; the span IS the game record
+ * (7446 B starting at the game offset r, so team block base = BOX_TEAM * t) */
+static int box_side_span(FILE *bx, const uint8_t *span, uint16_t season_no, uint8_t g,
+                         int t, int32_t tid, uint8_t *statbuf)
+{
+    const uint8_t *b = span + BOX_B_OFF + 40L * t;
+    const uint8_t *base = span + BOX_TEAM * t;
+    int i, k, ord, slot;
+    (void)statbuf;
+    for (slot = 0; slot <= 8; slot++)
+        for (ord = 0; ord < 16; ord++)
+            for (i = 0; i < 40; i++) {
+                uint8_t st[8];
+                if (b[i] == 0 || (b[i] & 15) != slot || (b[i] >> 4) != ord)
+                    continue;
+                for (k = 0; k < 8; k++)
+                    st[k] = box_val_span(base, &box_bat[k], i);
+                if (box_put(bx, season_no, g, (uint8_t)t, box_idx(tid, i), b[i],
+                            (uint8_t)i, st) != 0)
+                    return -1;
+            }
+    for (ord = 0; ord < 16; ord++)
+        for (i = 0; i < 16; i++) {
+            uint8_t st[8];
+            if (b[i] == 0 || (b[i] >> 4) != ord)
+                continue;
+            for (k = 0; k < 8; k++)
+                st[k] = box_val_span(base, &box_pit[k], i);
+            if ((b[i] & 15) != 9 && st[0] == 0 && st[7] == 0)
+                continue;
+            if (box_put(bx, season_no, g, (uint8_t)(t | 2), box_idx(tid, i), b[i],
+                        (uint8_t)i, st) != 0)
+                return -1;
+        }
+    return 0;
+}
+
+/* C23b: the round games' header + box rows into bx, keeping at most one game record span in
+ * memory. Pass 1 walks the eight archives (read order) and their games (stem pair -> and
+ * (rnd, L, s, k)), pass 2 sorts and writes. Returns 0, or -1 on error. */
+static int round_pass(const char *pre_dir, FILE *bx, uint16_t season_no)
+{
+    static RoundGame FARDATA kept[ROUND_KEEP];
+    static uint8_t FARDATA span[ARCH_GAME_REC];
+    /* first-appearance order and 1-based game counts per (L, rnd slot 0 = DS, 1 = LCS) over
+     * the unordered pair (lo, hi) of stable ids */
+    static uint8_t FARDATA s_seen[2][2][32][32];
+    static uint8_t FARDATA k_seen[2][2][32][32];
+    static uint8_t next_s[2][2];
+    int nk = 0, nd3 = 1, L, i, q, t;
+    int lcs0[2], lcs1[2], ds0[2], ds1[2], ds2[2], ds3[2];
+    memset(s_seen, 0xff, sizeof s_seen);
+    for (L = 0; L < 2; L++) {
+        int d3 = round_field_ids(&g_maj, L, &lcs0[L], &lcs1[L], &ds0[L], &ds1[L],
+                                 &ds2[L], &ds3[L]);
+        if (L == 0)
+            nd3 = d3;
+    }
+    for (i = 0; i < ARCHIVE_SLOTS; i++) {
+        char fname[16], path[600];
+        int n, g;
+        if (!find_archive(pre_dir, i, fname))
+            continue;
+        if (!path_join(path, sizeof path, pre_dir, fname))
+            continue;
+        if (archive_head(path, &n) != 0)
+            continue;
+        for (g = 0; g < n; g++) {
+            FILE *p;
+            long r = 1 + ARCH_GAME_REC * g;
+            char hup[9], vup[9];
+            int hid, vid, cls, lo, hi, ds_ok, pix, slot, j, k2;
+            p = fopen(path, "rb");
+            if (!p)
+                return -1;
+            if (fseek(p, r + 0x1c01, SEEK_SET) != 0
+                || fread(span, 1, 16, p) != 16) {
+                fclose(p);
+                return -1;
+            }
+            fclose(p);
+            for (j = 0; j < 8 && span[0 + j]; j++)
+                hup[j] = (char)span[j];
+            hup[j] = 0;
+            for (j = 0; j < 8 && span[8 + j]; j++)
+                vup[j] = (char)span[8 + j];
+            vup[j] = 0;
+            if (hup[0] == 0 || vup[0] == 0)
+                continue;
+            to_upper((uint8_t *)hup);
+            to_upper((uint8_t *)vup);
+            hid = vid = -1;
+            for (k2 = 0; k2 < 32; k2++) {
+                if (strcmp(hup, g_maj.stem_up[k2]) == 0)
+                    hid = k2;
+                if (strcmp(vup, g_maj.stem_up[k2]) == 0)
+                    vid = k2;
+            }
+            if (hid < 0 || vid < 0)
+                continue;
+            if ((hid < 16) != (vid < 16))
+                continue;                 /* cross-league (a stale World Series) */
+            L = hid < 16 ? 0 : 1;
+            ds_ok = nd3;
+            cls = round_classify((uint8_t)vid, (uint8_t)hid, lcs0[L], lcs1[L], ds_ok,
+                                 ds0[L], ds1[L], ds2[L], ds3[L]);
+            if (cls == 0)
+                continue;
+            slot = cls - 1;               /* 0 DS, 1 LCS */
+            if (vid <= hid) { lo = vid; hi = hid; }
+            else { lo = hid; hi = vid; }
+            pix = s_seen[L][slot][lo][hi];
+            if (pix == 0xff) {
+                pix = next_s[L][slot];
+                s_seen[L][slot][lo][hi] = (uint8_t)(pix + 1);
+                next_s[L][slot] = (uint8_t)(pix + 1);
+            } else {
+                pix = pix - 1;               /* stored s + 1 */
+            }
+            if (nk >= ROUND_KEEP)
+                continue;
+            kept[nk].file_ix = (uint8_t)i;
+            strcpy(kept[nk].fname, fname);
+            kept[nk].game_ix = (uint8_t)g;
+            kept[nk].rnd = (uint8_t)cls;
+            kept[nk].L = (uint8_t)L;
+            kept[nk].s = (uint8_t)pix;
+            kept[nk].k = (uint8_t)(k_seen[L][slot][lo][hi] + 1);
+            k_seen[L][slot][lo][hi] = kept[nk].k;
+            kept[nk].vis = (uint8_t)vid;
+            kept[nk].home = (uint8_t)hid;
+            nk++;
+        }
+    }
+    for (i = 1; i < nk; i++) {
+        RoundGame tm = kept[i];
+        int j = i - 1;
+        while (j >= 0 && round_cmp(&kept[j], &tm) > 0) {
+            kept[j + 1] = kept[j];
+            j--;
+        }
+        kept[j + 1] = tm;
+    }
+    for (q = 0; q < nk; q++) {
+        const RoundGame *rg = &kept[q];
+        char path[600];
+        FILE *p;
+        long r;
+        uint8_t rec[BOX_REC];
+        uint16_t g = (uint16_t)(16 + q);
+        if (!path_join(path, sizeof path, pre_dir, rg->fname))
+            return -1;
+        p = fopen(path, "rb");
+        if (!p)
+            return -1;
+        r = 1 + ARCH_GAME_REC * rg->game_ix;
+        if (fseek(p, r, SEEK_SET) != 0
+            || fread(span, 1, (size_t)ARCH_GAME_REC, p) != (size_t)ARCH_GAME_REC) {
+            fclose(p);
+            return -1;
+        }
+        fclose(p);
+        wr16(rec, season_no);
+        rec[2] = (uint8_t)(g & 0xff);
+        rec[3] = 4;
+        wr16(rec + 4, (uint16_t)(rg->vis * 256 + rg->home));
+        rec[6] = (uint8_t)(rg->rnd + 4 * rg->L + 8 * rg->s);
+        rec[7] = rg->k;
+        rec[8] = span[0x1beb];
+        rec[9] = span[0x1bec];
+        rec[10] = (uint8_t)sum80_span(span, 0x208);
+        rec[11] = (uint8_t)sum80_span(span, 0x208 + 0x8e8L);
+        rec[12] = (uint8_t)sum80_span(span, 0x5c8);
+        rec[13] = (uint8_t)sum80_span(span, 0x5c8 + 0x8e8L);
+        rec[14] = 0;
+        rec[15] = 0;
+        if (fwrite(rec, 1, BOX_REC, bx) != BOX_REC)
+            return -1;
+        for (t = 0; t < 2; t++)
+            if (box_side_span(bx, span, season_no, g, t,
+                              t == 0 ? rg->vis : rg->home, NULL) != 0)
+                return -1;
+    }
+    return 0;
+}
+
 /* MILESTON.DAT / BOXSCORE.DAT keep rule (C7): copy the rec-byte records of the file at path
  * whose u16 season (bytes 0..1) is below season_no to out; a short tail is dropped and a
  * missing file copies nothing. Returns -1 on a read or write error. */
@@ -2559,6 +2882,10 @@ racc:
      * the kept games' box rows into BOXSCORE.TMP */
     if (series_pass(pre_dir, ms, bx, season_no) != 0)
         goto fail;
+    /* C23b round games (division series and LCS) after the World Series rows, their
+     * header + box rows into BOXSCORE.TMP (MILESTON.DAT gains nothing) */
+    if (round_pass(pre_dir, bx, season_no) != 0)
+        goto fail;
     if (ms != NULL) {
         if (fclose(ms) != 0) {
             ms = NULL;
@@ -2898,10 +3225,27 @@ static int lg_default(int which, char *out)
     return lg_path(out, PATH_BUF, which, lg, DIR_SEP);
 }
 
+/* C23b: remove the eight round archive names (any case) from dir; missing files and dirs
+ * are errors to ignore. scan_dir "" upper-cases every name, so the compare is the exact
+ * upper-case name */
+static void cleanup_archives(const char *dir)
+{
+    char scan[MAXV][16];
+    int n, i, j;
+    n = scan_dir(dir, "", scan);
+    for (i = 0; i < n; i++) {
+        char path[PATH_BUF];
+        for (j = 0; j < ARCHIVE_SLOTS; j++)
+            if (strcmp(scan[i], round_names[j]) == 0)
+                if (path_join(path, sizeof path, dir, scan[i]))
+                    remove(path);
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *pre, *hpath, *rpath;
-    int k, rc;
+    int k, rc, default_mode = 0;
     if (argc >= 2 && arg_is(argv[1], "/SNAP")) {
         if (argc == 2) {
             if (!lg_default(LG_DIR, g_d_dir) || !lg_default(LG_SNAP, g_d_snap))
@@ -2946,6 +3290,7 @@ int main(int argc, char **argv)
         pre = g_d_snap;
         hpath = g_d_hist;
         rpath = g_d_ret;
+        default_mode = 1;
     }
     if (!fit_copy(g_retpath, sizeof g_retpath, rpath))
         return 2;                     /* RETIRED path too long */
@@ -2994,5 +3339,13 @@ int main(int argc, char **argv)
     rc = do_run(pre, hpath);
     if (rc != 0)
         return rc;
+    if (default_mode) {
+        /* C23b: success with no arguments deletes the round archives from the snapshot
+         * (the pre dir) and the live league dir; explicit arguments never delete */
+        char ldir[PATH_BUF];
+        cleanup_archives(pre);
+        if (lg_default(LG_DIR, ldir))
+            cleanup_archives(ldir);
+    }
     return 0;
 }

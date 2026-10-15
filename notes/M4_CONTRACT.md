@@ -1267,3 +1267,46 @@ carried the default POS2_OF[pos] with no choice.
   sl_salary for rules 1 and 2. sl_host gains a 'salary' mode (N x 143 B records in, N x
   u16 LE salaries out).
 - V20 layout unchanged: salary u16 at +25, byte 31 pos1 low / pos2 high nibble.
+
+## C23b. Playoff round box scores (added 2026-10-14)
+
+BACK.EXE archives each playoff round by renaming PLAYOFFS.AL / .NL to the first free of
+PLAYOFFS.A1..A4 (from .AL) and PLAYOFFS.N1..N4 (from .NL) in the league dir (all four taken:
+it deletes as before); C23a shipped the rename and HISTWR reads them, HISTWR does not delete
+them. HISTWR (and history.record_season) now also write the round games to BOXSCORE.DAT.
+
+Reading (history.round_games; C round_pass in do_run after the World Series rows):
+- Files PLAYOFFS.A1, A2, A3, A4, N1, N2, N3, N4, name matched case-insensitively in the dir
+  the run reads (record_season: the league dir; HISTWR: the pre dir); a missing one is
+  skipped. A file is ignored whole when len < 1, byte 0 is outside 1..12, or
+  len < 1 + 7446 * n. An archive holds the PLAYOFFS.AL layout: game g at 1 + 7446 * g, home
+  stem at r + 0x1c01, visitor stem at r + 0x1c09, visitor runs at r + 0x1beb, home runs at
+  r + 0x1bec, hits and errors as the World Series records read them. Its count byte has no
+  cap (a division series archive can hold up to 10 games), so the 1..12 read cap only drops
+  malformed files. A last-season World Series (cross-league) is naturally ignored.
+- A game is kept only when both stems map (series_stem_ids), both ids sit in one league
+  (both < 16: L 0, both >= 16: L 1) and it classifies: rnd 2 (LCS) when {vis, home} equals
+  league L's LCS pair (stable ids of d[S + 0x3d7] / d[S + 0x3d8], S = 0x21d AL / 0x758c NL);
+  else rnd 1 (division series) when the league has 3 divisions (teamids.ndiv == 3), neither
+  id is 0xff and both are in league L's division-series field (stable ids of d[S + 0x3d3+j],
+  j 0..3); else dropped.
+- s = the 0-based first-appearance order of the unordered pair within (rnd, L) over the kept
+  games in read order; k = the 1-based game number within (rnd, L, s), in read order. Output
+  order: sorted by (rnd, L, s, k), stable. q = the 0-based output position; games with q >= 48
+  are dropped. g in BOXSCORE.DAT = 16 + q.
+
+BOXSCORE.DAT records (C7 fourth amendment): after this season's World Series box rows, per
+round game in q order first one header record: season, g = 16 + q, flags 4, idx =
+vis * 256 + home, b = rnd + 4 * L + 8 * s, i = k, stats = (vR, hR, vH, hH, vE, hE, 0, 0)
+(runs/hits/errors exactly as the C7 World Series records compute them, hits and errors 80 B
+sums capped at 255), then that game's normal box rows exactly as the World Series rows build
+them (side 0 = visitor vis, side 1 = home home; same sort, same rec_idx lookup) but with
+g = 16 + q. MILESTON.DAT, HISTORY.DAT, SEASLINE.DAT and every other output are unchanged: no
+new milestone records. A round header record is a flags 4 record; readers that filter by
+(season, g) for g < 7 are unaffected.
+
+Cleanup: history.cleanup_archives(*dirs) removes PLAYOFFS.A1..A4 and PLAYOFFS.N1..N4 (any
+case) from each dir, ignoring missing files and dirs. record_season does not call it. HISTWR
+in its default (no-argument) mode only deletes the eight archive names from the snapshot dir
+(the pre dir) and from the live league dir after do_run returned 0; nothing is deleted with
+explicit arguments (PRE HIST RET), and a rename failure leaves everything as it was.

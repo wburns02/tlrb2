@@ -569,7 +569,9 @@ def record_season(league_dir, hist_path, season_no, retirees=None):
     stem_ids = series_stem_ids(m, table)
     ms_new += series_records(season_no, playoffs, stem_ids)
     write_milestones(hist_path, ms_old + ms_new)
-    write_box(hist_path, box_old + box_records(season_no, playoffs, stem_ids, rec_idx))
+    box_round = round_box_records(season_no, league_dir, m, table, stem_ids, rec_idx)
+    write_box(hist_path, box_old + box_records(season_no, playoffs, stem_ids, rec_idx)
+              + box_round)
     # C13.2 SEASLINE.DAT: drop season_no >= current (a missing or bad file starts empty), append this season
     sl_path = os.path.join(os.path.dirname(hist_path), SEASLINE_NAME)
     kept = [b for b in read_line_bytes(sl_path) if struct.unpack_from('<H', b, 2)[0] < season_no]
@@ -792,16 +794,119 @@ def series_records(season_no, playoffs, stem_ids):
     (kind 192 + g, then 200 + g); a short file or n outside 1..7 gives []."""
     out = []
     for g, r, vis, home in series_games(playoffs, stem_ids):
-        # team t: 0 visitor, 1 home; hits and errors are 80 B sums capped at 255
-        hits = [min(255, sum(playoffs[r + 0x208 + 0x8e8 * t:r + 0x208 + 0x8e8 * t + 80]))
-                for t in (0, 1)]
-        errs = [min(255, sum(playoffs[r + 0x5c8 + 0x8e8 * t:r + 0x5c8 + 0x8e8 * t + 80]))
-                for t in (0, 1)]
-        runs = playoffs[r + 0x1beb] * 256 + playoffs[r + 0x1bec]
-        out.append((season_no, vis * 256 + home, SERIES_KIND + g, runs))
-        out.append((season_no, hits[0] * 256 + hits[1], SERIES_HE_KIND + g,
-                    errs[0] * 256 + errs[1]))
+        out += series_game_records(season_no, playoffs, r, g, vis, home)
     return out
+
+
+def series_game_records(season_no, data, r, g, vis, home):
+    """The two C7 World Series records of one game at offset r (visitor then home ids vis, home):
+    (season, vis * 256 + home, runs) then (season, hits0 * 256 + hits1, errs0 * 256 + errs1)."""
+    # team t: 0 visitor, 1 home; hits and errors are 80 B sums capped at 255
+    hits = [min(255, sum(data[r + 0x208 + 0x8e8 * t:r + 0x208 + 0x8e8 * t + 80]))
+            for t in (0, 1)]
+    errs = [min(255, sum(data[r + 0x5c8 + 0x8e8 * t:r + 0x5c8 + 0x8e8 * t + 80]))
+            for t in (0, 1)]
+    runs = data[r + 0x1beb] * 256 + data[r + 0x1bec]
+    return [(season_no, vis * 256 + home, SERIES_KIND + g, runs),
+            (season_no, hits[0] * 256 + hits[1], SERIES_HE_KIND + g,
+             errs[0] * 256 + errs[1])]
+
+
+def archive_names():
+    """The C23b round archive names in read order (PLAYOFFS.AL layout archives)."""
+    return ['PLAYOFFS.A1', 'PLAYOFFS.A2', 'PLAYOFFS.A3', 'PLAYOFFS.A4',
+            'PLAYOFFS.N1', 'PLAYOFFS.N2', 'PLAYOFFS.N3', 'PLAYOFFS.N4']
+
+
+def round_games(league_dir, m, table, stem_ids):
+    """C23b round games (division series and LCS from the C23a archives): files PLAYOFFS.A1..A4 then
+    N1..N4 in league_dir (name matched case-insensitively; a missing one skipped). A file is
+    ignored when len < 1, byte 0 outside 1..12, or len < 1 + 7446 * n. A game is kept when both
+    stems map, both ids sit in one league (both < 16: L 0, both >= 16: L 1) and it classifies:
+    rnd 2 (LCS) when the pair is league L's LCS pair (stable ids of d[S + 0x3d7]/[S + 0x3d8]);
+    else rnd 1 (division series) when ndiv == 3, neither id is 0xff and both are in league L's
+    DS field (d[S + 0x3d3 + j], j 0..3); else dropped. Last season's World Series is naturally
+    ignored (cross-league). s = the 0-based first-appearance order of the unordered pair within
+    (rnd, L); k = the 1-based game number within (rnd, L, s), both in read order. Returns the
+    kept games in output order (rnd, L, s, k, stable), each (q, rnd, L, s, k, data, r, vis, home)
+    with q the 0-based output position; games past q 47 are dropped. data is the archive's bytes
+    and r the game's offset in it."""
+    ndiv = teamids.ndiv(m.d)
+    plates = []
+    for L in (0, 1):
+        S = 0x21d if L == 0 else 0x758c
+        lcs = {teamids.id_of_engine(m.d, table, m.d[S + 0x3d7]),
+               teamids.id_of_engine(m.d, table, m.d[S + 0x3d8])}
+        ds = {teamids.id_of_engine(m.d, table, m.d[S + 0x3d3 + j]) for j in range(4)}
+        plates.append((L, lcs, ds))
+    cand = []                           # (rnd, L, s, k, data, r, vis, home) in read order
+    series = {}                         # (rnd, L) -> {frozenset pair: s}
+    counts = {}                         # (rnd, L, s) -> next k
+    for name in archive_names():
+        p = None
+        if os.path.isdir(league_dir):
+            for fn in sorted(os.listdir(league_dir)):
+                if fn.upper() == name:
+                    p = os.path.join(league_dir, fn)
+                    break
+        if p is None or not os.path.isfile(p):
+            continue
+        data = open(p, 'rb').read()
+        if len(data) < 1:
+            continue
+        n = data[0]
+        if not 1 <= n <= 12 or len(data) < 1 + GAME_REC * n:
+            continue
+        for g in range(n):
+            r = 1 + GAME_REC * g
+            home = stem_ids.get(game_stem(data, r + 0x1c01))
+            vis = stem_ids.get(game_stem(data, r + 0x1c09))
+            if home is None or vis is None or (home < 16) != (vis < 16):
+                continue
+            L = 0 if home < 16 else 1
+            _L, lcs, ds = plates[L]
+            pair = frozenset((vis, home))
+            if pair == lcs:
+                rnd, field = 2, lcs
+            elif ndiv == 3 and 0xff not in pair and pair <= ds:
+                rnd, field = 1, ds
+            else:
+                continue
+            key = (rnd, L)
+            smap = series.setdefault(key, {})
+            if pair not in smap:
+                smap[pair] = len(smap)
+            s = smap[pair]
+            k = counts.get((rnd, L, s), 0) + 1
+            counts[(rnd, L, s)] = k
+            cand.append((rnd, L, s, k, data, r, vis, home))
+    cand.sort(key=lambda x: x[:4])
+    out = []
+    for q, (rnd, L, s, k, data, r, vis, home) in enumerate(cand):
+        if q >= 48:
+            break
+        out.append((q, rnd, L, s, k, data, r, vis, home))
+    return out
+
+
+def cleanup_archives(*dirs):
+    """C23b: remove PLAYOFFS.A1..A4 and N1..N4 (any case) from each dir; missing files and
+    dirs are fine."""
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        drop = set()
+        for fn in os.listdir(d):
+            if fn.upper() in ARCHIVE_UPPER:
+                drop.add(fn)
+        for fn in sorted(drop):
+            try:
+                os.remove(os.path.join(d, fn))
+            except OSError:
+                pass
+
+
+ARCHIVE_UPPER = {n.upper() for n in archive_names()}
 
 
 def box_stat(d, base, off, i, pair):
@@ -813,32 +918,60 @@ def box_stat(d, base, off, i, pair):
     return d[o + i]
 
 
+def box_game_rows(season_no, data, r, g, vis, home, rec_idx):
+    """The box score rows (C7 fourth amendment shape) of one game: side t = 0 (team id = the
+    visitor) then 1 (home): batting rows (b & 15 <= 8, sorted by slot, entry order, id), then
+    pitching rows (b & 15 == 9, or IP10 > 0, or BF > 0; sorted by entry order, id). Returns a
+    list of (season_no, g, flags, idx, b, i, stats) tuples in file order: flags bit 0 the side,
+    bit 1 a pitching row; idx NO_ENTRY when rec_idx has no entry; stats a tuple of 8 ints. data
+    holds the game at offset r (a PLAYOFFS.AL layout)."""
+    out = []
+    for t, tid in ((0, vis), (1, home)):
+        base = r + BOX_TEAM * t
+        b = data[r + BOX_B + 40 * t:r + BOX_B + 40 * t + 40]
+        bat = sorted((b[i] & 15, b[i] >> 4, i) for i in range(40)
+                     if b[i] and (b[i] & 15) <= 8)
+        for slot, order, i in bat:
+            st = tuple(box_stat(data, base, off, i, pair) for off, pair in BOX_BAT)
+            out.append((season_no, g, t, rec_idx.get((tid, i), NO_ENTRY), b[i], i, st))
+        pit = []
+        for i in range(16):
+            if not b[i]:
+                continue
+            st = tuple(box_stat(data, base, off, i, pair) for off, pair in BOX_PIT)
+            if (b[i] & 15) == 9 or st[0] > 0 or st[7] > 0:
+                pit.append((b[i] >> 4, i, st))
+        for order, i, st in sorted(pit):
+            out.append((season_no, g, t | 2, rec_idx.get((tid, i), NO_ENTRY), b[i], i, st))
+    return out
+
+
 def box_records(season_no, playoffs, stem_ids, rec_idx):
     """C7 box score records (fourth amendment): playoffs and stem_ids as series_records; rec_idx =
-    {(team id, V20 record number): player entry index}. Per kept game g in order, side t = 0 (team
-    id = visitor) then 1 (home): batting rows (b & 15 <= 8, sorted by slot, entry order, id), then
-    pitching rows (b & 15 == 9, or IP10 > 0, or BF > 0; sorted by entry order, id). Returns a list of
-    (season_no, g, flags, idx, b, i, stats) tuples in file order: flags bit 0 the side, bit 1 a
-    pitching row; idx NO_ENTRY when rec_idx has no entry; stats a tuple of 8 ints."""
+    {(team id, V20 record number): player entry index}. Per kept game g in order. Returns a list of
+    (season_no, g, flags, idx, b, i, stats) tuples in file order."""
     out = []
     for g, r, vis, home in series_games(playoffs, stem_ids):
-        for t, tid in ((0, vis), (1, home)):
-            base = r + BOX_TEAM * t
-            b = playoffs[r + BOX_B + 40 * t:r + BOX_B + 40 * t + 40]
-            bat = sorted((b[i] & 15, b[i] >> 4, i) for i in range(40)
-                         if b[i] and (b[i] & 15) <= 8)
-            for slot, order, i in bat:
-                st = tuple(box_stat(playoffs, base, off, i, pair) for off, pair in BOX_BAT)
-                out.append((season_no, g, t, rec_idx.get((tid, i), NO_ENTRY), b[i], i, st))
-            pit = []
-            for i in range(16):
-                if not b[i]:
-                    continue
-                st = tuple(box_stat(playoffs, base, off, i, pair) for off, pair in BOX_PIT)
-                if (b[i] & 15) == 9 or st[0] > 0 or st[7] > 0:
-                    pit.append((b[i] >> 4, i, st))
-            for order, i, st in sorted(pit):
-                out.append((season_no, g, t | 2, rec_idx.get((tid, i), NO_ENTRY), b[i], i, st))
+        out += box_game_rows(season_no, playoffs, r, g, vis, home, rec_idx)
+    return out
+
+
+def round_box_records(season_no, league_dir, m, table, stem_ids, rec_idx):
+    """C23b: the BOXSCORE.DAT records of the kept playoff round games, after the World Series rows:
+    per round game in q order first one header record (season, g = 16 + q, flags 4, idx =
+    vis * 256 + home, b = rnd + 4 * L + 8 * s, i = k, stats = (vR, hR, vH, hH, vE, hE, 0, 0))
+    with runs/hits/errors exactly as series_records computes them, then that game's normal box
+    rows (box_game_rows) with g = 16 + q."""
+    out = []
+    for q, rnd, _L, _s, k, data, r, vis, home in \
+            round_games(league_dir, m, table, stem_ids):
+        heads = series_game_records(season_no, data, r, 0, vis, home)
+        runs = heads[0][3]
+        hits_errs = (heads[1][1] >> 8, heads[1][1] & 255, heads[1][3] >> 8, heads[1][3] & 255)
+        stats = (runs >> 8, runs & 255, *hits_errs, 0, 0)
+        g = 16 + q
+        out.append((season_no, g, 4, vis * 256 + home, rnd + 4 * _L + 8 * _s, k, stats))
+        out += box_game_rows(season_no, data, r, g, vis, home, rec_idx)
     return out
 
 
